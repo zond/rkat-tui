@@ -30,7 +30,7 @@ mod triggers;
 pub use names::is_agent;
 use names::new_name;
 pub use notes::Leave;
-pub(crate) use notes::append_note;
+pub(crate) use notes::{append_note, note_compacted};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

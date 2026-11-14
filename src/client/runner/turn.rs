@@ -824,7 +824,7 @@ impl Runner {
     /// Switch the agent's session to `switch` in place
     /// (`rkat/set_model`): refused while a
     /// turn runs; the next prompt is an ordinary send.
-    pub(super) fn switch_model(&self, switch: ModelSwitch) {
+    pub(super) fn switch_model(&mut self, switch: ModelSwitch) {
         if self.turn.active {
             self.notice(
                 NoticeLevel::Warn,
@@ -836,6 +836,7 @@ impl Runner {
             return;
         };
         let reports = self.reporter();
+        self.model_switching = true;
         tokio::spawn(async move {
             let params = protocol::SetModelParams {
                 model: switch.model.clone(),
@@ -854,6 +855,36 @@ impl Runner {
             });
             reports.send(Report::ModelSet { switch, result });
         });
+    }
+
+    /// The daemon answered a model switch to `switch`.
+    pub(super) fn model_set(
+        &mut self,
+        switch: ModelSwitch,
+        result: Result<protocol::ModelSet, String>,
+    ) {
+        match result {
+            Ok(set) => {
+                if self
+                    .conn
+                    .link()
+                    .is_some_and(|link| link.session == set.session_id)
+                {
+                    let dialect = WireDialect::parse(&set.provider);
+                    self.show_model(&switch.endpoint, dialect, &set.model);
+                    // The agent was seated again: its stream is new.
+                    if set.reseated {
+                        self.rerender(set.session_id.clone(), Shown::Reseated);
+                    }
+                }
+                self.notice(
+                    NoticeLevel::Info,
+                    format!("switched to {} on {}", set.model, switch.endpoint),
+                );
+                self.last_switch = Some(switch);
+            }
+            Err(why) => self.notice(NoticeLevel::Error, format!("model not changed: {why}")),
+        }
     }
 
     /// The model lists arrived ([`Workbench::background`]): a `/model

@@ -186,6 +186,22 @@ impl RealmFile {
         save_realm(&self.path, &file)
     }
 
+    /// Write `text` as its `[auto] compact_prepare` (`/compact prepare`),
+    /// or remove the key (`None`, `/compact prepare off`), keeping
+    /// everything else.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::write_rules_with`].
+    pub fn write_compact_prepare(&self, text: Option<&str>) -> Result<(), RulesError> {
+        let _one = self.lock.lock();
+        let mut file = RulesFile::load(&self.path)?;
+        file.auto
+            .get_or_insert_with(AutoSection::default)
+            .compact_prepare = text.map(str::to_string);
+        save_realm(&self.path, &file)
+    }
+
     /// Write `view` as its `[ui] checklist`.
     ///
     /// # Errors

@@ -582,6 +582,17 @@ async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("granted for this session")))
         .await;
+    // The picker states it too, under the list it refreshed (the row gone).
+    let refreshed = client
+        .wait_for(|msg| matches!(msg, Msg::ShowPicker { refresh: true, .. }))
+        .await;
+    assert!(
+        matches!(&refreshed, Msg::ShowPicker { picker, .. } if picker.rows.is_empty()),
+        "{refreshed:?}"
+    );
+    client
+        .wait_for(|msg| matches!(msg, Msg::PickerDone { kind: rkat_tui::ui::PickerKind::Approve, text } if text.starts_with("granted for this session: writes under")))
+        .await;
     let reviews = setup.classifier.tools.lock().len();
     client.send(Effect::StartTurn("try again".into()));
     assert_eq!(client.turn_finished().await.unwrap().text, "written");

@@ -580,7 +580,7 @@ fn refuse(err: impl std::fmt::Display) -> MobError {
 #[must_use]
 pub fn scratch_instruction(dir: &std::path::Path) -> String {
     format!(
-        "Your scratch directory is `{}` (it is also TMPDIR, TMP and TEMP in your shell): use it for temporary files, logs and experiments instead of /tmp or the project. It is private to you and your helpers, writing there needs no review, and it is removed when you are retired or the daemon stops.",
+        "Your scratch directory is `{}` (it is also TMPDIR, TMP and TEMP in your shell): use it for temporary files, logs and experiments instead of /tmp or the project. It is private to you and your helpers, writing there needs no review, and it is removed when you are retired or the daemon stops. `blob_save_file` and `view_image` accept only paths inside the project, not this directory: have `blob_save_file` save inside the project and move the file from there with the shell, and copy an image into the project before `view_image` reads it.",
         dir.display()
     )
 }
@@ -789,6 +789,22 @@ impl SpawnMemberCustomizer for HelperCustomizer {
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// The scratch line names the directory and says that the engine's
+    /// `blob_save_file` and `view_image` refuse it (their own check keeps
+    /// them inside the project root), with the way around.
+    #[test]
+    fn the_scratch_line_says_the_blob_tools_stay_in_the_project() {
+        let line = scratch_instruction(std::path::Path::new("/s/main-ab12"));
+        assert!(line.contains("`/s/main-ab12`"), "{line}");
+        for part in [
+            "`blob_save_file` and `view_image` accept only paths inside the project",
+            "move the file from there with the shell",
+            "copy an image into the project",
+        ] {
+            assert!(line.contains(part), "{part}: {line}");
+        }
+    }
 
     #[test]
     fn the_tui_owned_builtins_are_denied() {

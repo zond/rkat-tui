@@ -9,8 +9,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::{
     Action, App, CHORD_WINDOW, Command, DOUBLE_CTRL_C_WINDOW, DOUBLE_ESC_WINDOW, Departure,
     EditAction, EditorClosed, EditorTarget, Effect, HistorySearch, InputMode, LocalEffect, Modal,
-    ModalKey, ModelCommand, NoticeLevel, PathIndex, PendingId, QUIT_CONFIRM_WINDOW, QuitChoice,
-    QuitDecision, QuitDialog, SearchOutcome, StashOutcome, complete, keymap, search,
+    ModalKey, ModelCommand, NoticeLevel, PathIndex, PendingId, PendingState, QUIT_CONFIRM_WINDOW,
+    QuitChoice, QuitDecision, QuitDialog, SearchOutcome, StashOutcome, complete, keymap, search,
 };
 
 impl App {
@@ -423,7 +423,7 @@ impl App {
                 ModalKey::Close => self.modal = None,
                 ModalKey::Choose(reference) => {
                     self.modal = None;
-                    fx.push(Effect::ResumeSession(reference));
+                    self.resume(reference, fx);
                 }
             },
             Some(Modal::List(picker)) => match picker.key(key) {
@@ -576,8 +576,14 @@ impl App {
     /// [`QUIT_CONFIRM_WINDOW`]. Quitting hands every held message to the
     /// client runner ([`Effect::SaveUnsent`]) so undelivered ones are saved.
     pub(super) fn request_quit(&mut self, now: Instant, fx: &mut Vec<Effect>) {
-        let queued = self.pending.len() + usize::from(self.send_next.is_some());
-        let busy = self.running || queued > 0;
+        let commands = self
+            .pending
+            .items()
+            .iter()
+            .filter(|p| p.state == PendingState::Command)
+            .count();
+        let queued = self.pending.len() - commands + usize::from(self.send_next.is_some());
+        let busy = self.running || queued > 0 || commands > 0;
         if busy && !self.quit_confirm_armed(now) {
             self.quit.confirm = Some(now);
             let mut what = Vec::new();
@@ -586,6 +592,12 @@ impl App {
             }
             if queued > 0 {
                 what.push(format!("{} queued", crate::text::count(queued, "message")));
+            }
+            if commands > 0 {
+                what.push(format!(
+                    "{} waiting for the turn's end (dropped on quit)",
+                    crate::text::count(commands, "command")
+                ));
             }
             // The daemon decides next whether the agent retires and the
             // daemon stops.
@@ -657,6 +669,19 @@ impl App {
     /// daemon ([`Effect::Leave`]), then [`Effect::Quit`].
     pub(super) fn leave(&mut self, departure: Option<Departure>, fx: &mut Vec<Effect>) {
         self.quit.deciding = false;
+        // Commands held for the turn's end would run on this client: they
+        // are dropped, and said so.
+        let dropped = self.drop_held_commands();
+        if !dropped.is_empty() {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                format!(
+                    "dropped what waited for the turn's end: {}",
+                    dropped.join(", ")
+                ),
+            );
+            fx.push(Effect::DroppedCommands(dropped));
+        }
         // Delivered (settled) messages are in the conversation already.
         let mut held: Vec<(Option<PendingId>, String)> = self
             .pending

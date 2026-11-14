@@ -23,6 +23,7 @@ mod classifier_llm;
 mod client;
 mod client_turns;
 mod compact;
+mod compact_prepare;
 mod confinement;
 mod conversations;
 mod corpus;

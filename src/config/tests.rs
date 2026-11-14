@@ -1021,3 +1021,68 @@ fn allow_statements_come_from_the_user_s_layers_only() {
     assert_eq!(auto.classifier_model.as_deref(), Some("claude-haiku-5-5"));
     assert_eq!(auto.mode, Some(crate::approval::mode::PermissionMode::Auto));
 }
+
+/// `[auto] compact_prepare` and `compact_prepare_at` layer like the other
+/// compaction keys: user layers, the command line, and the project file
+/// where the command line did not set them. The threshold reads as tokens
+/// or `"N%"`; unset it is 70%; an empty instruction is none; the realm's
+/// trusted writer sets and clears the instruction, keeping the rest.
+#[test]
+fn the_prepare_instruction_layers_like_the_compaction_keys() {
+    use super::settings::{DEFAULT_PREPARE_AT, PrepareAt};
+    let tmp = tempfile::tempdir().unwrap();
+    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+    write(&realm, "");
+    write(&project, "");
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
+    assert_eq!(layered.settings.compact_prepare(), None);
+    assert_eq!(layered.settings.compact_prepare_at, DEFAULT_PREPARE_AT);
+    assert_eq!(DEFAULT_PREPARE_AT, PrepareAt::Percent(70));
+
+    write(
+        &realm,
+        "[auto]\ncompact_prepare = \"update PLAN.md\"\ncompact_prepare_at = 300000\n",
+    );
+    let prepare = load_layered_with(&realm, None, &project, None)
+        .unwrap()
+        .settings
+        .compact_prepare()
+        .unwrap();
+    assert_eq!(prepare.instruction, "update PLAN.md");
+    assert_eq!(prepare.at, PrepareAt::Tokens(300_000));
+    // The project file may set them...
+    write(&project, "[auto]\ncompact_prepare_at = \"60%\"\n");
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
+    assert_eq!(layered.settings.compact_prepare_at, PrepareAt::Percent(60));
+    // ...unless the command line did (`--set auto.compact_prepare_at=80%`
+    // reaches it as a string).
+    let overlay = cli("[auto]\ncompact_prepare_at = \"80%\"\ncompact_prepare = \"x\"\n");
+    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
+    assert_eq!(layered.settings.compact_prepare_at, PrepareAt::Percent(80));
+    assert_eq!(layered.settings.compact_prepare().unwrap().instruction, "x");
+    // An empty instruction is none.
+    let overlay = cli("[auto]\ncompact_prepare = \"  \"\n");
+    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
+    assert_eq!(layered.settings.compact_prepare(), None);
+    // Bad thresholds are parse errors.
+    for bad in ["0", "\"0%\"", "\"101%\"", "\"soon\""] {
+        write(&project, &format!("[auto]\ncompact_prepare_at = {bad}\n"));
+        assert!(
+            load_layered_with(&realm, None, &project, None).is_err(),
+            "{bad}"
+        );
+    }
+    assert_eq!(PrepareAt::parse("300_000"), Ok(PrepareAt::Tokens(300_000)));
+    assert_eq!(PrepareAt::Percent(70).tokens(Some(1_000_000)), 700_000);
+    assert_eq!(PrepareAt::Percent(50).tokens(None), 100_000);
+    // The realm's writer sets and clears it, keeping the rest.
+    let file = RealmFile::new(realm.join(RULES_FILE_NAME));
+    file.write_compact_prepare(Some("write NOTES.md")).unwrap();
+    let written = RulesFile::load(&realm.join(RULES_FILE_NAME)).unwrap();
+    let auto = written.auto.unwrap();
+    assert_eq!(auto.compact_prepare.as_deref(), Some("write NOTES.md"));
+    assert_eq!(auto.compact_prepare_at, Some(PrepareAt::Tokens(300_000)));
+    file.write_compact_prepare(None).unwrap();
+    let written = RulesFile::load(&realm.join(RULES_FILE_NAME)).unwrap();
+    assert_eq!(written.auto.unwrap().compact_prepare, None);
+}

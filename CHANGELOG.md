@@ -42,7 +42,69 @@
   (`delegate`, `fork`, `spawned member`), state (`running`, `finished`,
   `idle`, `failed`, `cancelled`) and model.
 
+- **Smart auto-compaction**: `[auto] compact_prepare = "<instruction>"`
+  with `compact_prepare_at = <tokens>` or `"<N>%"` of the context window
+  (default 70%), in your own `tui.toml`, the realm's, `--set`, or a
+  project's `.rkat/tui.toml` (as the other compaction keys). When a
+  workspace agent's context crosses it, the agent is asked, steered into
+  its run, and picks the moment itself: "Your context is at 300k of 1M
+  tokens. Find a good stopping point soon: finish the step you are in, do
+  not start a large new piece of work. Then: <instruction>. Then call
+  `compact_ready`, which compacts the context; you continue after it."; an
+  idle agent is asked at the start of its next turn instead of being
+  woken. The transcript says "context at 300k: asked the agent to prepare
+  for compaction", and `/compact status` shows the request pending until
+  it is answered or the automatic compaction comes. One reminder ("do it
+  now") comes if the context passes the midpoint to the automatic
+  compaction (or a further 10% of the window when nothing compacts
+  automatically) first. The agent's new `compact_ready` tool requests the
+  compaction, which happens before its next step; asked without an
+  instruction it compacts too, unless the context is below 20% of the
+  window. It fires once per crossing and arms again below the threshold;
+  the engine's own threshold stays the backstop; helpers and forks get
+  neither. `/compact prepare <text>` sets the instruction for the
+  workspace (the realm's `tui.toml`), `/compact prepare off` clears it,
+  `/compact status` shows it with its threshold and whether it is armed. A
+  threshold at or above the automatic compaction's is a start-up notice
+  naming what to change. `compact_ready` adds 197 bytes to every model
+  request.
+- After each compaction of an agent's conversation the agent gets one
+  system note that what was discarded is searchable with `memory_search`
+  (when semantic memory is on), and its instructions say so.
+- Commands that need the agent idle (`/model`, `/new` and `/clear`,
+  `/resume`, `/init`, `/agents <name>` and the agent picker's switch and
+  new agent, `/rehome <ref>`) typed during a turn no longer refuse: they
+  wait in the queue with the messages typed after them, shown with "when
+  the turn ends", and run in that order once the agent is idle (`/model x`
+  then a message: the switch first, the message on the new model). ↑ on
+  an empty input takes one back like a queued message. A picker command
+  (`/model`, `/resume`, `/agents`) opens its picker at once and its choice
+  waits. Quitting or detaching with commands still waiting drops them
+  with a notice naming them.
+- `/compact` during a turn no longer waits: it requests the compaction at
+  once and the engine applies it before the run's next model request.
+
 ### Changed
+
+- The rows of every list dialog (`/approve`, `/permissions`,
+  `/schedules`, `/agents`, `/wire`, `/unwire`, `/mode`, `/memory`,
+  `/helpers`) wrap instead of being cut: the highlighted row in full,
+  every other row at most two lines of its text and two of its note,
+  ending in "…".
+- The confirm step of every list dialog: a pending question is its own
+  line in the warning style, naming what will happen and its keys
+  ("Grant writes under `/x/y` for this session? y yes · n or Esc no");
+  while it is up only `y`, `n` and Esc act (Enter and every other key
+  leave it up and say "press y to confirm, n or Esc to cancel"; nothing
+  reaches the row's own Enter); Esc cancels the question, a second Esc
+  closes the dialog. What an act did is stated on the dialog too
+  ("granted for this session: writes under …", "approved once: …",
+  "retired agent main-ab12"), as well as in the transcript. `/approve`'s
+  footer spells its choices: "Enter approve once · s grant this session ·
+  a grant always · e allow this kind of effect · Esc close".
+- The agent's scratch-directory instruction says that `blob_save_file`
+  and `view_image` accept only paths inside the project (the engine's own
+  check), and how to work around it.
 
 - A build after the agent changed the dependencies or build files: in a
   contained shell (rkat-tui's sandbox or `--confinement=external`) it

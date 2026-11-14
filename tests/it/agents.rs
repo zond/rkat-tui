@@ -396,6 +396,9 @@ async fn the_agent_picker_lists_retires_idle_agents_and_seats_a_new_one() {
         matches!(&refreshed, Msg::RefreshAgentPicker(rows) if rows.len() == 3 && rows.iter().all(|r| r.name != b_name)),
         "{refreshed:?}"
     );
+    // The picker states what was done.
+    a.wait_for(|m| matches!(m, Msg::PickerDone { kind: rkat_tui::ui::PickerKind::Agents, text } if text.starts_with(&format!("retired agent {b_name}"))))
+        .await;
     let status = daemon.status().await;
     assert!(status.agents.iter().all(|r| r.name != b_name), "{status:?}");
     a.send(Effect::Agents(None));

@@ -3,6 +3,7 @@
 
 use std::time::Instant;
 
+use super::deferred::Deferred;
 use super::{
     App, AutoCommand, Busy, COMPACT_FOCUS_UNSUPPORTED, Command, CompactCommand, CompactFailure,
     Effect, Modal, ModelCommand, NoticeLevel, RulesCommand, commands,
@@ -53,6 +54,9 @@ impl App {
             Some(Busy::Compacting)
         } else if self.shell.running.is_some() {
             Some(Busy::Shell)
+        } else if self.draining {
+            // A held command runs now: what was held behind it waits.
+            None
         } else if !self.pending.is_empty() || self.send_next.is_some() || self.recalling {
             Some(Busy::Queued)
         } else {
@@ -73,10 +77,37 @@ impl App {
         }
     }
 
-    /// `/model <id>` or a picker selection: switch when idle.
+    /// `/model <id>` or a picker selection: switch when idle; during a
+    /// turn the switch waits for its end.
     pub(super) fn switch_model(&mut self, model: String, fx: &mut Vec<Effect>) {
+        if self.defer(
+            format!("/model {model}"),
+            Deferred::Choice(Effect::SetModel(model.clone())),
+        ) {
+            return;
+        }
         if self.idle_or_notice() {
             fx.push(Effect::SetModel(model));
+        }
+    }
+
+    /// `cmd` (typed as `text`) waits for the turn's end when it must
+    /// ([`App::defers`]); whether it does.
+    fn held_typed(&mut self, text: &str, cmd: Command) -> bool {
+        self.defer(text.to_string(), Deferred::Typed(cmd))
+    }
+
+    /// `/resume <reference>` or the resume picker's choice: switch when
+    /// idle; during a turn the switch waits for its end.
+    pub(super) fn resume(&mut self, reference: String, fx: &mut Vec<Effect>) {
+        if self.defer(
+            format!("/resume {reference}"),
+            Deferred::Choice(Effect::ResumeSession(reference.clone())),
+        ) {
+            return;
+        }
+        if self.idle_or_notice() {
+            fx.push(Effect::ResumeSession(reference));
         }
     }
 
@@ -93,13 +124,32 @@ impl App {
             Command::Status => fx.push(Effect::StatusReport),
             Command::DaemonStop => fx.push(Effect::DaemonStop),
             Command::DaemonStart => fx.push(Effect::DaemonStart),
-            Command::Agents(name) => fx.push(Effect::Agents(name)),
+            Command::Agents(Some(name)) => {
+                if !self.defer(
+                    format!("/agents {name}"),
+                    Deferred::Choice(Effect::Agents(Some(name.clone()))),
+                ) {
+                    fx.push(Effect::Agents(Some(name)));
+                }
+            }
+            Command::Agents(None) => fx.push(Effect::Agents(None)),
             Command::Wire(target) => fx.push(Effect::Wire(target)),
             Command::Unwire(target) => fx.push(Effect::Unwire(target)),
             Command::Audit(lines) => fx.push(Effect::Audit(lines)),
             Command::Schedules(action) => fx.push(Effect::Schedules(action)),
-            Command::Rehome(reference) => fx.push(Effect::Rehome(reference)),
+            Command::Rehome(Some(reference)) => {
+                if !self.defer(
+                    format!("/rehome {reference}"),
+                    Deferred::Choice(Effect::Rehome(Some(reference.clone()))),
+                ) {
+                    fx.push(Effect::Rehome(Some(reference)));
+                }
+            }
+            Command::Rehome(None) => fx.push(Effect::Rehome(None)),
             Command::Init => {
+                if self.held_typed("/init", Command::Init) {
+                    return;
+                }
                 if self.idle_or_notice() {
                     self.start_turn(commands::INIT_PROMPT.to_string(), now, fx);
                 }
@@ -115,17 +165,18 @@ impl App {
                 self.transcript.push_notice(NoticeLevel::Info, text);
             }
             Command::Clear => {
+                if self.held_typed("/new", Command::Clear) {
+                    return;
+                }
                 if self.idle_or_notice() {
                     // The client runner resets the transcript and counters once
                     // the new session is live (and keeps them on failure).
                     fx.push(Effect::NewSession);
                 }
             }
-            Command::Resume(reference) => {
-                if self.idle_or_notice() {
-                    fx.push(reference.map_or(Effect::RequestResumePicker, Effect::ResumeSession));
-                }
-            }
+            // The picker opens at once; its choice waits for the turn's end.
+            Command::Resume(None) => fx.push(Effect::RequestResumePicker),
+            Command::Resume(Some(reference)) => self.resume(reference, fx),
             Command::Remember(text) => {
                 self.transcript
                     .push_notice(NoticeLevel::Info, format!("remembering: {text}"));
@@ -134,6 +185,27 @@ impl App {
             Command::Compact(CompactCommand::Status) => {
                 let text = self.gauge.policy().describe(self.status.context_window);
                 self.transcript.push_notice(NoticeLevel::Info, text);
+                // The prepare instruction is the daemon's.
+                fx.push(Effect::CompactPrepareStatus);
+            }
+            Command::Compact(CompactCommand::Prepare(text)) => {
+                fx.push(Effect::CompactPrepare(text));
+            }
+            Command::Compact(cmd @ (CompactCommand::Now | CompactCommand::Focused(_)))
+                if self.running =>
+            {
+                // During a turn the request goes now: the engine compacts
+                // before the run's next model request.
+                if matches!(cmd, CompactCommand::Focused(_)) {
+                    self.transcript
+                        .push_notice(NoticeLevel::Warn, COMPACT_FOCUS_UNSUPPORTED);
+                }
+                self.transcript.push_notice(
+                    NoticeLevel::Info,
+                    "asking the engine to compact before the run's next model request…",
+                );
+                self.scroll.bottom();
+                fx.push(Effect::CompactNow);
             }
             Command::Compact(cmd @ (CompactCommand::Now | CompactCommand::Focused(_))) => {
                 if !self.idle_or_notice() {
@@ -155,12 +227,12 @@ impl App {
                 fx.push(Effect::CompactNow);
             }
             Command::Model(ModelCommand::Set(model)) => self.switch_model(model, fx),
+            // The picker opens at once (during a turn too); its choice waits
+            // for the turn's end ([`Self::switch_model`]).
             Command::Model(cmd @ (ModelCommand::Pick | ModelCommand::Refresh)) => {
-                if self.idle_or_notice() {
-                    fx.push(Effect::RequestModelPicker {
-                        refresh: cmd == ModelCommand::Refresh,
-                    });
-                }
+                fx.push(Effect::RequestModelPicker {
+                    refresh: cmd == ModelCommand::Refresh,
+                });
             }
             Command::Mode(None) => self.show_modal(Modal::List(super::picker::mode_picker(
                 self.status.mode,

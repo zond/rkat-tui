@@ -42,6 +42,7 @@ pub mod lifecycle;
 pub mod local;
 pub mod mob;
 pub mod policy;
+pub mod prepare;
 pub mod protocol;
 pub mod schedules;
 pub mod schema_compat;
@@ -540,6 +541,7 @@ impl Daemon {
             ),
             conversations,
             audit,
+            prepare: Arc::clone(&composed.prepare),
         });
         let agents = agents::Agents::new(Arc::clone(&core));
         attach_engine(&core, &agents, &workspace)?;

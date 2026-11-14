@@ -109,6 +109,8 @@ pub enum QueuedLabel {
     Deferred,
     /// A `!` command held until the turn ends.
     Shell,
+    /// A slash command held until the turn ends (`/model`, `/new`, …).
+    Command,
 }
 
 impl QueuedLabel {
@@ -120,6 +122,7 @@ impl QueuedLabel {
             Self::Delivering => "delivering…",
             Self::Deferred => "will send after this turn",
             Self::Shell => "runs after this turn",
+            Self::Command => "when the turn ends",
         }
     }
 }

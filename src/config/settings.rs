@@ -137,6 +137,140 @@ impl CompactionTrigger {
     }
 }
 
+/// Default `compact_prepare_at`: 70% of the context window, below the
+/// engine's own threshold (80%) and `compact_auto_percent` (85%).
+pub const DEFAULT_PREPARE_AT: PrepareAt = PrepareAt::Percent(70);
+
+/// The window a percentage `compact_prepare_at` is taken of when the
+/// model's is unknown.
+pub const FALLBACK_PREPARE_WINDOW: u64 = 200_000;
+
+/// The engine's own auto-compaction threshold (native mode) as a share of
+/// the window: four fifths (`meerkat-core` `compact.rs`, "the model-aware
+/// token default").
+pub const NATIVE_THRESHOLD_PERCENT: u8 = 80;
+
+/// The engine's own threshold when the window is unknown.
+pub const NATIVE_FALLBACK_TOKENS: u64 = 100_000;
+
+/// Where `[auto] compact_prepare` runs: a number of tokens, or a share of
+/// the model's context window (`"70%"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrepareAt {
+    /// This many tokens of context.
+    Tokens(u64),
+    /// This percentage (1..=100) of the window.
+    Percent(u8),
+}
+
+impl PrepareAt {
+    /// The threshold in tokens for a model of `window` tokens
+    /// ([`FALLBACK_PREPARE_WINDOW`] when unknown).
+    #[must_use]
+    pub fn tokens(self, window: Option<u64>) -> u64 {
+        match self {
+            Self::Tokens(tokens) => tokens,
+            Self::Percent(percent) => {
+                window
+                    .filter(|w| *w > 0)
+                    .unwrap_or(FALLBACK_PREPARE_WINDOW)
+                    .saturating_mul(u64::from(percent))
+                    / 100
+            }
+        }
+    }
+
+    /// `300000` or `"70%"` (a string of digits reads as tokens).
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with `text`, for a notice.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim();
+        let bad = || {
+            format!(
+                "`{text}` is no threshold: give tokens (300000) or a share of the window (\"70%\")"
+            )
+        };
+        if let Some(percent) = text.strip_suffix('%') {
+            return match percent.trim().parse::<u8>() {
+                Ok(percent @ 1..=100) => Ok(Self::Percent(percent)),
+                _ => Err(bad()),
+            };
+        }
+        match text.replace('_', "").parse::<u64>() {
+            Ok(tokens) if tokens > 0 => Ok(Self::Tokens(tokens)),
+            _ => Err(bad()),
+        }
+    }
+}
+
+impl std::fmt::Display for PrepareAt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tokens(tokens) => write!(f, "{tokens}"),
+            Self::Percent(percent) => write!(f, "{percent}%"),
+        }
+    }
+}
+
+impl Serialize for PrepareAt {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Tokens(tokens) => serializer.serialize_u64(*tokens),
+            Self::Percent(_) => serializer.serialize_str(&self.to_string()),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PrepareAt {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Tokens(u64),
+            Text(String),
+        }
+        match Raw::deserialize(deserializer)? {
+            Raw::Tokens(0) => Err(serde::de::Error::custom(
+                "compact_prepare_at must be above 0",
+            )),
+            Raw::Tokens(tokens) => Ok(Self::Tokens(tokens)),
+            Raw::Text(text) => Self::parse(&text).map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+/// The instruction the agent gets before an automatic compaction
+/// (`[auto] compact_prepare`) and where it runs (`compact_prepare_at`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactPrepare {
+    /// What the agent is asked to do first.
+    pub instruction: String,
+    /// When.
+    pub at: PrepareAt,
+}
+
+impl CompactionPolicy {
+    /// The context at which the engine compacts on its own: its own
+    /// threshold in native mode, `compact_auto_percent` in auto mode,
+    /// none in warn mode.
+    #[must_use]
+    pub fn backstop_tokens(&self, window: Option<u64>) -> Option<u64> {
+        match self.mode {
+            CompactMode::Native => Some(
+                window
+                    .filter(|w| *w > 0)
+                    .map_or(NATIVE_FALLBACK_TOKENS, |window| {
+                        window.saturating_mul(u64::from(NATIVE_THRESHOLD_PERCENT)) / 100
+                    }),
+            ),
+            CompactMode::Auto => Some(self.auto_tokens(window)),
+            CompactMode::Warn => None,
+        }
+    }
+}
+
 /// Whether the checklist panel shows (`tui.toml` `[ui] checklist`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

@@ -119,6 +119,7 @@ impl ToolOrigin {
             ToolSourceKind::Callback
                 if provenance.source_id.as_str() == FILE_TOOLS_SOURCE
                     || provenance.source_id.as_str() == WATCH_TOOLS_SOURCE
+                    || provenance.source_id.as_str() == crate::tools::COMPACT_TOOLS_SOURCE
                     || provenance.source_id.as_str() == SKILL_TOOLS_SOURCE
                     || provenance.source_id.as_str() == TOOL_SEARCH_SOURCE =>
             {
@@ -137,8 +138,16 @@ impl ToolOrigin {
 /// The mutation class rkat-tui declares for its own tools.
 fn tui_mutation(name: &str) -> ToolMutationClass {
     match name {
-        READ_FILE | GLOB | GREP | NOTE_LIST | NOTE_READ | WATCH_PATHS | UNWATCH | TOOL_SEARCH
-        | SKILL_READ => ToolMutationClass::ReadOnly,
+        READ_FILE
+        | GLOB
+        | GREP
+        | NOTE_LIST
+        | NOTE_READ
+        | WATCH_PATHS
+        | UNWATCH
+        | TOOL_SEARCH
+        | SKILL_READ
+        | crate::tools::COMPACT_READY => ToolMutationClass::ReadOnly,
         WRITE_FILE | EDIT_FILE | NOTE_SAVE | NOTE_FORGET => ToolMutationClass::Mutating,
         _ => ToolMutationClass::Unknown,
     }

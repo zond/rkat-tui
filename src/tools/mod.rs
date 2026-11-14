@@ -1,6 +1,7 @@
 //! In-crate file tools: `read_file`, `write_file`, `edit_file`, `glob`, `grep`,
 //! the watch tools `watch_paths` and `unwatch` ([`WatchToolDispatcher`]),
-//! and the skill tool `skill_read` ([`SkillToolDispatcher`]).
+//! the skill tool `skill_read` ([`SkillToolDispatcher`]) and the agents'
+//! `compact_ready` ([`CompactToolDispatcher`]).
 //!
 //! [`FileToolDispatcher`] implements [`AgentToolDispatcher`] and is injected
 //! into sessions as an external tool source. It is deliberately policy-free:
@@ -17,6 +18,7 @@
 //! true, .. })`; malformed arguments and internal failures become
 //! `Err(ToolError)`.
 
+mod compact;
 mod diff;
 mod edit;
 mod glob;
@@ -29,6 +31,9 @@ mod skill;
 mod watch;
 mod write;
 
+pub use compact::{
+    COMPACT_READY, COMPACT_TOOLS_SOURCE, CompactHost, CompactToolDispatcher, NoCompactions,
+};
 pub use diff::FileDiff;
 pub(crate) use glob::mention_walker;
 

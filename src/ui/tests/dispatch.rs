@@ -95,15 +95,32 @@ fn slash_commands_map_to_effects() {
         run(&mut app, "//etc"),
         vec![Effect::StartTurn("/etc".into())]
     );
-    // While running, /clear and /model are refused, /quit asks again.
+    // While running, /clear and /model wait for the turn's end; /quit
+    // asks again, then drops them with a notice naming them.
     assert!(run(&mut app, "/clear").is_empty());
     assert!(run(&mut app, "/model gpt-5.2").is_empty());
     assert!(matches!(
         app.transcript.blocks().last(),
-        Some(Block::Notice { level: NoticeLevel::Warn, text }) if *text == Busy::Turn.to_string()
+        Some(Block::Queued { text, label: QueuedLabel::Command, .. }) if text == "/model gpt-5.2"
     ));
     assert!(run(&mut app, "/quit").is_empty());
-    assert_eq!(run(&mut app, "/quit"), vec![Effect::Quit]);
+    assert!(
+        last_notice(&app)
+            .is_some_and(|(_, text)| text.contains("2 commands waiting for the turn's end")),
+        "{:?}",
+        last_notice(&app)
+    );
+    assert_eq!(
+        run(&mut app, "/quit"),
+        vec![
+            Effect::DroppedCommands(vec!["/new".into(), "/model gpt-5.2".into()]),
+            Effect::Quit
+        ]
+    );
+    assert!(
+        last_notice(&app).is_some_and(|(level, text)| level == NoticeLevel::Warn
+            && text == "dropped what waited for the turn's end: /new, /model gpt-5.2")
+    );
 }
 
 #[test]
@@ -551,9 +568,13 @@ fn model_command_requests_picker_or_refresh() {
         app.update(key(KeyCode::Enter)),
         vec![Effect::RequestModelPicker { refresh: true }]
     );
+    // During a turn the picker opens at once (its choice waits).
     let mut running = running_app();
     type_str(&mut running, "/model");
-    assert!(running.update(key(KeyCode::Enter)).is_empty());
+    assert_eq!(
+        running.update(key(KeyCode::Enter)),
+        vec![Effect::RequestModelPicker { refresh: false }]
+    );
 }
 
 /// `/auto model` asks for the classifier's picker, also during a turn;
@@ -720,14 +741,26 @@ fn remember_is_allowed_while_running() {
     assert!(app.is_running());
 }
 
+/// `/compact` during a turn does not wait: the request goes at once (the
+/// engine compacts before the run's next model request) and holds up
+/// nothing; with messages still queued after the turn it is refused.
 #[test]
-fn compact_now_refused_while_running_or_pending() {
+fn compact_now_goes_at_once_during_a_turn_and_waits_for_queued_messages() {
     let mut app = running_app();
     app.status.context_used = Some(10_000);
-    assert!(submit(&mut app, "/compact now").is_empty());
+    assert_eq!(submit(&mut app, "/compact now"), vec![Effect::CompactNow]);
+    assert!(!app.compacting, "nothing waits for it");
     assert_eq!(
         last_notice(&app),
-        Some((NoticeLevel::Warn, Busy::Turn.to_string()))
+        Some((
+            NoticeLevel::Info,
+            "asking the engine to compact before the run's next model request…".into()
+        ))
+    );
+    assert!(app.update(Msg::CompactRequested(Ok(()))).is_empty());
+    assert_eq!(
+        last_notice(&app),
+        Some((NoticeLevel::Info, COMPACT_REQUESTED.into()))
     );
     submit(&mut app, "two");
     app.update(finished(Ok(summary())));
@@ -738,11 +771,15 @@ fn compact_now_refused_while_running_or_pending() {
     assert_eq!(last_notice(&app).map(|(l, _)| l), Some(NoticeLevel::Warn));
 }
 
-/// One guard for the session-level commands: each is refused, with the
-/// same notice, by everything [`App::blocker`] knows about. These were
-/// the drift cases when every command spelled its own guard (`/model`
-/// and `/init` ignored a running `!` command; `/clear` and `/resume`
-/// ignored a message being sent next or recalled).
+/// One guard for the session-level commands. While a turn, a `!`
+/// command or a compaction request is under way each waits for its end
+/// (held in the queue, run then; the pickers open at once and their
+/// choice waits; `/compact` during a turn goes at once, otherwise it is
+/// refused with the guard's notice); with messages being sent next or
+/// recalled each is refused, with the same notice. These were the drift
+/// cases when every command spelled its own guard (`/model` and `/init`
+/// ignored a running `!` command; `/clear` and `/resume` ignored a
+/// message being sent next or recalled).
 #[test]
 fn session_commands_share_one_idle_guard() {
     let commands = [
@@ -754,6 +791,18 @@ fn session_commands_share_one_idle_guard() {
         "/init",
         "/compact",
     ];
+    let session_effect = |e: &Effect| {
+        matches!(
+            e,
+            Effect::NewSession
+                | Effect::RequestResumePicker
+                | Effect::ResumeSession(_)
+                | Effect::RequestModelPicker { .. }
+                | Effect::SetModel(_)
+                | Effect::StartTurn(_)
+                | Effect::CompactNow
+        )
+    };
     let blocked = |busy: Busy, setup: &dyn Fn(&mut App)| {
         for cmd in commands {
             let mut app = App::new(StatusInfo::default());
@@ -761,17 +810,19 @@ fn session_commands_share_one_idle_guard() {
             setup(&mut app);
             assert_eq!(app.blocker(), Some(busy), "{cmd}");
             let fx = submit(&mut app, cmd);
+            // A picker opens; its choice is what the guard refuses.
+            if matches!(cmd, "/resume" | "/model") {
+                assert!(
+                    matches!(
+                        fx.as_slice(),
+                        [Effect::RequestResumePicker | Effect::RequestModelPicker { .. }]
+                    ),
+                    "{cmd}: {fx:?}"
+                );
+                continue;
+            }
             assert!(
-                !fx.iter().any(|e| matches!(
-                    e,
-                    Effect::NewSession
-                        | Effect::RequestResumePicker
-                        | Effect::ResumeSession(_)
-                        | Effect::RequestModelPicker { .. }
-                        | Effect::SetModel(_)
-                        | Effect::StartTurn(_)
-                        | Effect::CompactNow
-                )),
+                !fx.iter().any(session_effect),
                 "{cmd} ran while {busy:?}: {fx:?}"
             );
             assert_eq!(
@@ -780,14 +831,66 @@ fn session_commands_share_one_idle_guard() {
                 "{cmd}"
             );
         }
+        // The choice of a picker is refused the same way.
+        let mut app = App::new(StatusInfo::default());
+        setup(&mut app);
+        let mut fx = Vec::new();
+        app.switch_model("other".into(), &mut fx);
+        assert!(fx.is_empty(), "{fx:?}");
+        assert_eq!(
+            last_notice(&app),
+            Some((NoticeLevel::Warn, busy.to_string()))
+        );
     };
-    blocked(Busy::Shell, &|app| {
+    let held = |busy: Busy, setup: &dyn Fn(&mut App)| {
+        for cmd in commands {
+            let mut app = App::new(StatusInfo::default());
+            app.status.context_used = Some(10_000);
+            setup(&mut app);
+            assert_eq!(app.blocker(), Some(busy), "{cmd}");
+            let fx = submit(&mut app, cmd);
+            match cmd {
+                // The pickers open now.
+                "/resume" => assert_eq!(fx, vec![Effect::RequestResumePicker], "{busy:?}"),
+                "/model" => assert_eq!(
+                    fx,
+                    vec![Effect::RequestModelPicker { refresh: false }],
+                    "{busy:?}"
+                ),
+                "/compact" if busy == Busy::Turn => {
+                    assert_eq!(fx, vec![Effect::CompactNow]);
+                }
+                "/compact" => assert_eq!(
+                    last_notice(&app),
+                    Some((NoticeLevel::Warn, busy.to_string())),
+                    "{busy:?}"
+                ),
+                _ => {
+                    assert!(
+                        !fx.iter().any(session_effect),
+                        "{cmd} ran while {busy:?}: {fx:?}"
+                    );
+                    assert!(
+                        app.transcript.blocks().iter().any(|b| matches!(
+                            b,
+                            Block::Queued {
+                                label: QueuedLabel::Command,
+                                ..
+                            }
+                        )),
+                        "{cmd} not held while {busy:?}"
+                    );
+                }
+            }
+        }
+    };
+    held(Busy::Shell, &|app| {
         assert_eq!(submit(app, "! sleep 5"), vec![run_shell(1, "sleep 5")]);
     });
     blocked(Busy::Queued, &|app| app.send_next = Some("next".into()));
     blocked(Busy::Queued, &|app| app.recalling = true);
-    blocked(Busy::Compacting, &|app| app.compacting = true);
-    blocked(Busy::Turn, &|app| {
+    held(Busy::Compacting, &|app| app.compacting = true);
+    held(Busy::Turn, &|app| {
         submit(app, "one");
     });
     // Idle: nothing in the way.
@@ -799,14 +902,29 @@ fn session_commands_share_one_idle_guard() {
 #[test]
 fn compact_status_reports_the_policy_and_compact_needs_context() {
     let mut app = gauge_app(CompactMode::Auto);
-    assert!(submit(&mut app, "/compact status").is_empty());
+    // The prepare instruction is the daemon's to report.
+    assert_eq!(
+        submit(&mut app, "/compact status"),
+        vec![Effect::CompactPrepareStatus]
+    );
     assert!(
         last_notice(&app).is_some_and(|(level, text)| level == NoticeLevel::Info
             && text.contains("auto-compaction is on")
             && text.contains("85k tokens"))
     );
     let mut app = gauge_app(CompactMode::Warn);
-    assert!(submit(&mut app, "/compact status").is_empty());
+    assert_eq!(
+        submit(&mut app, "/compact status"),
+        vec![Effect::CompactPrepareStatus]
+    );
+    assert_eq!(
+        submit(&mut app, "/compact prepare update PLAN.md"),
+        vec![Effect::CompactPrepare(Some("update PLAN.md".into()))]
+    );
+    assert_eq!(
+        submit(&mut app, "/compact prepare off"),
+        vec![Effect::CompactPrepare(None)]
+    );
     assert!(last_notice(&app).is_some_and(|(_, text)| text.contains("auto-compaction is off")));
     // Nothing reported yet: nothing to compact.
     for cmd in ["/compact", "/compact now", "/compact keep the plan"] {
@@ -831,15 +949,17 @@ fn init_sends_the_canned_prompt_as_a_user_turn_when_idle() {
     assert!(app.is_running());
     assert!(commands::INIT_PROMPT.contains("AGENTS.md"));
     assert!(commands::INIT_PROMPT.contains("under 200 lines"));
-    // While a turn runs it is refused.
+    // While a turn runs it waits for the turn's end, then starts its own.
     assert!(submit(&mut app, "/init").is_empty());
+    assert!(matches!(
+        app.transcript.blocks().last(),
+        Some(Block::Queued { text, label: QueuedLabel::Command, .. }) if text == "/init"
+    ));
     assert_eq!(
-        last_notice(&app),
-        Some((
-            NoticeLevel::Warn,
-            "a turn is running; interrupt it first (Ctrl-C)".into()
-        ))
+        app.update(finished(Ok(summary()))),
+        vec![Effect::StartTurn(commands::INIT_PROMPT.into())]
     );
+    assert!(app.is_running());
 }
 
 #[test]
@@ -1227,4 +1347,157 @@ fn auto_check_shows_progress_and_the_reports_rows() {
         text.contains("this model blocks ordinary development"),
         "{text}"
     );
+}
+
+/// Commands typed during a turn wait in one queue with the messages typed
+/// after them and run in that order once the turn ends: `/model x`, then
+/// a message, switches first and sends the message after (the runner
+/// holds the prompt until the switch is answered); the message behind a
+/// held command is not steered into the running turn.
+#[test]
+fn held_commands_and_messages_run_in_the_order_typed() {
+    let mut app = running_app();
+    assert_eq!(submit(&mut app, "steered"), vec![steer(1, "steered")]);
+    assert!(submit(&mut app, "/model opus").is_empty());
+    // Behind the command: held, not steered.
+    assert!(submit(&mut app, "after the switch").is_empty());
+    let shown: Vec<(String, QueuedLabel)> = app
+        .transcript
+        .blocks()
+        .iter()
+        .filter_map(|b| match b {
+            Block::Queued { text, label, .. } => Some((text.clone(), *label)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        vec![
+            ("steered".to_string(), QueuedLabel::Queued),
+            ("/model opus".to_string(), QueuedLabel::Command),
+            ("after the switch".to_string(), QueuedLabel::Deferred),
+        ]
+    );
+    app.update(Msg::SteerAck {
+        id: PendingId(1),
+        result: Ok(()),
+    });
+    app.update(Msg::SteerDelivered(PendingId(1)));
+    let fx = app.update(finished(Ok(summary())));
+    assert_eq!(
+        fx,
+        vec![
+            Effect::SetModel("opus".into()),
+            Effect::StartTurn("after the switch".into())
+        ]
+    );
+    assert!(app.transcript.blocks().iter().any(|b| matches!(
+        b,
+        Block::Notice { text, .. } if text == "/model opus (held until the turn ended)"
+    )));
+    assert!(
+        !app.transcript
+            .blocks()
+            .iter()
+            .any(|b| matches!(b, Block::Queued { .. }))
+    );
+}
+
+/// A command that starts a turn (`/init`) runs first; what was typed
+/// after it waits for that turn's end in turn.
+#[test]
+fn what_follows_a_held_turn_waits_for_it() {
+    let mut app = running_app();
+    submit(&mut app, "/init");
+    submit(&mut app, "/new");
+    submit(&mut app, "then this");
+    assert_eq!(
+        app.update(finished(Ok(summary()))),
+        vec![Effect::StartTurn(commands::INIT_PROMPT.into())]
+    );
+    assert_eq!(
+        app.update(finished(Ok(summary()))),
+        vec![Effect::NewSession, Effect::StartTurn("then this".into())]
+    );
+}
+
+/// ↑ on an empty input takes a held command back into the editor, as it
+/// does a held message; nothing of it runs at the turn's end.
+#[test]
+fn a_held_command_is_taken_back_like_a_message() {
+    let mut app = running_app();
+    submit(&mut app, "/model opus");
+    assert!(app.can_take_back());
+    assert!(app.update(key(KeyCode::Up)).is_empty());
+    assert_eq!(app.input.text(), "/model opus");
+    assert!(
+        !app.transcript
+            .blocks()
+            .iter()
+            .any(|b| matches!(b, Block::Queued { .. }))
+    );
+    app.input.clear();
+    assert!(app.update(finished(Ok(summary()))).is_empty());
+}
+
+/// A picker's choice during a turn waits: the model picker's, the resume
+/// picker's and the agent picker's switch and new agent.
+#[test]
+fn a_pickers_choice_during_a_turn_waits_for_its_end() {
+    let mut app = running_app();
+    app.update(Msg::ShowResumePicker(vec![(
+        "abc12345".into(),
+        "an old conversation".into(),
+    )]));
+    assert!(app.update(key(KeyCode::Enter)).is_empty());
+    let mut agents = vec![crate::ui::AgentEntry {
+        name: "main-zz99".into(),
+        run: "idle",
+        conversation: None,
+        title: None,
+        clients: 0,
+        detached: true,
+        mine: false,
+        unretirable: None,
+        wires: Vec::new(),
+    }];
+    app.update(Msg::ShowAgentPicker(std::mem::take(&mut agents)));
+    // The first row is the other agent: Enter switches to it.
+    assert!(app.update(key(KeyCode::Enter)).is_empty());
+    let held: Vec<String> = app
+        .transcript
+        .blocks()
+        .iter()
+        .filter_map(|b| match b {
+            Block::Queued {
+                text,
+                label: QueuedLabel::Command,
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(held, vec!["/resume abc12345", "/agents main-zz99"]);
+    assert_eq!(
+        app.update(finished(Ok(summary()))),
+        vec![
+            Effect::ResumeSession("abc12345".into()),
+            Effect::Agents(Some("main-zz99".into()))
+        ]
+    );
+}
+
+/// Detaching with commands still held drops them with a notice naming
+/// them (they would have run on this client).
+#[test]
+fn detaching_drops_held_commands_with_a_notice() {
+    let mut app = attached_app();
+    submit(&mut app, "one");
+    submit(&mut app, "/model opus");
+    let fx = submit(&mut app, "/detach");
+    assert!(
+        fx.contains(&Effect::DroppedCommands(vec!["/model opus".into()])),
+        "{fx:?}"
+    );
+    assert!(last_notice(&app).is_some_and(|(_, text)| text.contains("/model opus")));
 }

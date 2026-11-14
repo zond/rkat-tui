@@ -736,22 +736,24 @@ fn agent_picker_snapshot() {
         .position(|row| row.contains("┌ Agents"))
         .expect("the picker is drawn");
     let modal: Vec<&str> = all[top..top + 7].iter().map(String::as_str).collect();
+    // The highlighted row wraps to show all of it.
     assert_eq!(
         modal,
         vec![
             "  ┌ Agents ──────────────────────────────────────────────────────────┐",
-            "  │* main-aaaa · idle · a0000000 fix the test · 1 client · this rkat…│",
+            "  │* main-aaaa · idle · a0000000 fix the test · 1 client · this      │",
+            "  │rkat-tui                                                          │",
             "  │  main-bbbb · running · b0000000 · 0 clients · detached           │",
             "  │  main-cccc · idle · c0000000 docs · 0 clients · detached         │",
             "  │+ new agent                                                       │",
             "  │↑/↓ move · Enter switch · d retire · Esc close                    │",
-            "  └──────────────────────────────────────────────────────────────────┘",
         ]
     );
     // This client's own agent is highlighted first.
     let row = u16::try_from(top + 1).unwrap();
     assert!(buffer[(3, row)].modifier.contains(Modifier::REVERSED));
-    assert!(!buffer[(3, row + 1)].modifier.contains(Modifier::REVERSED));
+    assert!(buffer[(3, row + 1)].modifier.contains(Modifier::REVERSED));
+    assert!(!buffer[(3, row + 2)].modifier.contains(Modifier::REVERSED));
     // `d` on a running agent says why, in the picker.
     app.update(key(KeyCode::Down));
     app.update(key(KeyCode::Char('d')));
@@ -767,7 +769,7 @@ fn agent_picker_snapshot() {
     let all = rows(&draw(&mut app));
     assert!(
         all.iter()
-            .any(|row| row.contains("retire main-cccc? its conversation stays")),
+            .any(|row| row.contains("Retire main-cccc? Its conversation stays")),
         "{all:#?}"
     );
 }
@@ -787,7 +789,7 @@ fn schedule_picker_snapshot() {
             vec![PickKey::confirmed(
                 KeyCode::Char('d'),
                 PickAct::Schedule(ScheduleOp::Delete, name.into()),
-                format!("delete schedule {name}? it never fires again"),
+                format!("Delete schedule {name}? It never fires again."),
             )],
         )
     };
@@ -822,13 +824,12 @@ fn schedule_picker_snapshot() {
     app.update(key(KeyCode::Char('d')));
     let buffer = draw(&mut app, H);
     assert_eq!(
-        modal(&buffer, 7),
+        modal(&buffer, 6),
         vec![
             "  ┌ Schedules ───────────────────────────────────────────────────────┐",
             "  │nightly  every 3600s  next 12:00:00Z  active  fired 2x  $0        │",
             "  │hourly  every 3600s  next 12:00:00Z  active  fired 2x  $0         │",
-            "  │delete schedule hourly? it never fires again (y yes, any other key│",
-            "  │no)                                                               │",
+            "  │Delete schedule hourly? It never fires again. y yes · n or Esc no │",
             "  │↑/↓ move · Enter or p pause/resume · d delete · Esc close         │",
             "  └──────────────────────────────────────────────────────────────────┘",
         ]
@@ -883,7 +884,7 @@ fn rule_picker_snapshot() {
                 vec![PickKey::confirmed(
                     KeyCode::Char('d'),
                     PickAct::RemoveRule(1),
-                    "remove rule 1? it leaves the workspace's rules for good",
+                    "Remove rule 1? It leaves the workspace's rules for good.",
                 )],
             )],
             "no approval rules yet",
@@ -908,8 +909,8 @@ fn rule_picker_snapshot() {
         vec![
             "  ┌ Approval rules ──────────────────────────────────────────────────┐",
             "  │1. deny shell pattern `git push*` · realm                         │",
-            "  │remove rule 1? it leaves the workspace's rules for good (y yes,   │",
-            "  │any other key no)                                                 │",
+            "  │Remove rule 1? It leaves the workspace's rules for good. y yes · n│",
+            "  │or Esc no                                                         │",
             "  │↑/↓ move · d remove · /permissions add allow|deny <tool> [pattern]│",
             "  │adds one · Esc close                                              │",
         ]
@@ -1350,7 +1351,7 @@ fn the_slash_menu_renders_above_the_input_with_the_highlight() {
             "• Sure, let me look.",
             "",
             "◐ find *.rs ▸",
-            " /compact [now | status | <instructions>] — compact the context (idle…",
+            " /compact [now | status | prepare <text>|off | <instructions>] — comp…",
             " /context — context usage and what the context holds",
             " /copy [N] — copy the latest (or Nth latest) answer to the clipboard",
             " /cost — token usage and cost per model",

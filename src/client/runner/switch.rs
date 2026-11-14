@@ -272,6 +272,8 @@ impl Runner {
         self.mark = None;
         self.seat_new = true;
         self.agent_switch = true;
+        // A prompt sent meanwhile goes to the new agent once it is bound.
+        self.held.get_or_insert_with(Vec::new);
         self.show(LinkState::Reconnecting);
         self.connect(false, 0);
     }
@@ -302,6 +304,8 @@ impl Runner {
         self.mark = None;
         self.agent = Some(name);
         self.agent_switch = true;
+        // A prompt sent meanwhile goes to this agent once it is bound.
+        self.held.get_or_insert_with(Vec::new);
         self.show(LinkState::Reconnecting);
         self.connect(false, 0);
     }

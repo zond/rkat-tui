@@ -654,6 +654,10 @@ pub struct Runner {
     /// runs: held until the link is up and no switch runs, or the first
     /// connect failed; `None` once released.
     held: Option<Vec<Effect>>,
+    /// A model switch (`rkat/set_model`) is on its way: prompts are held
+    /// until it is answered (a `/model` that waited for a turn's end goes
+    /// before the message typed after it).
+    model_switching: bool,
     /// The prompt of the turn that just failed, in its conversation.
     failed_prompt: Option<(SessionId, String)>,
     /// Numbers the UI's turns: a prompt's send failure ends the turn it was
@@ -680,6 +684,14 @@ impl Say {
             level,
             text: text.into(),
         });
+    }
+
+    /// State what a picker's act did (`done`, when it did something) under
+    /// the rows of the picker of `kind` (sent after its refreshed list).
+    fn picker_done(&self, kind: crate::ui::PickerKind, done: Option<String>) {
+        if let Some(text) = done {
+            let _ = self.ui_tx.send(Msg::PickerDone { kind, text });
+        }
     }
 
     /// Say `text` now and again on the terminal after the UI closed.
@@ -740,6 +752,7 @@ impl Runner {
             admitted: Vec::new(),
             farewells: Farewells::default(),
             held: Some(Vec::new()),
+            model_switching: false,
             failed_prompt: None,
             turns: 0,
             outbound: None,
@@ -789,7 +802,9 @@ impl Runner {
                     None | Some(Effect::Quit) => break,
                     // Held while a switch runs too: the prompt goes to the
                     // conversation the switch ends on, over its stream.
-                    Some(effect @ Effect::StartTurn(_)) if self.held.is_some() || self.switching => {
+                    Some(effect @ Effect::StartTurn(_))
+                        if self.held.is_some() || self.switching || self.model_switching =>
+                    {
                         self.held.get_or_insert_with(Vec::new).push(effect);
                     }
                     Some(effect) => self.handle_effect(effect),
@@ -823,8 +838,8 @@ impl Runner {
     /// The held prompts, once they may go: the first link is up and no
     /// start-up switch runs, or the first connect failed.
     fn releasable(&mut self) -> Vec<Effect> {
-        let ready =
-            matches!(self.conn, Conn::Failed) || (self.conn.link().is_some() && !self.switching);
+        let ready = matches!(self.conn, Conn::Failed)
+            || (self.conn.link().is_some() && !self.switching && !self.model_switching);
         if ready {
             self.held.take().unwrap_or_default()
         } else {
@@ -915,28 +930,10 @@ impl Runner {
                 self.bench.request_model_picker(false, current, true);
             }
             Report::Rehomed(rehomed) => self.rehomed(*rehomed),
-            Report::ModelSet { switch, result } => match result {
-                Ok(set) => {
-                    if self
-                        .conn
-                        .link()
-                        .is_some_and(|link| link.session == set.session_id)
-                    {
-                        let dialect = WireDialect::parse(&set.provider);
-                        self.show_model(&switch.endpoint, dialect, &set.model);
-                        // The agent was seated again: its stream is new.
-                        if set.reseated {
-                            self.rerender(set.session_id.clone(), Shown::Reseated);
-                        }
-                    }
-                    self.notice(
-                        NoticeLevel::Info,
-                        format!("switched to {} on {}", set.model, switch.endpoint),
-                    );
-                    self.last_switch = Some(switch);
-                }
-                Err(why) => self.notice(NoticeLevel::Error, format!("model not changed: {why}")),
-            },
+            Report::ModelSet { switch, result } => {
+                self.model_switching = false;
+                self.model_set(switch, result);
+            }
             Report::CompactAsked(asked) => self.compact_asked(asked),
             Report::Interrupt(err) => {
                 self.notice(NoticeLevel::Error, format!("interrupt incomplete: {err}"));
@@ -1147,6 +1144,25 @@ impl Runner {
             Effect::NewSession => self.switch_conversation(None),
             Effect::ResumeSession(reference) => self.resume_session(reference),
             Effect::RequestResumePicker => self.show_resume_picker(),
+            Effect::CompactPrepare(text) => {
+                self.outcome_command::<protocol::method::CompactPrepare>(
+                    protocol::CompactPrepareParams { text },
+                    "/compact prepare",
+                );
+            }
+            Effect::CompactPrepareStatus => {
+                self.outcome_command::<protocol::method::CompactStatus>(
+                    protocol::Empty {},
+                    "/compact status",
+                );
+            }
+            Effect::DroppedCommands(texts) => self.farewell(
+                NoticeLevel::Warn,
+                format!(
+                    "dropped what waited for the turn's end: {}",
+                    texts.join(", ")
+                ),
+            ),
             Effect::RequestModelPicker { refresh } => {
                 let current = current(self.model.as_ref());
                 self.bench.request_model_picker(refresh, current, false);
@@ -1317,7 +1333,7 @@ mod tests {
         );
         assert_eq!(picker.key(&press(KeyCode::Char('d'))), ModalKey::Stay);
         assert!(
-            matches!(&picker.line, Some(PickerLine::Confirm { question, .. }) if question.contains("delete schedule weekly?")),
+            matches!(&picker.line, Some(PickerLine::Confirm { question, .. }) if question.contains("Delete schedule weekly?")),
             "{:?}",
             picker.line
         );
@@ -1570,7 +1586,28 @@ mod tests {
         picker.key(&press(KeyCode::Char('s')));
         assert!(
             matches!(&picker.line, Some(PickerLine::Confirm { question, .. })
-            if question.contains("writes under `/data/store` for this session"))
+            if question == "Grant writes under `/data/store` for this session?")
+        );
+        // The owner's case: Enter while the question is up approves
+        // nothing (not even once) and leaves the question for y or n.
+        assert_eq!(picker.key(&press(KeyCode::Enter)), ModalKey::Stay);
+        assert!(matches!(
+            &picker.line,
+            Some(PickerLine::Confirm { nudged: true, .. })
+        ));
+        let lines = crate::ui::picker_lines_for_test(&picker, 200);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l
+                    == "Grant writes under `/data/store` for this session? y yes · n or Esc no"),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "press y to confirm, n or Esc to cancel"),
+            "{lines:?}"
         );
         assert_eq!(
             picker.key(&press(KeyCode::Char('y'))),
@@ -1614,11 +1651,9 @@ mod tests {
             ],
             100,
         );
-        assert!(picker.footer.contains("Enter/o once (exact: this call)"));
-        assert!(
-            picker
-                .footer
-                .contains("e allow this kind of effect (judged by the classifier)")
+        assert_eq!(
+            picker.footer,
+            "Enter approve once · s grant this session · a grant always · e allow this kind of effect · Esc close"
         );
         assert!(
             picker.rows[0]

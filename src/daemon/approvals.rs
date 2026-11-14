@@ -744,6 +744,13 @@ impl Watcher {
                 following.run.clone_from(&identity.run_id);
                 self.run_started(session_id, identity.run_id.as_ref(), input.prompt_text())
                     .await;
+                // A prepare instruction held for this run goes now.
+                if let Some(agents) = self.watched.agents.upgrade()
+                    && let Some((text, tokens, reminder)) =
+                        agents.core().prepare.run_started(&self.name)
+                {
+                    agents.prepare_compaction(&self.name, text, tokens, reminder);
+                }
             }
             AgentEvent::ToolCallRequested {
                 name: tool, args, ..
@@ -766,17 +773,29 @@ impl Watcher {
                 }
             }
             AgentEvent::TurnCompleted {
-                usage: Some(usage), ..
+                usage: Some(usage),
+                stop_reason,
+                ..
             } => {
                 if let Some(session) = session() {
                     self.model_call(&session, following.run.as_ref(), usage)
                         .await;
+                    self.prepare_reading(
+                        &session,
+                        crate::cost::context_tokens(usage),
+                        *stop_reason == meerkat_core::StopReason::ToolUse,
+                    );
                 }
             }
             AgentEvent::CompactionStarted {
                 estimated_history_tokens,
                 ..
-            } => following.compacting = Some(*estimated_history_tokens),
+            } => {
+                following.compacting = Some(*estimated_history_tokens);
+                if let Some(agents) = self.watched.agents.upgrade() {
+                    agents.core().prepare.compaction_started(&self.name);
+                }
+            }
             AgentEvent::CompactionCompleted {
                 summary_tokens,
                 estimated_history_tokens_after,
@@ -800,15 +819,12 @@ impl Watcher {
                             output: *summary_tokens,
                         });
                     let model = self.watched.current.model_of(&session).unwrap_or_default();
+                    let after = estimated_history_tokens_after.unwrap_or(*summary_tokens);
                     self.watched
                         .ledger
-                        .compaction(
-                            &session,
-                            &model,
-                            summarized,
-                            estimated_history_tokens_after.unwrap_or(*summary_tokens),
-                        )
+                        .compaction(&session, &model, summarized, after)
                         .await;
+                    self.compacted(&session, after);
                 }
             }
             AgentEvent::RunCompleted {
@@ -822,6 +838,48 @@ impl Watcher {
                 ..
             } => self.run_ended(session_id, identity.run_id.as_ref()),
             _ => {}
+        }
+    }
+
+    /// A model call of `session` left `tokens` of context: when it is the
+    /// agent's current conversation, the smart compaction reads it
+    /// ([`super::prepare`]), and a crossing steers the instruction into
+    /// the run when it `continues`.
+    fn prepare_reading(&self, session: &SessionId, tokens: u64, continues: bool) {
+        if self.watched.current.current(&self.name).as_ref() != Some(session) {
+            return;
+        }
+        let Some(agents) = self.watched.agents.upgrade() else {
+            return;
+        };
+        if let super::prepare::Crossing::Steer {
+            text,
+            tokens,
+            reminder,
+        } = agents.core().prepare.reading(&self.name, tokens, continues)
+        {
+            agents.prepare_compaction(&self.name, text, tokens, reminder);
+        }
+    }
+
+    /// A compaction of `session` completed with `tokens` left: when it is
+    /// the agent's current conversation, the smart compaction is armed
+    /// again below its threshold, and the agent is told (semantic memory
+    /// on) that what was discarded is searchable.
+    fn compacted(&self, session: &SessionId, tokens: u64) {
+        if self.watched.current.current(&self.name).as_ref() != Some(session) {
+            return;
+        }
+        let Some(agents) = self.watched.agents.upgrade() else {
+            return;
+        };
+        let prepare = &agents.core().prepare;
+        prepare.compacted(&self.name, tokens);
+        if prepare.memory() {
+            tokio::spawn(super::agents::note_compacted(
+                Arc::clone(&self.watched.state),
+                self.name.clone(),
+            ));
         }
     }
 

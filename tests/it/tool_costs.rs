@@ -22,7 +22,7 @@ use serde_json::json;
 
 /// A fresh conversation's request carries the direct tools and the search
 /// tool, about 56 KB (122 KB before rkat-tui's own deferral; `skill_read`
-/// added 373 bytes): no schedule
+/// added 373 bytes, `compact_ready` 197): no schedule
 /// tool and of the agent mob tools only `delegate`; what is hidden (the
 /// eight schedule tools, 18 mob tools, about 67 KB) `/context` reports as
 /// hidden. Its session's catalog is inexact, so the engine defers nothing
@@ -54,7 +54,16 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     let total = main.total_tool_bytes();
     let report = format!("{total} bytes: {bytes:?}");
     for family in [
-        "builtin", "catalog", "comms", "files", "memory", "mob", "notes", "skills", "watch",
+        "builtin",
+        "catalog",
+        "comms",
+        "compaction",
+        "files",
+        "memory",
+        "mob",
+        "notes",
+        "skills",
+        "watch",
     ] {
         assert!(bytes.contains_key(family), "{family} missing: {report}");
     }
@@ -78,11 +87,17 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     // definition.
     assert_eq!(main.tools_of("skills"), ["skill_read"], "{report}");
     assert!(bytes["skills"] < 500, "{report}");
+    // `compact_ready` is direct (not behind `tool_search`) and argument
+    // free: 197 bytes on every request, the bounds below raised by 200
+    // for it.
+    assert_eq!(main.tools_of("compaction"), ["compact_ready"], "{report}");
+    assert!(bytes["compaction"] < 250, "{report}");
     assert!(
-        bytes["files"] + bytes["notes"] + bytes["watch"] + bytes["skills"] < 10_500,
+        bytes["files"] + bytes["notes"] + bytes["watch"] + bytes["skills"] + bytes["compaction"]
+            < 10_700,
         "{report}"
     );
-    assert!(total < 56_500, "{report}");
+    assert!(total < 56_700, "{report}");
     // What is hidden: the eight schedule tools and 18 mob tools.
     let session = rig.current_session().await;
     let hidden = deferral.hidden(&session);

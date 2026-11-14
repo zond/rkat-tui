@@ -50,6 +50,8 @@ pub struct Core {
     pub activity: Arc<Activity>,
     /// The audit log, when it could be opened.
     pub audit: Option<Arc<AuditLog>>,
+    /// The agents' smart compaction (`[auto] compact_prepare`).
+    pub prepare: Arc<super::prepare::Prepare>,
 }
 
 impl std::fmt::Debug for Core {

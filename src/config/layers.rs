@@ -587,6 +587,8 @@ fn project_auto_without(project: AutoSection, cli: &AutoSection) -> AutoSection 
         classifier_tools: keep(project.classifier_tools, cli.classifier_tools.is_some()),
         classifier_probe: keep(project.classifier_probe, cli.classifier_probe.is_some()),
         allow: Vec::new(),
+        compact_prepare: keep(project.compact_prepare, cli.compact_prepare.is_some()),
+        compact_prepare_at: keep(project.compact_prepare_at, cli.compact_prepare_at.is_some()),
     }
 }
 
@@ -619,6 +621,12 @@ fn apply_auto(settings: &mut AutoSettings, mode: &mut PermissionMode, auto: &Aut
     }
     if let Some(percent) = auto.compact_auto_percent {
         settings.compact_auto_percent = percent;
+    }
+    if let Some(text) = &auto.compact_prepare {
+        settings.compact_prepare = Some(text.clone());
+    }
+    if let Some(at) = auto.compact_prepare_at {
+        settings.compact_prepare_at = at;
     }
     if let Some(tools) = auto.classifier_tools {
         settings.classifier_tools = tools;

@@ -157,6 +157,22 @@ pub(super) async fn note_agent(state: Arc<MobMcpState>, agent: String, text: Str
     }
 }
 
+/// Tell `agent` its context was just compacted and where what was
+/// discarded is ([`crate::daemon::prepare::MEMORY_NOTE`]); a failure is
+/// logged.
+pub(crate) async fn note_compacted(state: Arc<MobMcpState>, agent: String) {
+    if let Err(err) = append_note(
+        &state,
+        &agent,
+        crate::daemon::local::SYSTEM_CONTEXT_SOURCE,
+        crate::daemon::prepare::MEMORY_NOTE.to_string(),
+    )
+    .await
+    {
+        tracing::warn!(%agent, error = %err, "the agent could not be told about its compaction");
+    }
+}
+
 impl Agents {
     /// Every live agent and what it is doing now (whether a run is open,
     /// whether a client is attached), names in order.

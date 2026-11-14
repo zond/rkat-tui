@@ -228,6 +228,9 @@ async fn the_schedule_picker_pauses_resumes_and_deletes_a_schedule() {
     send(&mut rig, act(&shown, KeyCode::Char('d')));
     rig.wait_for(|m| refreshed(m) && schedules_shown(m, "this agent has no schedules"))
         .await;
+    // The picker states what the delete did.
+    rig.wait_for(|m| matches!(m, Msg::PickerDone { kind: rkat_tui::ui::PickerKind::Schedules, text } if text.contains("later")))
+        .await;
     assert_eq!(rig.escalations(), 0, "the user's own acts ask nothing");
     rig.quit().await;
 }

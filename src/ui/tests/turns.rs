@@ -866,15 +866,19 @@ fn prompts_during_the_request_are_queued_inputs_not_held_text() {
     );
     assert!(app.is_running());
     assert_eq!(app.status.queued, 0);
-    // Lifecycle commands wait for the request; /remember does not.
-    for cmd in ["/clear", "/resume last", "/compact now"] {
+    // Lifecycle commands wait for the turn's end; /compact asks again at
+    // once; /remember does not wait.
+    for cmd in ["/clear", "/resume last"] {
         assert!(submit(&mut app, cmd).is_empty(), "{cmd}");
-        assert_eq!(
-            last_notice(&app).map(|(l, _)| l),
-            Some(NoticeLevel::Warn),
-            "{cmd}"
-        );
+        assert!(matches!(
+            app.transcript.blocks().last(),
+            Some(Block::Queued {
+                label: QueuedLabel::Command,
+                ..
+            })
+        ));
     }
+    assert_eq!(submit(&mut app, "/compact now"), vec![Effect::CompactNow]);
     assert_eq!(submit(&mut app, "#x"), vec![Effect::Remember("x".into())]);
     assert!(app.update(Msg::CompactRequested(Ok(()))).is_empty());
     assert!(!app.compacting);

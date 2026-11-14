@@ -33,6 +33,8 @@ pub enum Push {
     Mode(crate::approval::desk::ModeStatus),
     /// An agent is idle ([`protocol::IDLE`]).
     Idle(protocol::IdleNote),
+    /// A notice for one agent's clients ([`protocol::AGENT_NOTICE`]).
+    AgentNotice(protocol::AgentNotice),
     /// An event of the stream `stream` (the conversation's own, or a mob's;
     /// which one decides how `event` reads).
     Stream {
@@ -77,6 +79,7 @@ impl Push {
             protocol::SWITCHED => Self::Switched(read(note)?),
             protocol::MOB => Self::Mob(read(note)?),
             protocol::IDLE => Self::Idle(read(note)?),
+            protocol::AGENT_NOTICE => Self::AgentNotice(read(note)?),
             protocol::MODE => Self::Mode(read(note)?),
             STREAM_EVENT => {
                 let StreamEvent {
@@ -134,6 +137,13 @@ mod tests {
         );
         let end = Push::decode(note(STREAM_END, json!({"stream_id": "s1"})));
         assert!(matches!(end, Some(Push::StreamEnd(stream)) if stream == "s1"));
+        let notice = Push::decode(note(
+            protocol::AGENT_NOTICE,
+            json!({"agent": "main-a", "text": "context at 300k"}),
+        ));
+        assert!(
+            matches!(notice, Some(Push::AgentNotice(n)) if n.agent == "main-a" && !n.warn && n.text == "context at 300k")
+        );
         // Unreadable parameters and unknown methods are not acted on.
         assert!(Push::decode(note(protocol::COST, json!({"nope": true}))).is_none());
         assert!(Push::decode(note("rkat/unknown", json!({}))).is_none());

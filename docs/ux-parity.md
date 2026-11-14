@@ -30,7 +30,7 @@ official tables name, then niche features.
 | 13 | Take back queued messages | `Up` from the first line | `Up` on an empty input takes back the queued messages the agent has not read yet | same |
 | 14 | `/help` | `/help`; `?` on an empty input toggles a shortcut panel | `/help`, `/?`; `?` on an empty input shows the keys | same |
 | 15 | `/clear` | `/clear [name]` | `/clear`, `/new` | same |
-| 16 | `/compact` | `/compact [instructions]`: compacts now, with optional focus | `/compact` compacts at once (a short run of its own after the summary, not shown; `compacting… Ns` in the status bar); focus instructions are ignored with a warning; `/compact status` shows the policy | partial |
+| 16 | `/compact` | `/compact [instructions]`: compacts now, with optional focus | `/compact` compacts at once (a short run of its own after the summary, not shown; `compacting… Ns` in the status bar; during a turn the request goes at once and the engine compacts before the run's next model request); focus instructions are ignored with a warning; `/compact status` shows the policy and the prepare instruction; `/compact prepare <text>\|off` sets the instruction the agent gets before an automatic compaction (it answers with `compact_ready`) | partial (no focus; the prepare step is rkat-tui's own) |
 | 17 | `/exit`, `/quit` | `/exit` (alias `/quit`) | `/quit`, `/exit`, `/q` | same |
 | 18 | `/model` | `/model [model]`, opens a picker | `/model [[endpoint:]id\|refresh]`, opens a filtered picker grouped by endpoint | same |
 | 19 | `/resume`, `--continue`, `--resume` | `/resume [session]`; `claude -c`; `claude --resume [id]` (opens a picker with no id) | `/resume [ref]` and a picker; `-c`/`--continue`; `--resume [ref]` (opens the picker with no ref) | same |
@@ -84,6 +84,9 @@ official tables name, then niche features.
 | 67 | `/terminal-setup` | installs Shift+Enter in some terminals | not needed: `Ctrl+J`/`Alt+Enter` work everywhere | n/a |
 | 68 | `/login`, `/logout`, `/bug`, `/feedback`, `/release-notes`, `/upgrade`, `/mobile`, `/desktop`, `/install-github-app`, `/theme` | account and product commands | none | n/a |
 | 69 | Tool call lines | `Read(src/a.rs)`, `Bash(cargo build)` with a one-line result summary | one plain line per call that never wraps: state, verb, object, outcome in numbers, time (`✓ read src/a.rs  lines 1–40`, `✗ run cargo test  exit 101 · 48s`, `⊘ run git push --force  blocked by the classifier (R1)`); paths relative to the project; the object shortened to fit; arguments only in the expansion, never JSON on the line | same |
+
+| 70 | Commands during a turn | slash commands typed while the agent works are queued with the messages | `/model`, `/new`, `/resume`, `/init`, `/agents <name>` and `/rehome <ref>` wait in the queue with the messages typed after them (shown "when the turn ends"), run in that order once the agent is idle, and `Up` takes one back; a picker command opens its picker at once and its choice waits; quitting drops them with a notice | same (as rkat-tui reads CC's queue) |
+| 71 | List dialogs' confirm step | a question with yes/no choices | a question naming what happens and its keys (`y yes · n or Esc no`); only `y`, `n` and Esc answer it, Enter does not; what was done is stated on the dialog and in the transcript; rows wrap, the highlighted one in full | same |
 
 rkat-tui extras with no CC counterpart: `Shift+↑/↓`, `PgUp/PgDn` and
 `Home/End` scroll the transcript; mouse selection copies over OSC 52;

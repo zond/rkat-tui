@@ -56,7 +56,11 @@ impl App {
                         .or_else(|| commands::unescape_bang(&raw))
                         .unwrap_or(raw),
                 };
-                if self.running {
+                if self.has_held_command() {
+                    // A command waits for the turn's end: the message goes
+                    // after it.
+                    self.hold(prompt);
+                } else if self.running {
                     self.enqueue(prompt, fx);
                 } else if self.shell_busy() || self.compaction_run {
                     self.hold(prompt);
@@ -180,7 +184,12 @@ impl App {
     }
 
     /// `/compact now` answered: report the request (or why it failed).
-    pub(super) fn compact_requested(&mut self, result: Result<(), CompactFailure>) {
+    pub(super) fn compact_requested(
+        &mut self,
+        result: Result<(), CompactFailure>,
+        now: Instant,
+        fx: &mut Vec<Effect>,
+    ) {
         // Session commands keep waiting while the compaction's run goes.
         self.compacting = self.compaction_run;
         match result {
@@ -197,6 +206,10 @@ impl App {
                     .push_notice(NoticeLevel::Error, format!("/compact failed: {err}"));
             }
         }
+        // Commands held behind the request go once nothing runs.
+        if !self.compacting && !self.running {
+            self.run_held(now, fx);
+        }
     }
 
     /// [`Msg::CompactionRun`](crate::ui::Msg::CompactionRun): the run that lets the idle agent
@@ -210,6 +223,10 @@ impl App {
         self.compacting = false;
         self.status.compacting_since = None;
         if self.running || self.shell_busy() {
+            return;
+        }
+        if self.has_held_command() && self.send_next.is_none() {
+            self.run_held(now, fx);
             return;
         }
         let held = self
@@ -243,6 +260,9 @@ impl App {
     /// texts oldest first.
     pub(super) fn withdraw(&mut self, ids: &[PendingId]) -> Vec<String> {
         let taken = self.pending.take_where(|p| ids.contains(&p.id));
+        for item in &taken {
+            self.deferred.remove(&item.id);
+        }
         self.drop_blocks(taken.iter().map(|p| p.block));
         taken.into_iter().map(|p| p.text).collect()
     }
@@ -454,13 +474,23 @@ impl App {
         let unsent = self.pending.take_unsent();
         // `!` commands typed during the turn run first; what would start the
         // next turn waits for them (a failed turn's messages still go back
-        // to the editor).
+        // to the editor). Commands held for the turn's end then go, in
+        // order with the messages typed after them.
         if self.shell_busy() && (self.send_next.is_some() || succeeded || interrupted) {
             for item in unsent {
                 self.pending.hold_again(&mut self.transcript, item);
             }
+        } else if self.has_held_command() && self.send_next.is_none() && (succeeded || interrupted)
+        {
+            for item in unsent {
+                self.pending.hold_again(&mut self.transcript, item);
+            }
+            self.run_held(now, fx);
         } else {
             self.next_after_turn(unsent, interrupted, succeeded, now, fx);
+            if !self.running && !self.shell_busy() {
+                self.run_held(now, fx);
+            }
         }
         if self.shell.running.is_none() && !self.running {
             self.run_next_shell(now, fx);

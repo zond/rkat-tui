@@ -183,6 +183,63 @@ impl Agents {
     }
 }
 
+impl Agents {
+    /// Steer the smart compaction's request (or its one `reminder`) `text`
+    /// into `name`'s run (its context reached `tokens`), off the caller's
+    /// task: the agent's clients get the notice, the audit log a line. A
+    /// steer that does not reach the agent is a warning to its clients.
+    pub fn prepare_compaction(
+        self: &Arc<Self>,
+        name: &str,
+        text: String,
+        tokens: u64,
+        reminder: bool,
+    ) {
+        let agents = Arc::clone(self);
+        let name = name.to_string();
+        tokio::spawn(async move {
+            let _sending = agents.core.activity.sending(&name);
+            let sent = agents
+                .core
+                .state
+                .mob_member_send(
+                    &MobId::from(MOB_ID),
+                    AgentIdentity::from(name.as_str()),
+                    meerkat_core::types::ContentInput::from(text.clone()),
+                    meerkat_core::types::HandlingMode::Steer,
+                    None,
+                )
+                .await;
+            let notice = match sent {
+                Ok(_) => {
+                    agents.audit_run(&name, None, "compact_prepare", text);
+                    crate::daemon::protocol::AgentNotice {
+                        agent: name.clone(),
+                        warn: false,
+                        text: if reminder {
+                            crate::daemon::prepare::Prepare::reminded_notice(tokens)
+                        } else {
+                            crate::daemon::prepare::Prepare::asked_notice(tokens)
+                        },
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(agent = %name, error = %err, "the prepare instruction did not reach the agent");
+                    crate::daemon::protocol::AgentNotice {
+                        agent: name.clone(),
+                        warn: true,
+                        text: format!("the agent was not asked to prepare for compaction: {err}"),
+                    }
+                }
+            };
+            agents
+                .core
+                .decisions
+                .broadcast(crate::daemon::protocol::AGENT_NOTICE, &notice);
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

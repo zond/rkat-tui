@@ -1,6 +1,6 @@
 //! The small formatters every message shares: a count with its noun
 //! (`1 tool`, `3 tools`), a length of time (`5m6s`, `5m`) and a
-//! conversation's short id.
+//! conversation's short id, a token count (`84k`).
 
 use std::fmt::{Display, Write as _};
 
@@ -49,6 +49,19 @@ pub fn span(seconds: u64, units: usize) -> String {
         rest %= size;
     }
     out
+}
+
+/// Short token count for the context gauge: `950`, `8.5k`, `84k`, `1M`, `1.2M`.
+#[must_use]
+pub fn tokens(n: u64) -> String {
+    let (value, unit) = match n {
+        0..1_000 => return n.to_string(),
+        1_000..10_000 => (format!("{:.1}", n as f64 / 1_000.0), "k"),
+        10_000..1_000_000 => (format!("{:.0}", n as f64 / 1_000.0), "k"),
+        _ => (format!("{:.1}", n as f64 / 1_000_000.0), "M"),
+    };
+    let value = value.strip_suffix(".0").unwrap_or(&value);
+    format!("{value}{unit}")
 }
 
 #[cfg(test)]

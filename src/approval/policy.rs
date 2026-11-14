@@ -418,6 +418,11 @@ impl<'a> Action<'a> {
             {
                 ActionKind::ReadOnlyBuiltin
             }
+            // Asking for a compaction of the agent's own context changes
+            // nothing in the workspace (`crate::daemon::prepare`).
+            (ToolFamily::Files, crate::tools::COMPACT_READY) if !declared_mutating => {
+                ActionKind::ReadOnlyBuiltin
+            }
             // Reading a skill of the agent's own inventory, through the
             // engine's skill runtime: no path, nothing written.
             (ToolFamily::Files, crate::tools::SKILL_READ) if !declared_mutating => {

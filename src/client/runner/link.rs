@@ -490,7 +490,19 @@ impl Runner {
             {
                 self.idle_reported(note);
             }
-            Push::Triggered(_) | Push::Cost(_) | Push::Switched(_) | Push::Idle(_) => {}
+            Push::AgentNotice(notice) if notice.agent == link.connection.agent() => {
+                let level = if notice.warn {
+                    NoticeLevel::Warn
+                } else {
+                    NoticeLevel::Info
+                };
+                self.notice(level, notice.text);
+            }
+            Push::Triggered(_)
+            | Push::Cost(_)
+            | Push::Switched(_)
+            | Push::Idle(_)
+            | Push::AgentNotice(_) => {}
             Push::Mob(protocol::MobNote {
                 mob_id,
                 change: protocol::MobChange::Hosts,

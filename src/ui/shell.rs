@@ -164,6 +164,10 @@ impl App {
         if self.running || self.run_next_shell(now, fx) {
             return;
         }
+        if self.has_held_command() && self.send_next.is_none() {
+            self.run_held(now, fx);
+            return;
+        }
         let held = self
             .pending
             .take_where(|p| p.state == PendingState::Deferred);

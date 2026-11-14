@@ -9,6 +9,7 @@ pub mod commands;
 pub mod compaction;
 pub mod complete;
 pub mod connection;
+mod deferred;
 pub mod delivery;
 mod dispatch;
 pub mod editor;
@@ -426,6 +427,14 @@ pub enum Msg {
         /// Why.
         why: String,
     },
+    /// What a picker's act did ("approved once: …"): a picker of `kind`
+    /// open or waiting states it under its rows (after the refreshed list).
+    PickerDone {
+        /// Whose picker.
+        kind: PickerKind,
+        /// What happened.
+        text: String,
+    },
     /// Show a list picker (`/schedules`, `/permissions`, `/memory`). A
     /// `refresh` is the list again after the picker's own act: it replaces
     /// only a picker of its kind still open (or waiting behind an approval
@@ -659,6 +668,15 @@ pub enum Effect {
     ResumeSession(String),
     /// Load session list; answer with [`Msg::ShowResumePicker`].
     RequestResumePicker,
+    /// `/compact prepare <text>|off`: set or clear the instruction the
+    /// agents get before an automatic compaction (`rkat/compact_prepare`).
+    CompactPrepare(Option<String>),
+    /// `/compact status`: the daemon's side of it, the prepare instruction
+    /// (`rkat/compact_status`), as a notice.
+    CompactPrepareStatus,
+    /// Leaving with commands still held for the turn's end: they are
+    /// dropped; the runner says so after the UI closes too.
+    DroppedCommands(Vec<String>),
     /// Answer an escalation.
     RespondEscalation(EscalationId, EscalationAnswer),
     /// Persist an approval rule.
@@ -1222,6 +1240,12 @@ pub struct App {
     pub modal: Option<Modal>,
     /// Messages typed while a turn was running, not yet delivered.
     pending: PendingQueue,
+    /// What each held [`PendingState::Command`] item does once the agent
+    /// is idle ([`deferred`]).
+    deferred: std::collections::HashMap<PendingId, deferred::Deferred>,
+    /// A held command runs now ([`App::run_held`]): what queues behind it
+    /// does not keep it from running.
+    draining: bool,
     /// Prompt to send once the interrupted turn ends (Ctrl-X Ctrl-S).
     send_next: Option<String>,
     /// Sequence number of the last primary-stream event processed.
@@ -1321,6 +1345,8 @@ impl App {
             status,
             modal: None,
             pending: PendingQueue::new(),
+            deferred: std::collections::HashMap::new(),
+            draining: false,
             send_next: None,
             last_seq: 0,
             mode: InputMode::Normal,
@@ -1742,6 +1768,7 @@ impl App {
                 self.picker_refused(PickerKind::Agents, &format!("not retired: {why}"));
             }
             Msg::PickerRefused { kind, why } => self.picker_refused(kind, &why),
+            Msg::PickerDone { kind, text } => self.picker_done(kind, &text),
             Msg::ShowPicker { picker, refresh } => self.show_picker(picker, refresh),
             Msg::ShowClassifierPicker(groups) => {
                 if matches!(self.modal, None | Some(Modal::Keys)) && self.parked.is_none() {
@@ -1786,7 +1813,7 @@ impl App {
                 self.run_first_block = self.transcript.next_id();
                 self.scroll.bottom();
             }
-            Msg::CompactRequested(result) => self.compact_requested(result),
+            Msg::CompactRequested(result) => self.compact_requested(result, now, &mut fx),
             Msg::CompactionRun(running) => self.compaction_run(running, now, &mut fx),
             Msg::EditFile { target, path } => {
                 self.local

@@ -118,6 +118,8 @@ pub struct Composed {
     pub startup_notices: Vec<StartupNotice>,
     /// `[helpers] max_depth` (`rkat/report`).
     pub helper_max_depth: u8,
+    /// The agents' smart compaction (`[auto] compact_prepare`).
+    pub prepare: Arc<super::prepare::Prepare>,
 }
 
 /// How the daemon composes its approval side (tests vary it).
@@ -160,6 +162,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         tasks_db,
         notices,
         compaction,
+        compact_prepare,
         context_window,
         ..
     } = parts;
@@ -167,6 +170,17 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     // the start-up model's window (a configured endpoint's own listing
     // first; unknown: the policy's fallback).
     let compact_threshold = compaction.trigger(context_window).threshold_override();
+    // The agents' smart compaction: its instruction, its threshold on the
+    // start-up model's window, the engine's own threshold as backstop.
+    let prepare = Arc::new(super::prepare::Prepare::new(
+        compact_prepare,
+        &compaction,
+        context_window,
+        memory,
+        approval.realm_file.clone(),
+    ));
+    let mut notices = notices;
+    notices.extend(prepare.startup_notice());
     let startup_notices =
         startup_notices(&confinement.notices, approval.notices.drain(..), notices);
     // The engine's decision events go to every attached client
@@ -231,6 +245,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         endpoints,
         instructions,
         search_limits,
+        prepare: Arc::clone(&prepare),
     });
     let root_plan = RootPlan {
         model: choice.engine_model.clone(),
@@ -293,6 +308,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         &realm_root,
         &registry,
     )?;
+    prepare.bind(&state);
     // The agent-facing mob tools (`delegate`, `mob_*`, …) reach a session
     // build through the builder's mob-tools slot. `MethodRouter::new` fills
     // it on the first connection, which is after the agent's spawn:
@@ -396,6 +412,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         realm_file: approval.realm_file.take(),
         startup_notices,
         helper_max_depth,
+        prepare,
     })
 }
 
@@ -708,6 +725,8 @@ struct AgentHost {
     instructions: crate::bootstrap::InstructionSources,
     /// `[search]`: how far the file tools' searches go.
     search_limits: crate::tools::SearchLimits,
+    /// Where the agents' `compact_ready` goes.
+    prepare: Arc<super::prepare::Prepare>,
 }
 
 impl crate::mobs::customizer::RootHost for AgentHost {
@@ -736,7 +755,11 @@ impl crate::mobs::customizer::RootHost for AgentHost {
         let files = FileToolDispatcher::new(self.scope.project_root.clone(), Some(diffs))
             .with_search_limits(self.search_limits)
             .with_write_mark(mark);
-        match agent_tools(files, &self.notes, &self.skills, Some(watch)) {
+        let compact = Arc::new(crate::tools::CompactToolDispatcher::new(
+            identity.to_string(),
+            Arc::clone(&self.prepare) as Arc<dyn crate::tools::CompactHost>,
+        ));
+        match agent_tools(files, &self.notes, &self.skills, Some((watch, compact))) {
             Ok(tools) => tools,
             Err(err) => {
                 // The same composition succeeded at start for the catalog;
@@ -815,29 +838,42 @@ fn helper_external_tools(
     }
 }
 
+/// One agent's own watch tools and `compact_ready`.
+type AgentOwn = (
+    Arc<crate::tools::WatchToolDispatcher>,
+    Arc<crate::tools::CompactToolDispatcher>,
+);
+
 /// One agent's external tools: its own file tools (`files`, reporting
 /// every change they make as a diff the clients show), the shared note
-/// and skill tools and its watch tools, behind one gateway. Without
-/// `watch` (the catalog read at start) the watch tools are named over a
-/// host that watches nothing.
+/// and skill tools, its watch tools and its `compact_ready`, behind one
+/// gateway. Without `own` (the catalog read at start) the watch tools
+/// and `compact_ready` are named over hosts that do nothing.
 fn agent_tools(
     files: FileToolDispatcher,
     notes: &Arc<NoteToolDispatcher>,
     skills: &Arc<crate::tools::SkillToolDispatcher>,
-    watch: Option<Arc<crate::tools::WatchToolDispatcher>>,
+    own: Option<AgentOwn>,
 ) -> Result<Arc<dyn AgentToolDispatcher>, DaemonError> {
     let files = Arc::new(files);
-    let watch = watch.unwrap_or_else(|| {
-        Arc::new(crate::tools::WatchToolDispatcher::new(
-            "",
-            Arc::new(NoWatches) as Arc<dyn crate::tools::WatchHost>,
-        ))
+    let (watch, compact) = own.unwrap_or_else(|| {
+        (
+            Arc::new(crate::tools::WatchToolDispatcher::new(
+                "",
+                Arc::new(NoWatches) as Arc<dyn crate::tools::WatchHost>,
+            )),
+            Arc::new(crate::tools::CompactToolDispatcher::new(
+                "",
+                Arc::new(crate::tools::NoCompactions) as Arc<dyn crate::tools::CompactHost>,
+            )),
+        )
     });
     let gateway = ToolGatewayBuilder::new()
         .add_dispatcher(files as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(Arc::clone(notes) as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(Arc::clone(skills) as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(watch as Arc<dyn AgentToolDispatcher>)
+        .add_dispatcher(compact as Arc<dyn AgentToolDispatcher>)
         .build()
         .map_err(TuiError::ToolGateway)?;
     Ok(Arc::new(gateway))

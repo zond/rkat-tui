@@ -74,8 +74,13 @@ pub enum CompactCommand {
     /// `/compact <instructions>`: as [`Self::Now`]; the engine has no
     /// instruction-guided compaction, so the instructions are not used.
     Focused(String),
-    /// `/compact status`: report the compaction policy.
+    /// `/compact status`: report the compaction policy and the prepare
+    /// instruction (its threshold, whether it is armed).
     Status,
+    /// `/compact prepare <text>`: set (or replace) the workspace's prepare
+    /// instruction (`[auto] compact_prepare`); `None` (`/compact prepare
+    /// off`) clears it.
+    Prepare(Option<String>),
 }
 
 /// Which instruction file `/memory` opens.
@@ -311,7 +316,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "pick an agent: switch, start a new one, retire an idle one",
         help: &[(
             "/agents [name]",
-            "open a picker of the agents working in this workspace (name,\nstate, conversation, clients, yours marked): Enter switches this\nrkat-tui to one (yours keeps running), the last row starts a\nnew agent, d then y retires an idle one nobody works with (its\nconversation stays in /resume); with a name, switch directly",
+            "open a picker of the agents working in this workspace (name,\nstate, conversation, clients, yours marked): Enter switches this\nrkat-tui to one (yours keeps running), the last row starts a\nnew agent, d then y retires an idle one nobody works with (its\nconversation stays in /resume); with a name, switch directly\n(a switch during a turn: runs when it ends)",
         )],
         parse: |rest| match words(rest).as_slice() {
             [] => Some(Command::Agents(None)),
@@ -403,7 +408,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "clear the transcript and start a new session",
         help: &[(
             "/clear, /new",
-            "clear the transcript and start a new session (idle only)",
+            "clear the transcript and start a new session (during a turn:\nruns when it ends)",
         )],
         parse: |_| Some(Command::Clear),
     },
@@ -414,7 +419,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "resume a session (no ref: pick one)",
         help: &[(
             "/resume [ref]",
-            "resume a session (last, ~N, the short id shown, or an id prefix);\nno ref opens a picker\n(so does rkat-tui --resume without a ref; archived sessions\nare not offered)",
+            "resume a session (last, ~N, the short id shown, or an id prefix);\nno ref opens a picker\n(so does rkat-tui --resume without a ref; archived sessions\nare not offered); during a turn: runs when it ends",
         )],
         parse: parse_resume,
     },
@@ -517,7 +522,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             ),
             (
                 "/model [endpoint:]<id>",
-                "switch to a model (idle only); a bare id is looked up",
+                "switch to a model (during a turn: runs when it ends); a bare\nid is looked up",
             ),
             (
                 "/model refresh",
@@ -540,12 +545,12 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "compact",
         aliases: &[],
-        usage: "[now | status | <instructions>]",
-        summary: "compact the context (idle only)",
+        usage: "[now | status | prepare <text>|off | <instructions>]",
+        summary: "compact the context (during a turn: before its next step)",
         help: &[
             (
                 "/compact [now]",
-                "ask the engine to compact the context at the next\nmodel call (idle only)",
+                "ask the engine to compact the context at the next\nmodel call (during a turn: before the run's next model\nrequest)",
             ),
             (
                 "/compact <instructions>",
@@ -553,10 +558,22 @@ pub static COMMANDS: &[CommandSpec] = &[
             ),
             (
                 "/compact status",
-                "show the compaction policy (tui.toml [auto] compact =\n\"warn\" (default) warns at 75% and 85%; \"auto\" or\n--auto-compact lets the runtime compact at 85%)",
+                "show the compaction policy (tui.toml [auto] compact =\n\"warn\" (default) warns at 75% and 85%; \"auto\" or\n--auto-compact lets the runtime compact at 85%) and the\nprepare instruction: its threshold, whether it is armed",
+            ),
+            (
+                "/compact prepare <text>|off",
+                "set the instruction the agent gets before an automatic\ncompaction (at [auto] compact_prepare_at, default 70% of\nthe window; it calls compact_ready when done), or clear it",
             ),
         ],
         parse: |rest| {
+            if let Some(text) = rest.trim().strip_prefix("prepare") {
+                let text = text.trim();
+                return Some(Command::Compact(match text {
+                    "" => CompactCommand::Status,
+                    "off" => CompactCommand::Prepare(None),
+                    text => CompactCommand::Prepare(Some(text.to_string())),
+                }));
+            }
             Some(Command::Compact(match words(rest).as_slice() {
                 [] | ["now"] => CompactCommand::Now,
                 ["status"] => CompactCommand::Status,
@@ -626,7 +643,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "ask the agent to write AGENTS.md for this project",
         help: &[(
             "/init",
-            "ask the agent to write or update AGENTS.md for this project (idle only)",
+            "ask the agent to write or update AGENTS.md for this project\n(during a turn: runs when it ends)",
         )],
         parse: |rest| arg_free(rest, Command::Init),
     },
@@ -656,7 +673,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             ),
             (
                 "/rehome <directory>",
-                "move this workspace's state there: the daemon restarts\nin that directory and this rkat-tui reattaches to the same\nconversation (refused while a turn runs, or when the\ndirectory's own state holds a conversation)",
+                "move this workspace's state there: the daemon restarts\nin that directory and this rkat-tui reattaches to the same\nconversation (during a turn: runs when it ends; refused\nwhen the directory's own state holds a conversation)",
             ),
             (
                 "/rehome <id|old path>",
@@ -863,7 +880,8 @@ Keys:
   Esc                            interrupt the turn; queued messages are sent next (no turn shown:
                                  the client asks the daemon and says when nothing runs)
   Esc Esc (idle, with text)      clear the input and save it to the prompt history (↑ recalls it)
-  Up (empty input)               take queued messages back into the editor
+  Up (empty input)               take queued messages back into the editor (and commands
+                                 waiting for the turn's end: /model, /new, /resume, /init, …)
   Ctrl-D                         quit on an empty input: press again within 3 s (while a turn
                                  runs or messages are queued the turn is then interrupted and
                                  undelivered messages are saved; attached, as /quit: it may stop
@@ -922,13 +940,16 @@ Approval prompt:
 Agent picker (/agents):
   Up/Down, j/k, Enter            move; switch to the agent (the last row starts a new one)
   d, then y                      retire the agent: only one idle with no client (its
-                                 conversation stays in /resume); any other key keeps it
+                                 conversation stays in /resume); n or Esc keeps it
   Esc, q                         close
-Lists (/schedules, /permissions, /approve, /helpers, /mode, /memory):
-  Up/Down, j/k                   move
+Lists (/schedules, /permissions, /approve, /helpers, /mode, /memory, /wire, /unwire):
+  Up/Down, j/k                   move; rows wrap (the highlighted one in full)
+  y / n, Esc                     answer a pending question (yes / no); while one is up every
+                                 other key, Enter too, only points at y and n; Esc again closes
   Enter, p (/schedules)          pause the schedule, or resume a paused one
-  d, then y (/schedules)         delete it; any other key keeps it
+  d, then y (/schedules)         delete it; n or Esc keeps it
   d, then y (/permissions)       remove the rule, the session grant or the statement (adding stays /permissions add)
+  Enter, then y (/unwire)        unwire the agent of the other workspace
   Enter, o (/approve)            approve the blocked call once (exact)
   s, then y (/approve)           grant its directory or call for this session (exact)
   a, then y (/approve)           grant it always (the realm's tui.toml; exact)
@@ -1297,6 +1318,20 @@ mod tests {
             ok("/compact later"),
             Command::Compact(CompactCommand::Focused("later".into()))
         );
+        assert_eq!(
+            ok("/compact prepare update  PLAN.md, then call compact_ready"),
+            Command::Compact(CompactCommand::Prepare(Some(
+                "update  PLAN.md, then call compact_ready".into()
+            )))
+        );
+        assert_eq!(
+            ok("/compact prepare off"),
+            Command::Compact(CompactCommand::Prepare(None))
+        );
+        assert_eq!(
+            ok("/compact prepare"),
+            Command::Compact(CompactCommand::Status)
+        );
     }
 
     #[test]
@@ -1530,7 +1565,7 @@ mod tests {
             "take queued messages back",
             "delivers it at the next step",
             "press again",
-            "switch to a model (idle only)",
+            "switch to a model (during a turn: runs when it ends)",
             "endpoint:",
             "/model refresh",
             "/helpers",

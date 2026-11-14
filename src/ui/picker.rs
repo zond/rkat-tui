@@ -62,15 +62,17 @@ impl PickerKind {
             Self::Approve => " Recently blocked ",
         }
     }
-
-    /// What the answers to a question are, as its line says them.
-    fn answers(self) -> &'static str {
-        match self {
-            Self::Agents => "y retires, any other key keeps it",
-            _ => "y yes, any other key no",
-        }
-    }
 }
+
+/// What a pending question's keys are, as its line says them.
+const ANSWERS: &str = "y yes · n or Esc no";
+
+/// What replaces [`ANSWERS`] after a key that does not answer.
+const NUDGE: &str = "press y to confirm, n or Esc to cancel";
+
+/// How many lines a row that is not highlighted shows of its text, and
+/// of its note, before an ellipsis.
+const ROW_CAP: usize = 2;
 
 /// What a picker's key does; each is what a typed command does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,15 +239,20 @@ impl PickRow {
 /// The line under a picker's rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickerLine {
-    /// A key that asks first: `y` does `act`, any other key keeps things.
+    /// A key that asks first: `y` does `act`, `n` or Esc cancels the
+    /// question; every other key leaves it up and points at those keys.
     Confirm {
         /// What is asked.
         question: String,
         /// What `y` does.
         act: PickAct,
+        /// A key that does not answer was pressed: the line says which do.
+        nudged: bool,
     },
     /// Why the key pressed does nothing on this row.
     Refused(String),
+    /// What the last act did ("approved once: …", "retired main-ab12").
+    Done(String),
     /// A one-line field: the kind of action blocked call `id` is to be
     /// allowed for (Enter allows it for `scope`, Tab switches the scope,
     /// Esc keeps things).
@@ -314,9 +321,14 @@ impl ListPicker {
         self.rows.get(self.cursor.index())
     }
 
-    /// ↑/↓ (or k/j) move; a row's own key acts, asks first (`y` then acts,
-    /// any other key keeps things and is not acted on) or says why it does
-    /// nothing; Esc, `q` or Ctrl-C close. A held key only moves.
+    /// ↑/↓ (or k/j) move; a row's own key acts, asks first or says why it
+    /// does nothing; Esc, `q` or Ctrl-C close. A held key only moves.
+    ///
+    /// While a question is pending only `y` (acts), `n` and Esc (cancel the
+    /// question, not the picker) answer it: every other key, Enter and the
+    /// arrows too, leaves it up and points at those keys, and nothing
+    /// reaches the row's own keys. Ctrl-C still closes the picker, acting
+    /// on nothing.
     pub fn key(&mut self, key: &KeyEvent) -> ModalKey<PickAct> {
         let held = is_held(key);
         if is_ctrl_c(key) {
@@ -324,6 +336,26 @@ impl ListPicker {
                 ModalKey::Stay
             } else {
                 ModalKey::Close
+            };
+        }
+        if let Some(PickerLine::Confirm { act, nudged, .. }) = &mut self.line {
+            if held || has_ctrl_or_alt(key) {
+                return ModalKey::Stay;
+            }
+            return match key.code {
+                KeyCode::Char('y') => {
+                    let act = act.clone();
+                    self.line = None;
+                    ModalKey::Choose(act)
+                }
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.line = None;
+                    ModalKey::Stay
+                }
+                _ => {
+                    *nudged = true;
+                    ModalKey::Stay
+                }
             };
         }
         let moves = matches!(
@@ -371,12 +403,8 @@ impl ListPicker {
                 _ => ModalKey::Stay,
             };
         }
-        if let Some(PickerLine::Confirm { act, .. }) = self.line.take() {
-            return match key.code {
-                KeyCode::Char('y') => ModalKey::Choose(act),
-                _ => ModalKey::Stay,
-            };
-        }
+        // A refusal or an act's outcome shows until the next key.
+        self.line = None;
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.cursor.up(),
             KeyCode::Down | KeyCode::Char('j') => self.cursor.down(self.rows.len()),
@@ -401,7 +429,13 @@ impl ListPicker {
                     act: Ok(act),
                     confirm: Some(question),
                     ..
-                }) => self.line = Some(PickerLine::Confirm { question, act }),
+                }) => {
+                    self.line = Some(PickerLine::Confirm {
+                        question,
+                        act,
+                        nudged: false,
+                    });
+                }
                 Some(PickKey { act: Err(why), .. }) => self.line = Some(PickerLine::Refused(why)),
                 None => {}
             },
@@ -456,15 +490,32 @@ pub(super) fn list_picker_lines(
     let warn = Style::default().fg(Color::Yellow);
     let mut tail = Vec::new();
     match &picker.line {
-        Some(PickerLine::Confirm { question, .. }) => tail.extend(
-            wrap_text(&format!("{question} ({})", picker.kind.answers()), width)
-                .into_iter()
-                .map(|line| Line::styled(line, warn)),
-        ),
+        Some(PickerLine::Confirm {
+            question, nudged, ..
+        }) => {
+            let ask = warn.add_modifier(Modifier::BOLD);
+            tail.extend(
+                wrap_text(&format!("{question} {ANSWERS}"), width)
+                    .into_iter()
+                    .map(|line| Line::styled(line, ask)),
+            );
+            if *nudged {
+                tail.extend(
+                    wrap_text(NUDGE, width)
+                        .into_iter()
+                        .map(|line| Line::styled(line, ask.add_modifier(Modifier::REVERSED))),
+                );
+            }
+        }
         Some(PickerLine::Refused(why)) => tail.extend(
             wrap_text(why, width)
                 .into_iter()
                 .map(|line| Line::styled(line, warn)),
+        ),
+        Some(PickerLine::Done(what)) => tail.extend(
+            wrap_text(what, width)
+                .into_iter()
+                .map(|line| Line::styled(line, Style::default().fg(Color::Green))),
         ),
         Some(PickerLine::Edit { scope, text, .. }) => {
             let (now, other) = match scope {
@@ -502,23 +553,56 @@ pub(super) fn list_picker_lines(
         lines.extend(tail);
         return lines;
     }
+    let selected = picker.cursor.index();
     let rows: Vec<Vec<Line<'static>>> = picker
         .rows
         .iter()
-        .map(|row| {
-            let mut lines = vec![Line::from(truncate_to_width(&row.text, width))];
+        .enumerate()
+        .map(|(i, row)| {
+            let full = i == selected;
+            let text_style = if full {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            let mut lines: Vec<Line<'static>> = capped(wrap_text(&row.text, width), full, width)
+                .into_iter()
+                .map(|line| Line::styled(line, text_style))
+                .collect();
             if let Some(note) = &row.note {
-                lines.push(Line::styled(
-                    truncate_to_width(&format!("    {note}"), width),
-                    dim,
-                ));
+                let inner = width.saturating_sub(NOTE_INDENT.len()).max(1);
+                lines.extend(
+                    capped(wrap_text(note, inner), full, inner)
+                        .into_iter()
+                        .map(|line| Line::styled(format!("{NOTE_INDENT}{line}"), dim)),
+                );
             }
             lines
         })
         .collect();
     let room = max_lines.saturating_sub(tail.len());
-    let mut lines = window_lines(rows, picker.cursor.index(), room);
+    let mut lines = window_lines(rows, selected, room);
     lines.extend(tail);
+    lines
+}
+
+/// How far a row's note is indented under its text.
+const NOTE_INDENT: &str = "    ";
+
+/// `lines` (wrapped to `width`) in `full`, else at most [`ROW_CAP`] of
+/// them, the last ending in an ellipsis when some were left out.
+fn capped(mut lines: Vec<String>, full: bool, width: usize) -> Vec<String> {
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    if full || lines.len() <= ROW_CAP {
+        return lines;
+    }
+    lines.truncate(ROW_CAP);
+    if let Some(last) = lines.last_mut() {
+        let room = width.saturating_sub(1);
+        *last = format!("{}…", truncate_to_width(last, room).trim_end_matches('…'));
+    }
     lines
 }
 
@@ -612,7 +696,7 @@ pub fn agent_picker(agents: &[AgentEntry]) -> ListPicker {
                 None => PickKey::confirmed(
                     retire,
                     PickAct::RetireAgent(agent.name.clone()),
-                    format!("retire {}? its conversation stays in /resume", agent.name),
+                    format!("Retire {}? Its conversation stays in /resume.", agent.name),
                 ),
             };
             PickRow::new(
@@ -721,11 +805,24 @@ impl App {
     /// Why a picker's act was refused: a picker of `kind` open or waiting
     /// shows it under its rows.
     pub(super) fn picker_refused(&mut self, kind: PickerKind, why: &str) {
+        self.picker_says(kind, &PickerLine::Refused(why.to_string()));
+    }
+
+    /// What a picker's act did: a picker of `kind` open or waiting shows
+    /// it under its rows (the transcript has it as a notice too).
+    pub(super) fn picker_done(&mut self, kind: PickerKind, what: &str) {
+        self.picker_says(kind, &PickerLine::Done(what.to_string()));
+    }
+
+    /// `line` under the rows of a picker of `kind` open or waiting; a
+    /// question pending there stays.
+    fn picker_says(&mut self, kind: PickerKind, line: &PickerLine) {
         for slot in [&mut self.modal, &mut self.parked] {
             if let Some(Modal::List(picker)) = slot
                 && picker.kind == kind
+                && !matches!(picker.line, Some(PickerLine::Confirm { .. }))
             {
-                picker.line = Some(PickerLine::Refused(why.to_string()));
+                picker.line = Some(line.clone());
             }
         }
     }
@@ -753,8 +850,23 @@ impl App {
             PickAct::Unwire { workspace, agent } => {
                 fx.push(Effect::UnwireFrom { workspace, agent });
             }
-            PickAct::SwitchAgent(name) => fx.push(Effect::Agents(Some(name))),
-            PickAct::NewAgent => fx.push(Effect::NewAgent),
+            // A switch during a turn waits for its end.
+            PickAct::SwitchAgent(name) => {
+                if !self.defer(
+                    format!("/agents {name}"),
+                    super::deferred::Deferred::Choice(Effect::Agents(Some(name.clone()))),
+                ) {
+                    fx.push(Effect::Agents(Some(name)));
+                }
+            }
+            PickAct::NewAgent => {
+                if !self.defer(
+                    "/agents: a new agent",
+                    super::deferred::Deferred::Choice(Effect::NewAgent),
+                ) {
+                    fx.push(Effect::NewAgent);
+                }
+            }
             PickAct::RetireAgent(name) => fx.push(Effect::RetireAgent(name)),
             PickAct::ViewHelper(header) => {
                 self.helper_view = Some(OpenHelperView {
@@ -773,7 +885,7 @@ impl App {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use ratatui::crossterm::event::{KeyEventKind, KeyModifiers};
@@ -807,10 +919,9 @@ mod tests {
         )
     }
 
-    /// Rows act at once, ask first (only `y` then acts, any other key
-    /// keeps things and is not acted on) or say why not; a key a row does
-    /// not have does nothing; ↑/↓ and j/k move within the rows; Esc, `q`
-    /// and Ctrl-C close; a held key only moves.
+    /// Rows act at once, ask first or say why not; a key a row does not
+    /// have does nothing; ↑/↓ and j/k move within the rows; Esc, `q` and
+    /// Ctrl-C close; a held key only moves.
     #[test]
     fn a_list_picker_acts_asks_refuses_moves_and_closes() {
         let mut p = picker();
@@ -820,18 +931,17 @@ mod tests {
         );
         assert_eq!(p.key(&press(KeyCode::Char('d'))), ModalKey::Stay);
         assert!(
-            matches!(&p.line, Some(PickerLine::Confirm { question, .. }) if question == "delete a?")
+            matches!(&p.line, Some(PickerLine::Confirm { question, nudged: false, .. }) if question == "delete a?")
         );
-        // `n` keeps it; Esc during the question keeps the picker open.
+        // `n` cancels the question; `y` after a fresh `d` acts.
         assert_eq!(p.key(&press(KeyCode::Char('n'))), ModalKey::Stay);
         assert_eq!(p.line, None);
-        p.key(&press(KeyCode::Char('d')));
-        assert_eq!(p.key(&press(KeyCode::Esc)), ModalKey::Stay);
         p.key(&press(KeyCode::Char('d')));
         assert_eq!(
             p.key(&press(KeyCode::Char('y'))),
             ModalKey::Choose(PickAct::Schedule(ScheduleOp::Delete, "1".into()))
         );
+        assert_eq!(p.line, None);
         // The second row refuses with its reason; Enter there does nothing.
         p.key(&press(KeyCode::Char('j')));
         p.key(&press(KeyCode::Down));
@@ -858,6 +968,189 @@ mod tests {
         assert_eq!(empty.key(&press(KeyCode::Enter)), ModalKey::Stay);
         assert_eq!(empty.key(&press(KeyCode::Down)), ModalKey::Stay);
         assert_eq!(empty.selected(), None);
+    }
+
+    /// While a question is pending only `y`, `n` and Esc answer it: Enter
+    /// (the row's own act), the arrows and every other key leave it up,
+    /// act on nothing, move nothing and point at the keys that answer.
+    #[test]
+    fn a_pending_question_takes_only_y_n_and_esc() {
+        let mut p = picker();
+        p.key(&press(KeyCode::Char('d')));
+        for code in [
+            KeyCode::Enter,
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::Char('j'),
+            KeyCode::Char('q'),
+            KeyCode::Char('d'),
+            KeyCode::Char('s'),
+            KeyCode::Tab,
+        ] {
+            assert_eq!(p.key(&press(code)), ModalKey::Stay, "{code:?}");
+            assert_eq!(p.cursor.index(), 0, "{code:?}");
+            assert!(
+                matches!(&p.line, Some(PickerLine::Confirm { question, nudged: true, .. }) if question == "delete a?"),
+                "{code:?}: {:?}",
+                p.line
+            );
+        }
+        let text = list_picker_lines(&p, 60, 20)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("delete a? y yes · n or Esc no"), "{text}");
+        assert!(
+            text.contains("press y to confirm, n or Esc to cancel"),
+            "{text}"
+        );
+        // `y` still answers after the nudge.
+        assert_eq!(
+            p.key(&press(KeyCode::Char('y'))),
+            ModalKey::Choose(PickAct::Schedule(ScheduleOp::Delete, "1".into()))
+        );
+    }
+
+    /// Esc cancels a pending question, not the picker; a second Esc closes
+    /// it. The question's line is in the warning style and names its keys.
+    #[test]
+    fn esc_cancels_the_question_then_closes_the_picker() {
+        let mut p = picker();
+        p.key(&press(KeyCode::Char('d')));
+        let lines = list_picker_lines(&p, 60, 20);
+        let ask = lines
+            .iter()
+            .find(|line| line.to_string().contains("delete a?"))
+            .unwrap();
+        assert_eq!(ask.style.fg, Some(Color::Yellow));
+        assert!(ask.to_string().ends_with("y yes · n or Esc no"), "{ask}");
+        assert_eq!(p.key(&press(KeyCode::Esc)), ModalKey::Stay);
+        assert_eq!(p.line, None);
+        assert_eq!(p.key(&press(KeyCode::Esc)), ModalKey::Close);
+    }
+
+    /// What an act did shows under the rows (a question pending is not
+    /// replaced by it) until the next key.
+    #[test]
+    fn an_acts_outcome_is_stated_on_the_picker() {
+        let mut app = App::new(crate::ui::StatusInfo::default());
+        app.update(crate::ui::Msg::ShowPicker {
+            picker: picker(),
+            refresh: false,
+        });
+        app.update(crate::ui::Msg::PickerDone {
+            kind: PickerKind::Schedules,
+            text: "deleted schedule a".into(),
+        });
+        let Some(Modal::List(open)) = &app.modal else {
+            panic!("the picker is open")
+        };
+        assert_eq!(
+            open.line,
+            Some(PickerLine::Done("deleted schedule a".into()))
+        );
+        let lines = list_picker_lines(open, 60, 20);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.to_string() == "deleted schedule a"
+                    && line.style.fg == Some(Color::Green))
+        );
+        // Another kind's outcome does not land here.
+        app.update(crate::ui::Msg::PickerDone {
+            kind: PickerKind::Agents,
+            text: "retired main-ab12".into(),
+        });
+        let Some(Modal::List(open)) = &mut app.modal else {
+            panic!("the picker is open")
+        };
+        assert_eq!(
+            open.line,
+            Some(PickerLine::Done("deleted schedule a".into()))
+        );
+        open.key(&press(KeyCode::Char('d')));
+        app.update(crate::ui::Msg::PickerDone {
+            kind: PickerKind::Schedules,
+            text: "late".into(),
+        });
+        let Some(Modal::List(open)) = &mut app.modal else {
+            panic!("the picker is open")
+        };
+        assert!(matches!(open.line, Some(PickerLine::Confirm { .. })));
+    }
+
+    /// A row's text and note wrap to the dialog's width: the highlighted
+    /// row in full, every other capped at two lines of each with an
+    /// ellipsis; the window keeps the highlighted row whole.
+    #[test]
+    fn rows_wrap_the_highlighted_in_full_the_others_capped() {
+        let long = "word ".repeat(30);
+        let rows = (0..3)
+            .map(|i| {
+                PickRow::new(format!("row{i} {long}"), vec![]).noted(format!("note{i} {long}"))
+            })
+            .collect();
+        let mut p = ListPicker::new(PickerKind::Approve, rows, "none", "keys");
+        let text = |p: &ListPicker, room| -> Vec<String> {
+            list_picker_lines(p, 30, room)
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        let all = text(&p, 100);
+        // Row 0 (highlighted): every word of its text and note is shown.
+        let row0: Vec<&String> = all
+            .iter()
+            .take_while(|line| !line.starts_with("row1"))
+            .collect();
+        assert!(row0.len() > 4, "{all:#?}");
+        assert!(row0.iter().all(|line| !line.contains('…')), "{all:#?}");
+        assert_eq!(
+            row0.iter()
+                .map(|l| l.matches("word").count())
+                .sum::<usize>(),
+            60
+        );
+        assert!(
+            all.iter().all(|line| line.chars().count() <= 30),
+            "{all:#?}"
+        );
+        // Row 1: two lines of text, two of note, each pair ending in "…".
+        let at = all
+            .iter()
+            .position(|line| line.starts_with("row1"))
+            .unwrap();
+        assert!(all[at + 1].ends_with('…'), "{all:#?}");
+        assert!(all[at + 2].starts_with("    note1"), "{all:#?}");
+        assert!(all[at + 3].ends_with('…'), "{all:#?}");
+        assert!(all[at + 4].starts_with("row2"), "{all:#?}");
+        // Every line of the highlighted row's text is reversed.
+        let lines = list_picker_lines(&p, 30, 100);
+        assert!(
+            lines
+                .iter()
+                .take_while(|line| !line.to_string().starts_with("    note0"))
+                .all(|line| line.style.add_modifier.contains(Modifier::REVERSED))
+        );
+        // Highlighting the last row in a short window shows it whole.
+        p.key(&press(KeyCode::Down));
+        p.key(&press(KeyCode::Down));
+        let short = text(&p, 14);
+        assert!(
+            short.iter().any(|line| line.starts_with("row2")),
+            "{short:#?}"
+        );
+        assert_eq!(
+            short
+                .iter()
+                .filter(|line| !line.starts_with("keys"))
+                .skip_while(|line| !line.starts_with("row2"))
+                .map(|l| l.matches("word").count())
+                .sum::<usize>(),
+            60,
+            "{short:#?}"
+        );
     }
 
     /// A refreshed picker keeps the row the user was on, the last when the
@@ -954,8 +1247,8 @@ mod tests {
     }
 
     /// The agent picker opens on this client's own agent; Enter switches,
-    /// the last row seats a new agent, `d` asks and `y` retires (any other
-    /// key keeps the agent), `d` on an agent in use says why and retires
+    /// the last row seats a new agent, `d` asks and `y` retires (`n` or
+    /// Esc keeps the agent), `d` on an agent in use says why and retires
     /// nothing; Esc, `q` and Ctrl-C close.
     #[test]
     fn the_agent_picker_switches_seats_and_retires_after_a_confirmation() {
@@ -985,8 +1278,9 @@ mod tests {
         assert_eq!(p.key(&press(KeyCode::Char('n'))), ModalKey::Stay);
         assert_eq!(p.line, None);
         // A cancelled confirmation does not also act: Esc there keeps the
-        // picker open.
+        // picker open, and Enter there does not switch.
         p.key(&press(KeyCode::Char('d')));
+        assert_eq!(p.key(&press(KeyCode::Enter)), ModalKey::Stay);
         assert_eq!(p.key(&press(KeyCode::Esc)), ModalKey::Stay);
         p.key(&press(KeyCode::Char('d')));
         assert_eq!(

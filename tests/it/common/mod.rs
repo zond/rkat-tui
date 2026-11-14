@@ -108,6 +108,14 @@ pub enum Step {
     },
     /// Several tool calls `(id, name, args)`, then `Done(ToolUse)`.
     Tools(Vec<(&'static str, &'static str, Value)>),
+    /// A single tool call reporting `input` input tokens, then
+    /// `Done(ToolUse)`.
+    ToolUsage {
+        id: &'static str,
+        name: &'static str,
+        args: Value,
+        input: u64,
+    },
     /// A 400 rejecting the tool definitions.
     RejectTools,
     /// A transport failure.
@@ -131,7 +139,7 @@ impl Step {
 
     fn events(self, model: &str) -> Vec<Result<LlmEvent, LlmError>> {
         let input_tokens = match self {
-            Self::TextUsage(_, input) => input,
+            Self::TextUsage(_, input) | Self::ToolUsage { input, .. } => input,
             _ => 10,
         };
         let usage = Ok(LlmEvent::UsageUpdate {
@@ -160,6 +168,15 @@ impl Step {
                 done(StopReason::EndTurn),
             ],
             Self::Tool { id, name, args } => Self::Tools(vec![(id, name, args)]).events(model),
+            Self::ToolUsage { id, name, args, .. } => {
+                let mut events: Vec<_> = Self::Tools(vec![(id, name, args)])
+                    .events(model)
+                    .into_iter()
+                    .filter(|event| !matches!(event, Ok(LlmEvent::UsageUpdate { .. })))
+                    .collect();
+                events.insert(events.len() - 1, usage);
+                events
+            }
             Self::Tools(calls) => {
                 let mut events: Vec<_> = calls
                     .into_iter()

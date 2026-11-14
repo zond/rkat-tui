@@ -411,7 +411,10 @@ async fn a_client_cannot_drive_another_agent_through_the_engine() {
         params
     };
     for (method, params) in [
-        ("mob/member_send", on_a(json!({"content": "from b"}))),
+        (
+            "mob/member_send",
+            on_a(json!({"content": "sent by client b"})),
+        ),
         (
             "mob/stop_member_run",
             on_a(json!({"run_id": "r", "reason": "b"})),
@@ -440,7 +443,7 @@ async fn a_client_cannot_drive_another_agent_through_the_engine() {
     a.run_completed(&stream).await;
     assert_eq!(llm.recorded().len(), 1, "B started nothing");
     assert!(llm.recorded()[0].user().contains("from a"));
-    assert!(!last_request(&llm).contains("from b"));
+    assert!(!last_request(&llm).contains("sent by client b"));
     assert!(!last_request(&llm).contains("b says"));
     // A still acts on its own agent.
     a.ok("mob/force_cancel", a.member()).await;

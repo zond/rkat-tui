@@ -29,6 +29,8 @@ pub enum ToolFamily {
     Watch,
     /// rkat-tui's skill tool.
     Skills,
+    /// rkat-tui's `compact_ready` (`super::prepare`).
+    Compaction,
     /// Another host callback tool.
     Callback,
     /// The engine's work graph tools.
@@ -47,7 +49,7 @@ pub enum ToolFamily {
 impl ToolFamily {
     /// Every family.
     #[cfg(test)]
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 16] = [
         Self::Builtin,
         Self::Comms,
         Self::Files,
@@ -57,6 +59,7 @@ impl ToolFamily {
         Self::Schedule,
         Self::Watch,
         Self::Skills,
+        Self::Compaction,
         Self::Callback,
         Self::Workgraph,
         Self::Mcp,
@@ -79,6 +82,7 @@ impl ToolFamily {
             Self::Schedule => "schedule",
             Self::Watch => "watch",
             Self::Skills => "skills",
+            Self::Compaction => "compaction",
             Self::Callback => "callback",
             Self::Workgraph => "workgraph",
             Self::Mcp => "mcp",
@@ -107,6 +111,7 @@ impl ToolFamily {
                 crate::tools::FILE_TOOLS_SOURCE => Self::Files,
                 crate::memory::NOTES_SOURCE => Self::Notes,
                 crate::tools::WATCH_TOOLS_SOURCE => Self::Watch,
+                crate::tools::COMPACT_TOOLS_SOURCE => Self::Compaction,
                 crate::tools::SKILL_TOOLS_SOURCE => Self::Skills,
                 _ => Self::Callback,
             },

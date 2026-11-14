@@ -54,6 +54,30 @@ pub const MOB: &str = "rkat/mob";
 /// agent becomes idle, and to a client as it attaches when it is idle
 /// then.
 pub const IDLE: &str = "rkat/idle";
+/// The notification of something one agent's clients should see in the
+/// transcript (the smart compaction's steps): [`AgentNotice`].
+pub const AGENT_NOTICE: &str = "rkat/agent_notice";
+
+/// What [`AGENT_NOTICE`] carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentNotice {
+    /// The agent it is about.
+    pub agent: String,
+    /// A warning (else information).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub warn: bool,
+    /// What it says.
+    pub text: String,
+}
+
+/// What [`method::CompactPrepare`] takes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactPrepareParams {
+    /// The instruction (`None`: clear it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
 /// The notification of the permission mode and the denial counters
 /// ([`ModeStatus`]): pushed when a mode switch, a decision, a pause or a
 /// resume may have moved them, and to a client as it attaches.
@@ -131,6 +155,13 @@ methods! {
     /// check run in the background); refused for an endpoint this daemon
     /// does not have.
     SetClassifierModel = "rkat/set_classifier_model" (ClassifierModelParams) -> crate::approval::desk::RuleOutcome;
+    /// `/compact prepare <text>|off`: the instruction every agent gets
+    /// before an automatic compaction, set (written to the realm's
+    /// `tui.toml`, live) or cleared.
+    CompactPrepare = "rkat/compact_prepare" (CompactPrepareParams) -> crate::approval::desk::RuleOutcome;
+    /// `/compact status`'s daemon side: the prepare instruction, its
+    /// threshold and whether it is armed for this client's agent.
+    CompactStatus = "rkat/compact_status" (Empty) -> crate::approval::desk::RuleOutcome;
     /// The review numbers (`/auto stats`), since the daemon started and
     /// for this client's agent's conversation.
     AutoStats = "rkat/auto_stats" (Empty) -> crate::approval::desk::RuleOutcome;

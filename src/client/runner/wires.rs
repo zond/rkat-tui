@@ -148,7 +148,9 @@ impl Runner {
                     return;
                 };
                 match cross::resolve_wire(&target, &rows) {
-                    Ok(row) => unwire_with(&say, &connection, &scene.status, row, &others).await,
+                    Ok(row) => {
+                        let _ = unwire_with(&say, &connection, &scene.status, row, &others).await;
+                    }
                     Err(why) => {
                         say.notice(NoticeLevel::Warn, format!("nothing was unwired: {why}"));
                     }
@@ -166,13 +168,22 @@ impl Runner {
             |say, connection, scene| async move {
                 let others = scene.others().await;
                 let row = protocol::WireRow { workspace, agent };
-                unwire_with(&say, &connection, &scene.status, &row, &others).await;
+                let done = unwire_with(&say, &connection, &scene.status, &row, &others).await;
                 if let Some(status) = daemon_status(&connection).await {
                     show(
                         &say,
                         cross::unwire_picker(&cross::rows_of(&status), &others),
                         true,
                     );
+                }
+                match done {
+                    Ok(text) => say.picker_done(crate::ui::PickerKind::Unwire, Some(text)),
+                    Err(why) => {
+                        let _ = say.ui_tx.send(Msg::PickerRefused {
+                            kind: crate::ui::PickerKind::Unwire,
+                            why,
+                        });
+                    }
                 }
             },
         );
@@ -239,14 +250,21 @@ async fn unwire_with(
     status: &protocol::Status,
     row: &protocol::WireRow,
     others: &[Other],
-) {
+) -> Result<String, String> {
     let Some(agent) = status.agent.as_deref() else {
         say.notice(NoticeLevel::Warn, NO_STATUS);
-        return;
+        return Err(NO_STATUS.to_string());
     };
     match cross::unwire(connection, agent, &status.workspace, row, others).await {
-        Ok(text) => say.notice(NoticeLevel::Info, text),
-        Err(why) => say.notice(NoticeLevel::Warn, format!("nothing was unwired: {why}")),
+        Ok(text) => {
+            say.notice(NoticeLevel::Info, text.clone());
+            Ok(text)
+        }
+        Err(why) => {
+            let why = format!("nothing was unwired: {why}");
+            say.notice(NoticeLevel::Warn, why.clone());
+            Err(why)
+        }
     }
 }
 

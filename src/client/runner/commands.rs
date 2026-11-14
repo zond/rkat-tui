@@ -244,6 +244,7 @@ impl Runner {
         let prices = self.bench.prices().clone();
         tokio::spawn(async move {
             let refresh = action.is_some();
+            let mut changed = None;
             if let Some(action) = action {
                 let done = bounded(
                     CALL_TIMEOUT,
@@ -251,6 +252,9 @@ impl Runner {
                 )
                 .await;
                 let (level, text) = schedule_notice(done);
+                if level == NoticeLevel::Info {
+                    changed = Some(text.clone());
+                }
                 say.notice(level, text);
             }
             let listed = bounded(
@@ -262,6 +266,7 @@ impl Runner {
                 Ok(list) => {
                     let picker = schedule_picker(&list.schedules, &prices);
                     let _ = say.ui_tx.send(Msg::ShowPicker { picker, refresh });
+                    say.picker_done(crate::ui::PickerKind::Schedules, changed);
                 }
                 Err(err) => say.notice(
                     NoticeLevel::Warn,
@@ -285,6 +290,7 @@ impl Runner {
         let say = self.say();
         tokio::spawn(async move {
             let refresh = remove.is_some();
+            let mut removed = None;
             if let Some(n) = remove {
                 let done = bounded(
                     CALL_TIMEOUT,
@@ -299,6 +305,9 @@ impl Runner {
                     Ok(outcome) => (NoticeLevel::Error, outcome.text),
                     Err(err) => (NoticeLevel::Error, format!("/permissions failed: {err}")),
                 };
+                if level == NoticeLevel::Info {
+                    removed = Some(text.clone());
+                }
                 say.notice(level, text);
             }
             match bounded(
@@ -310,6 +319,7 @@ impl Runner {
                 Ok(rows) => {
                     let picker = rule_picker(&rows.rules, &rows.grants, &rows.statements);
                     let _ = say.ui_tx.send(Msg::ShowPicker { picker, refresh });
+                    say.picker_done(crate::ui::PickerKind::Permissions, removed);
                 }
                 Err(err) => say.notice(NoticeLevel::Warn, format!("cannot list the rules: {err}")),
             }
@@ -340,6 +350,7 @@ impl Runner {
                 .await
             };
             let (level, text) = outcome_notice(done, "/permissions");
+            let removed = (level == NoticeLevel::Info).then(|| text.clone());
             say.notice(level, text);
             match bounded(
                 CALL_TIMEOUT,
@@ -353,6 +364,7 @@ impl Runner {
                         picker,
                         refresh: true,
                     });
+                    say.picker_done(crate::ui::PickerKind::Permissions, removed);
                 }
                 Err(err) => say.notice(NoticeLevel::Warn, format!("cannot list the rules: {err}")),
             }
@@ -373,6 +385,7 @@ impl Runner {
         tokio::spawn(async move {
             let refresh = approve.is_some();
             let mut refused = None;
+            let mut granted = None;
             if let Some((id, scope, effect)) = approve {
                 let done = bounded(
                     CALL_TIMEOUT,
@@ -382,9 +395,11 @@ impl Runner {
                     ),
                 )
                 .await;
-                let not_ok = matches!(&done, Ok(outcome) if !outcome.ok);
+                let ok = matches!(&done, Ok(outcome) if outcome.ok);
                 let (level, text) = outcome_notice(done, "/approve");
-                if not_ok {
+                if ok {
+                    granted = Some(text.clone());
+                } else {
                     refused = Some(text.clone());
                 }
                 say.notice(level, text);
@@ -406,6 +421,7 @@ impl Runner {
                             why,
                         });
                     }
+                    say.picker_done(crate::ui::PickerKind::Approve, granted);
                 }
                 Err(err) => say.notice(
                     NoticeLevel::Warn,
@@ -461,15 +477,19 @@ impl Runner {
                 remote::call::<protocol::method::RetireAgent>(&connection, &params),
             )
             .await;
-            match retired {
-                Ok(retired) => say.notice(NoticeLevel::Info, retired_words(&retired)),
+            let words = match retired {
+                Ok(retired) => {
+                    let words = retired_words(&retired);
+                    say.notice(NoticeLevel::Info, words.clone());
+                    words
+                }
                 Err(err) => {
                     let why = format!("{name} was not retired: {err}");
                     say.notice(NoticeLevel::Warn, why.clone());
                     let _ = say.ui_tx.send(Msg::AgentPickerRefused(why));
                     return;
                 }
-            }
+            };
             let Some(status) = daemon_status(&connection).await else {
                 return;
             };
@@ -482,6 +502,7 @@ impl Runner {
                 &listed,
                 mine,
             )));
+            say.picker_done(crate::ui::PickerKind::Agents, Some(words));
         });
     }
 
@@ -849,7 +870,7 @@ pub(super) fn rule_picker(
             PickKey::confirmed(
                 KeyCode::Char('d'),
                 PickAct::RemoveGrant(grant.id),
-                format!("remove the session grant of {what}?"),
+                format!("Remove the session grant of {what}?"),
             )
         } else {
             PickKey::refused(
@@ -873,13 +894,13 @@ pub(super) fn rule_picker(
             StatementOrigin::Session => PickKey::confirmed(
                 KeyCode::Char('d'),
                 PickAct::RemoveStatement(statement.id),
-                format!("stop allowing \"{}\" for this session?", statement.text),
+                format!("Stop allowing \"{}\" for this session?", statement.text),
             ),
             StatementOrigin::Always => PickKey::confirmed(
                 KeyCode::Char('d'),
                 PickAct::RemoveStatement(statement.id),
                 format!(
-                    "stop allowing \"{}\"? it leaves the realm's tui.toml",
+                    "Stop allowing \"{}\"? It leaves the realm's tui.toml.",
                     statement.text
                 ),
             ),
@@ -905,11 +926,11 @@ pub(super) fn rule_picker(
             };
             let lasts = match rule.origin {
                 RuleOrigin::Realm | RuleOrigin::Session => {
-                    "it leaves the workspace's rules for good".to_string()
+                    "It leaves the workspace's rules for good".to_string()
                 }
-                RuleOrigin::Global => "it is written in your global tui.toml, so it is removed until the daemon restarts (edit that file to drop it for good)".to_string(),
-                RuleOrigin::Project => "it is written in the project's .rkat/tui.toml, so it is removed until the daemon restarts (edit that file to drop it for good)".to_string(),
-                RuleOrigin::Cli => "it comes from the daemon's command line, so it is removed until the daemon restarts".to_string(),
+                RuleOrigin::Global => "It is written in your global tui.toml, so it is removed until the daemon restarts (edit that file to drop it for good)".to_string(),
+                RuleOrigin::Project => "It is written in the project's .rkat/tui.toml, so it is removed until the daemon restarts (edit that file to drop it for good)".to_string(),
+                RuleOrigin::Cli => "It comes from the daemon's command line, so it is removed until the daemon restarts".to_string(),
             };
             let n = usize::try_from(rule.n).unwrap_or(usize::MAX);
             PickRow::new(
@@ -917,7 +938,7 @@ pub(super) fn rule_picker(
                 vec![PickKey::confirmed(
                     KeyCode::Char('d'),
                     PickAct::RemoveRule(n),
-                    format!("remove rule {}? {lasts}", rule.n),
+                    format!("Remove rule {}? {lasts}.", rule.n),
                 )],
             )
         })
@@ -961,12 +982,12 @@ pub(super) fn approve_picker(
                     keys.push(PickKey::confirmed(
                         KeyCode::Char('s'),
                         PickAct::Approve(call.id, GrantScope::Session),
-                        format!("allow {what} for this session?"),
+                        format!("Grant {what} for this session?"),
                     ));
                     keys.push(PickKey::confirmed(
                         KeyCode::Char('a'),
                         PickAct::Approve(call.id, GrantScope::Always),
-                        format!("allow {what} always (written to the realm's tui.toml)?"),
+                        format!("Grant {what} always (written to the realm's tui.toml)?"),
                     ));
                 }
                 None => {
@@ -1015,7 +1036,7 @@ pub(super) fn approve_picker(
         PickerKind::Approve,
         rows,
         "nothing was blocked recently",
-        "↑/↓ move · Enter/o once (exact: this call) · s this session / a always (exact: its directory or literal command) · e allow this kind of effect (judged by the classifier) · Esc close",
+        "Enter approve once · s grant this session · a grant always · e allow this kind of effect · Esc close",
     )
 }
 
@@ -1085,7 +1106,7 @@ pub(super) fn schedule_picker(
                     PickKey::confirmed(
                         KeyCode::Char('d'),
                         PickAct::Schedule(ScheduleOp::Delete, row.id.clone()),
-                        format!("delete schedule {}? it never fires again", row.name),
+                        format!("Delete schedule {}? It never fires again.", row.name),
                     ),
                 ],
             )

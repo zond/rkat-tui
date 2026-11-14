@@ -1,7 +1,10 @@
 //! The `tui.toml` schema: [`RulesFile`] and its sections, and the settings
 //! they layer into (see [`super::layers`]).
 
-use super::settings::{ChecklistView, CompactMode, CompactionPolicy, HelperView};
+use super::settings::{
+    ChecklistView, CompactMode, CompactPrepare, CompactionPolicy, DEFAULT_PREPARE_AT, HelperView,
+    PrepareAt,
+};
 use crate::approval::mode::PermissionMode;
 use crate::approval::rules::{Rule, RuleKind, RuleOrigin, RulesError};
 use crate::bootstrap::confinement::ConfinementSection;
@@ -49,6 +52,11 @@ pub struct AutoSettings {
     /// ([`crate::approval::statements::normalize`]); never a project
     /// file's.
     pub allow: Vec<(crate::approval::statements::StatementOrigin, String)>,
+    /// What the agent is asked to do before an automatic compaction
+    /// (`None`: nothing; an empty text is none).
+    pub compact_prepare: Option<String>,
+    /// Where it is asked ([`DEFAULT_PREPARE_AT`] unless a layer says).
+    pub compact_prepare_at: PrepareAt,
 }
 
 impl Default for AutoSettings {
@@ -64,6 +72,8 @@ impl Default for AutoSettings {
             trust_project_builds_given: false,
             classifier_probe: true,
             allow: Vec::new(),
+            compact_prepare: None,
+            compact_prepare_at: DEFAULT_PREPARE_AT,
         }
     }
 }
@@ -80,6 +90,16 @@ impl AutoSettings {
         }
         .normalized()
         .0
+    }
+
+    /// The prepare instruction and its threshold, when one is set.
+    #[must_use]
+    pub fn compact_prepare(&self) -> Option<CompactPrepare> {
+        let instruction = self.compact_prepare.as_deref()?.trim();
+        (!instruction.is_empty()).then(|| CompactPrepare {
+            instruction: instruction.to_string(),
+            at: self.compact_prepare_at,
+        })
     }
 }
 
@@ -120,6 +140,14 @@ pub struct AutoSection {
     /// file's are ignored with a notice).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
+    /// See [`AutoSettings::compact_prepare`] (`/compact prepare` writes the
+    /// realm's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_prepare: Option<String>,
+    /// See [`AutoSettings::compact_prepare_at`]: tokens (`300000`) or a
+    /// share of the window (`"70%"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_prepare_at: Option<PrepareAt>,
 }
 
 /// How deep helpers may nest when none of the layers says.

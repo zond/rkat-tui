@@ -75,6 +75,10 @@ pub enum PendingState {
     /// A `!` command (its text is the input as typed), held by the UI
     /// until the turn ends; it runs before the messages held with it.
     Shell,
+    /// A slash command that waits for the agent to be idle (`/model`,
+    /// `/new`, …; its text is the command as shown), held by the UI with
+    /// the messages typed after it: they run in order once the turn ends.
+    Command,
 }
 
 impl PendingState {
@@ -86,6 +90,7 @@ impl PendingState {
             Self::Admitted => QueuedLabel::Delivering,
             Self::Deferred => QueuedLabel::Deferred,
             Self::Shell => QueuedLabel::Shell,
+            Self::Command => QueuedLabel::Command,
         }
     }
 
@@ -94,7 +99,7 @@ impl PendingState {
     /// recall through the runner).
     #[must_use]
     pub fn recallable(self) -> bool {
-        matches!(self, Self::Deferred | Self::Shell)
+        matches!(self, Self::Deferred | Self::Shell | Self::Command)
     }
 }
 
@@ -473,5 +478,8 @@ mod tests {
         assert!(PendingState::Deferred.recallable());
         assert!(!PendingState::Admitted.recallable());
         assert!(!PendingState::Queued.recallable());
+        assert_eq!(PendingState::Command.label(), QueuedLabel::Command);
+        assert_eq!(QueuedLabel::Command.text(), "when the turn ends");
+        assert!(PendingState::Command.recallable());
     }
 }

@@ -9355,3 +9355,131 @@ the background (`probe_switched`, which also says when it passes).
 `the_classifier_model_is_picked_or_set_from_the_tui` and the rig's
 `the_classifier_model_change_is_refused_for_an_unknown_endpoint`; no live
 model was called.
+
+## Smart auto-compaction: prepare, then `compact_ready` (owner decision, 2026-11-14)
+
+The owner: "an instruction that's executed before auto-compact runs.
+E.g. 'at 300k tokens context, you update your plan file, and then
+compact, and then continue working'". `[auto] compact_prepare` and
+`compact_prepare_at` (tokens or `"N%"` of the start-up model's window,
+default 70%) layer as the other compaction keys; `/compact prepare` writes
+the realm's through `RealmFile::write_compact_prepare`. The daemon's agent
+event watcher (`daemon::approvals`) already reads every model call's
+usage (`cost::context_tokens`), so it is the trigger: a reading of the
+agent's current conversation at or above the threshold fires once
+(`daemon::prepare::Prepare::reading`) and re-arms below it. Delivery is
+the engine's steer (`mob_member_send`, `HandlingMode::Steer`, as watch
+events): a steer into a run lands at its next model boundary, a steer to
+an idle member starts a run, so a crossing on a call that asked for tools
+(`StopReason::ToolUse`: the run goes on) steers at once, and one on the
+call that ended the run is held and steered at the next `RunStarted`
+(never waking the agent). The owner then asked for leeway ("please find
+a good time to compact soon … then do B …, then send command C which
+will start the compaction"): the request says to find a good stopping
+point soon, finish the step in hand and start nothing large, then the
+instruction, then `compact_ready`; the agent picks the moment, and one
+signal (`compact_ready`) is all it gives, so there is less for a model to
+get wrong. What bounds it: one reminder per crossing once the context
+passes the midpoint between the prepare threshold and the engine's own
+(`Prepare::reminder_at`; a further 10% of the window when nothing
+compacts on its own), naming the automatic compaction, and the engine's
+own threshold. From the request until `compact_ready` or a compaction,
+`/compact status` shows "compaction requested of the agent at N tokens;
+it prepares when it reaches a stopping point" (`pending_text`). The
+agent's `compact_ready` (a host tool in the
+agents' direct set, read-only, 197 bytes per request:
+`tool_costs::an_agent_s_request_carries_every_tool_definition`) calls
+`mob_compact_member`, the same request `/compact` makes; the engine
+records it in a running turn too ("A registration that serves (idle,
+attached, or running a turn) records the request", meerkat-runtime 0.9.14
+`meerkat_machine/compaction_request.rs`) and the run's next compaction
+check compacts. Asked without an instruction it requests too unless the
+context is below 20% of the window. The engine's own threshold is the
+backstop and is not touched; its native-mode value, for the start-up
+notice, is four fifths of the window (`compact.rs`, "the model-aware
+token default"), 100k when unknown. Helpers' events never reach the
+agent's watcher as the agent's conversation, and helpers get no
+`compact_ready` (their tools are `helper_external_tools`). After every
+compaction of an agent's conversation the agent gets one system note
+(`agents::note_compacted`, through `append_note`) that what was
+discarded is in `memory_search`, when semantic memory is on, and the
+persona says so. Pinned by the rig's
+`compact_prepare::a_crossing_steers_the_instruction_and_compact_ready_compacts`,
+`an_ignored_request_is_reminded_once_then_compacted_automatically`,
+`daemon::prepare::tests::one_reminder_at_the_midpoint_and_none_after`,
+`an_idle_agent_gets_the_instruction_at_its_next_turn`,
+`a_helpers_context_does_not_fire_it`, and `daemon::prepare::tests`; no
+real model ran `compact_ready`.
+
+## `blob_save_file` and `view_image` stay in the project (2026-11-14)
+
+The agent is told to use its scratch directory, and the engine's
+`blob_save_file` then refuses it: meerkat-tools 0.9.14
+`builtin/utility/blob_file.rs` resolves every path against the project
+root and refuses anything outside ("path '…' escapes the project root",
+`resolve_project_path` ~139, `ensure_under_root` ~165,
+`ensure_writable_parent_under_root` ~210); `view_image` has its own copy
+of the check. No grant or scratch directory widens it: the tools take no
+other root from the host. The error cannot carry a hint from rkat-tui:
+they are engine built-ins dispatched by the engine, and rkat-tui's gate
+is a pre-dispatch admission that never sees a result. So the scratch
+line of the instructions (`mobs::customizer::scratch_instruction`) says
+both tools accept only paths inside the project and how to work around
+it (`the_scratch_line_says_the_blob_tools_stay_in_the_project`). The ask
+upstream (extra allowed roots from the host) is drafted, not filed.
+
+## Commands during a turn wait instead of refusing (owner decision, 2026-11-14)
+
+The owner: "I would like commands that don't work during turns (i.e.
+/model) to still be callable by the user, and then take effect as soon as
+they can". The refusals were the UI's one idle guard (`App::blocker`) and
+the runner's (`switch_model`, `may_switch`, `switch_agent`, `new_agent`,
+`rehome`), the daemon's `while_idle` behind them. The UI now holds such a
+command in the pending queue as `PendingState::Command` (`ui::deferred`),
+in one FIFO with the messages: a message typed after a held command is
+held too rather than steered into the running turn, so `/model x` then a
+message runs in that order. At the turn's end (the runner ends a turn on
+the daemon's idle note) `App::run_held` runs the queue: each command as
+typed, then the messages up to the next command as one turn; a command
+that starts a turn (`/init`) leaves the rest for that turn's end. The
+message after a `/model` must not race the switch: the runner holds a
+prompt while an `rkat/set_model` is on its way (`model_switching`, the
+same hold a conversation switch uses) and while an agent switch
+reconnects. A held command is taken back with ↑ like a held message;
+quitting or detaching drops the held commands with a notice naming them
+(`Effect::DroppedCommands`, said again after the UI closes). `/compact`
+during a turn does not wait: the engine takes `mob/compact_member` in a
+running turn and compacts at the run's next check. The guard still
+refuses while messages are being sent next or recalled. Known limit: two
+held commands both answered by the daemon asynchronously (`/model`, then
+`/new`) are sent one after the other without waiting for the first's
+answer. Pinned by `ui::tests::dispatch::held_commands_and_messages_run_in_the_order_typed`,
+`what_follows_a_held_turn_waits_for_it`,
+`a_held_command_is_taken_back_like_a_message`,
+`a_pickers_choice_during_a_turn_waits_for_its_end`,
+`detaching_drops_held_commands_with_a_notice`,
+`session_commands_share_one_idle_guard` and the rig's
+`client_turns::commands_typed_during_a_turn_run_when_it_ends_in_order`.
+
+## List dialogs: rows wrap, and a confirm that cannot be missed (owner decision, 2026-11-14)
+
+The owner pressed `s` in `/approve`, was unsure whether anything had
+been granted, pressed Enter and found the call "approved for single
+use": the question line looked like any line, any other key cancelled it,
+and the Enter that cancelled it then fell through to the row's own
+Enter. Every `ListPicker` question (`PickerLine::Confirm`) is now its own
+bold warning line naming its keys ("… y yes · n or Esc no"); while it is
+up only `y`, `n` and Esc act, every other key (Enter, the arrows) leaves
+it up and says "press y to confirm, n or Esc to cancel" (`nudged`); Esc
+cancels the question, a second closes the dialog; Ctrl-C still closes it
+acting on nothing. What an act did comes back as `Msg::PickerDone` after
+the refreshed list and shows under the rows (`PickerLine::Done`) as well
+as in the transcript. Rows wrap (`list_picker_lines`, `capped`): the
+highlighted row in full, the others two lines of text and two of note
+with an ellipsis. Pinned by `ui::picker::tests::a_pending_question_takes_only_y_n_and_esc`,
+`esc_cancels_the_question_then_closes_the_picker`,
+`an_acts_outcome_is_stated_on_the_picker`,
+`rows_wrap_the_highlighted_in_full_the_others_capped`,
+`client::runner::tests::the_approve_picker_offers_once_session_and_always`
+(Enter during `s`'s question approves nothing) and the rig's picker
+checks in `approvals`, `agents` and `schedules`.

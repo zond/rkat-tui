@@ -519,7 +519,7 @@ pub fn unwire_picker(wired: &[WireRow], others: &[Other]) -> crate::ui::ListPick
                 vec![PickKey::confirmed(
                     KeyCode::Enter,
                     act,
-                    format!("unwire {}? messages between the two stop", w.label()),
+                    format!("Unwire {}? Messages between the two stop.", w.label()),
                 )],
             )
             .noted(w.workspace.display().to_string())

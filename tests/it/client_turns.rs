@@ -1596,3 +1596,99 @@ async fn ctrl_enter_interrupts_another_clients_run_then_sends() {
     assert!(user_texts(&llm.requests()[1]).contains(&"typed meanwhile".to_string()));
     rig.quit().await;
 }
+
+/// Type `text` into `app` and press Enter, forwarding its effects.
+fn type_into(rig: &Attached, app: &mut rkat_tui::ui::App, text: &str) {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    for c in text.chars() {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
+    }
+    for effect in app.update(Msg::Key(KeyEvent::from(KeyCode::Enter))) {
+        rig.send(effect);
+    }
+}
+
+/// Commands typed during a turn that need the agent idle wait for its
+/// end, in one order with the messages typed after them: `/model` typed
+/// during a held turn switches once it ends, and the message typed after
+/// it runs on the new model; a held command taken back (↑) never runs;
+/// `/compact` during the turn does not wait, the engine takes the request
+/// at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn commands_typed_during_a_turn_run_when_it_ends_in_order() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let ws = Workspace::new();
+    let gate = Arc::new(Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Gated(Arc::clone(&gate), Box::new(Step::Text("first done"))),
+        // The compaction `/compact` asked for, at the next run's check.
+        Step::Text("SUMMARY of the earlier turns"),
+        Step::Text("after the switch"),
+        Step::Text("spare"),
+    ]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    let mut app = rkat_tui::ui::App::new(rkat_tui::ui::StatusInfo::default());
+    for msg in rig.seen.clone() {
+        for effect in app.update(msg) {
+            rig.send(effect);
+        }
+    }
+    type_into(&rig, &mut app, "work");
+    llm.wait_call(0).await;
+    // Held: a model switch, an /init taken back, a message after them.
+    type_into(&rig, &mut app, "/model anthropic:claude-opus-4-8");
+    type_into(&rig, &mut app, "/init");
+    assert!(app.update(Msg::Key(KeyEvent::from(KeyCode::Up))).is_empty());
+    assert_eq!(app.input.text(), "/init");
+    app.input.clear();
+    type_into(&rig, &mut app, "on the new model");
+    // `/compact` goes now.
+    app.status.apply(StatusUpdate::Context {
+        used: Some(1_000),
+        approx: false,
+    });
+    type_into(&rig, &mut app, "/compact");
+    let answered = pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::CompactRequested(_))
+    })
+    .await;
+    assert!(
+        matches!(answered, Msg::CompactRequested(Ok(()))),
+        "{answered:?}"
+    );
+    assert_eq!(llm.recorded().len(), 1, "nothing ran before the turn's end");
+    gate.notify_one();
+    pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::Notice { text, .. } if text.starts_with("switched to claude-opus-4-8"))
+    })
+    .await;
+    let finished = pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::TurnFinished(_))
+    })
+    .await;
+    assert!(
+        matches!(&finished, Msg::TurnFinished(Ok(summary)) if summary.text == "after the switch"),
+        "{finished:?}"
+    );
+    let recorded = llm.recorded();
+    let models: Vec<&str> = recorded.iter().map(|r| r.model.as_str()).collect();
+    assert_eq!(models[0], "claude-sonnet-4-6");
+    assert!(
+        models[1..].iter().all(|model| *model == "claude-opus-4-8"),
+        "{models:?}"
+    );
+    assert!(recorded.last().unwrap().user().contains("on the new model"));
+    // The compaction asked for mid-turn was consumed by the next run's
+    // check.
+    assert!(rig.events().iter().any(|e| matches!(
+        e,
+        AgentEvent::CompactionStarted { .. } | AgentEvent::RequestedCompactionSkipped { .. }
+    )));
+    assert!(
+        !recorded
+            .iter()
+            .any(|r| r.user().contains(rkat_tui::ui::commands::INIT_PROMPT)),
+        "the taken-back /init never ran"
+    );
+    rig.quit().await;
+}

@@ -519,6 +519,20 @@ approval would make. On a row:
 
 - `e` allows **this kind of effect**: see below.
 
+The footer spells the choices: "Enter approve once · s grant this
+session · a grant always · e allow this kind of effect · Esc close". `s`
+and `a` ask first, on a line of their own that names what will happen
+("Grant writes under `/data/store` for this session? y yes · n or Esc
+no"). While that question is up only `y` (grants), `n` and Esc (cancel the
+question; a second Esc closes the list) answer it; Enter is deliberately
+not "yes": it and every other key leave the question up and say "press y
+to confirm, n or Esc to cancel", so an Enter meant for the question can
+never approve the row once. The `e` field is a text field and keeps Enter
+as its confirm, as its line says. Whatever was done is stated under the
+list ("approved once: …", "granted for this session: writes under …",
+"granted always: …") as well as in the transcript, and the row leaves the
+list.
+
 The list says of each choice whether it is exact (Enter/`o`: this call
 once; `s`/`a`: its directory or its literal command) or judged by the
 classifier (`e`: a statement). The agent is told in a system note what is
@@ -753,6 +767,12 @@ is read-only shell, and a leading `TMPDIR=<it>` (also `TMP`, `TEMP`) is
 accepted in front of an allowlisted command; the classifier is told the
 directory is the session's. The shared `/tmp` stays judged by the
 classifier.
+
+Two engine tools do not take it: `blob_save_file` and `view_image`
+accept only paths inside the project (their own check, which no grant
+widens), so the agent's instructions tell it to save inside the project
+and move the file with the shell, or copy an image into the project
+first.
 
 The name is fixed per agent and workspace, so a resumed agent finds its
 directory under the same name, empty. rkat-tui uses the directory only
@@ -1280,6 +1300,8 @@ are never written to a file.
 | `auto.compact` (`"warn"`/`"auto"`) | `--auto-compact` / `--no-auto-compact` | `"warn"` |
 | `auto.compact_warn_percent` | `--set auto.compact_warn_percent=N` | `75` |
 | `auto.compact_auto_percent` | `--set auto.compact_auto_percent=N` | `85` |
+| `auto.compact_prepare` (an instruction before an automatic compaction; `/compact prepare` writes the realm's) | `--set 'auto.compact_prepare=<text>'` | none |
+| `auto.compact_prepare_at` (tokens, or `"N%"` of the window) | `--set auto.compact_prepare_at=60%` | `"70%"` |
 | `auto.classifier_tools` | `--set auto.classifier_tools=false` | `true` |
 | `[[allow]]` / `[[deny]]` `tool`, `arg` (glob) or `literal` | `--allow` / `--deny <tool>[=<glob>]` (repeatable) | none |
 | `endpoints.<name>.dialect`, `.base_url`, `.api_key_env`, `.priority` (an inline `.api_key` is refused at start-up), `.api_style` (`"responses"`/`"chat_completions"`, `openai` dialect only) | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]` | `api_style`: `"responses"` |
@@ -1605,9 +1627,13 @@ For a model whose window is unknown the thresholds are 120k (warn) and 150k
 (auto) tokens. `compact_auto_percent` below `compact_warn_percent` is raised
 to it, with a notice.
 
-`/compact status` shows the policy and threshold. **`/compact`** (or
-`/compact now`; idle only, after at least one turn) compacts the
-conversation by itself; the session is not rebuilt and its threshold does
+`/compact status` shows the policy and threshold, and the prepare
+instruction (below) with its threshold and whether it is armed.
+**`/compact`** (or `/compact now`, after at least one turn) compacts the
+conversation by itself. During a turn it does not wait: the request goes
+at once and the engine compacts before the run's next model request ("the
+context will be compacted before the agent's next model request"). The
+session is not rebuilt and its threshold does
 not change. Meerkat compacts only at the check before a run's next model
 request and has no call that compacts an idle session, so rkat-tui asks
 it to compact (`mob/compact_member`) and then starts that run itself with
@@ -1640,6 +1666,70 @@ tokens are estimates (four bytes a token).
 `/compact <instructions>` compacts the same way. Claude Code uses such text
 to focus the summary; Meerkat's compaction takes no instructions yet, so
 rkat-tui says so in a warning and compacts without them.
+
+After every compaction of an agent's conversation the agent gets one
+system note: "Your context was compacted just now. What was discarded is
+indexed: search it with memory_search when you need an earlier detail."
+(when semantic memory is on), and its instructions say the same.
+
+#### Preparing for a compaction
+
+A compaction keeps a summary and the recent turns; what the agent had in
+mind and wrote nowhere is gone. `[auto] compact_prepare` is an
+instruction the agent gets first, for example "update PLAN.md with where
+you are and what is next":
+
+```toml
+[auto]
+compact_prepare = "update PLAN.md with where you are and what is next"
+compact_prepare_at = "70%"   # or tokens: 300000; default 70%
+```
+
+When the context of a workspace agent's conversation reaches
+`compact_prepare_at` (tokens, or a share of the start-up model's window;
+of 200k when the window is unknown), the daemon asks the agent, steered
+into its run, and leaves it to pick the moment: "Your context is at 300k
+of 1M tokens. Find a good stopping point soon: finish the step you are
+in, do not start a large new piece of work. Then: <your instruction>.
+Then call `compact_ready`, which compacts the context; you continue after
+it." The transcript says "context at 300k: asked the agent to prepare for
+compaction", and from then until `compact_ready` or the automatic
+compaction `/compact status` says "compaction requested of the agent at
+300k tokens; it prepares when it reaches a stopping point". If the model
+call that crossed it ended the turn, the agent is idle: it is not woken,
+it is asked at the start of its next turn. When the agent calls
+`compact_ready` (its one signal: there is no separate "starting" call)
+the daemon requests the compaction (as `/compact` does) and the tool
+answers "compaction requested: it happens before your next step; details
+from before stay searchable with memory_search"; the usual compaction
+notices follow. The agent may call `compact_ready` on its own too: it
+compacts unless the context is below 20% of the window (then nothing is
+compacted and it is told why).
+
+What bounds the agent's choice of moment: if the context grows past the
+midpoint between `compact_prepare_at` and the automatic compaction's
+threshold (or by a further 10% of the window when nothing compacts
+automatically, `compact = "warn"`) without `compact_ready`, it gets one
+reminder ("Compaction happens automatically at 800k tokens whether or not
+you have prepared: do it now: <your instruction>, then `compact_ready`.";
+the transcript says "reminded the agent to prepare for compaction now"),
+never a second for the same crossing; and the automatic compaction
+itself comes at its threshold regardless.
+
+It fires once per crossing and is armed again when the context is below
+the threshold (after the compaction, or in a new conversation). The
+automatic compaction stays as it is: an agent that ignores the
+instruction is compacted at the usual threshold. If `compact_prepare_at`
+is at or above that threshold (the engine's own, 80% of the window, in
+the default mode; `compact_auto_percent` with `compact = "auto"`), a
+start-up notice says the instruction would never run first and what to
+change. Helpers and forks get no instruction and have no `compact_ready`.
+`/compact prepare <text>` sets (or replaces) the instruction for the
+workspace in the realm's `tui.toml`, live; `/compact prepare off` clears
+it. The keys may come from your own `tui.toml`, the realm's, `--set`
+(`--set 'auto.compact_prepare=update PLAN.md'`, `--set
+auto.compact_prepare_at=60%`), or a project's `.rkat/tui.toml` where the
+command line does not set them, as the other compaction keys.
 
 ## Skills
 
@@ -1764,7 +1854,7 @@ feature by feature.
 `/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`; alone, it opens a list of the rules and the grants in force: d then y removes the highlighted rule or session grant),
 `/approve` (the calls the gate recently blocked: Enter once, s for this session, a always; see [Approving a blocked call](#approving-a-blocked-call)),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume|stats|check [all|<n>|<case id>…]]` (see [Checking your classifier model](#checking-your-classifier-model)), `/model [[endpoint:]id|refresh]`,
-`/remember <text>`, `/memory [workspace|user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
+`/remember <text>`, `/memory [workspace|user|system]`, `/init`, `/compact [now|status|prepare <text>|prepare off|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
 `/helpers [list|expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
 rkat-tui version, the model and its endpoint, the session id, the workspace
 and realm directories, the shell confinement, the permission mode, the
@@ -1777,13 +1867,48 @@ folded reasoning and collapsed tool output keep only their headers, as on
 screen) to `file` (relative to the workspace; owner-readable only), by
 default `export-<session id>-<unix time>.txt` in the workspace's state
 directory (the notice names the file).
-It is rkat-tui's own write, like the history file, not a tool call. `/init` (idle only) sends a
+It is rkat-tui's own write, like the history file, not a tool call. `/init` sends a
 fixed prompt as an ordinary turn, shown in the transcript: inspect the
 project and write or update the workspace `AGENTS.md` with the build and
 test commands, the layout and the conventions, under 200 lines. The agent
 writes it with its file tools, so the usual approval, protected-path and
-sealed-path rules apply. `/clear`, `/resume`, `/model` and `/compact` work only while
-idle; the transcript is replaced only once the new session is live.
+sealed-path rules apply. The transcript is replaced only once the new
+session is live.
+
+#### Commands during a turn
+
+`/model`, `/clear` (`/new`), `/resume`, `/init`, `/agents <name>` (and
+the agent picker's switch and new agent) and `/rehome <ref>` need the
+agent idle. Typed while a turn runs (or a `!` command, or a compaction),
+each waits in the queue with the messages, shown as its command text with
+"when the turn ends", and runs once the agent is idle (the daemon's idle
+note, not a guess), its result or failure reported then as usual. The
+queue keeps the order you typed: `/model x` followed by a message
+switches first and sends the message on the new model (a message typed
+after a waiting command waits too, instead of joining the running turn).
+↑ on an empty input takes the newest one back into the editor, as it does
+a queued message. `/model`, `/resume` and `/agents` without an argument
+open their picker at once; the choice waits. `/compact` does not wait
+(see [Context and compaction](#context-and-compaction)). Quitting or
+detaching with commands still waiting drops them, with a notice naming
+them.
+
+#### List dialogs
+
+The lists of `/approve`, `/permissions`, `/schedules`, `/agents`, `/wire`,
+`/unwire`, `/mode`, `/memory` and `/helpers` share their keys: ↑/↓ (or
+k/j) move, each row's keys act on it, Esc, `q` or Ctrl-C close. Rows wrap
+to the dialog's width: the highlighted row in full, every other at most
+two lines of its text and two of its note, ending in "…". A key that asks
+first (retire, delete, remove, unwire, `/approve`'s `s` and `a`) puts its
+question on a line of its own in the warning colour, naming what will
+happen and its keys ("Delete schedule nightly? It never fires again. y
+yes · n or Esc no"). While it is up only `y` (do it), `n` and Esc (cancel
+it; a second Esc closes the dialog) act; Enter, the arrows and every other
+key leave the question up and say "press y to confirm, n or Esc to
+cancel". What was done is stated under the rows ("retired agent
+main-ab12", "deleted schedule nightly") and in the transcript, and the
+list shows the change.
 
 Typing `/` at the start of a one-line input opens a menu of the commands
 whose name or alias starts with what follows (case-insensitive) right above
@@ -2447,15 +2572,17 @@ are attached, `detached` for one left running without a TUI, and `*` and
 `this rkat-tui` on yours, which is highlighted first. ↑/↓ (or `j`/`k`)
 move, Esc or `q` closes it, and:
 
-- Enter switches this TUI to the highlighted agent (not while a turn of
-  yours runs): the agent you leave keeps running, and the TUI shows the
-  other's conversation from its start. `/agents <name>` does the same
-  without the picker.
+- Enter switches this TUI to the highlighted agent (chosen while a turn
+  of yours runs, the switch waits for its end: [Commands during a
+  turn](#commands-during-a-turn)): the agent you leave keeps running, and
+  the TUI shows the other's conversation from its start. `/agents <name>`
+  does the same without the picker.
 - Enter on the last row, `+ new agent`, starts a new agent for this TUI
   and switches to it, as a plain `rkat-tui` would; the agent you leave
   keeps running.
-- `d` retires the highlighted agent after a one-line confirmation (`y`
-  retires it, any other key keeps it). Only an idle agent nobody works
+- `d` retires the highlighted agent after a confirmation ("Retire
+  main-ab12? Its conversation stays in /resume. y yes · n or Esc no"; see
+  [List dialogs](#list-dialogs)). Only an idle agent nobody works
   with can be retired this way: the picker, and the daemon after it,
   refuse one that is running (or whose state cannot be read), one with a
   TUI attached, and your own (`/quit` retires that), saying why. A

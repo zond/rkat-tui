@@ -675,9 +675,13 @@ fn alt_p_opens_the_model_picker_and_keeps_the_draft() {
         vec![Effect::SetModel("anthropic:claude-opus-4-6".into())]
     );
     assert_eq!(app.input.text(), "half a thought");
-    // While a turn runs it is refused, as /model is.
+    // While a turn runs it opens too, as /model does (its choice waits
+    // for the turn's end).
     let mut running = running_app();
-    assert!(running.update(alt_p).is_empty());
+    assert_eq!(
+        running.update(alt_p),
+        vec![Effect::RequestModelPicker { refresh: false }]
+    );
 }
 
 #[test]
