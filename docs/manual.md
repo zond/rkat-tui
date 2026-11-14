@@ -9,7 +9,7 @@ the test protocol for working on rkat-tui itself.
 
 - [Overview](#overview)
 - [First run](#first-run)
-- [Sessions](#sessions)
+- [Sessions](#sessions) ([Reading the transcript](#reading-the-transcript))
 - [How approval works](#how-approval-works) ([Permission modes](#permission-modes))
 - [Confinement](#confinement) ([Security decisions](#security-decisions), [Security model and its limits](#security-model-and-its-limits))
 - [Helpers](#helpers)
@@ -109,7 +109,9 @@ runs as one follow-up turn when no boundary comes. Its placeholder in the
 transcript reads *queued*, then *delivering*, and becomes your message once
 the runtime reports it written. A steer never joins a model request already
 on its way: while one runs longer than five seconds, the status bar reads
-`queued N, waiting for the model's reply (Ns)`. A steer an interrupted turn did not deliver
+`queued N, waiting for the model's reply (Ns)` (after 20 s without word
+from the agent the activity segment says it instead, see **Working or
+waiting** below). A steer an interrupted turn did not deliver
 is sent next (see below); one a failed turn did not deliver comes back to
 the editor.
 
@@ -176,6 +178,41 @@ turn runs or messages are pending both warn first; pressing again within
 which the daemon never received, to the realm directory's
 `tui_unsent.txt` (the workspace's state directory, see [Where things
 live](#where-things-live); the next start says so).
+
+### Reading the transcript
+
+Each tool call is one line that never wraps, in five parts: the state
+(`○` asked for, `◐` running, `✓` done, `✗` failed, `⊘` denied), a plain
+verb, what it acts on, the outcome in numbers, and the time:
+
+```
+✓ read src/main.rs  lines 1–40
+✓ edit src/ui/render.rs  +12 −3 · 1.2s ▸
+◐ run cargo build  12s
+✗ run cargo test  exit 101 · 48s ▸
+✓ search "fn main" in *.rs  3 files
+⊘ run git push --force  blocked by the classifier (R1) ▸
+```
+
+Paths are relative to the project (`~` for your home directory, else
+absolute). Success says nothing of itself; a failure adds its reason on
+the line, cut to fit, and a denial says who denied it (`blocked by the
+classifier (R1)`, `denied by you`, `denied by rule u3`, `plan mode`).
+The time shows from one second on (`1.2s`, `48s`, `3m 2s`), and ticks
+while a call runs. When the line is too long its object is shortened (a
+path in the middle, a command at its end, with `…`); the marker, the verb
+and the outcome stay. An outcome is only what the call's own result says
+for certain: `lines A–B` or `N lines` for a read, `new, N lines` or `+A
+−R` for a write, `+A −R` for an edit, `exit N` or `timed out after 10m`
+for a command (a zero exit says nothing), `N files`, `N matches in M
+files` or `no matches` for a search (`(stopped early)` when its budget
+ran out); where the result does not say, the line leaves the number out.
+A tool with no line of its own (an MCP tool, say) shows `<tool>: <its
+first argument>`. `▸` at the end means there is more: a click on the
+line, or Ctrl-O for every call, shows the full arguments (a command as
+written, other arguments pretty-printed, after `┊`), the output (after
+`│`) or the diff, and a denial's whole reason (with how to `/approve`
+it). `/export` writes the same lines.
 
 ## How approval works
 
@@ -979,6 +1016,26 @@ A `delegate` helper is a member of the mob `implicit-<session id>` of the
 agent that started it, not of the workspace's mob (`tui`, where the agents
 are); the agent is told so.
 
+**Working or waiting.** The input's prompt marker shows whether the agent
+is busy: the plain `›` while it is idle; a turning braille spinner (`⠋`,
+cyan) while a turn runs, whether this TUI started it or the daemon reports
+a run of the agent it did not start (a schedule, a watch, another
+client, a fork's report), and while a classifier review or a compaction
+runs. The input's text never moves. The spinner turns only while word
+arrives from the agent: any event of its run or its helpers (streamed
+text, a tool call requested or completed, a helper's progress, a
+classifier or compaction event, an approval request). After 20 seconds
+without any, the marker becomes a slow yellow pulse (`•`/`·`) and the
+status bar's activity segment says, in yellow, what is being waited for
+and since when, from what the TUI knows: `waiting for your answer 12s`
+(an approval dialog is open), `compacting 40s`, `review by the
+classifier 8s`, `tool shell running 2m 10s` (a call requested and not
+completed), `waiting for the model's reply 34s` (a model request is
+open), else `no word from the agent for 45s`. These are facts, not a
+verdict: a long tool or a slow model is silent too. After two minutes of
+silence during a turn it adds `· Esc interrupts`. The next event brings
+the spinner back.
+
 **Watching a helper.** While helpers work, a panel under the input lists
 them, one line each, indented by nesting depth (the newest top-level helper
 first, its nested helpers under it): `[scout · model] ⠋ running · 4 tool
@@ -990,11 +1047,22 @@ around the selection and `… and N more`) and is hidden when empty.
 Ctrl+↓/Ctrl+↑ move a selection in the panel (the newest first, wrapping
 around). Enter on an **empty** input opens the selected helper's **full
 view** in place of the transcript (Enter with text in the input sends it as
-usual, and the input keeps working while the view is open): the helper's
-header as the title, then everything it did in order: its prose
-(markdown), its reasoning (one line), its tool calls with collapsed output
-(Ctrl-O toggles the latest reasoning and tool output) and notes, and the
-headers of helpers it spawned. PgUp/PgDn, Shift+↑/↓ and the wheel scroll
+usual, and the input keeps working while the view is open). It reads as
+the main transcript reads for the agent: the title names the helper, its
+model, its kind (`delegate`, `fork`, `spawned member`, when the call that
+started it was seen) and its state (`running`, `finished`, `idle` for a
+spawned member whose task is done, `failed`, `cancelled`), then, in
+order, the task it was given as a prompt (`› `) under `task from
+<agent>` (or the helper above it), every later input the same way (a
+message an agent or helper sent it under `✉ from agent <sender>`, any
+other input under `message`), its prose (markdown, its last one being
+its answer), its reasoning (one line), its tool calls as lines (Ctrl-O
+shows all of them and the reasoning in full) and notes,
+and the headers of helpers it spawned. A `fork_off` child opens with the
+dim line `forked from <agent> with its conversation so far` and then its
+own task: the conversation it inherited is not shown again. The task
+comes from the helper's own run start, so a helper whose start the TUI
+never saw begins with its work. PgUp/PgDn, Shift+↑/↓ and the wheel scroll
 it; it follows new output while at the bottom. The view stays open after
 the helper finishes, so its result can be read; Esc returns to the
 transcript, a second Esc drops the selection.
@@ -1671,7 +1739,7 @@ project file may only lower it), and Esc or Ctrl-C cancels it; whatever it
 started is killed when it ends. Its output, stdout and stderr together in
 arrival order and capped at 64 KiB (`[output truncated at 64 KiB]`), shows
 as a `$ <cmd>` block with the exit code, folded and unfolded like tool
-output (a click, Ctrl-O), and joins the session as durable system context
+output (a click, or Ctrl-O for all), and joins the session as durable system context
 (`[shell run by the user] $ <cmd>`, the output, `(exit N)`) through the
 same call `/remember` uses: the model reads it on its next call, and no
 turn starts for it. While the agent works, a `!` command waits as a queued
@@ -1695,9 +1763,9 @@ in `src/ui/commands.rs`, pinned to the keymap by a test):
 | Esc Esc (idle, with text) | Clear the input and save it to the prompt history (↑ recalls it) |
 | Up (empty input) | Take queued messages back into the editor |
 | Ctrl-D | On an empty input, quit on a second press within 3 s (see [Sessions](#sessions) and [Detach and reattach](#the-workspace-daemon)); with text, delete forward |
-| Ctrl-O | Show or hide detail: the last reasoning block and the output of the last tool call (a click toggles one tool) |
+| Ctrl-O | Show everything in full, or fold it all back: every tool call's arguments, output and diff, every reasoning block, every job outcome, in the transcript and an open helper view; while on, new ones arrive shown (a click toggles one until the next Ctrl-O; scrolled back, the line at the top stays put) |
 | Ctrl-T | Show or hide the [task checklist](#task-checklist) |
-| Ctrl+Up/Down | Select a helper in the panel under the input (newest first); Enter on an empty input opens its full view (Esc returns, PgUp/PgDn scroll it) |
+| Ctrl+Up/Down | Select a helper in the panel under the input (newest first); Enter on an empty input opens its full view: its task and later inputs with who gave them, its work and its answer, under a title with its kind, state and model (Esc returns, PgUp/PgDn scroll it) |
 | Ctrl-R | Search the prompt history, the workspace's then the global one (Ctrl-R again: older; Enter accepts; Esc cancels) |
 | Ctrl-X Ctrl-S | Interrupt and send the input (sends normally when idle) |
 | Ctrl-G, Ctrl-X Ctrl-E | Edit the input in `$VISUAL`, else `$EDITOR`, else `vi` (also while a turn runs) |
@@ -1761,7 +1829,7 @@ Details the table leaves out:
   while the TUI is stopped.
 
 The mouse is captured by default: the wheel scrolls and a click expands or
-collapses a tool call's output (Ctrl-O for the latest). Dragging selects text
+collapses one tool call (Ctrl-O does all of them). Dragging selects text
 and copies it on release (double click: a word, triple click: a line;
 `/copy` copies the latest answer, `/copy N` the Nth latest). Hold Shift for native
 selection, or start with `--no-mouse`.
@@ -2048,7 +2116,10 @@ confinement, rules it could not load, ignored project settings, semantic
 memory being off) shows when a TUI first attaches to it, and again after
 it restarted.
 
-**Status bar.** The first segment is the connection: `connecting`,
+**Status bar.** While the agent is busy, its activity leads the bar
+(`⠋ running 12s`, `⠋ classifying…`, `⠋ compacting… 4s`, or what it waits
+for after a silence, see **Working or waiting**), so that a narrow
+terminal, which cuts the bar's end, keeps it. Then comes the connection: `connecting`,
 `daemon starting`, `attached 127.0.0.1:<port>`, `reconnecting`, a
 failure, or `daemon stopped`; the next one the agent this TUI works with
 (`agent main-<id>`). A daemon built from another commit than this TUI

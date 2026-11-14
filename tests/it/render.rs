@@ -88,7 +88,7 @@ fn renders_blocks_input_and_status_bar() {
     assert_eq!(rows[1], "");
     assert_eq!(rows[2], "• Sure, let me look.");
     assert_eq!(rows[3], "");
-    assert_eq!(rows[4], "◐ glob({\"pattern\":\"*.rs\"}) running…");
+    assert_eq!(rows[4], "◐ find *.rs ▸");
     // Input box: top border (idle and empty: the `?` hint) then the prompt line.
     assert!(
         rows[9].starts_with(" ? keys · Shift+Tab mode ────"),
@@ -118,8 +118,9 @@ fn running_turn_shows_spinner_and_queue_in_status() {
         now,
     );
     let rows = render_sized(&mut app, now, 100);
+    // The activity leads the status bar.
     assert!(
-        rows[11].ends_with("⠋ running 0s"),
+        rows[11].starts_with(" ⠋ running 0s │ "),
         "status row: {:?}",
         rows[11]
     );
@@ -346,6 +347,9 @@ fn diff_block_snapshot() {
     let mut app = App::new(StatusInfo::default());
     app.transcript.push(Block::Tool {
         name: "edit_file".into(),
+        head: rkat_tui::ui::transcript::tool_line::head("edit_file", &json!({"path": "src/a.rs"}), &rkat_tui::ui::transcript::tool_line::PathView::default()),
+        outcome: rkat_tui::ui::transcript::tool_line::Outcome::default(),
+        ticked: 0,
         args: json!({"path": "src/a.rs"}),
         state: ToolState::Done {
             is_error: false,
@@ -363,20 +367,24 @@ fn diff_block_snapshot() {
         depth: 0,
         collapsed: false,
     });
-    let buf = render_buffer(&mut app, W, 14);
+    let buf = render_buffer(&mut app, W, 20);
     let rows = rows(&buf);
-    assert_eq!(rows[0], "✓ edit_file({\"path\":\"src/a.rs\"}) (4ms) ▾");
-    assert_eq!(rows[1], "  src/a.rs (+1 -1)");
-    assert_eq!(rows[2], "  --- a/src/a.rs");
-    assert_eq!(rows[3], "  +++ b/src/a.rs");
-    assert_eq!(rows[4], "  @@ -1,2 +1,2 @@");
-    assert_eq!(rows[5], "   fn a() {}");
-    assert_eq!(rows[6], "  -let x = 1;");
-    assert_eq!(rows[7], "  +let x = 2;");
-    assert_eq!(buf[(2, 6)].fg, Color::Red);
-    assert_eq!(buf[(2, 7)].fg, Color::Green);
-    assert_eq!(buf[(2, 4)].fg, Color::Cyan);
-    assert!(buf[(2, 2)].modifier.contains(Modifier::DIM));
+    // The line: verb, path and the diff's numbers; then the arguments.
+    assert_eq!(rows[0], "✓ edit src/a.rs  +1 −1 ▾");
+    assert_eq!(rows[1], "  ┊ {");
+    assert_eq!(rows[2], "  ┊   \"path\": \"src/a.rs\"");
+    assert_eq!(rows[3], "  ┊ }");
+    assert_eq!(rows[4], "  src/a.rs (+1 -1)");
+    assert_eq!(rows[5], "  --- a/src/a.rs");
+    assert_eq!(rows[6], "  +++ b/src/a.rs");
+    assert_eq!(rows[7], "  @@ -1,2 +1,2 @@");
+    assert_eq!(rows[8], "   fn a() {}");
+    assert_eq!(rows[9], "  -let x = 1;");
+    assert_eq!(rows[10], "  +let x = 2;");
+    assert_eq!(buf[(2, 9)].fg, Color::Red);
+    assert_eq!(buf[(2, 10)].fg, Color::Green);
+    assert_eq!(buf[(2, 7)].fg, Color::Cyan);
+    assert!(buf[(2, 5)].modifier.contains(Modifier::DIM));
 }
 
 #[test]
@@ -1175,11 +1183,8 @@ fn an_expanded_helper_renders_its_blocks() {
         rows[2],
         "▾ [scout · opus] ⠋ running · 2 tool calls · grep \"fn resolve\""
     );
-    assert_eq!(rows[4], "  ○ [scout · opus] glob({\"pattern\":\"*.rs\"})");
-    assert_eq!(
-        rows[6],
-        "  ○ [scout · opus] grep({\"pattern\":\"fn resolve\"})"
-    );
+    assert_eq!(rows[4], "  ○ [scout · opus] find *.rs ▸");
+    assert_eq!(rows[6], "  ○ [scout · opus] search \"fn resolve\" ▸");
 }
 
 #[test]
@@ -1227,7 +1232,7 @@ fn a_helper_full_view_renders_title_prose_reasoning_and_tools() {
     assert_eq!(rows[2], "");
     assert_eq!(rows[3], "• Looking in src.");
     assert_eq!(rows[4], "");
-    assert_eq!(rows[5], "  ○ [scout · opus] glob({\"pattern\":\"*.rs\"})");
+    assert_eq!(rows[5], "  ○ [scout · opus] find *.rs ▸");
     // The transcript's own blocks are not drawn.
     assert!(rows.iter().all(|r| !r.contains("find it")), "{rows:?}");
     assert!(
@@ -1344,7 +1349,7 @@ fn the_slash_menu_renders_above_the_input_with_the_highlight() {
             "",
             "• Sure, let me look.",
             "",
-            "◐ glob({\"pattern\":\"*.rs\"}) running…",
+            "◐ find *.rs ▸",
             " /compact [now | status | <instructions>] — compact the context (idle…",
             " /context — context usage and what the context holds",
             " /copy [N] — copy the latest (or Nth latest) answer to the clipboard",

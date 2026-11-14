@@ -452,3 +452,32 @@ fn ctrl_o_shows_the_whole_arguments_the_preview_cut() {
         "still open"
     );
 }
+
+/// The dialog names the call as the transcript's line does (a command
+/// is shown as it is, with no line of its own).
+#[test]
+fn the_dialog_shows_the_call_as_its_line() {
+    for (tool, args, call) in [
+        (
+            "write_file",
+            "{\n  \"path\": \"src/a.rs\",\n  \"content\": \"x\"\n}",
+            Some("Call: write src/a.rs"),
+        ),
+        ("shell", "cargo build --release", None),
+    ] {
+        let mut app = App::new(StatusInfo::default());
+        app.update(Msg::Escalation(
+            RecordedPrompt {
+                tool: tool.into(),
+                args_preview: args.into(),
+                ..RecordedPrompt::default()
+            },
+            EscalationId(1),
+        ));
+        let rows = screen(&mut app, 30);
+        match call {
+            Some(call) => assert!(rows.iter().any(|row| row.contains(call)), "{rows:#?}"),
+            None => assert!(!rows.iter().any(|row| row.contains("Call:")), "{rows:#?}"),
+        }
+    }
+}

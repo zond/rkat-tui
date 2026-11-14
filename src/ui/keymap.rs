@@ -63,8 +63,8 @@ pub enum Action {
     /// Esc: interrupt a running turn (queued messages go next); idle, twice
     /// on a draft, clear it into the history.
     Escape,
-    /// Show or hide detail (Ctrl-O): the last reasoning block and the
-    /// output of the last tool call together.
+    /// Show everything in full or fold it all back (Ctrl-O): every tool
+    /// call, reasoning block and outcome of the transcript.
     ToggleDetail,
     /// Ctrl-T: show or hide the task checklist under the input.
     ToggleChecklist,

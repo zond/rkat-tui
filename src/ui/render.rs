@@ -13,7 +13,7 @@ use super::markdown::{display_width, render_markdown, sanitize, truncate_to_widt
 use super::modal::draw_modal;
 use super::transcript::{
     Block, BlockId, DiffView, HelperFold, HelperState, NoticeLevel, Preview, ShellState, ToolState,
-    tool_header,
+    tool_line,
 };
 use super::{App, HistorySearch, StatusInfo};
 use crate::approval::mode::PermissionMode;
@@ -25,6 +25,8 @@ pub const MAX_INPUT_LINES: usize = 6;
 const INPUT_PREFIX_W: usize = 2;
 /// Most lines of the helper panel under the input.
 pub const MAX_PANEL_LINES: usize = 6;
+/// Columns of a tool line's object kept before its outcome's text is cut.
+const MIN_TOOL_OBJECT: usize = 12;
 /// Maximum diff lines shown under a tool block.
 const MAX_DIFF_LINES: usize = 40;
 /// Braille spinner frames.
@@ -36,6 +38,116 @@ const SEP: &str = " │ ";
 /// How long a model request runs before the status bar says that the
 /// queued messages wait for its reply.
 pub const MODEL_WAIT_SHOWN: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long the busy agent can be silent (no event of its run, its
+/// helpers, the classifier or a compaction) before the prompt marker stops
+/// spinning and the status bar says what is being waited for.
+pub const QUIET_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
+/// How long a silence lasts before the status bar adds that Esc
+/// interrupts.
+pub const LONG_QUIET: std::time::Duration = std::time::Duration::from_mins(2);
+/// The waiting form of the prompt marker: a slow pulse between two glyphs.
+const PULSE: [char; 2] = ['•', '·'];
+/// Milliseconds per glyph of the waiting pulse.
+const PULSE_FRAME_MS: u128 = 800;
+/// The accent of the prompt marker (idle and spinning).
+const PROMPT_STYLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+/// The waiting form's colour.
+const WAITING_STYLE: Style = Style::new().fg(Color::Yellow);
+
+/// What the agent is doing, as the prompt marker and the status bar's
+/// activity segment show it (both from this one reading, so the two never
+/// disagree).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Activity {
+    /// Nothing runs.
+    Idle,
+    /// Busy, and events arrive: the spinner turns.
+    Busy {
+        /// When the busy state began (the spinner's phase).
+        since: Instant,
+    },
+    /// Busy, and nothing arrived for [`QUIET_AFTER`] or longer.
+    Quiet {
+        /// When the client last heard from the agent.
+        heard: Instant,
+        /// What is being waited for, and for how long.
+        fact: String,
+        /// Whether the silence is longer than [`LONG_QUIET`] while a turn
+        /// runs (Esc interrupts it).
+        long: bool,
+    },
+}
+
+/// `34s`, `2m 10s`, `1h 5m`.
+fn fmt_elapsed(elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs();
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3_600 => format!("{}m {}s", secs / 60, secs % 60),
+        _ => format!("{}h {}m", secs / 3_600, secs % 3_600 / 60),
+    }
+}
+
+/// The agent's [`Activity`] at `now`, from what the status holds.
+#[must_use]
+pub fn activity(status: &StatusInfo, now: Instant) -> Activity {
+    if !status.busy() {
+        return Activity::Idle;
+    }
+    let since = status
+        .running_since
+        .or(status.compacting_since)
+        .or(status.classifying_since)
+        .unwrap_or(now);
+    let heard = status.heard_at.unwrap_or(since).max(since);
+    let silence = now.saturating_duration_since(heard);
+    if silence < QUIET_AFTER {
+        return Activity::Busy { since };
+    }
+    let for_ = |from: Instant| fmt_elapsed(now.saturating_duration_since(from));
+    let fact = if let Some(asked) = status.asking_since {
+        format!("waiting for your answer {}", for_(asked))
+    } else if let Some(started) = status.compacting_since {
+        format!("compacting {}", for_(started))
+    } else if status.classifying {
+        format!(
+            "review by the classifier {}",
+            for_(status.classifying_since.unwrap_or(heard))
+        )
+    } else if let Some(tool) = status.open_tools.first() {
+        format!("tool {} running {}", sanitize(&tool.name), for_(tool.since))
+    } else if let Some(asked) = status.model_since {
+        format!("waiting for the model's reply {}", for_(asked))
+    } else {
+        format!("no word from the agent for {}", for_(heard))
+    };
+    Activity::Quiet {
+        heard,
+        fact,
+        long: silence >= LONG_QUIET && status.running_since.is_some(),
+    }
+}
+
+/// The input's prompt marker: `›` while idle, the spinner while the agent
+/// is busy and heard from, the slow waiting pulse after a silence. One
+/// column, so the input text never moves.
+fn prompt_marker(status: &StatusInfo, now: Instant) -> Span<'static> {
+    match activity(status, now) {
+        Activity::Idle => Span::styled("› ", PROMPT_STYLE),
+        Activity::Busy { since } => Span::styled(
+            format!("{} ", spinner_frame(Some(since), now)),
+            PROMPT_STYLE,
+        ),
+        Activity::Quiet { heard, .. } => {
+            let phase = now.saturating_duration_since(heard).as_millis() / PULSE_FRAME_MS;
+            let glyph = PULSE
+                .get(phase as usize % PULSE.len())
+                .copied()
+                .unwrap_or('•');
+            Span::styled(format!("{glyph} "), WAITING_STYLE)
+        }
+    }
+}
 
 /// Draw the whole application.
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
@@ -105,6 +217,12 @@ fn draw_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let height = usize::from(area.height);
     app.set_viewport_height(height);
     let total = app.transcript.ensure_layout(area.width);
+    // Ctrl-O changed what is folded: the line that was at the top stays.
+    if let Some((block, offset)) = app.take_detail_anchor()
+        && let Some(first) = app.transcript.start_line(block)
+    {
+        app.scroll.anchor_top(total, height, first + offset);
+    }
     let start = app.scroll.window(total, height);
     let mut lines = app.transcript.visible_lines(start, height);
     let rows = app.transcript.visible_blocks(start, height);
@@ -128,7 +246,9 @@ fn draw_helper_view(frame: &mut Frame<'_>, app: &mut App, header: BlockId, area:
     app.set_transcript_rows(area, 0, Vec::new());
     let w = usize::from(area.width).max(4);
     let title = match app.transcript.block(header) {
-        Some(Block::Helper(fold)) => helper_line(fold, w, "◂ ", "  Esc back"),
+        Some(Block::Helper(fold)) => {
+            helper_line(fold, &fold.view_status_text(), w, "◂ ", "  Esc back")
+        }
         _ => Line::default(),
     };
     let body = app.transcript.helper_view_lines(header, area.width);
@@ -159,7 +279,7 @@ fn draw_panel(frame: &mut Frame<'_>, app: &App, panel: &[BlockId], area: Rect) {
         .filter_map(|(i, id)| match app.transcript.block(*id) {
             Some(Block::Helper(fold)) => {
                 let indent = "  ".repeat(fold.depth);
-                let line = helper_line(fold, w, &indent, "");
+                let line = helper_line(fold, &fold.status_text(), w, &indent, "");
                 Some(if selected == Some(i) {
                     line.patch_style(Modifier::REVERSED)
                 } else {
@@ -447,9 +567,7 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
     let rows = usize::from(inner.height).max(1);
     let first = cursor_vrow.saturating_sub(rows - 1);
 
-    let prompt_style = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
+    let marker = prompt_marker(&app.status, now);
     let input_lines = app.input.lines();
     let lines: Vec<Line<'static>> = layout
         .rows()
@@ -462,11 +580,11 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
                 .map(|l| l.chars().skip(vr.start).take(vr.end - vr.start).collect())
                 .unwrap_or_default();
             let prefix = if vr.line == 0 && vr.start == 0 {
-                "› "
+                marker.clone()
             } else {
-                "  "
+                Span::raw("  ")
             };
-            let mut spans = vec![Span::styled(prefix, prompt_style)];
+            let mut spans = vec![prefix];
             spans.extend(input_spans(&raw, app.input.chips()));
             Line::from(spans)
         })
@@ -675,9 +793,60 @@ fn mode_segment(status: &StatusInfo) -> Option<Span<'static>> {
     })
 }
 
+/// The status bar's activity segments: while events arrive, the spinner
+/// with what runs (`⠋ compacting… 4s`, `⠋ classifying…`, `⠋ running 12s`);
+/// after a silence one segment in the waiting colour saying what is waited
+/// for (`• waiting for the model's reply 34s`), with `· Esc interrupts`
+/// after a long one.
+fn activity_segments(status: &StatusInfo, activity: &Activity, now: Instant) -> Vec<Span<'static>> {
+    let mut segs = Vec::new();
+    match activity {
+        Activity::Idle => {}
+        Activity::Quiet { fact, long, .. } => {
+            let marker = prompt_marker(status, now).content.trim_end().to_string();
+            let hint = if *long { " · Esc interrupts" } else { "" };
+            segs.push(Span::styled(
+                format!("{marker} {fact}{hint}"),
+                WAITING_STYLE.add_modifier(Modifier::BOLD),
+            ));
+        }
+        Activity::Busy { .. } => {
+            if let Some(since) = status.compacting_since {
+                let frame = spinner_frame(Some(since), now);
+                segs.push(Span::styled(
+                    format!(
+                        "{frame} compacting… {}s",
+                        now.saturating_duration_since(since).as_secs()
+                    ),
+                    Style::default().fg(Color::Magenta),
+                ));
+            }
+            if status.classifying {
+                let frame = spinner_frame(status.running_since, now);
+                segs.push(Span::styled(
+                    format!("{frame} classifying…"),
+                    Style::default().fg(Color::Magenta),
+                ));
+            }
+            if let Some(since) = status.running_since {
+                let elapsed = now.saturating_duration_since(since);
+                let frame = spinner_frame(Some(since), now);
+                segs.push(Span::styled(
+                    format!("{frame} running {}s", elapsed.as_secs()),
+                    PROMPT_STYLE,
+                ));
+            }
+        }
+    }
+    segs
+}
+
 /// The styled status bar (drawn on a reversed background).
 pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
-    let mut segs: Vec<Span<'static>> = Vec::new();
+    // What the agent is doing leads, so that a narrow terminal, which
+    // clips the bar's end, cuts it last.
+    let activity = activity(status, now);
+    let mut segs: Vec<Span<'static>> = activity_segments(status, &activity, now);
     if let Some(connection) = &status.connection {
         segs.push(Span::styled(
             connection.segment(now),
@@ -701,41 +870,21 @@ pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
     segs.extend(crate::cost::cost_segment_text(&status.cost, &status.prices).map(Span::raw));
     segs.extend(context_segment(status));
     segs.extend(mode_segment(status));
-    if status.classifying {
-        let frame = spinner_frame(status.running_since, now);
-        segs.push(Span::styled(
-            format!("{frame} classifying…"),
-            Style::default().fg(Color::Magenta),
-        ));
-    }
     if let Some((done, total)) = status.check {
         segs.push(Span::styled(
             format!("classifier check {done}/{total}"),
             Style::default().fg(Color::Magenta),
         ));
     }
-    if let Some(since) = status.compacting_since {
-        let frame = spinner_frame(Some(since), now);
-        segs.push(Span::styled(
-            format!(
-                "{frame} compacting… {}s",
-                now.saturating_duration_since(since).as_secs()
-            ),
-            Style::default().fg(Color::Magenta),
-        ));
-    }
-    if let Some(since) = status.running_since {
-        let elapsed = now.saturating_duration_since(since);
-        let frame = spinner_frame(Some(since), now);
-        segs.push(Span::raw(format!("{frame} running {}s", elapsed.as_secs())));
-    }
     if status.queued > 0 {
         // A queued message joins once the model's reply is in: a long wait
-        // says so, and for how long.
+        // says so, and for how long (unless the activity segment says what
+        // is waited for already).
         let waiting = status
             .model_since
             .map(|since| now.saturating_duration_since(since))
-            .filter(|waited| *waited >= MODEL_WAIT_SHOWN);
+            .filter(|waited| *waited >= MODEL_WAIT_SHOWN)
+            .filter(|_| !matches!(activity, Activity::Quiet { .. }));
         segs.push(Span::raw(match waiting {
             Some(waited) => format!(
                 "queued {}, waiting for the model's reply ({}s)",
@@ -855,6 +1004,9 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
         Block::Tool {
             name,
             args,
+            head,
+            outcome,
+            ticked,
             state,
             result_preview,
             diff,
@@ -863,36 +1015,64 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
             collapsed,
         } => {
             let indent = "  ".repeat(*depth);
-            let (marker, mut status, color) = match state {
-                ToolState::Requested => ("○", String::new(), Color::DarkGray),
-                ToolState::Running { .. } => ("◐", " running…".to_string(), Color::Yellow),
-                ToolState::Done {
-                    is_error: false,
-                    duration_ms,
-                } => ("✓", format!(" ({duration_ms}ms)"), Color::Green),
-                ToolState::Done {
-                    is_error: true,
-                    duration_ms,
-                } => ("✗", format!(" ({duration_ms}ms)"), Color::Red),
-                ToolState::Denied { reason } => ("⊘", format!(" denied: {reason}"), Color::Red),
+            let parts = tool_line::Parts::of(head, state, outcome, *ticked, diff.as_ref());
+            let color = match parts.mark {
+                tool_line::Mark::Requested => Color::DarkGray,
+                tool_line::Mark::Running => Color::Yellow,
+                tool_line::Mark::Done => Color::Green,
+                tool_line::Mark::Failed | tool_line::Mark::Denied => Color::Red,
             };
-            let has_body = result_preview.is_some() || diff.is_some();
-            if has_body {
-                status.push_str(&tool_toggle_hint(
-                    *collapsed,
-                    result_preview.as_ref(),
-                    diff.as_ref(),
-                ));
+            let foldable = super::transcript::foldable(block);
+            let fold = match (foldable, *collapsed) {
+                (false, _) => "",
+                (true, true) => " ▸",
+                (true, false) => " ▾",
+            };
+            let lead = format!("{indent}{} ", parts.mark.glyph());
+            // The line never wraps: the object gives way first, then the
+            // outcome's text (a failure's reason), never the marker, the
+            // verb or the fold marker.
+            let fixed = display_width(&lead) + display_width(fold);
+            let time = parts.time.as_ref().map(|t| {
+                if parts.outcome.is_some() {
+                    format!(" · {t}")
+                } else {
+                    format!("  {t}")
+                }
+            });
+            let time_w = time.as_ref().map_or(0, |t| display_width(t));
+            let head_min = display_width(&parts.head.verb) + 1 + MIN_TOOL_OBJECT;
+            let head_full = display_width(&sanitize(&parts.head.text()));
+            let room = w.saturating_sub(fixed + time_w);
+            let outcome_text = parts.outcome.as_ref().map(|o| {
+                let o = sanitize(o);
+                let keep = room.saturating_sub(head_full.min(head_min) + 2).max(1);
+                format!("  {}", truncate_to_width(&o, keep))
+            });
+            let outcome_w = outcome_text.as_ref().map_or(0, |o| display_width(o));
+            let head_text = sanitize_head(&parts.head).fit(room.saturating_sub(outcome_w).max(1));
+            let outcome_style = if matches!(
+                parts.mark,
+                tool_line::Mark::Failed | tool_line::Mark::Denied
+            ) {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default()
+            };
+            let mut spans = vec![Span::styled(
+                format!("{lead}{head_text}"),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )];
+            if let Some(o) = outcome_text {
+                spans.push(Span::styled(o, outcome_style));
             }
-            let header = format!("{indent}{marker} {}", tool_header(name, args));
-            let header_w = w.saturating_sub(display_width(&status));
-            out.push(Line::from(vec![
-                Span::styled(
-                    truncate_to_width(&sanitize(&header), header_w),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(truncate_to_width(&sanitize(&status), w), dim),
-            ]));
+            if let Some(t) = time {
+                spans.push(Span::styled(t, dim));
+            }
+            if !fold.is_empty() {
+                spans.push(Span::styled(fold, dim));
+            }
+            out.push(Line::from(spans));
             if let Some(note) = note {
                 out.push(Line::styled(
                     truncate_to_width(&sanitize(&format!("{indent}  {note}")), w),
@@ -900,6 +1080,21 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
                 ));
             }
             if !*collapsed {
+                let body_prefix = format!("{indent}  │ ");
+                if let ToolState::Denied { reason } = state {
+                    prefixed(
+                        reason,
+                        w,
+                        &body_prefix,
+                        &body_prefix,
+                        Style::default().fg(Color::Red),
+                        &mut out,
+                    );
+                }
+                if let Some(args) = tool_line::expanded_args(name, args) {
+                    let args_prefix = format!("{indent}  ┊ ");
+                    prefixed(&args, w, &args_prefix, &args_prefix, dim, &mut out);
+                }
                 tool_body(
                     &indent,
                     result_preview.as_deref(),
@@ -936,6 +1131,13 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
             prefixed(text, w, "", "", style, &mut out);
         }
         Block::Helper(fold) => out.push(helper_header(fold, w)),
+        Block::Task { label, text } => {
+            out.push(Line::styled(truncate_to_width(&sanitize(label), w), dim));
+            let style = Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD);
+            prefixed(text, w, "› ", "  ", style, &mut out);
+        }
         Block::Peer { from, text } => {
             let style = Style::default().fg(Color::Magenta);
             out.push(Line::from(Span::styled(
@@ -1093,14 +1295,20 @@ fn shell_lines(
 fn helper_header(fold: &HelperFold, w: usize) -> Line<'static> {
     let indent = "  ".repeat(fold.depth.saturating_sub(1));
     let marker = if fold.expanded { "▾ " } else { "▸ " };
-    helper_line(fold, w, &format!("{indent}{marker}"), "")
+    helper_line(
+        fold,
+        &fold.status_text(),
+        w,
+        &format!("{indent}{marker}"),
+        "",
+    )
 }
 
 /// A helper's header text after `lead`: its tag, then its status, then
 /// `tail` (dim), cut to the width.
-fn helper_line(fold: &HelperFold, w: usize, lead: &str, tail: &str) -> Line<'static> {
+fn helper_line(fold: &HelperFold, status: &str, w: usize, lead: &str, tail: &str) -> Line<'static> {
     let head = format!("{lead}{} ", sanitize(&fold.tag()));
-    let status = sanitize(&fold.status_text());
+    let status = sanitize(status);
     let status_style = match fold.state {
         HelperState::Running => Style::default().fg(Color::Yellow),
         HelperState::Done => Style::default().fg(Color::Green),
@@ -1141,6 +1349,16 @@ fn tool_toggle_hint(collapsed: bool, preview: Option<&Preview>, diff: Option<&Di
         parts.push(format!("+{} -{}", d.added, d.removed));
     }
     format!(" ▸ {}", parts.join(", "))
+}
+
+/// A head with its verb and object made safe to draw.
+fn sanitize_head(head: &tool_line::Head) -> tool_line::Head {
+    tool_line::Head {
+        verb: sanitize(&head.verb),
+        object: sanitize(&head.object),
+        more: head.more.as_deref().map(sanitize),
+        ..head.clone()
+    }
 }
 
 /// The expanded body of a tool block: the result preview, then the diff.
@@ -1292,7 +1510,7 @@ mod tests {
         let line = status_line(&s, now);
         assert_eq!(
             line,
-            " anthropic/claude-sonnet-4-6 │ session 345-ffff │ ↑1.5k ↓20 │ auto (deny 1/3, 4/20) │ ⠋ running 0s │ queued 2"
+            " ⠋ running 0s │ anthropic/claude-sonnet-4-6 │ session 345-ffff │ ↑1.5k ↓20 │ auto (deny 1/3, 4/20) │ queued 2"
         );
     }
 
@@ -1365,6 +1583,13 @@ mod tests {
     fn tool_block_layout() {
         let mut block = Block::Tool {
             name: "read_file".into(),
+            head: super::super::transcript::tool_line::head(
+                "read_file",
+                &serde_json::json!({"path": "a.rs"}),
+                &super::super::transcript::tool_line::PathView::default(),
+            ),
+            outcome: super::super::transcript::tool_line::Outcome::default(),
+            ticked: 0,
             args: serde_json::json!({"path": "a.rs"}),
             state: ToolState::Done {
                 is_error: false,
@@ -1377,13 +1602,7 @@ mod tests {
             collapsed: true,
         };
         let lines: Vec<String> = block_lines(&block, 60).iter().map(line_text).collect();
-        assert_eq!(
-            lines,
-            vec![
-                "✓ read_file({\"path\":\"a.rs\"}) (3ms) ▸ 1 line".to_string(),
-                String::new(),
-            ]
-        );
+        assert_eq!(lines, vec!["✓ read a.rs ▸".to_string(), String::new(),]);
         if let Block::Tool { collapsed, .. } = &mut block {
             *collapsed = false;
         }
@@ -1391,7 +1610,10 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "✓ read_file({\"path\":\"a.rs\"}) (3ms) ▾".to_string(),
+                "✓ read a.rs ▾".to_string(),
+                "  ┊ {".to_string(),
+                "  ┊   \"path\": \"a.rs\"".to_string(),
+                "  ┊ }".to_string(),
                 "  │ fn main() {}".to_string(),
                 String::new(),
             ]
@@ -1422,7 +1644,7 @@ mod tests {
         let lines = t.ensure_layout(80);
         assert_eq!(lines, 2, "collapsed: header + spacer");
         let header = line_text(&t.visible_lines(0, 1)[0]);
-        assert!(header.ends_with("(2ms) ▸ 30 lines"), "{header}");
+        assert!(header.ends_with("  30 files ▸"), "{header}");
 
         let diff = DiffView {
             path: "x".into(),
@@ -1442,6 +1664,13 @@ mod tests {
     fn tool_without_output_has_no_hint() {
         let block = Block::Tool {
             name: "shell".into(),
+            head: super::super::transcript::tool_line::head(
+                "shell",
+                &serde_json::json!({}),
+                &super::super::transcript::tool_line::PathView::default(),
+            ),
+            outcome: super::super::transcript::tool_line::Outcome::default(),
+            ticked: 0,
             args: serde_json::json!({}),
             state: ToolState::Running {
                 since: Instant::now(),
@@ -1453,7 +1682,13 @@ mod tests {
             collapsed: true,
         };
         let header = line_text(&block_lines(&block, 60)[0]);
-        assert_eq!(header, "◐ shell({}) running…");
+        assert_eq!(header, "◐ run");
+        // Its clock, from one second on.
+        let mut block = block;
+        if let Block::Tool { ticked, .. } = &mut block {
+            *ticked = 12;
+        }
+        assert_eq!(line_text(&block_lines(&block, 60)[0]), "◐ run  12s");
     }
 
     #[test]
@@ -1517,7 +1752,8 @@ mod tests {
         s.apply(StatusUpdate::Classifying(true));
         let bar = status_bar(&s, now);
         assert_eq!(seg_style(&bar, "auto: PAUSED").bg, Some(Color::Yellow));
-        assert!(status_line(&s, now).ends_with("auto: PAUSED (deny 3/3, 5/20) │ ⠋ classifying…"));
+        assert!(status_line(&s, now).starts_with(" ⠋ classifying… │ "));
+        assert!(status_line(&s, now).ends_with("│ auto: PAUSED (deny 3/3, 5/20)"));
         s.apply(StatusUpdate::Classifying(false));
         for (mode, shown) in [
             (PermissionMode::Manual, "│ manual"),
@@ -1642,6 +1878,13 @@ mod tests {
         }
         let block = Block::Tool {
             name: "edit_file".into(),
+            head: super::super::transcript::tool_line::head(
+                "edit_file",
+                &serde_json::json!({}),
+                &super::super::transcript::tool_line::PathView::default(),
+            ),
+            outcome: super::super::transcript::tool_line::Outcome::default(),
+            ticked: 0,
             args: serde_json::json!({}),
             state: ToolState::Done {
                 is_error: false,

@@ -180,10 +180,10 @@ fn the_helper_view_follows_new_output_while_at_the_bottom() {
     // (two helpers) and the status bar.
     let rows = screen(&mut app, 12);
     assert!(rows[0].starts_with("◂ [fork-1 · m]"), "{rows:?}");
-    assert!(rows[5].contains("read_file({\"path\":\"f9\"})"), "{rows:?}");
+    assert!(rows[5].contains("read f9"), "{rows:?}");
     app.update(fork_call("f10"));
     let rows = screen(&mut app, 12);
-    assert!(rows[5].contains("\"f10\""), "{rows:?}");
+    assert!(rows[5].contains("read f10"), "{rows:?}");
     // Scrolled back, new output does not move the view.
     app.update(key(KeyCode::PageUp));
     let before = screen(&mut app, 12);
@@ -195,7 +195,7 @@ fn the_helper_view_follows_new_output_while_at_the_bottom() {
     // Back at the bottom it follows again.
     app.update(Msg::Key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL)));
     let rows = screen(&mut app, 12);
-    assert!(rows[5].contains("\"f11\""), "{rows:?}");
+    assert!(rows[5].contains("read f11"), "{rows:?}");
 }
 
 #[test]
@@ -380,4 +380,188 @@ fn the_helper_picker_folds_and_opens_a_helper() {
     app.update(key(KeyCode::Enter));
     assert!(app.modal.is_none());
     assert_eq!(app.helper_view(), Some(fork));
+}
+
+/// A helper run's start with `input` as its prompt.
+fn run_started(input: &str) -> AgentEvent {
+    use meerkat_core::types::{ContentInput, RunInput, TranscriptMessageIdentity};
+    AgentEvent::RunStarted {
+        session_id: meerkat_core::SessionId::new(),
+        identity: TranscriptMessageIdentity::default(),
+        input: RunInput::Content {
+            content: ContentInput::Text(input.into()),
+        },
+        request_reasoning: None,
+    }
+}
+
+/// The text of the helper's full view (title and blocks) at 80 columns.
+fn view_rows(app: &mut App, label: &str) -> Vec<String> {
+    app.update(Msg::Status(StatusUpdate::Helpers(Vec::new())));
+    let header = app.transcript.helper_header(label).unwrap();
+    app.update(ctrl_key(KeyCode::Down));
+    app.update(key(KeyCode::Enter));
+    assert_eq!(app.helper_view(), Some(header));
+    screen(app, 30)
+}
+
+/// The view of a `delegate` helper reads as the main transcript: its task
+/// from the agent first, as a prompt; a later peer message in order with
+/// its sender; its answer; the title names its kind and state.
+#[test]
+fn a_delegate_s_view_starts_with_its_task_and_shows_later_input_in_order() {
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::Status(StatusUpdate::Agent(Some("main-ab12".into()))));
+    app.transcript.push(user("go"));
+    app.update(agent(AgentEvent::ToolCallRequested {
+        id: "d1".into(),
+        name: "delegate".into(),
+        args: test_args(json!({"member_id": "scout", "task": "find the bug"})),
+    }));
+    app.update(live(&["scout"]));
+    for event in [
+        run_started("find the bug"),
+        AgentEvent::ToolCallRequested {
+            id: "g".into(),
+            name: "grep".into(),
+            args: test_args(json!({"pattern": "bug"})),
+        },
+        AgentEvent::TextComplete {
+            content: "It is in a.rs.".into(),
+            assistant_message_id: None,
+        },
+        run_started("Peer message\nPeer message from tui/main/main-ab12:\nlook at b.rs too"),
+        AgentEvent::TurnStarted {
+            turn_number: 2,
+            assistant_message_id: None,
+        },
+        AgentEvent::TextComplete {
+            content: "b.rs is fine.".into(),
+            assistant_message_id: None,
+        },
+    ] {
+        app.update(helper_msg("scout", event));
+    }
+    let scout = app.transcript.helper_header("scout").unwrap();
+    let kinds: Vec<String> = app
+        .transcript
+        .helper_view_blocks(scout)
+        .into_iter()
+        .map(|id| match app.transcript.block(id) {
+            Some(Block::Task { label, text }) => format!("task {label}: {text}"),
+            Some(Block::Peer { from, text }) => format!("peer {from}: {text}"),
+            Some(Block::Tool { .. }) => "tool".into(),
+            Some(Block::Assistant { md }) => format!("prose {md}"),
+            other => panic!("unexpected block {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "task task from main-ab12: find the bug",
+            "tool",
+            "prose It is in a.rs.",
+            "peer main-ab12: look at b.rs too",
+            "prose b.rs is fine.",
+        ]
+    );
+    let rows = view_rows(&mut app, "scout");
+    assert!(
+        rows[0].starts_with("◂ [scout · m] delegate · finished · 1 tool call"),
+        "{rows:#?}"
+    );
+    assert!(rows[0].ends_with("Esc back"), "{rows:#?}");
+    assert_eq!(rows[1], "task from main-ab12");
+    assert_eq!(rows[2], "› find the bug");
+}
+
+/// A fork's view opens with one line that it carries its parent's
+/// conversation, then its own task (not the engine's framing), and
+/// nothing of the parent's history.
+#[test]
+fn a_fork_s_view_says_it_was_forked_and_shows_only_its_own_task() {
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::Status(StatusUpdate::Agent(Some("main-ab12".into()))));
+    app.update(live(&["forky"]));
+    app.update(helper_msg(
+        "forky",
+        run_started(
+            "DELEGATED DURABLE FORK\n\nTask:\nFORK-TASK go\n\nExpected output guidance:\nReport it.\n\nInstructions:\n- This is a delegated durable transcript fork.",
+        ),
+    ));
+    app.update(helper_msg(
+        "forky",
+        AgentEvent::TextComplete {
+            content: "FORK-DONE".into(),
+            assistant_message_id: None,
+        },
+    ));
+    let rows = view_rows(&mut app, "forky");
+    assert!(
+        rows[0].starts_with("◂ [forky · m] fork · finished"),
+        "{rows:#?}"
+    );
+    assert_eq!(
+        rows[1],
+        "forked from main-ab12 with its conversation so far"
+    );
+    assert_eq!(rows[3], "task from main-ab12");
+    assert_eq!(rows[4], "› FORK-TASK go");
+    let all = rows.join("\n");
+    assert!(!all.contains("DELEGATED"), "{all}");
+    assert!(!all.contains("Expected output"), "{all}");
+    assert!(all.contains("FORK-DONE"), "{all}");
+}
+
+/// A spawned member whose task is done is idle (it stays); a failed
+/// helper says so; a nested helper's task is from the helper above it.
+#[test]
+fn the_view_title_names_a_member_idle_and_a_nested_task_s_giver() {
+    let mut app = App::new(StatusInfo::default());
+    app.update(agent(AgentEvent::ToolCallRequested {
+        id: "s1".into(),
+        name: "spawn_many_members".into(),
+        args: test_args(json!({"specs": [{"profile": "p", "member_id": "w1"}]})),
+    }));
+    app.update(live(&["w1"]));
+    app.update(helper_msg("w1", run_started("index the repo")));
+    let w1 = app.transcript.helper_header("w1").unwrap();
+    app.update(live(&[]));
+    match app.transcript.block(w1) {
+        Some(Block::Helper(fold)) => {
+            assert_eq!(
+                fold.view_status_text(),
+                "spawned member · idle · 0 tool calls"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // Without the agent's name known, the giver is "its parent".
+    match app
+        .transcript
+        .block(app.transcript.helper_view_blocks(w1)[0])
+    {
+        Some(Block::Task { label, .. }) => assert_eq!(label, "task from its parent"),
+        other => panic!("{other:?}"),
+    }
+    let nested = Msg::Scoped(
+        crate::mobs::HelperTag {
+            owner: meerkat_core::SessionId::new(),
+            path: vec!["w1".into(), "inner".into()],
+            model: "m".into(),
+        }
+        .scope(run_started("nested work")),
+    );
+    app.update(nested);
+    let inner = app.transcript.helper_header("inner").unwrap();
+    match app
+        .transcript
+        .block(app.transcript.helper_view_blocks(inner)[0])
+    {
+        Some(Block::Task { label, text }) => {
+            assert_eq!(label, "task from w1");
+            assert_eq!(text, "nested work");
+        }
+        other => panic!("{other:?}"),
+    }
 }

@@ -9157,3 +9157,73 @@ take. Pinned by `the_totals_of_a_scripted_mix_and_nothing_reaches_a_session`,
 `the_quick_sample_is_fixed_spread_and_balanced`,
 `totals_and_the_rendered_report`, `the_wrong_block_target_is_one_in_thirty`
 and `auto_check_shows_progress_and_the_reports_rows`.
+
+## Working or waiting, and a helper's view as a transcript (2026-11-14)
+
+The owner could not tell a working agent from a hanging one: the status
+bar's spinner was the last of many segments and turned on the client's
+clock alone. The prompt marker now carries it (`src/ui/render.rs`
+`activity`, `prompt_marker`): `›` idle, the spinner while busy and heard
+from, a slow pulse after `QUIET_AFTER` (20 s) without any event, the bar's
+leading segment then naming what is waited for from what the client holds
+(`StatusInfo::heard_at`, `open_tools`, `model_since`, `classifying_since`,
+`compacting_since`, `asking_since`; `App::from_the_agent` decides which
+messages count as word). Busy is `StatusInfo::busy`, the same turn state
+the interrupt uses. Tests: `ui::tests::activity::*`.
+
+A helper's full view showed only its work, not what it was asked. A probe
+through the rig (delegate and `fork_off` with the scripted LLM, every
+`Msg` the runner sent dumped) showed that the follower delivers each
+helper's `RunStarted` (the backfill reads its session from sequence 0):
+a `delegate` helper's input is its task verbatim, a fork child's is the
+engine's `DELEGATED DURABLE FORK\n\nTask:\n<task>\n\nExpected output
+guidance:…` framing (meerkat-mob-mcp `agent_tools.rs`), and a fork's
+events start at its own run, so the inherited conversation is not in its
+stream. The view therefore takes the task from the helper's own run start
+(not the parent's tool call, which only names the kind:
+`Transcript::note_spawn`), a peer message by the engine's `Peer message
+from` framing (`ui::peer::of_input`), and the answer is the helper's last
+prose, which is what `delegate` returns. A stored conversation has no
+helper headers (`restore.rs` reads messages only), so nothing changes
+there. Tests: `ui::tests::helpers::a_delegate_s_view_starts_with_its_task_and_shows_later_input_in_order`,
+`a_fork_s_view_says_it_was_forked_and_shows_only_its_own_task`,
+`the_view_title_names_a_member_idle_and_a_nested_task_s_giver`, and the
+rig's `a_delegated_helper_is_followed_with_its_result_and_cost`.
+
+## A tool call as one plain line; Ctrl-O shows everything (2026-11-14)
+
+Every call rendered as `name({json})`. The line is now made from one table
+of per-tool rows (`src/ui/transcript/tool_line.rs` `RULES`: verb, object,
+outcome), used by the live transcript, a stored conversation (its heads
+made again with the transcript's path view on `reset`), the helpers'
+views, the approval dialog's `Call:` line (a call whose arguments the
+prompt carries as JSON; a command is shown as it is) and `/export`. An
+outcome is taken only from what is certain: this application's own
+tools' answers (`read_file`'s numbered lines, `write_file`'s `created …
+(N lines)`, `glob`'s and `grep`'s answers and their `[partial:` note),
+the engine's shell status line (meerkat-tools
+`ShellOutput::render_for_model`: `exit code N (Xs)`, `timed out after
+Xs`), the diff the edit reported, a JSON result's array. Left out where
+the data does not say: `edit_file`'s replacement count (`×N`, its answer
+does not carry it), `grep` content with context lines (they look like
+matches), `tool_search` and `skill_read` counts. The outcome is computed
+once from the whole result when it arrives (`Transcript::outcome_of`),
+before the preview caps it. A denial's few words come from the gate's own
+message constants (`approval::CLASSIFIER_SOURCE`, `PLAN_MODE_DENIAL`, the
+`DenyReason` texts). A running call's clock is the block's `ticked`
+seconds, advanced by `Transcript::tick_tools` only when the second
+changes, so a tick re-lays out that block alone.
+
+Ctrl-O is one transcript-wide detail state (`Transcript::toggle_detail`,
+`detail`): every tool call, reasoning block, `!` output and job outcome
+flips, and `push_raw` makes new ones arrive shown while it is on.
+Helper headers' folds are not part of it (`/helpers` and a click own
+those). Scrolled back, the block at the top of the view and the line of
+it shown there are kept (`App::toggle_detail` records them from the last
+frame's rows, `render::draw_transcript` restores them after the next
+layout with `ScrollState::anchor_top`); only the blocks that changed are
+laid out again. Tests: `ui::transcript::tool_line::tests::*`,
+`ui::tests::mouse::a_click_toggles_one_call_and_ctrl_o_all_of_them`,
+`ctrl_o_keeps_the_top_line_in_place`,
+`ui::tests::escalations::the_dialog_shows_the_call_as_its_line`, and the
+pinned lines in `tests/it/render.rs`.

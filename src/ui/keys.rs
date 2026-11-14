@@ -293,9 +293,7 @@ impl App {
             Action::Edit(EditAction::Up) if self.input.is_empty() && self.can_take_back() => {
                 self.take_back_queued(fx);
             }
-            Action::ToggleDetail => {
-                self.transcript.toggle_last_detail_in(view);
-            }
+            Action::ToggleDetail => self.toggle_detail(view),
             Action::ToggleChecklist => self.toggle_checklist(fx),
             Action::Stash => {
                 if let StashOutcome::Stashed {

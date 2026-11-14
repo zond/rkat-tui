@@ -113,6 +113,7 @@ impl App {
         }
         self.running = true;
         self.status.running_since = Some(now);
+        self.status.heard_at = Some(now);
         self.scroll.bottom();
         fx.push(Effect::StartTurn(prompt));
     }
@@ -158,6 +159,7 @@ impl App {
         }
         self.running = true;
         self.status.running_since = Some(now);
+        self.status.heard_at = Some(now);
         self.scroll.bottom();
     }
 
@@ -417,6 +419,8 @@ impl App {
         self.status.running_since = None;
         self.status.model_since = None;
         self.status.classifying = false;
+        self.status.classifying_since = None;
+        self.status.open_tools.clear();
         // An unconfirmed interrupt goes on as an interrupted turn does (the
         // queue goes next; it waits behind a run that is still going).
         let interrupted = matches!(

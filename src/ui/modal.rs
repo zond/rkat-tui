@@ -17,7 +17,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block as BorderBlock, Borders, Clear, Paragraph};
 
-use super::markdown::{truncate_to_width, wrap_text};
+use super::markdown::{sanitize, truncate_to_width, wrap_text};
 use super::picker::{ListPicker, list_picker_lines};
 use super::render::fmt_ctx_tokens;
 pub use crate::approval::desk::EscalationAnswer;
@@ -756,6 +756,12 @@ fn escalation_lines(
             Style::default().add_modifier(Modifier::BOLD),
         ),
     ]));
+    if let Some(call) = call_line(prompt) {
+        lines.push(Line::from(vec![
+            Span::styled("Call: ", dim),
+            Span::raw(truncate_to_width(&sanitize(&call), width.saturating_sub(6))),
+        ]));
+    }
     if dialog.expanded {
         // Every line is reachable: a window of `room` lines at `scroll`.
         let text = prompt.args_full.as_deref().unwrap_or(&prompt.args_preview);
@@ -1104,6 +1110,19 @@ fn model_row(entry: &ModelEntry, id_width: usize) -> String {
         row.push_str("  current");
     }
     row.trim_end().to_string()
+}
+
+/// The call an approval dialog asks about as the transcript's line
+/// shows it (`edit src/a.rs`), from the arguments the prompt carries as
+/// JSON (`None` when they are not: a shell call's command, which the
+/// dialog shows as it is, or a schedule's summary).
+fn call_line(prompt: &crate::approval::escalation::RecordedPrompt) -> Option<String> {
+    let text = prompt.args_full.as_deref().unwrap_or(&prompt.args_preview);
+    let args = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .filter(serde_json::Value::is_object)?;
+    let paths = super::transcript::tool_line::PathView::default();
+    Some(super::transcript::tool_line::head(&prompt.tool, &args, &paths).text())
 }
 
 #[cfg(test)]

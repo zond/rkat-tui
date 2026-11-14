@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn click_toggles_tool_output_and_ctrl_o_toggles_the_last() {
+fn a_click_toggles_one_call_and_ctrl_o_all_of_them() {
     let mut app = App::new(StatusInfo::default());
     app.transcript.push(user("look"));
     for id in ["t1", "t2"] {
@@ -36,8 +36,8 @@ fn click_toggles_tool_output_and_ctrl_o_toggles_the_last() {
     assert!(!tool_collapsed(&app, t1));
     assert!(tool_collapsed(&app, t2));
     assert!(app.take_dirty());
-    // Expanded t1 is 5 rows (header, 3 lines, spacer); a click on its
-    // output collapses it again.
+    // Expanded t1 is 8 rows (line, 3 of arguments, 3 of output, spacer);
+    // a click on its output collapses it again.
     draw_rows(&mut app, 2, 60, 20);
     assert_eq!(app.block_at_row(6), Some(t1));
     click_at(&mut app, 6);
@@ -50,15 +50,82 @@ fn click_toggles_tool_output_and_ctrl_o_toggles_the_last() {
     assert!(!app.take_dirty());
     assert_eq!(app.take_clipboard_text(), None);
 
-    // Ctrl-O toggles the last tool output (no reasoning here); Ctrl-T
-    // (the task checklist) leaves it alone.
+    // Ctrl-O shows every call in full, and the reasoning; Ctrl-T (the
+    // task checklist) leaves them alone.
+    app.update(agent(AgentEvent::ReasoningDelta {
+        delta: "hmm".into(),
+        assistant_message_id: None,
+    }));
     app.update(ctrl('t'));
     assert!(tool_collapsed(&app, t2));
     app.update(ctrl('o'));
-    assert!(!tool_collapsed(&app, t2));
+    assert!(!tool_collapsed(&app, t1) && !tool_collapsed(&app, t2));
+    let reasoning = app
+        .transcript
+        .iter()
+        .find_map(|(id, b)| matches!(b, Block::Reasoning { .. }).then_some(id))
+        .unwrap();
+    assert!(matches!(
+        app.transcript.block(reasoning),
+        Some(Block::Reasoning {
+            collapsed: false,
+            ..
+        })
+    ));
+    // A call arriving now comes shown; a click still folds one.
+    app.update(agent(AgentEvent::ToolCallRequested {
+        id: "t3".into(),
+        name: "glob".into(),
+        args: test_args(json!({"pattern": "*"})),
+    }));
+    let t3 = app.transcript.tool_block("t3").unwrap();
+    assert!(!tool_collapsed(&app, t3));
+    draw_rows(&mut app, 2, 60, 40);
+    click_at(&mut app, 4);
     assert!(tool_collapsed(&app, t1));
+    // Ctrl-O again folds them all, the clicked one included.
     app.update(ctrl('o'));
-    assert!(tool_collapsed(&app, t2));
+    assert!(tool_collapsed(&app, t1) && tool_collapsed(&app, t2) && tool_collapsed(&app, t3));
+    assert!(matches!(
+        app.transcript.block(reasoning),
+        Some(Block::Reasoning {
+            collapsed: true,
+            ..
+        })
+    ));
+    app.update(ctrl('o'));
+    assert!(!tool_collapsed(&app, t1), "and all open again");
+}
+
+/// Scrolled back, Ctrl-O keeps the block at the top of the view at the
+/// top while everything above it opens.
+#[test]
+fn ctrl_o_keeps_the_top_line_in_place() {
+    let mut app = App::new(StatusInfo::default());
+    for i in 0..30 {
+        let id = format!("t{i}");
+        app.update(agent(AgentEvent::ToolCallRequested {
+            id: id.clone(),
+            name: "read_file".into(),
+            args: test_args(json!({"path": format!("f{i}.rs")})),
+        }));
+        app.update(agent(AgentEvent::ToolExecutionCompleted {
+            id: id.clone(),
+            name: "read_file".into(),
+            is_error: false,
+            duration_ms: 1,
+        }));
+        app.update(agent(test_tool_result(&id, "     1\tx\n     2\ty\n")));
+    }
+    let rows = |app: &mut App| screen(app, 12);
+    let _ = rows(&mut app);
+    app.update(key(KeyCode::PageUp));
+    let before = rows(&mut app);
+    let top = before[0].clone();
+    assert!(top.contains(".rs"), "{before:#?}");
+    app.update(ctrl('o'));
+    let after = rows(&mut app);
+    assert_eq!(after[0].replace('▾', "▸"), top, "{after:#?}");
 }
 
 #[test]

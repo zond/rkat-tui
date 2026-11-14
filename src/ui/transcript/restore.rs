@@ -115,10 +115,16 @@ fn outcome_blocks(notice: &meerkat_core::SystemNoticeMessage) -> Vec<Block> {
         .collect()
 }
 
+/// A stored call as a done tool block (its line's paths are made again
+/// with the transcript's path view, [`super::Transcript::reset`]).
 fn restored_tool_block(name: &str, args: serde_json::Value) -> Block {
+    let head = super::tool_line::head(name, &args, &super::tool_line::PathView::default());
     Block::Tool {
         name: name.to_string(),
         args,
+        head,
+        outcome: super::tool_line::Outcome::default(),
+        ticked: 0,
         state: ToolState::Done {
             is_error: false,
             duration_ms: 0,

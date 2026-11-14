@@ -853,8 +853,9 @@ Keys:
                                  runs or messages are queued the turn is then interrupted and
                                  undelivered messages are saved; attached, as /quit: it may stop
                                  the daemon, /detach keeps it); with text, delete forward
-  Ctrl-O                         show or hide detail: the last reasoning block and the
-                                 output of the last tool call (a click toggles one tool)
+  Ctrl-O                         show everything in full, or fold it all back: every tool
+                                 call's arguments, output and diff, every reasoning block,
+                                 every outcome; new ones arrive so (a click toggles one)
   Ctrl-T                         show or hide the task checklist under the input (the agent's
                                  task_create/task_update list: ☐ pending, ◐ in progress, ☑ done;
                                  nothing shows while there are no tasks; saved as [ui] checklist)

@@ -31,6 +31,57 @@ pub enum HelperState {
     Cancelled,
 }
 
+/// What a helper is, from the call that started it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelperKind {
+    /// A `delegate` helper: one task, its answer returned to the caller.
+    Delegate,
+    /// A `fork_off` child: a copy of its parent's conversation on a task.
+    Fork,
+    /// A member spawned into a mob (`spawn_member`, `spawn_many_members`,
+    /// `mob_spawn_member`): it stays after its task.
+    Member,
+}
+
+impl HelperKind {
+    /// The word the full view's title shows.
+    #[must_use]
+    pub fn text(self) -> &'static str {
+        match self {
+            Self::Delegate => "delegate",
+            Self::Fork => "fork",
+            Self::Member => "spawned member",
+        }
+    }
+
+    /// The kind of helper the tool `name` starts (`None`: it starts none).
+    fn of_tool(name: &str) -> Option<Self> {
+        match name {
+            "delegate" => Some(Self::Delegate),
+            "fork_off" => Some(Self::Fork),
+            "spawn_member" | "spawn_many_members" | "mob_spawn_member" => Some(Self::Member),
+            _ => None,
+        }
+    }
+}
+
+/// The engine's opening of a `fork_off` child's first input
+/// (meerkat-mob-mcp `agent_tools.rs`): `DELEGATED DURABLE FORK`, the task
+/// after `Task:`, then the expected output and the fork's instructions.
+const FORK_HEADER: &str = "DELEGATED DURABLE FORK";
+/// The fork input's label before its task.
+const FORK_TASK: &str = "\n\nTask:\n";
+/// The fork input's label after its task.
+const FORK_AFTER_TASK: &str = "\n\nExpected output guidance:";
+
+/// The task of a `fork_off` child's first input (`None`: not a fork's).
+fn fork_task(input: &str) -> Option<&str> {
+    let rest = input.strip_prefix(FORK_HEADER)?;
+    let task = rest.strip_prefix(FORK_TASK).unwrap_or(rest);
+    let task = task.split(FORK_AFTER_TASK).next().unwrap_or(task);
+    Some(task.trim())
+}
+
 /// What a helper did last (the running header's preview).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum HelperLast {
@@ -77,6 +128,31 @@ pub struct HelperFold {
     /// header is made, cleared for finished helpers when the next turn
     /// starts ([`Transcript::retire_finished_helpers`]).
     pub this_turn: bool,
+    /// What it is, when the call that started it was seen.
+    pub kind: Option<HelperKind>,
+    /// Its inputs shown so far (the first is its task).
+    pub inputs: usize,
+}
+
+impl HelperFold {
+    /// The full view's title text after the tag: its kind, state and
+    /// progress (`delegate · finished · 3 tool calls · 2.1k tokens`). A
+    /// spawned member whose task is done is idle: it stays.
+    #[must_use]
+    pub fn view_status_text(&self) -> String {
+        let status = self.status_text();
+        let state = self.state.text();
+        let shown = match (self.state, self.kind) {
+            (HelperState::Done, Some(HelperKind::Member)) => "idle",
+            (HelperState::Done, _) => "finished",
+            _ => state,
+        };
+        let status = status.replacen(state, shown, 1);
+        match self.kind {
+            Some(kind) => format!("{} · {status}", kind.text()),
+            None => status,
+        }
+    }
 }
 
 /// A helper header's preview of a call's arguments: the first string
@@ -374,6 +450,8 @@ impl Transcript {
             depth: path.len(),
             spin: 0,
             this_turn: true,
+            kind: self.helper_kinds.get(*label).copied(),
+            inputs: 0,
         }));
         self.set_owner(id, parent);
         self.helper_folds.insert((*label).to_string(), id);
@@ -397,6 +475,88 @@ impl Transcript {
         if let Some(Block::Helper(fold)) = self.block_mut(id) {
             f(fold);
         }
+    }
+
+    /// The name of the agent this transcript is: who gave its helpers
+    /// their tasks.
+    pub fn set_agent_name(&mut self, name: Option<String>) {
+        self.agent_name = name;
+    }
+
+    /// A tool call of the agent or of a helper: one that starts helpers
+    /// says what they are (by the `member_id` of its arguments, or of each
+    /// of their entries).
+    pub(super) fn note_spawn(&mut self, tool: &str, args: &Value) {
+        let Some(kind) = HelperKind::of_tool(tool) else {
+            return;
+        };
+        let mut labels: Vec<&str> = args
+            .get("member_id")
+            .and_then(Value::as_str)
+            .into_iter()
+            .collect();
+        if let Some(map) = args.as_object() {
+            for value in map.values().filter_map(Value::as_array) {
+                labels.extend(
+                    value
+                        .iter()
+                        .filter_map(|entry| entry.get("member_id").and_then(Value::as_str)),
+                );
+            }
+        }
+        for label in labels {
+            self.helper_kinds.insert(label.to_string(), kind);
+            if let Some(id) = self.helper_folds.get(label).copied() {
+                self.update_fold(id, |fold| fold.kind = Some(kind));
+            }
+        }
+    }
+
+    /// A run of the helper `helper` started on `input` (`None`: a
+    /// continuation without one): the input is shown in its view as the
+    /// main transcript shows a prompt. Its first is its task, given by its
+    /// parent (a fork's opens with the line that it carries its parent's
+    /// conversation, which is not shown again); a peer message is shown
+    /// with its sender; any other later input as a message.
+    pub(super) fn helper_input(&mut self, helper: &HelperScope<'_>, input: Option<&str>) {
+        let Some(input) = input.map(str::trim).filter(|text| !text.is_empty()) else {
+            return;
+        };
+        let first = matches!(self.block(helper.header), Some(Block::Helper(f)) if f.inputs == 0);
+        let parent = helper.parent.as_deref().unwrap_or("its parent");
+        let mut blocks = Vec::new();
+        if let Some((from, body)) = crate::ui::peer::of_input(input) {
+            blocks.push(Block::Peer {
+                from: crate::ui::peer::short_name(&from).to_string(),
+                text: body,
+            });
+        } else if let Some(task) = fork_task(input) {
+            self.update_fold(helper.header, |f| f.kind = Some(HelperKind::Fork));
+            blocks.push(Block::Notice {
+                level: super::NoticeLevel::Info,
+                text: format!("forked from {parent} with its conversation so far"),
+            });
+            blocks.push(Block::Task {
+                label: format!("task from {parent}"),
+                text: task.to_string(),
+            });
+        } else if first {
+            blocks.push(Block::Task {
+                label: format!("task from {parent}"),
+                text: input.to_string(),
+            });
+        } else {
+            blocks.push(Block::Task {
+                label: "message".to_string(),
+                text: input.to_string(),
+            });
+        }
+        self.close_streams(Some(helper.header));
+        for block in blocks {
+            let id = self.push(block);
+            self.set_owner(id, Some(helper.header));
+        }
+        self.update_fold(helper.header, |f| f.inputs += 1);
     }
 
     /// The model of the helper `label`, when known.
@@ -436,11 +596,16 @@ impl Transcript {
         let Some(label) = path.last().copied() else {
             return;
         };
+        let parent = match path.len() {
+            0 | 1 => self.agent_name.clone(),
+            n => path.get(n - 2).map(|p| (*p).to_string()),
+        };
         let helper = HelperScope {
             header: self.ensure_fold(&path),
             tag: self.helper_tag(label),
             scope_id: &scoped.scope_id,
             depth: path.len(),
+            parent,
         };
         self.apply_event(Some(&helper), &scoped.event, now);
     }

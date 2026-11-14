@@ -1025,10 +1025,18 @@ fn a_queued_message_says_it_waits_for_the_model_s_reply() {
     assert!(at(2).contains("queued 1"), "{}", at(2));
     assert!(!at(2).contains("waiting"), "{}", at(2));
     assert!(
-        at(42).contains("queued 1, waiting for the model's reply (42s)"),
+        at(10).contains("queued 1, waiting for the model's reply (10s)"),
+        "{}",
+        at(10)
+    );
+    // After the quiet period the activity segment says it, once.
+    assert!(
+        at(42).contains("waiting for the model's reply 42s"),
         "{}",
         at(42)
     );
+    assert_eq!(at(42).matches("waiting for the model's reply").count(), 1);
+    assert!(at(42).contains("│ queued 1"), "{}", at(42));
     app.update_at(
         agent(AgentEvent::ToolExecutionStarted {
             id: "t1".into(),

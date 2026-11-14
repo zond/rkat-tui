@@ -20,16 +20,17 @@ mod helpers;
 mod notices;
 pub mod outcome;
 mod restore;
+pub mod tool_line;
 
 use helpers::helper_args_preview;
-pub use helpers::{HelperFold, HelperLast, HelperState, HelperView, MAX_HELPER_PREVIEW};
+pub use helpers::{
+    HelperFold, HelperKind, HelperLast, HelperState, HelperView, MAX_HELPER_PREVIEW,
+};
 use notices::{compaction_skipped, retry_notice, upstream_notice};
 pub use restore::blocks_from_messages;
 
 /// Maximum tool-result lines kept in the preview (matches the CLI stream renderer).
 pub const MAX_TOOL_RESULT_LINES: usize = 20;
-/// Maximum characters of serialized tool args shown in a header (matches the CLI).
-pub const MAX_TOOL_ARGS_PREVIEW: usize = 200;
 
 /// Most notes kept for tool calls whose block has not arrived yet.
 const MAX_PENDING_NOTES: usize = 64;
@@ -244,6 +245,13 @@ pub enum Block {
         name: String,
         /// Arguments as requested by the model.
         args: Value,
+        /// Its line's verb and object ([`tool_line::head`]).
+        head: tool_line::Head,
+        /// What the finished call came to ([`tool_line::outcome`]).
+        outcome: tool_line::Outcome,
+        /// Whole seconds it has run, while it runs (the line's clock,
+        /// advanced by [`Transcript::tick_tools`]).
+        ticked: u64,
         /// Lifecycle state.
         state: ToolState,
         /// Truncated result preview.
@@ -255,8 +263,9 @@ pub enum Block {
         note: Option<String>,
         /// Nesting depth (0 for the primary agent, >0 for sub-agents).
         depth: usize,
-        /// Whether the result preview and diff are hidden behind the header.
-        /// Tool output starts collapsed; a click (or Ctrl-O for the latest) toggles it.
+        /// Whether the arguments, the result preview and the diff are hidden
+        /// behind the line. A call starts folded unless the transcript's
+        /// detail is on; a click toggles it, Ctrl-O all of them.
         collapsed: bool,
     },
     /// An approval decision.
@@ -279,6 +288,15 @@ pub enum Block {
     },
     /// A helper's header (see [`HelperFold`]).
     Helper(HelperFold),
+    /// A helper's input as its full view shows it, as a prompt (`› `)
+    /// under who gave it: its task (`task from main-ab12`) or a later
+    /// input ([`HelperFold`]).
+    Task {
+        /// Who gave it, or what it is.
+        label: String,
+        /// The input's text.
+        text: String,
+    },
     /// A message another agent of the workspace sent this one (a peer
     /// message), labelled with its sender.
     Peer {
@@ -427,6 +445,16 @@ pub struct Transcript {
     live_helpers: Vec<String>,
     /// How new helper headers start.
     helper_view: HelperView,
+    /// The name of the agent this transcript is (`main-ab12`): who gave
+    /// its helpers their tasks.
+    agent_name: Option<String>,
+    /// Where tool lines show paths from.
+    paths: tool_line::PathView,
+    /// Whether every foldable block is shown in full (Ctrl-O): new ones
+    /// arrive so.
+    detail: bool,
+    /// What each helper is (by label), from the call that started it.
+    helper_kinds: IndexMap<String, HelperKind>,
     /// Notes for tool calls whose block has not arrived yet, by tool-use id
     /// (at most [`MAX_PENDING_NOTES`], oldest dropped first).
     pending_notes: IndexMap<String, String>,
@@ -491,6 +519,8 @@ struct HelperScope<'a> {
     scope_id: &'a str,
     /// How deep it is nested (its tool blocks' indent).
     depth: usize,
+    /// Who gave it its task: the helper above it, or the agent.
+    parent: Option<String>,
 }
 
 impl Transcript {
@@ -502,6 +532,7 @@ impl Transcript {
     /// The blocks a toggle key looks at: the transcript's blocks on screen
     /// (`scope == None`) or the full view of the helper `scope`, newest
     /// first.
+    #[cfg(any(test, feature = "test-support"))]
     fn scoped_blocks_rev(&self, scope: Option<BlockId>) -> Vec<BlockId> {
         match scope {
             Some(header) => {
@@ -564,6 +595,9 @@ impl Transcript {
                 Block::Tool {
                     name,
                     args,
+                    head,
+                    outcome,
+                    ticked,
                     state,
                     result_preview,
                     diff,
@@ -571,30 +605,18 @@ impl Transcript {
                     collapsed,
                     ..
                 } => {
-                    let state = match state {
-                        ToolState::Requested => "requested".to_string(),
-                        ToolState::Running { .. } => "running".to_string(),
-                        ToolState::Done {
-                            is_error,
-                            duration_ms,
-                        } => format!(
-                            "{} in {duration_ms} ms",
-                            if *is_error { "failed" } else { "done" }
-                        ),
-                        ToolState::Denied { reason } => format!("denied: {reason}"),
-                    };
-                    let _ = writeln!(out, "## tool {name} {} ({state})", args_preview(args));
+                    let parts = tool_line::Parts::of(head, state, outcome, *ticked, diff.as_ref());
+                    let _ = writeln!(out, "## tool {}", parts.text());
                     if let Some(note) = note {
                         let _ = writeln!(out, "{note}");
                     }
-                    if let Some(diff) = diff {
-                        let _ = writeln!(
-                            out,
-                            "edited {} (+{} -{})",
-                            diff.path, diff.added, diff.removed
-                        );
-                    }
                     if !collapsed {
+                        if let ToolState::Denied { reason } = state {
+                            body(&mut out, reason);
+                        }
+                        if let Some(args) = tool_line::expanded_args(name, args) {
+                            body(&mut out, &args);
+                        }
                         if let Some(preview) = result_preview {
                             body(&mut out, preview);
                         }
@@ -616,6 +638,10 @@ impl Transcript {
                 }
                 Block::Peer { from, text } => {
                     let _ = writeln!(out, "## message from agent {from}");
+                    body(&mut out, text);
+                }
+                Block::Task { label, text } => {
+                    let _ = writeln!(out, "## {label}");
                     body(&mut out, text);
                 }
                 Block::Triggered { label, text } => {
@@ -754,8 +780,14 @@ impl Transcript {
     /// Remove every block (the helper view setting stays).
     pub fn clear(&mut self) {
         let helper_view = self.helper_view;
+        let agent_name = self.agent_name.take();
+        let paths = std::mem::take(&mut self.paths);
+        let detail = self.detail;
         *self = Self::default();
         self.helper_view = helper_view;
+        self.agent_name = agent_name;
+        self.paths = paths;
+        self.detail = detail;
     }
 
     /// Replace the whole transcript with `blocks` (e.g. after resuming a
@@ -772,6 +804,7 @@ impl Transcript {
             }
             self.push_raw(block);
         }
+        self.refresh_tool_heads();
     }
 
     /// Block `index` (or one before it) changed: the clean prefix ends
@@ -882,57 +915,117 @@ impl Transcript {
         true
     }
 
-    /// Ctrl-O: show or hide the detail of the latest work in the transcript
-    /// on screen (`None`) or in the full view of the helper `scope`: the
-    /// most recent reasoning block and the most recent tool output together.
-    /// Both expand when either is collapsed, else both collapse. Returns
-    /// whether there was anything to toggle.
-    pub fn toggle_last_detail_in(&mut self, scope: Option<BlockId>) -> bool {
-        let blocks = self.scoped_blocks_rev(scope);
-        let reasoning = blocks
-            .iter()
-            .copied()
-            .find(|id| matches!(self.block(*id), Some(Block::Reasoning { .. })));
-        let tool = blocks
-            .iter()
-            .copied()
-            .find(|id| self.block(*id).is_some_and(tool_has_output));
-        let targets: Vec<BlockId> = reasoning.into_iter().chain(tool).collect();
-        if targets.is_empty() {
-            return false;
-        }
-        let expand = targets.iter().any(|id| {
-            matches!(
-                self.block(*id),
-                Some(
-                    Block::Reasoning {
-                        collapsed: true,
-                        ..
-                    } | Block::Tool {
-                        collapsed: true,
-                        ..
-                    } | Block::Shell {
-                        collapsed: true,
-                        ..
-                    } | Block::Outcome {
-                        collapsed: true,
-                        ..
-                    }
-                )
-            )
-        });
-        for id in targets {
-            if let Some(
+    /// Ctrl-O: show every foldable block in full, or fold them all back
+    /// (one state for the whole transcript, the helpers' blocks and views
+    /// included): each tool call's arguments, output and diff, every
+    /// reasoning block, each `!` command's output and each job's outcome.
+    /// Blocks made while it is on arrive shown. Returns the new state.
+    pub fn toggle_detail(&mut self) -> bool {
+        self.detail = !self.detail;
+        let collapse = !self.detail;
+        for index in 0..self.entries.len() {
+            let changed = match &mut self.entries[index].block {
                 Block::Reasoning { collapsed, .. }
                 | Block::Tool { collapsed, .. }
                 | Block::Shell { collapsed, .. }
-                | Block::Outcome { collapsed, .. },
-            ) = self.block_mut(id)
-            {
-                *collapsed = !expand;
+                | Block::Outcome { collapsed, .. } => {
+                    let changed = *collapsed != collapse;
+                    *collapsed = collapse;
+                    changed
+                }
+                _ => false,
+            };
+            if changed {
+                self.touch(index);
+                let entry = &mut self.entries[index];
+                entry.layout = None;
+                entry.view_layout = None;
             }
         }
-        true
+        self.detail
+    }
+
+    /// The first laid-out line of block `id`, as of the last
+    /// [`Self::ensure_layout`] (`None`: not laid out since it changed).
+    #[must_use]
+    pub fn start_line(&self, id: BlockId) -> Option<usize> {
+        let index = self.index_of(id)?;
+        (index <= self.clean).then(|| self.prefix.get(index).copied())?
+    }
+
+    /// Whether every foldable block is shown in full ([`Self::toggle_detail`]).
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn detail(&self) -> bool {
+        self.detail
+    }
+
+    /// Where tool lines show paths from: relative to the project `root`,
+    /// with `~` for `home`. The lines already made are made again.
+    pub fn set_paths(
+        &mut self,
+        root: Option<std::path::PathBuf>,
+        home: Option<std::path::PathBuf>,
+    ) {
+        self.paths = tool_line::PathView { root, home };
+        self.refresh_tool_heads();
+    }
+
+    /// The home directory tool lines show as `~`.
+    #[must_use]
+    pub fn home(&self) -> Option<&std::path::Path> {
+        self.paths.home.as_deref()
+    }
+
+    /// Make every tool line's head again (the path view changed, or the
+    /// blocks came from a stored conversation).
+    fn refresh_tool_heads(&mut self) {
+        for index in 0..self.entries.len() {
+            if let Block::Tool {
+                name, args, head, ..
+            } = &self.entries[index].block
+            {
+                let fresh = tool_line::head(name, args, &self.paths);
+                if fresh != *head {
+                    self.touch(index);
+                    let entry = &mut self.entries[index];
+                    if let Block::Tool { head, .. } = &mut entry.block {
+                        *head = fresh;
+                    }
+                    entry.layout = None;
+                    entry.view_layout = None;
+                }
+            }
+        }
+    }
+
+    /// Advance the clock of running tool calls (whole seconds). Returns
+    /// whether a line changed.
+    pub fn tick_tools(&mut self, now: Instant) -> bool {
+        let mut changed = false;
+        for index in 0..self.entries.len() {
+            let Block::Tool {
+                state: ToolState::Running { since },
+                ticked,
+                ..
+            } = &self.entries[index].block
+            else {
+                continue;
+            };
+            let secs = now.saturating_duration_since(*since).as_secs();
+            if secs == *ticked {
+                continue;
+            }
+            self.touch(index);
+            let entry = &mut self.entries[index];
+            if let Block::Tool { ticked, .. } = &mut entry.block {
+                *ticked = secs;
+            }
+            entry.layout = None;
+            entry.view_layout = None;
+            changed = true;
+        }
+        changed
     }
 
     /// Expand or collapse the output of the tool block `id`. Returns the new
@@ -944,6 +1037,7 @@ impl Transcript {
         match self.block_mut(id) {
             Some(
                 Block::Tool { collapsed, .. }
+                | Block::Reasoning { collapsed, .. }
                 | Block::Shell { collapsed, .. }
                 | Block::Outcome { collapsed, .. },
             ) => {
@@ -1185,6 +1279,9 @@ impl Transcript {
             Some(h) => format!("{}/{id}", h.scope_id),
             None => id.to_string(),
         };
+        if let AgentEvent::ToolCallRequested { name, args, .. } = event {
+            self.note_spawn(name, args.as_value());
+        }
         match event {
             AgentEvent::TurnStarted { .. } => *self.stream(scope) = Stream::default(),
             AgentEvent::TurnCompleted { usage, .. } => {
@@ -1256,6 +1353,15 @@ impl Transcript {
             AgentEvent::ToolExecutionTimedOut { id, timeout_ms, .. } => {
                 let text = format!("timed out after {timeout_ms}ms");
                 self.complete_tool(&key(id), true, *timeout_ms, Some(&text));
+                let after = tool_line::human_secs(*timeout_ms as f64 / 1_000.0);
+                if let Some(block) = self.tool_block(&key(id))
+                    && let Some(Block::Tool { outcome, .. }) = self.block_mut(block)
+                {
+                    *outcome = tool_line::Outcome {
+                        text: Some(format!("timed out after {after}")),
+                        failed: true,
+                    };
+                }
             }
             AgentEvent::RunFailed { error_report, .. } => match helper {
                 None => {
@@ -1278,7 +1384,8 @@ impl Transcript {
                     self.set_owner(notice, scope);
                 }
             },
-            AgentEvent::RunStarted { .. } if let Some(h) = helper => {
+            AgentEvent::RunStarted { input, .. } if let Some(h) = helper => {
+                self.helper_input(h, input.prompt_text().as_deref());
                 self.update_fold(h.header, |f| {
                     if matches!(
                         f.state,
@@ -1412,7 +1519,16 @@ impl Transcript {
         }
     }
 
-    fn push_raw(&mut self, block: Block) -> BlockId {
+    fn push_raw(&mut self, mut block: Block) -> BlockId {
+        // With the detail on (Ctrl-O), a foldable block arrives shown.
+        if self.detail
+            && let Block::Reasoning { collapsed, .. }
+            | Block::Tool { collapsed, .. }
+            | Block::Shell { collapsed, .. }
+            | Block::Outcome { collapsed, .. } = &mut block
+        {
+            *collapsed = false;
+        }
         let id = BlockId(self.next_id);
         self.next_id += 1;
         if matches!(block, Block::Helper(_)) {
@@ -1490,9 +1606,13 @@ impl Transcript {
                 .and_then(|(_, call)| self.pending_notes.shift_remove(call))
         });
         let args = self.with_peer_name(&name, args);
+        let head = tool_line::head(&name, &args, &self.paths);
         let id = self.push(Block::Tool {
             name,
             args,
+            head,
+            outcome: tool_line::Outcome::default(),
+            ticked: 0,
             state: ToolState::Requested,
             result_preview: None,
             diff: None,
@@ -1604,8 +1724,32 @@ impl Transcript {
             if let Some(result) = result {
                 *result_preview = Some(result).filter(|r| !r.is_empty()).map(Preview::of);
             }
+            if let (
+                Some(text),
+                Some(Block::Tool {
+                    name,
+                    args,
+                    state,
+                    outcome,
+                    ..
+                }),
+            ) = (result, self.block_mut(id))
+            {
+                *outcome = Self::outcome_of(name, args, state, text);
+            }
         }
         self.learn_from_result(id);
+    }
+
+    /// A finished call's outcome from its whole `result`: the tool's row
+    /// ([`tool_line::outcome`]), and for a call that reported an error
+    /// without one, the result's first line as the reason.
+    fn outcome_of(name: &str, args: &Value, state: &ToolState, result: &str) -> tool_line::Outcome {
+        let mut outcome = tool_line::outcome(name, args, result);
+        if matches!(state, ToolState::Done { is_error: true, .. }) && outcome.text.is_none() {
+            outcome.text = tool_line::failure_reason(result);
+        }
+        outcome
     }
 
     /// Attach a tool's result body (it arrives after the execution fact).
@@ -1613,8 +1757,17 @@ impl Transcript {
         let Some(id) = self.tool_block(key) else {
             return;
         };
-        if let Some(Block::Tool { result_preview, .. }) = self.block_mut(id) {
+        if let Some(Block::Tool {
+            name,
+            args,
+            state,
+            outcome,
+            result_preview,
+            ..
+        }) = self.block_mut(id)
+        {
             *result_preview = Some(result).filter(|r| !r.is_empty()).map(Preview::of);
+            *outcome = Self::outcome_of(name, args, state, result);
         }
         self.learn_from_result(id);
     }
@@ -1673,12 +1826,6 @@ impl Transcript {
     }
 }
 
-/// Serialized, truncated tool arguments for headers.
-pub fn args_preview(args: &Value) -> String {
-    let raw = serde_json::to_string(args).unwrap_or_default();
-    truncate_chars(&raw, MAX_TOOL_ARGS_PREVIEW)
-}
-
 /// A tool block's tool name without a helper's tag (`[scout] peers`).
 fn tool_base(name: &str) -> &str {
     name.rsplit(' ').next().unwrap_or(name)
@@ -1699,27 +1846,23 @@ fn recipient(args: &Value) -> String {
         .to_string()
 }
 
-/// A tool block's header: `send_message → <recipient>: <start of body>`
-/// for a peer message (the recipient first, which the arguments' order
-/// would cut off), else `name(<arguments>)`.
+/// Whether `block` has something to fold: its line ends in `▸`/`▾`.
 #[must_use]
-pub fn tool_header(name: &str, args: &Value) -> String {
-    if send_tool(name) {
-        let body = args.get("body").and_then(Value::as_str).unwrap_or("");
-        let body = body.split_whitespace().collect::<Vec<_>>().join(" ");
-        return format!(
-            "{name} → {}: {}",
-            recipient(args),
-            truncate_chars(&body, MAX_TOOL_ARGS_PREVIEW)
-        );
-    }
-    format!("{name}({})", args_preview(args))
+pub fn foldable(block: &Block) -> bool {
+    tool_has_output(block)
 }
 
-/// Whether `block` is a tool block with a result preview or a diff.
+/// Whether `block` folds something away: a tool call (its arguments,
+/// output, diff or reason), a reasoning block, a `!` command's output or a
+/// job's outcome.
 fn tool_has_output(block: &Block) -> bool {
-    matches!(block, Block::Tool { result_preview, diff, .. }
-        if result_preview.is_some() || diff.is_some())
+    matches!(block, Block::Tool { args, result_preview, diff, state, outcome, .. }
+        if result_preview.is_some()
+            || diff.is_some()
+            || args.as_object().is_some_and(|map| !map.is_empty())
+            || matches!(state, ToolState::Denied { .. })
+            || outcome.text.is_some())
+        || matches!(block, Block::Reasoning { text, .. } if !text.is_empty())
         || matches!(
             block,
             Block::Shell {
@@ -1828,6 +1971,13 @@ mod tests {
         });
         let tool = |collapsed| Block::Tool {
             name: "read_file".into(),
+            head: tool_line::head(
+                "read_file",
+                &json!({"path": "a.rs"}),
+                &tool_line::PathView::default(),
+            ),
+            outcome: tool_line::Outcome::default(),
+            ticked: 0,
             args: json!({"path": "a.rs"}),
             state: ToolState::Done {
                 is_error: false,
@@ -1855,8 +2005,8 @@ mod tests {
         assert_eq!(
             text,
             "## user\nfix it\n\n## reasoning\n\n\
-             ## tool read_file {\"path\":\"a.rs\"} (done in 3 ms)\nallowed by rule\n\n\
-             ## tool read_file {\"path\":\"a.rs\"} (done in 3 ms)\nallowed by rule\nfn main() {}\n\n\
+             ## tool ✓ read a.rs\nallowed by rule\n\n\
+             ## tool ✓ read a.rs\nallowed by rule\n{\n  \"path\": \"a.rs\"\n}\nfn main() {}\n\n\
              ## assistant\ndone\n\n\
              ## approval: shell denied by classifier: rm -rf\n\n\
              ## notice (warning)\nturn interrupted\n"
@@ -2778,8 +2928,7 @@ mod tests {
         );
         let id = t.tool_block("m1").unwrap();
         let Some(Block::Tool {
-            name,
-            args,
+            head,
             note,
             collapsed,
             result_preview,
@@ -2789,8 +2938,8 @@ mod tests {
             panic!("no tool block");
         };
         assert_eq!(
-            tool_header(name, args),
-            "send_message → tui/main/main-bbbb: I am changing src/lib.rs now"
+            head.text(),
+            "message → tui/main/main-bbbb: I am changing src/lib.rs now"
         );
         assert_eq!(note.as_deref(), Some("sent to tui/main/main-bbbb"));
         assert!(*collapsed);
@@ -2815,8 +2964,7 @@ mod tests {
         );
         let id = t.tool_block("m2").unwrap();
         let Some(Block::Tool {
-            name,
-            args,
+            head,
             note,
             collapsed,
             ..
@@ -2824,12 +2972,17 @@ mod tests {
         else {
             panic!("no tool block");
         };
-        assert_eq!(tool_header(name, args), "send_message → ed25519:zzz: hi");
+        assert_eq!(head.text(), "message → ed25519:zzz: hi");
         assert!(note.is_none() && !*collapsed);
-        // Other tools keep the arguments form.
+        // Other tools have their own lines, never JSON.
         assert_eq!(
-            tool_header("read_file", &json!({"path": "a"})),
-            r#"read_file({"path":"a"})"#
+            tool_line::head(
+                "read_file",
+                &json!({"path": "a"}),
+                &tool_line::PathView::default()
+            )
+            .text(),
+            "read a"
         );
     }
 }

@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+### Added
+
+- The input's prompt marker shows whether the agent is working: `›` while
+  idle, a turning spinner while a turn runs (yours, or a run the daemon
+  reports that you did not start) and while a classifier review or a
+  compaction runs. It turns only while events arrive from the agent or
+  its helpers: after 20 s without any it becomes a slow yellow pulse and
+  the status bar says what is being waited for and since when
+  (`waiting for the model's reply 34s`, `tool shell running 2m 10s`,
+  `review by the classifier 8s`, `compacting 40s`, `waiting for your
+  answer 12s`, else `no word from the agent for 45s`), adding `· Esc
+  interrupts` after two minutes. The next event brings the spinner back.
+- A helper's full view (Ctrl+↓, Enter) reads as the main transcript: it
+  starts with the task the helper was given, as a prompt under `task from
+  <agent>`, shows every later input in order (a peer message with its
+  sender), then its work and its answer; a `fork_off` child shows one
+  `forked from <agent> with its conversation so far` line instead of the
+  conversation it inherited. The title names the helper's kind
+  (`delegate`, `fork`, `spawned member`), state (`running`, `finished`,
+  `idle`, `failed`, `cancelled`) and model.
+
+### Changed
+
+- The status bar's activity segment (spinner, state, elapsed time) comes
+  first while the agent is busy, so a narrow terminal no longer cuts it.
+- Each tool call is one plain line that never wraps instead of its name
+  and its arguments as JSON: state, verb, object, the outcome in numbers
+  and the time (`✓ read src/main.rs  lines 1–40`, `✓ edit src/a.rs  +12
+  −3 · 1.2s`, `◐ run cargo build  12s`, `✗ run cargo test  exit 101 ·
+  48s`, `⊘ run git push --force  blocked by the classifier (R1)`). Paths
+  are relative to the project, `~` for your home; the object is shortened
+  to fit, the outcome and time stay; a time shows from one second on and
+  ticks while a call runs. The same lines are in a helper's view, a
+  restored conversation, the approval dialog (`Call:`, for a call other than a command) and `/export`. A
+  click or Ctrl-O shows the full arguments (a command as written, others
+  pretty-printed), the output or the diff, and a denial's whole reason.
+- Ctrl-O shows everything in full, or folds it all back: every tool call,
+  every reasoning block and every job outcome of the transcript and of an
+  open helper view, not only the latest. While it is on, new ones arrive
+  shown; a click still toggles one until the next Ctrl-O; scrolled back,
+  the line at the top of the view stays there.
+
 ## [0.0.4] - 2026-11-14
 
 ### Added

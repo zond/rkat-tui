@@ -148,6 +148,22 @@ async fn a_delegated_helper_is_followed_with_its_result_and_cost() {
         30,
         "two calls of the agent and one of the helper"
     );
+    // Its full view reads as the main transcript: the task the agent gave
+    // it (from its run's own start), then its answer.
+    use rkat_tui::ui::transcript::Block;
+    let scout = app.transcript.helper_header("scout").unwrap();
+    let view = app.transcript.helper_view_blocks(scout);
+    match app.transcript.block(view[0]) {
+        Some(Block::Task { label, text }) => {
+            assert!(label.starts_with("task from main-"), "{label}");
+            assert_eq!(text, "HELPER-TASK: look around");
+        }
+        other => panic!("the view starts with {other:?}"),
+    }
+    assert!(
+        matches!(app.transcript.block(*view.last().unwrap()), Some(Block::Assistant { md }) if md == "HELPER-DONE"),
+        "{view:?}"
+    );
     client.quit().await;
     daemon.stop().await;
 }

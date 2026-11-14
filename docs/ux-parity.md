@@ -35,7 +35,7 @@ official tables name, then niche features.
 | 18 | `/model` | `/model [model]`, opens a picker | `/model [[endpoint:]id\|refresh]`, opens a filtered picker grouped by endpoint | same |
 | 19 | `/resume`, `--continue`, `--resume` | `/resume [session]`; `claude -c`; `claude --resume [id]` (opens a picker with no id) | `/resume [ref]` and a picker; `-c`/`--continue`; `--resume [ref]` (opens the picker with no ref) | same |
 | 20 | `/cost` / `/usage` | `/usage`, with `/cost` and `/stats` as aliases | `/usage`, with `/cost` and `/stats` as aliases | same |
-| 21 | Expand detail (transcript viewer) | `Ctrl+O`: tool details, thinking, collapsed lines | `Ctrl+O` shows or hides the last reasoning block and the last tool call's output; a click toggles one tool | partial (not a whole-transcript view) |
+| 21 | Expand detail (transcript viewer) | `Ctrl+O`: tool details, thinking, collapsed lines | `Ctrl+O` shows everything in full or folds it all back: every tool call's arguments, output and diff, every reasoning block, every outcome, in the transcript and a helper's view; new ones arrive shown while it is on; the line at the top stays put; a click toggles one call | same (in place, not a separate viewer) |
 | 22 | Task / todo checklist | `Ctrl+T` toggles the checklist | `Ctrl+T` shows or hides the task checklist | same |
 | 23 | `@` file mention with autocomplete | `@` | `@` opens a path menu; mentioned files are attached when the prompt is sent | same |
 | 24 | Shell mode | `!` prefix runs a command; its output joins the context | `!` prefix runs a command as you, with no sandbox; its output joins the context | same |
@@ -53,7 +53,7 @@ official tables name, then niche features.
 | 36 | External editor | `Ctrl+G` or `Ctrl+X Ctrl+E` | `Ctrl+G` or `Ctrl+X Ctrl+E` | same |
 | 37 | Redraw | `Ctrl+L` | `Ctrl+L` | same |
 | 38 | Background a task | `Ctrl+B`; `/tasks` (`/bashes`) | none: the shell runs commands in the foreground (background jobs are not available); `/tasks` is an alias of `/helpers` | missing |
-| 39 | Subagents: watch and expand | collapsed subagent lines, `Ctrl+O` to expand; `/tasks` lists background subagents; `Ctrl+X Ctrl+K` stops them | helper panel with `Ctrl+↑/↓` to select and `Enter` for a helper's full view; a click on a header unfolds it; `/helpers` opens a list of them (Enter: full view, `f`: fold), `/helpers [list\|expand\|fold <label>\|all]` (alias `/tasks`); `Esc` stops them with the turn | differs (more than CC: a panel and a full view per helper) |
+| 39 | Subagents: watch and expand | collapsed subagent lines, `Ctrl+O` to expand; `/tasks` lists background subagents; `Ctrl+X Ctrl+K` stops them | helper panel with `Ctrl+↑/↓` to select and `Enter` for a helper's full view (read as the main transcript: its task and later inputs as prompts with who gave them, its work, its answer; a fork without its inherited conversation; the title names kind, state and model); a click on a header unfolds it; `/helpers` opens a list of them (Enter: full view, `f`: fold), `/helpers [list\|expand\|fold <label>\|all]` (alias `/tasks`); `Esc` stops them with the turn | differs (more than CC: a panel and a full view per helper) |
 | 40 | Thinking toggle | `Alt+T` (`Option+T`); `/effort` | none (`[thinking]` in `tui.toml`, per model) | missing |
 | 41 | Switch model, keeping the prompt | `Alt+P` (`Option+P`) | `Alt+P` | same |
 | 42 | Undo an input edit | `Ctrl+_` | `Ctrl+_` | same |
@@ -64,7 +64,7 @@ official tables name, then niche features.
 | 47 | Suspend | `Ctrl+Z` | `Ctrl+Z` | same |
 | 48 | Diff display for edits | colored diffs on Edit/Write | unified diffs on the tool blocks | same |
 | 49 | Markdown rendering | yes | yes; a table wider than the transcript wraps its cells within shrunk columns, or stacks as `header: cell` lines when its columns cannot fit, so nothing is cut off | same |
-| 50 | Spinner / elapsed / status | spinner + status | braille spinner, `running Ns`, `classifying…`, queued count | same |
+| 50 | Spinner / elapsed / status | spinner + status | the prompt marker spins while the agent is busy (its own turn, a run the daemon reports, a classifier review, a compaction) and turns into a slow yellow pulse after 20 s without any event, the status bar's leading segment then saying what is waited for (`waiting for the model's reply 34s`, `tool shell running 2m 10s`, `no word from the agent for 45s`, `· Esc interrupts` after 2 min); braille spinner, `running Ns`, `classifying…`, queued count | differs (more than CC: activity and silence told apart) |
 | 51 | Close dialogs | `Esc` | `Esc` (and `q` in pickers) | same |
 | 52 | `/mcp` | `/mcp`: list, reconnect, enable, disable | none; `/trust` trusts the project's `.rkat/mcp.toml` | missing |
 | 53 | `/status` | `/status`: version, model, account | `/status`: version, model and endpoint, session, workspace, confinement, mode, trust state | same |
@@ -83,6 +83,7 @@ official tables name, then niche features.
 | 66 | Vim mode | `/config` → Editor mode (`/vim` removed in v2.1.92) | none | missing |
 | 67 | `/terminal-setup` | installs Shift+Enter in some terminals | not needed: `Ctrl+J`/`Alt+Enter` work everywhere | n/a |
 | 68 | `/login`, `/logout`, `/bug`, `/feedback`, `/release-notes`, `/upgrade`, `/mobile`, `/desktop`, `/install-github-app`, `/theme` | account and product commands | none | n/a |
+| 69 | Tool call lines | `Read(src/a.rs)`, `Bash(cargo build)` with a one-line result summary | one plain line per call that never wraps: state, verb, object, outcome in numbers, time (`✓ read src/a.rs  lines 1–40`, `✗ run cargo test  exit 101 · 48s`, `⊘ run git push --force  blocked by the classifier (R1)`); paths relative to the project; the object shortened to fit; arguments only in the expansion, never JSON on the line | same |
 
 rkat-tui extras with no CC counterpart: `Shift+↑/↓`, `PgUp/PgDn` and
 `Home/End` scroll the transcript; mouse selection copies over OSC 52;

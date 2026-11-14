@@ -851,6 +851,18 @@ pub struct StatusInfo {
     helper_panel: bool,
     /// Whether the classifier is running.
     classifying: bool,
+    /// When the classifier review running now started.
+    classifying_since: Option<Instant>,
+    /// When this client last heard from the agent: any event of its run,
+    /// of its helpers, of the classifier or of a compaction. While the
+    /// agent is busy, a long silence turns the prompt marker into its
+    /// waiting form ([`render::QUIET_AFTER`]).
+    heard_at: Option<Instant>,
+    /// The session's own tool calls requested and not completed, oldest
+    /// first.
+    open_tools: Vec<OpenTool>,
+    /// When the approval dialog waiting for the user's answer opened.
+    asking_since: Option<Instant>,
     /// A classifier check's `(done, total)`, while one runs.
     check: Option<(usize, usize)>,
     /// Tokens in the last model call, `None` when unknown.
@@ -872,6 +884,15 @@ pub struct StatusInfo {
     agent: Option<String>,
 }
 
+/// A tool call of the session the model asked for whose execution has
+/// not completed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenTool {
+    id: String,
+    name: String,
+    since: Instant,
+}
+
 /// The prompt the "Plan ready" dialog's proceed choices send.
 pub const PROCEED_PROMPT: &str = "Proceed with the plan";
 
@@ -880,6 +901,49 @@ impl StatusInfo {
     #[must_use]
     pub fn reached_daemon(&self) -> bool {
         self.connection.as_ref().is_some_and(Connection::reached)
+    }
+
+    /// Whether the agent this client works with is busy, as the prompt
+    /// marker and the status bar show it: a turn (this client's or one the
+    /// daemon reports), a classifier review or a compaction.
+    #[must_use]
+    pub fn busy(&self) -> bool {
+        self.running_since.is_some() || self.classifying || self.compacting_since.is_some()
+    }
+
+    /// Follow the session's tool calls from its events: a request opens
+    /// one, its completion (or time-out, or result) closes it; the next
+    /// model call and the run's end close them all.
+    fn track_tools(&mut self, event: &AgentEvent, now: Instant) {
+        match event {
+            AgentEvent::ToolCallRequested { id, name, .. } => {
+                if !self.open_tools.iter().any(|t| t.id == *id) {
+                    self.open_tools.push(OpenTool {
+                        id: id.clone(),
+                        name: name.clone(),
+                        since: now,
+                    });
+                }
+            }
+            AgentEvent::ToolExecutionCompleted { id, .. }
+            | AgentEvent::ToolExecutionTimedOut { id, .. }
+            | AgentEvent::ToolResultReceived { id, .. } => {
+                self.open_tools.retain(|t| t.id != *id);
+            }
+            AgentEvent::HookDenied { payload, .. } => {
+                if let Some(id) = payload
+                    .as_ref()
+                    .and_then(|p| p.get("tool_use_id"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    self.open_tools.retain(|t| t.id != id);
+                }
+            }
+            AgentEvent::TurnStarted { .. }
+            | AgentEvent::RunCompleted { .. }
+            | AgentEvent::RunFailed { .. } => self.open_tools.clear(),
+            _ => {}
+        }
     }
 
     /// Add to the token counters (a model call's usage).
@@ -1031,6 +1095,15 @@ impl ScrollState {
     pub fn bottom(&mut self) {
         self.offset_from_bottom = 0;
         self.follow = true;
+    }
+
+    /// Show laid-out line `top` at the top of a `height`-line window over
+    /// `total` lines (as far as the transcript's ends allow).
+    pub fn anchor_top(&mut self, total: usize, height: usize, top: usize) {
+        let bottom_start = total.saturating_sub(height);
+        self.offset_from_bottom = bottom_start.saturating_sub(top);
+        self.last_total = total;
+        self.follow = self.offset_from_bottom == 0;
     }
 
     /// Reconcile with the laid-out transcript and return the first visible line.
@@ -1185,6 +1258,10 @@ pub struct App {
     shell: shell::ShellRuns,
     /// The checklist panel ([`checklist::ChecklistPanel`]).
     checklist: checklist::ChecklistPanel,
+    /// The block at the top of the transcript when Ctrl-O changed the
+    /// detail, and the line of it shown there: the next frame keeps it
+    /// there ([`ScrollState::anchor_top`]).
+    detail_anchor: Option<(BlockId, usize)>,
     dirty: bool,
 }
 
@@ -1240,6 +1317,7 @@ impl App {
             completion: keys::Completion::default(),
             shell: shell::ShellRuns::default(),
             checklist: checklist::ChecklistPanel::default(),
+            detail_anchor: None,
             dirty: true,
         }
     }
@@ -1247,8 +1325,29 @@ impl App {
     /// The workspace `@` mentions complete against (the path menu).
     #[must_use]
     pub fn with_workspace(mut self, root: ProjectRoot) -> Self {
+        self.transcript
+            .set_paths(Some(root.as_path().to_path_buf()), dirs::home_dir());
         self.workspace = Some(root);
         self
+    }
+
+    /// Ctrl-O: every foldable block shown in full, or all folded back
+    /// ([`Transcript::toggle_detail`]). Scrolled back in the transcript,
+    /// the line at the top stays at the top.
+    pub(super) fn toggle_detail(&mut self, view: Option<BlockId>) {
+        if view.is_none()
+            && !self.scroll.follow
+            && let Some((block, line)) = self.mouse.transcript_rows.first().copied()
+            && let Some(start) = self.transcript.start_line(block)
+        {
+            self.detail_anchor = Some((block, line.saturating_sub(start)));
+        }
+        self.transcript.toggle_detail();
+    }
+
+    /// The anchor Ctrl-O left for the next frame (taken).
+    pub(crate) fn take_detail_anchor(&mut self) -> Option<(BlockId, usize)> {
+        self.detail_anchor.take()
     }
 
     /// Whether to ring the bell when a turn ends or an approval prompt opens
@@ -1265,8 +1364,7 @@ impl App {
     /// chord). An idle terminal is not woken.
     #[must_use]
     pub fn wants_tick(&self) -> bool {
-        self.status.running_since.is_some()
-            || self.status.classifying
+        self.status.busy()
             || self.quit.last_ctrl_c.is_some()
             || self.quit.confirm.is_some()
             || self.chord.is_some()
@@ -1387,6 +1485,30 @@ impl App {
         out
     }
 
+    /// Whether `msg` is word from the agent or its run (an event of the
+    /// session or of a helper, the classifier, a compaction, an approval
+    /// request, a run the daemon reports): the liveness the prompt marker
+    /// shows ([`StatusInfo::busy`]). Keys, ticks and the client's own
+    /// answers are not.
+    fn from_the_agent(msg: &Msg) -> bool {
+        matches!(
+            msg,
+            Msg::Agent(_)
+                | Msg::Scoped(_)
+                | Msg::RemoteTurn { .. }
+                | Msg::Peer { .. }
+                | Msg::Triggered { .. }
+                | Msg::Diff { .. }
+                | Msg::ToolNote { .. }
+                | Msg::Approval(_)
+                | Msg::Escalation(..)
+                | Msg::EscalationResolved(_)
+                | Msg::SteerDelivered(_)
+                | Msg::CompactionRun(_)
+                | Msg::Status(StatusUpdate::Classifying(_) | StatusUpdate::ClassifierCheck(_))
+        )
+    }
+
     /// Process one message. Pure: no I/O, only state changes and returned effects.
     pub fn update(&mut self, msg: Msg) -> Vec<Effect> {
         self.update_at(msg, Instant::now())
@@ -1396,6 +1518,9 @@ impl App {
     pub fn update_at(&mut self, msg: Msg, now: Instant) -> Vec<Effect> {
         let mut fx = Vec::new();
         let mut dirty = true;
+        if Self::from_the_agent(&msg) {
+            self.status.heard_at = Some(now);
+        }
         match msg {
             Msg::Key(key) => {
                 if self.mouse.selection.is_some() {
@@ -1448,6 +1573,7 @@ impl App {
                     AgentEvent::CompactionCompleted { .. } => self.gauge.compacted(),
                     _ => {}
                 }
+                self.status.track_tools(&env.payload, now);
                 match &env.payload {
                     AgentEvent::TurnStarted { .. } => self.status.model_since = Some(now),
                     AgentEvent::ToolCallRequested { .. }
@@ -1489,6 +1615,9 @@ impl App {
             Msg::NotDelivered { id, why } => self.not_delivered(id, why.as_deref()),
             Msg::QuitDecided(decision) => self.quit_decided(decision, &mut fx),
             Msg::Rerooted { workspace, realm } => {
+                let home = self.transcript.home().map(std::path::Path::to_path_buf);
+                self.transcript
+                    .set_paths(Some(workspace.as_path().to_path_buf()), home);
                 self.workspace = Some(workspace);
                 self.completion.path_index = PathIndex::Dropped;
                 self.completion.generation += 1;
@@ -1542,6 +1671,16 @@ impl App {
                 // Envelope sequence numbers restart with every session task.
                 if matches!(update, StatusUpdate::Session(_)) {
                     self.last_seq = 0;
+                }
+                if let StatusUpdate::Agent(agent) = &update {
+                    self.transcript.set_agent_name(agent.clone());
+                }
+                if let StatusUpdate::Classifying(running) = &update {
+                    self.status.classifying_since = if *running {
+                        self.status.classifying_since.or(Some(now))
+                    } else {
+                        None
+                    };
                 }
                 if let StatusUpdate::Helpers(helpers) = &update {
                     self.transcript.note_live_helpers(
@@ -1628,9 +1767,10 @@ impl App {
             // Sent only while [`Self::wants_tick`].
             Msg::Tick => {
                 let helpers_spun = self.transcript.tick_helpers(now);
+                let tools_ticked = self.transcript.tick_tools(now);
                 dirty = helpers_spun
-                    || self.status.running_since.is_some()
-                    || self.status.classifying
+                    || tools_ticked
+                    || self.status.busy()
                     || self.quit.last_ctrl_c.is_some()
                     || self.quit.confirm.is_some()
                     || self.chord.is_some();
@@ -1646,6 +1786,13 @@ impl App {
             }
         }
         self.status.queued = self.pending.len();
+        let asking = matches!(self.modal, Some(Modal::Escalation { .. }))
+            || !self.pending_escalations.is_empty();
+        self.status.asking_since = if asking {
+            self.status.asking_since.or(Some(now))
+        } else {
+            None
+        };
         self.status.helper_panel = !self.transcript.panel_helpers().is_empty();
         self.refresh_menu();
         self.dirty |= dirty;

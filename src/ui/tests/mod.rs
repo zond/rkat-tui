@@ -8,6 +8,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton
 use ratatui::layout::Rect;
 use serde_json::json;
 
+mod activity;
 mod dispatch;
 mod escalations;
 mod helpers;
