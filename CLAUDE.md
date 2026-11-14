@@ -180,6 +180,10 @@ repository). Open upstream issues this code waits on:
   roster note's states and "do not message an idle agent with no client"
   (`src/daemon/agents/notes.rs`, the persona) go then.
 
+- #2300: `blob_save_file` and `view_image` taking additional allowed
+  directories from the host. The scratch-directory instruction's sentence
+  about them (`src/bootstrap/persona.rs`) goes when it ships.
+
 ## Stored state
 
 `docs/state.md` lists every file rkat-tui stores (path, format, writer,
