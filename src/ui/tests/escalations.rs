@@ -80,9 +80,9 @@ fn escalation_choices_by_number_arrows_and_enter() {
     for n in 1..=4 {
         app.update(Msg::Escalation(shell_prompt(), EscalationId(n)));
     }
-    // `2` picks the rule choice directly.
+    // `3` picks the rule choice directly.
     assert_eq!(
-        app.update(key(KeyCode::Char('2'))),
+        app.update(key(KeyCode::Char('3'))),
         vec![Effect::RespondEscalation(
             EscalationId(1),
             EscalationAnswer::AllowAndAddRule
@@ -108,7 +108,7 @@ fn escalation_choices_by_number_arrows_and_enter() {
         app.update(key(KeyCode::Enter)),
         vec![Effect::RespondEscalation(
             EscalationId(2),
-            EscalationAnswer::AllowAndAddRule
+            EscalationAnswer::AllowForSession
         )]
     );
     // j/k move too, and the cursor stops at the last row; a held j moves.
@@ -117,13 +117,14 @@ fn escalation_choices_by_number_arrows_and_enter() {
     app.update(Msg::Key(held));
     app.update(key(KeyCode::Char('j')));
     app.update(key(KeyCode::Char('j')));
+    app.update(key(KeyCode::Char('j')));
     app.update(key(KeyCode::Char('k')));
     app.update(key(KeyCode::Char('j')));
     assert!(matches!(
         app.modal,
         Some(Modal::Escalation {
             dialog: EscalationDialog {
-                cursor: 2,
+                cursor: 3,
                 comment: None,
                 expanded: false,
                 ..
@@ -187,7 +188,8 @@ fn deny_with_a_comment_then_the_queue_and_the_parked_picker() {
             ..
         })
     ));
-    // Enter on row 3 opens it too; an empty Enter denies without a comment.
+    // Enter on row 4 opens it too; an empty Enter denies without a comment.
+    app.update(key(KeyCode::Down));
     app.update(key(KeyCode::Down));
     app.update(key(KeyCode::Down));
     assert!(app.update(key(KeyCode::Enter)).is_empty());
@@ -200,7 +202,7 @@ fn deny_with_a_comment_then_the_queue_and_the_parked_picker() {
     );
     // Ctrl+C in an open field still stops every prompt, and the parked
     // picker comes back.
-    app.update(key(KeyCode::Char('3')));
+    app.update(key(KeyCode::Char('4')));
     type_str(&mut app, "half a thought");
     assert_eq!(
         app.update(ctrl('c')),

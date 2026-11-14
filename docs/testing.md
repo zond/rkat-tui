@@ -84,13 +84,27 @@ removed.
 | Daemon wire | `tests/it/daemon.rs` | The raw JSON-RPC wire below the attach client (handshake, the proxy's method allow-list, endpoint files) |
 | Rendering | `tests/it/render.rs` | Draws the UI into a ratatui `TestBackend` and asserts on rows; there are no snapshot files to update |
 | Confinement | `tests/it/confinement.rs` (and the confined rows of `tests/it/daemon.rs`) | Probes the host sandbox; prints `SKIPPED: <reason>` and passes where the backend is unavailable (nested namespaces, Ubuntu's user-namespace restriction), unless `RKAT_TUI_REQUIRE_SANDBOX=1`, which turns the skip into a failure |
-| Live | `tests/it/e2e_classifier.rs`, `--lib e2e_list_models` | `#[ignore]`; need provider keys. Not part of the gate |
+| Permission corpus | `tests/corpus/permissions/*.toml` (labelled must-allow, must-block and scope-pair cases; a third `held_out`), `tests/it/corpus.rs` | `every_case_passes_the_deterministic_tiers_as_labelled` runs every case through the deterministic tiers with no model (in the gate); `live_corpus` (ignored) runs them through a real classifier model and prints the table |
+| Live | `tests/it/e2e_classifier.rs`, `tests/it/corpus.rs` `live_corpus`, `--lib e2e_list_models` | `#[ignore]`; need provider keys. Not part of the gate |
 
 The live lanes skip a provider whose key is not in the environment:
 
 ```bash
 ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… cargo test --all-features --test it e2e_classifier:: -- --ignored
 ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… cargo test --lib e2e_list_models -- --ignored
+```
+
+The permission corpus's live run costs one classifier review per case
+(stage 1, and stage 2 when stage 1 flags it; stage 2 without its file
+tools). Run it before a policy or classifier-model change, and when a
+policy wording changes rerun only the cases that came out wrong
+(`RKAT_CORPUS_CASES`); the module docs of `tests/it/corpus.rs` list the
+variables (model, provider, `RKAT_CORPUS_POLICY=legacy` for 0.0.4's
+text, sets, a case cap):
+
+```bash
+ANTHROPIC_API_KEY=… RKAT_CORPUS_MODEL=claude-haiku-5-5 cargo nextest run --all-features \
+  --test it --run-ignored only -E 'test(corpus::live_corpus)' --no-capture
 ```
 
 Every behaviour change ships with a test in the matching place. A UI change

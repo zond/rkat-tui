@@ -256,10 +256,89 @@ impl Runner {
             .await
             {
                 Ok(rows) => {
-                    let picker = rule_picker(&rows.rules);
+                    let picker = rule_picker(&rows.rules, &rows.grants);
                     let _ = say.ui_tx.send(Msg::ShowPicker { picker, refresh });
                 }
                 Err(err) => say.notice(NoticeLevel::Warn, format!("cannot list the rules: {err}")),
+            }
+        });
+    }
+
+    /// The `/permissions` picker's confirmed removal of session grant
+    /// `id`: its notice, then the picker again.
+    pub(super) fn grant_removal(&self, id: u64) {
+        let Some(connection) = self.link_or_say("/permissions needs it") else {
+            return;
+        };
+        let say = self.say();
+        tokio::spawn(async move {
+            let done = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::RemoveGrant>(
+                    &connection,
+                    &protocol::GrantParams { id },
+                ),
+            )
+            .await;
+            let (level, text) = outcome_notice(done, "/permissions");
+            say.notice(level, text);
+            match bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::RuleRows>(&connection, &protocol::Empty {}),
+            )
+            .await
+            {
+                Ok(rows) => {
+                    let picker = rule_picker(&rows.rules, &rows.grants);
+                    let _ = say.ui_tx.send(Msg::ShowPicker {
+                        picker,
+                        refresh: true,
+                    });
+                }
+                Err(err) => say.notice(NoticeLevel::Warn, format!("cannot list the rules: {err}")),
+            }
+        });
+    }
+
+    /// `/approve`: the picker over the calls the gate recently blocked;
+    /// after the picker's approval `approve` (its notice shown), a refresh
+    /// of the one open.
+    pub(super) fn approve_picker(
+        &self,
+        approve: Option<(u64, crate::approval::grants::GrantScope)>,
+    ) {
+        let Some(connection) = self.link_or_say("/approve needs it") else {
+            return;
+        };
+        let say = self.say();
+        tokio::spawn(async move {
+            let refresh = approve.is_some();
+            if let Some((id, scope)) = approve {
+                let done = bounded(
+                    CALL_TIMEOUT,
+                    remote::call::<protocol::method::Approve>(
+                        &connection,
+                        &protocol::ApproveParams { id, scope },
+                    ),
+                )
+                .await;
+                let (level, text) = outcome_notice(done, "/approve");
+                say.notice(level, text);
+            }
+            match bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Blocked>(&connection, &protocol::Empty {}),
+            )
+            .await
+            {
+                Ok(list) => {
+                    let picker = approve_picker(&list.calls, crate::pricing::unix_now());
+                    let _ = say.ui_tx.send(Msg::ShowPicker { picker, refresh });
+                }
+                Err(err) => say.notice(
+                    NoticeLevel::Warn,
+                    format!("cannot list the blocked calls: {err}"),
+                ),
             }
         });
     }
@@ -638,10 +717,34 @@ pub(super) fn report_lines(report: &protocol::Report) -> Vec<String> {
 /// says how long the removal lasts: for good for the realm's own rules,
 /// until the daemon restarts for those written in another layer (as
 /// `/permissions rm` does). Adding stays typed; the hint says how.
-pub(super) fn rule_picker(rules: &[crate::approval::desk::RuleRow]) -> crate::ui::ListPicker {
+pub(super) fn rule_picker(
+    rules: &[crate::approval::desk::RuleRow],
+    grants: &[crate::approval::grants::GrantRow],
+) -> crate::ui::ListPicker {
     use crate::approval::rules::RuleOrigin;
     use crate::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
     use ratatui::crossterm::event::KeyCode;
+    let grant_rows = grants.iter().map(|grant| {
+        let what = grant.target.describe();
+        let key = if grant.removable {
+            PickKey::confirmed(
+                KeyCode::Char('d'),
+                PickAct::RemoveGrant(grant.id),
+                format!("remove the session grant of {what}?"),
+            )
+        } else {
+            PickKey::refused(
+                KeyCode::Char('d'),
+                match grant.origin.as_str() {
+                    "default" => "the sandbox grants it by default".to_string(),
+                    "flag" => "it comes from the daemon's command line".to_string(),
+                    "always" => "it is in the realm's tui.toml ([confinement] extra_write): edit that file to drop it".to_string(),
+                    _ => "it is in a tui.toml ([confinement]): edit that file to drop it".to_string(),
+                },
+            )
+        };
+        PickRow::new(format!("grant {what} · {}", grant.origin), vec![key])
+    });
     let rows = rules
         .iter()
         .map(|rule| {
@@ -669,13 +772,95 @@ pub(super) fn rule_picker(rules: &[crate::approval::desk::RuleRow]) -> crate::ui
                 )],
             )
         })
+        .chain(grant_rows)
         .collect();
     ListPicker::new(
         PickerKind::Permissions,
         rows,
-        "no approval rules yet",
-        "↑/↓ move · d remove · /permissions add allow|deny <tool> [pattern] adds one · Esc close",
+        "no approval rules or grants yet",
+        "↑/↓ move · d remove · /permissions add allow|deny <tool> [pattern] adds a rule · /approve grants · Esc close",
     )
+}
+
+/// The `/approve` picker: the calls the gate recently blocked, newest
+/// first; Enter or `o` approves one once, `s` for this session, `a`
+/// always (a call no grant fits says so).
+pub(super) fn approve_picker(
+    calls: &[crate::approval::grants::BlockedCall],
+    now: u64,
+) -> crate::ui::ListPicker {
+    use crate::approval::grants::GrantScope;
+    use crate::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
+    use ratatui::crossterm::event::KeyCode;
+    let rows = calls
+        .iter()
+        .rev()
+        .map(|call| {
+            let once = PickAct::Approve(call.id, GrantScope::Once);
+            let mut keys = vec![
+                PickKey::now(KeyCode::Enter, once.clone()),
+                PickKey::now(KeyCode::Char('o'), once),
+            ];
+            match &call.grant {
+                Some(grant) => {
+                    let what = grant.describe();
+                    keys.push(PickKey::confirmed(
+                        KeyCode::Char('s'),
+                        PickAct::Approve(call.id, GrantScope::Session),
+                        format!("allow {what} for this session?"),
+                    ));
+                    keys.push(PickKey::confirmed(
+                        KeyCode::Char('a'),
+                        PickAct::Approve(call.id, GrantScope::Always),
+                        format!("allow {what} always (written to the realm's tui.toml)?"),
+                    ));
+                }
+                None => {
+                    for code in ['s', 'a'] {
+                        keys.push(PickKey::refused(
+                            KeyCode::Char(code),
+                            "no grant fits this call; Enter approves it once",
+                        ));
+                    }
+                }
+            }
+            let who = call
+                .helper
+                .as_ref()
+                .map_or_else(String::new, |helper| format!(" (helper {helper})"));
+            let rule = call
+                .rule
+                .as_ref()
+                .map_or_else(String::new, |rule| format!(" [{rule}]"));
+            let ago = crate::text::span(now.saturating_sub(call.at), 1);
+            let grant = call.grant.as_ref().map_or_else(String::new, |grant| {
+                format!(" · grant: {}", grant.describe())
+            });
+            PickRow::new(
+                format!(
+                    "#{} {}{who}: {}{rule} · {ago} ago",
+                    call.id, call.tool, call.summary
+                ),
+                keys,
+            )
+            .noted(format!("{}{grant}", call.reason))
+        })
+        .collect();
+    ListPicker::new(
+        PickerKind::Approve,
+        rows,
+        "nothing was blocked recently",
+        "↑/↓ move · Enter/o once · s for this session · a always · Esc close",
+    )
+}
+
+/// What a daemon command's answer says, as a notice.
+fn outcome_notice(done: Result<RuleOutcome, CallFailure>, what: &str) -> (NoticeLevel, String) {
+    match done {
+        Ok(outcome) if outcome.ok => (NoticeLevel::Info, outcome.text),
+        Ok(outcome) => (NoticeLevel::Warn, outcome.text),
+        Err(err) => (NoticeLevel::Error, format!("{what} failed: {err}")),
+    }
 }
 
 /// What a pause, resume or delete of a schedule did, as a notice.

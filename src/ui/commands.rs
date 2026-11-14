@@ -131,6 +131,9 @@ pub enum Command {
     Resume(Option<String>),
     /// `/permissions ...`.
     Rules(RulesCommand),
+    /// `/approve`: the calls the gate recently blocked, to approve once,
+    /// for this session or always.
+    Approve,
     /// `/auto [on|off|resume]`.
     Auto(AutoCommand),
     /// `/mode [default|accept-edits|plan|auto]`: show (`None`) or set the
@@ -425,6 +428,17 @@ pub static COMMANDS: &[CommandSpec] = &[
             ("/permissions rm <n>", "remove rule n (rm or remove)"),
         ],
         parse: |rest| parse_rules(&words(rest)).map(Command::Rules),
+    },
+    CommandSpec {
+        name: "approve",
+        aliases: &[],
+        usage: "",
+        summary: "approve a call the gate blocked: once, for this session or always",
+        help: &[(
+            "/approve",
+            "open a list of the calls the classifier recently blocked (the\nnewest 10): Enter or o runs one once, s allows its directory or\ncall for this session, a always (the realm's tui.toml)",
+        )],
+        parse: |rest| arg_free(rest, Command::Approve),
     },
     CommandSpec {
         name: "trust",
@@ -847,8 +861,9 @@ Keys:
   Home/End                       scroll to top/bottom when the input is empty (Ctrl+Home/End always)
 Approval prompt:
   1, y                           yes, allow once
-  2, a                           yes, allow and add the rule the row shows
-  3, n, Esc                      no: type what the agent should do instead and Enter sends it
+  2, t                           yes, and grant what the row shows for this session
+  3, a                           yes, allow and add the rule the row shows
+  4, n, Esc                      no: type what the agent should do instead and Enter sends it
                                  with the denial (empty Enter or Esc denies without a comment)
   Up/Down, j/k, Enter            move between the rows and pick one
   Ctrl+O                         show the whole arguments when the prompt abbreviates them
@@ -859,11 +874,14 @@ Agent picker (/agents):
   d, then y                      retire the agent: only one idle with no client (its
                                  conversation stays in /resume); any other key keeps it
   Esc, q                         close
-Lists (/schedules, /permissions, /helpers, /mode, /memory):
+Lists (/schedules, /permissions, /approve, /helpers, /mode, /memory):
   Up/Down, j/k                   move
   Enter, p (/schedules)          pause the schedule, or resume a paused one
   d, then y (/schedules)         delete it; any other key keeps it
-  d, then y (/permissions)       remove the rule (adding stays /permissions add)
+  d, then y (/permissions)       remove the rule or the session grant (adding stays /permissions add)
+  Enter, o (/approve)            approve the blocked call once
+  s, then y (/approve)           grant its directory or call for this session
+  a, then y (/approve)           grant it always (the realm's tui.toml)
   Enter (/helpers)               open the helper's full view (Esc returns)
   f (/helpers)                   fold or expand the helper's block in the transcript
   Enter (/mode)                  switch to the mode (a paused auto mode: resume it)
@@ -1078,6 +1096,7 @@ mod tests {
             "model",
             "auto",
             "permissions",
+            "approve",
             "trust",
             "helpers",
             "tasks",
@@ -1093,7 +1112,7 @@ mod tests {
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 34);
+        assert_eq!(seen.len(), 35);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;
@@ -1401,8 +1420,10 @@ mod tests {
             "Home",
             "End",
             "1, y",
-            "2, a",
-            "3, n, Esc",
+            "2, t",
+            "3, a",
+            "/approve",
+            "4, n, Esc",
             "j/k, Enter",
             "stop the turn",
             "queued messages are sent next",

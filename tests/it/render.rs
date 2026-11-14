@@ -197,15 +197,16 @@ fn escalation_modal_is_drawn_over_the_transcript() {
             tool: "shell".into(),
             args_preview: "rm -rf build".into(),
             subjects: vec!["rm -rf build".into()],
+            session_grant: Some("`shell rm -rf build`".into()),
             ..RecordedPrompt::default()
         },
         EscalationId(1),
     ));
     // The numbered choices, the cursor on the first; `s` is a footer hint.
-    let buf = render_buffer(&mut app, W, 14);
+    let buf = render_buffer(&mut app, W, 15);
     let drawn = rows(&buf);
-    // The dialog spans columns 2..58 of rows 1..12.
-    let modal: Vec<String> = drawn[1..12]
+    // The dialog spans columns 2..58 of rows 1..13.
+    let modal: Vec<String> = drawn[1..13]
         .iter()
         .map(|r| r.chars().skip(2).take(56).collect())
         .collect();
@@ -218,22 +219,23 @@ fn escalation_modal_is_drawn_over_the_transcript() {
             "│rm -rf build                                          │",
             "│                                                      │",
             "│❯ 1. Yes, allow once                                  │",
-            "│  2. Yes, allow and add a rule (shell rm -rf build)   │",
-            "│  3. No, and tell the agent what to do instead (Esc)  │",
+            "│  2. Yes, for this session (`shell rm -rf build`)     │",
+            "│  3. Yes, allow and add a rule (shell rm -rf build)   │",
+            "│  4. No, and tell the agent what to do instead (Esc)  │",
             "│                                                      │",
             "│Enter select · s stop the turn · Ctrl+C stop all      │",
             "└──────────────────────────────────────────────────────┘",
         ]
     );
     assert_eq!(buf[(3, 6)].fg, Color::Cyan, "the highlighted row");
-    // ↓ moves the cursor to the rule choice.
+    // ↓ moves the cursor to the session choice.
     app.update(Msg::Key(ratatui::crossterm::event::KeyEvent::from(
         ratatui::crossterm::event::KeyCode::Down,
     )));
-    let moved = rows(&render_buffer(&mut app, W, 14));
+    let moved = rows(&render_buffer(&mut app, W, 15));
     assert!(moved[6].contains("│  1. Yes, allow once"), "{}", moved[6]);
     assert!(
-        moved[7].contains("│❯ 2. Yes, allow and add a rule (shell rm -rf build)"),
+        moved[7].contains("│❯ 2. Yes, for this session (`shell rm -rf build`)"),
         "{}",
         moved[7]
     );
@@ -257,12 +259,12 @@ fn escalation_deny_comment_field_snapshot() {
     for c in "use .env.example".chars() {
         app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
     }
-    let drawn = rows(&render_buffer(&mut app, W, 16));
+    let drawn = rows(&render_buffer(&mut app, W, 17));
     let modal: Vec<String> = drawn
         .iter()
         .map(|r| r.chars().skip(2).take(56).collect::<String>())
         .skip_while(|r| !r.starts_with('┌'))
-        .take(13)
+        .take(14)
         .collect();
     assert_eq!(
         modal,
@@ -272,8 +274,9 @@ fn escalation_deny_comment_field_snapshot() {
             "│.env.local                                            │",
             "│                                                      │",
             "│  1. Yes, allow once                                  │",
-            "│  2. Yes, allow and add a rule (write_file .env.local)│",
-            "│❯ 3. No, and tell the agent what to do instead (Esc)  │",
+            "│  2. Yes, for this session (no grant fits)            │",
+            "│  3. Yes, allow and add a rule (write_file .env.local)│",
+            "│❯ 4. No, and tell the agent what to do instead (Esc)  │",
             "│                                                      │",
             "│Tell the agent what to do instead:                    │",
             "│› use .env.example                                    │",

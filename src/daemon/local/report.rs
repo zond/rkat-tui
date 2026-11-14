@@ -311,6 +311,64 @@ impl Local {
     /// (`/new`, `/resume`, a daemon restart). The agent's MCP servers
     /// are part of its mob's definition, made when the mob was first
     /// created; trusting `.rkat/mcp.toml` here does not add them to it.
+    /// The session of `caller`'s agent.
+    fn session_of_caller(&self, caller: &Caller) -> Result<meerkat_core::SessionId, Refusal> {
+        let agent = self.agent_of(caller)?;
+        self.core.conversations.current(&agent).ok_or_else(|| {
+            Refusal::new(
+                protocol::NO_AGENT,
+                format!("agent {agent} has no conversation open"),
+            )
+        })
+    }
+
+    /// `rkat/rule_rows`: the rules, and the grants in force for `caller`'s
+    /// agent.
+    pub(super) fn rule_and_grant_rows(&self, caller: &Caller) -> crate::approval::desk::RuleRows {
+        let mut rows = crate::approval::desk::rule_rows(&self.core.engine);
+        let session = self.session_of_caller(caller).ok();
+        rows.grants = self.core.engine.grant_rows(session.as_ref());
+        rows
+    }
+
+    /// `rkat/blocked`: the calls of `caller`'s agent the gate recently
+    /// blocked.
+    pub(super) fn blocked(&self, caller: &Caller) -> Result<protocol::BlockedList, Refusal> {
+        let session = self.session_of_caller(caller)?;
+        Ok(protocol::BlockedList {
+            calls: self.core.engine.blocked(&session),
+        })
+    }
+
+    /// `rkat/approve`: the user approves blocked call `id`.
+    pub(super) fn approve(
+        &self,
+        caller: &Caller,
+        id: u64,
+        scope: crate::approval::grants::GrantScope,
+    ) -> Result<RuleOutcome, Refusal> {
+        let session = self.session_of_caller(caller)?;
+        Ok(match self.core.engine.approve(&session, id, scope) {
+            Ok(approved) => RuleOutcome {
+                ok: true,
+                text: approved.notice,
+            },
+            Err(why) => RuleOutcome {
+                ok: false,
+                text: why,
+            },
+        })
+    }
+
+    /// `rkat/remove_grant`: remove session grant `id` of `caller`'s agent.
+    pub(super) fn remove_grant(&self, caller: &Caller, id: u64) -> Result<RuleOutcome, Refusal> {
+        let session = self.session_of_caller(caller)?;
+        Ok(match self.core.engine.remove_grant(&session, id) {
+            Ok(text) => RuleOutcome { ok: true, text },
+            Err(text) => RuleOutcome { ok: false, text },
+        })
+    }
+
     pub(super) fn trust_project(&self) -> RuleOutcome {
         match self.parts.project.trust_all() {
             Ok(recorded) if recorded.is_empty() => RuleOutcome {

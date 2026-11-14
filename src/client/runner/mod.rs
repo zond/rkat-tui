@@ -1160,6 +1160,9 @@ impl Runner {
             }
             Effect::RequestRulePicker => self.rule_picker(None),
             Effect::PickedRuleRemoval(n) => self.rule_picker(Some(n)),
+            Effect::PickedGrantRemoval(id) => self.grant_removal(id),
+            Effect::RequestApprovePicker => self.approve_picker(None),
+            Effect::PickedApproval(id, scope) => self.approve_picker(Some((id, scope))),
             Effect::ListRules => {
                 self.outcome_command::<protocol::method::Rules>(RuleCommand::List, "/permissions");
             }
@@ -1223,7 +1226,7 @@ async fn sleep_until(deadline: Option<Instant>) {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::commands::{
-        agent_entries, others_notice, report_lines, rule_picker, schedule_picker,
+        agent_entries, approve_picker, others_notice, report_lines, rule_picker, schedule_picker,
     };
     use super::turn::model_switch;
     use super::*;
@@ -1314,11 +1317,14 @@ mod tests {
             literal,
             origin,
         };
-        let mut picker = rule_picker(&[
-            rule(1, false, Some("git status*"), false, RuleOrigin::Realm),
-            rule(4, true, Some("git push"), true, RuleOrigin::Global),
-            rule(7, false, None, false, RuleOrigin::Cli),
-        ]);
+        let mut picker = rule_picker(
+            &[
+                rule(1, false, Some("git status*"), false, RuleOrigin::Realm),
+                rule(4, true, Some("git push"), true, RuleOrigin::Global),
+                rule(7, false, None, false, RuleOrigin::Cli),
+            ],
+            &[],
+        );
         let texts: Vec<&str> = picker.rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(
             texts,
@@ -1362,9 +1368,120 @@ mod tests {
             "{}",
             question(&picker)
         );
-        let none = rule_picker(&[]);
+        let none = rule_picker(&[], &[]);
         assert!(none.rows.is_empty());
         assert!(none.footer.contains("/permissions add"), "{}", none.footer);
+    }
+
+    /// `/permissions` lists the grants in force with where each comes
+    /// from; only a session grant can be removed there, the others say
+    /// where to drop them.
+    #[test]
+    fn the_rule_picker_lists_grants_and_removes_session_ones() {
+        use crate::approval::grants::{GrantRow, GrantTarget};
+        use crate::ui::{ModalKey, PickAct, PickerLine};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let grant = |id, origin: &str, removable| GrantRow {
+            id,
+            target: GrantTarget::Dir {
+                path: format!("/data/{origin}").into(),
+            },
+            origin: origin.into(),
+            removable,
+        };
+        let mut picker = rule_picker(
+            &[],
+            &[
+                grant(0, "default", false),
+                grant(0, "flag", false),
+                grant(5, "always", false),
+                grant(9, "session", true),
+            ],
+        );
+        let texts: Vec<&str> = picker.rows.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "grant writes under `/data/default` · default",
+                "grant writes under `/data/flag` · flag",
+                "grant writes under `/data/always` · always",
+                "grant writes under `/data/session` · session",
+            ]
+        );
+        let press = |code| KeyEvent::from(code);
+        picker.key(&press(KeyCode::Char('d')));
+        assert!(
+            matches!(&picker.line, Some(PickerLine::Refused(why)) if why.contains("by default"))
+        );
+        for _ in 0..3 {
+            picker.key(&press(KeyCode::Down));
+        }
+        picker.key(&press(KeyCode::Char('d')));
+        assert_eq!(
+            picker.key(&press(KeyCode::Char('y'))),
+            ModalKey::Choose(PickAct::RemoveGrant(9))
+        );
+    }
+
+    /// `/approve` lists the blocked calls newest first; Enter approves once,
+    /// `s` and `a` ask before a session or lasting grant, and a call no
+    /// grant fits says so.
+    #[test]
+    fn the_approve_picker_offers_once_session_and_always() {
+        use crate::approval::grants::{BlockedCall, GrantScope, GrantTarget};
+        use crate::ui::{ModalKey, PickAct, PickerLine};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let call = |id, grant| BlockedCall {
+            id,
+            tool: "shell".into(),
+            helper: None,
+            summary: format!("cmd {id}"),
+            rule: Some("T3".into()),
+            path: None,
+            reason: "the safety classifier blocked it: x".into(),
+            at: 100,
+            grant,
+        };
+        let mut picker = approve_picker(
+            &[
+                call(1, None),
+                call(
+                    2,
+                    Some(GrantTarget::Dir {
+                        path: "/data/store".into(),
+                    }),
+                ),
+            ],
+            160,
+        );
+        assert!(
+            picker.rows[0]
+                .text
+                .starts_with("#2 shell: cmd 2 [T3] · 1m ago"),
+            "{}",
+            picker.rows[0].text
+        );
+        let press = |code| KeyEvent::from(code);
+        assert_eq!(
+            picker.key(&press(KeyCode::Enter)),
+            ModalKey::Choose(PickAct::Approve(2, GrantScope::Once))
+        );
+        picker.key(&press(KeyCode::Char('s')));
+        assert!(
+            matches!(&picker.line, Some(PickerLine::Confirm { question, .. })
+            if question.contains("writes under `/data/store` for this session"))
+        );
+        assert_eq!(
+            picker.key(&press(KeyCode::Char('y'))),
+            ModalKey::Choose(PickAct::Approve(2, GrantScope::Session))
+        );
+        picker.key(&press(KeyCode::Down));
+        picker.key(&press(KeyCode::Char('a')));
+        assert!(
+            matches!(&picker.line, Some(PickerLine::Refused(why)) if why.contains("no grant fits"))
+        );
+        let empty = approve_picker(&[], 0);
+        assert!(empty.rows.is_empty() && empty.empty.contains("nothing was blocked"));
     }
 
     /// The start-up notice about the other agents, for a client that

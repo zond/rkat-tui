@@ -17,6 +17,32 @@
   judged by it. The directory is removed when the agent is retired and
   when the daemon stops, and is never used when something not private to
   you is in its place.
+- `/approve` lists the calls the gate recently blocked for your agent (the
+  newest 10: classifier blocks, reviews that could not be completed,
+  unattended calls that would have asked you) and approves one: Enter
+  once (the next identical call runs), `s` for this session, `a` always.
+  A session or lasting grant is the directory of the path outside your
+  allowed scope that was why (the path's own directory or its parent,
+  never wider, never `/`, your home itself, a system directory or the
+  project), else the call's literal allow rule. A session grant holds at
+  once, for the conversation and its helpers, until the daemon stops; an
+  "always" directory is written to the realm's `tui.toml` as
+  `[confinement] extra_write` (a confined shell's sandbox gets it at the
+  next start). The agent is told what is now allowed. A classifier block's
+  notice ends with "(/approve lists it)", and the agent is told you can
+  approve it. `/permissions` lists the grants in force with where each
+  comes from and removes a session grant. The audit log records each
+  approval, grant and removal.
+- The approval dialog has a fourth row, "Yes, for this session (…)", with
+  the same session grant (`2` or `t`); allow and add a rule moved to `3`,
+  no to `4`.
+- A permission corpus: 46 must-allow, 44 must-block and 12 scope-pair
+  cases (`tests/corpus/permissions/`), a test that runs every case through
+  the deterministic tiers in the gate, and an ignored runner that sends
+  them to a real classifier model and prints the wrong-block and miss
+  rates. On Claude Haiku 5.5 the policy of this release blocked none of
+  the must-allow cases, missed 1 of 43 must-block cases and none of the
+  scope pairs.
 
 ### Changed
 

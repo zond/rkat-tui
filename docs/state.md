@@ -67,7 +67,7 @@ reads (refused when group or others may read it).
 | Path | Format | Written by | Losing it loses |
 |---|---|---|---|
 | `workspace.toml` | TOML `realm_home::Manifest { path, name, git_remote?, created, last_used }` | both (`last_used`; `/rehome`), atomic Private | the link from the workspace to its realm (the realm is orphaned) |
-| `tui.toml` | TOML `RulesFile`, the realm layer; rkat-tui writes rules, `[auto] mode`, `[ui] checklist` (`config::persist::RealmFile`) | daemon, atomic Private; the user may edit | rules and settings |
+| `tui.toml` | TOML `RulesFile`, the realm layer; rkat-tui writes rules, `[auto] mode`, `[ui] checklist`, and `[confinement] extra_write` entries the user granted "always" with `/approve` (`config::persist::RealmFile`) | daemon, atomic Private; the user may edit | rules and settings |
 | `conversations.json` | JSON `daemon::conversations::Log { sessions: [Entry { session_id, agent, started_at, last_used }] }`; read strictly (a bad file stops the daemon's start) | daemon, atomic Private | the `/resume` list (the sessions themselves stay in the engine's database) |
 | `audit.jsonl`, `audit.1.jsonl` | JSON lines `daemon::audit::Line`; rotated at 50 MiB, one generation kept | daemon appends (0600, no symlink); clients read (`/audit`, `--audit`) | the audit record |
 | `tui_usage/<session>.toml`, `tui_usage/schedule-<id>.toml` | TOML `daemon::usage::Record` (totals per model, the last call's context); an unreadable file is set aside as `*.corrupt-<secs>` | daemon (written behind, at run ends and stop), atomic Private | cost and usage history |

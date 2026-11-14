@@ -518,6 +518,104 @@ async fn the_rule_picker_removes_a_rule_from_the_daemon() {
     daemon.stop().await;
 }
 
+/// `/approve` through the daemon: the classifier blocks a write to a
+/// directory outside the project; the block's notice says `/approve`
+/// lists it; the picker offers the directory; "for this session" makes
+/// the next write there an in-project edit with no classifier call, the
+/// agent is told in a system note, `/permissions` lists the grant as the
+/// session's and removes it, and the audit log records both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
+    use rkat_tui::approval::grants::{GrantScope, GrantTarget};
+    use rkat_tui::ui::PickerKind;
+    let ws = Workspace::new();
+    let store = ws.sibling("store");
+    std::fs::create_dir_all(&store).unwrap();
+    let store = std::fs::canonicalize(&store).unwrap();
+    let target = store.join("index.json").display().to_string();
+    let llm = ScriptedLlmClient::new(vec![
+        write("w1", &target, "{}"),
+        Step::Text("blocked"),
+        write("w2", &target, "{}"),
+        Step::Text("written"),
+    ]);
+    let setup = Setup {
+        classifier: Arc::new(ScriptedClassifier {
+            verdicts: Mutex::new(vec![ClassifierVerdict::Block {
+                rule: Some("T3".into()),
+                reason: "it writes outside the project".into(),
+                annotation: None,
+                path: Some(target.clone()),
+            }]),
+            ..ScriptedClassifier::default()
+        }),
+        ..Setup::default()
+    };
+    let daemon = start(&ws.root, &llm, &setup).await;
+    let mut client = attach(&ws.root).await;
+    client.set_mode(PermissionMode::Auto).await;
+    client.send(Effect::StartTurn("write the store index".into()));
+    assert_eq!(client.turn_finished().await.unwrap().text, "blocked");
+    client
+        .saw(|msg| {
+            matches!(msg, Msg::Approval(notice)
+            if notice.reason.as_deref().is_some_and(|r| r.contains("(/approve lists it)")))
+        })
+        .await;
+    client.send(Effect::RequestApprovePicker);
+    let shown = client
+        .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, .. } if picker.kind == PickerKind::Approve))
+        .await;
+    let Msg::ShowPicker { picker, .. } = shown else {
+        unreachable!()
+    };
+    assert_eq!(picker.rows.len(), 1, "{:?}", picker.rows);
+    let note = picker.rows[0].note.clone().unwrap_or_default();
+    assert!(
+        note.contains(&format!("writes under `{}`", store.display())),
+        "{note}"
+    );
+    let id = daemon.engine().blocked(&daemon.session)[0].id;
+    client.send(Effect::PickedApproval(id, GrantScope::Session));
+    client
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("granted for this session")))
+        .await;
+    let reviews = setup.classifier.tools.lock().len();
+    client.send(Effect::StartTurn("try again".into()));
+    assert_eq!(client.turn_finished().await.unwrap().text, "written");
+    assert_eq!(
+        setup.classifier.tools.lock().len(),
+        reviews,
+        "no classifier call"
+    );
+    assert!(std::path::Path::new(&target).exists());
+    let system = llm.recorded().last().unwrap().system();
+    assert!(system.contains("The user granted writes under"), "{system}");
+    // `/permissions` lists it as the session's and removes it.
+    let rows = daemon.engine().grant_rows(Some(&daemon.session));
+    let grant = rows
+        .iter()
+        .find(|row| row.origin == "session")
+        .unwrap_or_else(|| panic!("{rows:?}"));
+    assert_eq!(
+        grant.target,
+        GrantTarget::Dir {
+            path: store.clone()
+        }
+    );
+    client.send(Effect::PickedGrantRemoval(grant.id));
+    client
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("removed the session grant")))
+        .await;
+    let audit = std::fs::read_to_string(common::realm_of(&ws.root).join("audit.jsonl")).unwrap();
+    assert!(
+        audit.contains("grant_added") && audit.contains("grant_removed"),
+        "{audit}"
+    );
+    client.quit().await;
+    daemon.stop().await;
+}
+
 /// The `/mode` picker switches the daemon's mode: its Enter on another
 /// row is the mode switch, the daemon pushes the new mode, and the next
 /// picker marks it.

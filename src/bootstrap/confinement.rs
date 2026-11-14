@@ -596,6 +596,32 @@ pub struct PlannedGrants {
     pub user_write: Vec<PathBuf>,
     /// The canonical directories the user named for reading.
     pub user_read: Vec<PathBuf>,
+    /// Which of the user's directories came from the command line
+    /// (`--confinement-write`/`--confinement-read`), not a `tui.toml`.
+    pub from_flag: Vec<PathBuf>,
+}
+
+/// Whether `dir` may be written as a `[confinement] extra_write` entry of
+/// the realm's `tui.toml` without refusing the next start: a grantable
+/// directory ([`validate_extra`]) apart from the workspace and from every
+/// directory the user already named (`named`).
+///
+/// # Errors
+///
+/// [`ExtraGrantProblem`]: why it may not.
+pub fn grantable_extra_write(
+    dir: &Path,
+    workspace: &Path,
+    named: &[PathBuf],
+) -> Result<PathBuf, ExtraGrantProblem> {
+    let path = validate_extra(dir)?;
+    if let Some(ws) = canonical(workspace, true).filter(|ws| overlaps(&path, ws)) {
+        return Err(ExtraGrantProblem::OverlapsWorkspace(ws));
+    }
+    if let Some(other) = named.iter().find(|other| overlaps(&path, other)) {
+        return Err(ExtraGrantProblem::OverlapsGrant(other.clone()));
+    }
+    Ok(path)
 }
 
 impl PlannedGrants {
@@ -631,6 +657,7 @@ impl PlannedGrants {
             user_write: sorted(self.user_write.clone()),
             user_read: sorted(self.user_read.clone()),
             scratch: None,
+            from_flag: sorted(self.from_flag.clone()),
         }
     }
 }
@@ -657,6 +684,11 @@ pub fn plan_grants(
     read.retain(|dir| !clashes(dir));
     files.retain(|file| !granted().any(|grant| file.starts_with(&grant.path)));
     let (mut user_write, mut user_read) = (Vec::new(), Vec::new());
+    let from_flag = accepted
+        .iter()
+        .filter(|grant| grant.from_cli)
+        .map(|grant| grant.path.clone())
+        .collect();
     for grant in accepted {
         let (sandbox, user) = if grant.writable {
             (&mut write, &mut user_write)
@@ -674,6 +706,7 @@ pub fn plan_grants(
         files,
         user_write,
         user_read,
+        from_flag,
     })
 }
 

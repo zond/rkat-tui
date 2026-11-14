@@ -39,6 +39,8 @@ pub enum PickerKind {
     Unwire,
     /// `/agents`.
     Agents,
+    /// `/approve`.
+    Approve,
 }
 
 impl PickerKind {
@@ -54,6 +56,7 @@ impl PickerKind {
             Self::Wire => " Agents of other workspaces ",
             Self::Unwire => " Wires to other workspaces ",
             Self::Agents => " Agents ",
+            Self::Approve => " Recently blocked ",
         }
     }
 
@@ -73,6 +76,10 @@ pub enum PickAct {
     Schedule(ScheduleOp, String),
     /// `/permissions rm <n>`, then the list again.
     RemoveRule(usize),
+    /// Remove session grant `id`, then the list again.
+    RemoveGrant(u64),
+    /// Approve blocked call `id` for the scope, then the list again.
+    Approve(u64, crate::approval::grants::GrantScope),
     /// `/mode <mode>` (`/auto resume` for a paused auto mode).
     SetMode(PermissionMode),
     /// `/memory [workspace | user | system]`.
@@ -113,6 +120,8 @@ impl PickAct {
             self,
             Self::Schedule(..)
                 | Self::RemoveRule(_)
+                | Self::RemoveGrant(_)
+                | Self::Approve(..)
                 | Self::FoldHelper(_)
                 | Self::Wire { .. }
                 | Self::Unwire { .. }
@@ -606,6 +615,8 @@ impl App {
         match act {
             PickAct::Schedule(op, id) => fx.push(Effect::PickedSchedule(op, id)),
             PickAct::RemoveRule(n) => fx.push(Effect::PickedRuleRemoval(n)),
+            PickAct::RemoveGrant(id) => fx.push(Effect::PickedGrantRemoval(id)),
+            PickAct::Approve(id, scope) => fx.push(Effect::PickedApproval(id, scope)),
             PickAct::SetMode(mode) => fx.push(Effect::SetMode(mode)),
             PickAct::OpenMemory(target) => fx.push(Effect::OpenMemory(target)),
             PickAct::Wire { workspace, agent } => fx.push(Effect::WireTo { workspace, agent }),

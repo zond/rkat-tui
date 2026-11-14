@@ -82,6 +82,12 @@ pub fn note_messages(note: ApprovalNote) -> Vec<Msg> {
                 || decider == Decider::Human
                 || matches!(tier, Tier::Classifier | Tier::AskUser)
             {
+                // A classifier block can be approved: the notice says how.
+                let reason = if !allowed && decider == Decider::Classifier {
+                    reason.map(|reason| format!("{reason} (/approve lists it)"))
+                } else {
+                    reason
+                };
                 vec![Msg::Approval(ApprovalNotice {
                     tool,
                     tier: format!("{tier} · {decider:?}").to_lowercase(),

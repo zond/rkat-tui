@@ -651,6 +651,15 @@ pub enum Effect {
     /// The rule picker's confirmed removal of rule `n`: as
     /// `/permissions rm <n>`, then the picker's list again.
     PickedRuleRemoval(usize),
+    /// The rule picker's confirmed removal of session grant `id`, then the
+    /// picker's list again.
+    PickedGrantRemoval(u64),
+    /// `/approve`: open the picker over the calls the gate recently
+    /// blocked (answered with [`Msg::ShowPicker`]).
+    RequestApprovePicker,
+    /// The `/approve` picker's choice: approve blocked call `id` for the
+    /// scope, then the picker's list again.
+    PickedApproval(u64, crate::approval::grants::GrantScope),
     /// `/trust`: record every project input's digest
     /// in the host trust record; their servers and hooks run from the next
     /// session.

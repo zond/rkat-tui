@@ -105,10 +105,10 @@ const ARGS_PAGE: usize = MAX_ARGS_LINES - 1;
 pub struct EscalationId(pub u64);
 
 /// How many numbered choices the escalation dialog lists.
-const ESCALATION_CHOICES: usize = 3;
+const ESCALATION_CHOICES: usize = 4;
 
 /// Index of the "No, and tell the agent what to do instead" choice.
-const DENY_CHOICE: usize = 2;
+const DENY_CHOICE: usize = 3;
 
 /// Longest deny comment, in characters.
 const MAX_COMMENT_CHARS: usize = 2000;
@@ -188,8 +188,8 @@ impl EscalationDialog {
     }
 
     /// Apply a key: arrows (and `j`/`k`) move the cursor, Enter picks the
-    /// highlighted choice, `1`-`3` pick directly, and the accelerators
-    /// `y`, `a`, `n`/Esc and `s` answer at once. The deny choice opens the
+    /// highlighted choice, `1`-`4` pick directly, and the accelerators
+    /// `y`, `t` (this session), `a`, `n`/Esc and `s` answer at once. The deny choice opens the
     /// comment field; there Enter denies with the comment (none when
     /// empty) and Esc denies without one. `None`: no answer yet.
     fn answer(&mut self, code: KeyCode) -> Option<EscalationAnswer> {
@@ -223,9 +223,10 @@ impl EscalationDialog {
                 None
             }
             KeyCode::Enter => self.pick(self.cursor),
-            KeyCode::Char(c @ '1'..='3') => self.pick(usize::from(c as u8 - b'1')),
+            KeyCode::Char(c @ '1'..='4') => self.pick(usize::from(c as u8 - b'1')),
             KeyCode::Char('y' | 'Y') => self.pick(0),
-            KeyCode::Char('a' | 'A') => self.pick(1),
+            KeyCode::Char('t' | 'T') => self.pick(1),
+            KeyCode::Char('a' | 'A') => self.pick(2),
             KeyCode::Char('n' | 'N') | KeyCode::Esc => self.pick(DENY_CHOICE),
             KeyCode::Char('s' | 'S') => Some(EscalationAnswer::Stop),
             _ => None,
@@ -250,7 +251,8 @@ impl EscalationDialog {
     fn pick(&mut self, index: usize) -> Option<EscalationAnswer> {
         match index {
             0 => Some(EscalationAnswer::AllowOnce),
-            1 => Some(EscalationAnswer::AllowAndAddRule),
+            1 => Some(EscalationAnswer::AllowForSession),
+            2 => Some(EscalationAnswer::AllowAndAddRule),
             _ => {
                 self.cursor = DENY_CHOICE;
                 self.comment = Some(String::new());
@@ -817,8 +819,13 @@ fn escalation_lines(
         Some(rule) => format!("Yes, allow and add a rule ({rule})"),
         None => "Yes, allow (no rule fits this action)".to_string(),
     };
+    let session = match &prompt.session_grant {
+        Some(grant) => format!("Yes, for this session ({grant})"),
+        None => "Yes, for this session (no grant fits)".to_string(),
+    };
     let choices = [
         "Yes, allow once".to_string(),
+        session,
         rule,
         "No, and tell the agent what to do instead (Esc)".to_string(),
     ];
@@ -1306,7 +1313,7 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(d.answer(KeyCode::Down), None);
         }
-        assert_eq!(d.cursor, 2);
+        assert_eq!(d.cursor, 3);
         assert_eq!(d.answer(KeyCode::Char('k')), None);
         assert_eq!(
             d.answer(KeyCode::Enter),
@@ -1314,32 +1321,34 @@ mod tests {
         );
         for (c, answer) in [
             ('1', EscalationAnswer::AllowOnce),
-            ('2', EscalationAnswer::AllowAndAddRule),
+            ('2', EscalationAnswer::AllowForSession),
+            ('3', EscalationAnswer::AllowAndAddRule),
             ('y', EscalationAnswer::AllowOnce),
+            ('t', EscalationAnswer::AllowForSession),
             ('a', EscalationAnswer::AllowAndAddRule),
             ('s', EscalationAnswer::Stop),
         ] {
             assert_eq!(d.answer(KeyCode::Char(c)), Some(answer), "{c}");
         }
-        assert_eq!(d.answer(KeyCode::Char('4')), None);
+        assert_eq!(d.answer(KeyCode::Char('5')), None);
         assert_eq!(d.answer(KeyCode::Char('x')), None);
         assert_eq!(d.comment, None);
-        // `3`, `n`, Esc and Enter on row 3 open the comment field; there
+        // `4`, `n`, Esc and Enter on row 4 open the comment field; there
         // Esc denies without a comment.
         for open in [
-            KeyCode::Char('3'),
+            KeyCode::Char('4'),
             KeyCode::Char('n'),
             KeyCode::Char('N'),
             KeyCode::Esc,
         ] {
             let mut d = EscalationDialog::default();
             assert_eq!(d.answer(open), None, "{open:?}");
-            assert_eq!(d.cursor, 2);
+            assert_eq!(d.cursor, 3);
             assert_eq!(d.comment.as_deref(), Some(""));
             assert_eq!(d.answer(KeyCode::Esc), Some(deny(None)));
         }
         let mut d = EscalationDialog {
-            cursor: 2,
+            cursor: 3,
             ..EscalationDialog::default()
         };
         assert_eq!(d.answer(KeyCode::Enter), None);
@@ -1353,7 +1362,7 @@ mod tests {
         let mut d = EscalationDialog::default();
         d.type_text("ignored while closed");
         assert_eq!(d.comment, None);
-        d.answer(KeyCode::Char('3'));
+        d.answer(KeyCode::Char('4'));
         // Letters that answer elsewhere are text here, `s` included.
         for c in "use git mvx".chars() {
             assert_eq!(d.answer(KeyCode::Char(c)), None);
@@ -1371,7 +1380,7 @@ mod tests {
             None,
             "arrows do not move in the field"
         );
-        assert_eq!(d.cursor, 2);
+        assert_eq!(d.cursor, 3);
         assert_eq!(
             d.answer(KeyCode::Enter),
             Some(EscalationAnswer::Deny {

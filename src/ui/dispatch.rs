@@ -180,6 +180,7 @@ impl App {
             Command::Auto(AutoCommand::Off) => fx.push(Effect::SetMode(PermissionMode::Manual)),
             Command::Mode(Some(mode)) => fx.push(Effect::SetMode(mode)),
             Command::Rules(RulesCommand::Pick) => fx.push(Effect::RequestRulePicker),
+            Command::Approve => fx.push(Effect::RequestApprovePicker),
             Command::Rules(RulesCommand::List) => fx.push(Effect::ListRules),
             Command::Rules(RulesCommand::Add {
                 effect,

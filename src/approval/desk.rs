@@ -29,6 +29,9 @@ use super::rules::{Rule, RuleId, RuleKind, RuleOrigin, RuleSet, RulesError};
 pub enum EscalationAnswer {
     /// Allow this call only.
     AllowOnce,
+    /// Allow it and grant what the dialog named for this session
+    /// ([`RecordedPrompt::session_grant`]).
+    AllowForSession,
     /// Allow and persist the literal allow rule of the call's first
     /// subject ([`RecordedPrompt::rule`]).
     AllowAndAddRule,
@@ -48,6 +51,7 @@ impl EscalationAnswer {
     pub fn remote(&self) -> (RemoteAnswer, Option<&str>) {
         match self {
             Self::AllowOnce => (RemoteAnswer::AllowOnce, None),
+            Self::AllowForSession => (RemoteAnswer::AllowForSession, None),
             Self::AllowAndAddRule => (RemoteAnswer::AllowAndAddRule, None),
             Self::Deny { comment } => (RemoteAnswer::Deny, comment.as_deref()),
             Self::Stop => (RemoteAnswer::Stop, None),
@@ -65,10 +69,10 @@ impl EscalationAnswer {
         reason: Option<&str>,
     ) -> Self {
         if approve {
-            if answer == Some(RemoteAnswer::AllowAndAddRule) {
-                Self::AllowAndAddRule
-            } else {
-                Self::AllowOnce
+            match answer {
+                Some(RemoteAnswer::AllowAndAddRule) => Self::AllowAndAddRule,
+                Some(RemoteAnswer::AllowForSession) => Self::AllowForSession,
+                _ => Self::AllowOnce,
             }
         } else if answer == Some(RemoteAnswer::Stop) {
             Self::Stop
@@ -89,6 +93,8 @@ impl EscalationAnswer {
 pub enum RemoteAnswer {
     /// Allow this call.
     AllowOnce,
+    /// Allow it and grant what the dialog named for this session.
+    AllowForSession,
     /// Allow and add the literal allow rule of the call's first subject.
     AllowAndAddRule,
     /// Deny this call (the decision's reason is the user's comment).
@@ -102,7 +108,9 @@ impl RemoteAnswer {
     #[must_use]
     pub fn decision(self) -> ApprovalDecision {
         match self {
-            Self::AllowOnce | Self::AllowAndAddRule => ApprovalDecision::Approve,
+            Self::AllowOnce | Self::AllowForSession | Self::AllowAndAddRule => {
+                ApprovalDecision::Approve
+            }
             Self::Deny | Self::Stop => ApprovalDecision::Deny,
         }
     }
@@ -146,6 +154,7 @@ pub fn answered(
 ) -> (HumanDecision, Option<AllowRuleError>) {
     match answer {
         EscalationAnswer::AllowOnce => (HumanDecision::AllowOnce, None),
+        EscalationAnswer::AllowForSession => (HumanDecision::AllowForSession, None),
         EscalationAnswer::AllowAndAddRule => {
             // A literal rule over the canonical subject: matches exactly
             // this command or path, no glob semantics to escape.
@@ -353,6 +362,10 @@ pub struct RuleRow {
 pub struct RuleRows {
     /// The rules.
     pub rules: Vec<RuleRow>,
+    /// The directory and session grants in force for the asking client's
+    /// agent ([`super::ApprovalEngine::grant_rows`]).
+    #[serde(default)]
+    pub grants: Vec<super::grants::GrantRow>,
 }
 
 /// The rules of `engine` as the `/permissions` picker shows them.
@@ -373,6 +386,7 @@ pub fn rule_rows(engine: &ApprovalEngine) -> RuleRows {
                 origin: rule.origin,
             })
             .collect(),
+        grants: Vec::new(),
     }
 }
 

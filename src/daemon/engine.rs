@@ -337,7 +337,13 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         &decisions,
         spawning_rx,
     );
-    let notes_task = forward_approval_notes(&decisions, &ledger, &engine, approval_events);
+    let notes_task = forward_approval_notes(
+        &decisions,
+        &ledger,
+        &engine,
+        approval_events,
+        Some((Arc::clone(&state), Arc::clone(&registry))),
+    );
     let (desk, desk_task) = Desk::spawn(
         Arc::clone(&decisions),
         engine.escalation_timeout(),
@@ -863,12 +869,14 @@ fn tagged_diffs(
 /// Push every event of the approval engine's `events` to the clients as
 /// an [`ApprovalNote`](super::protocol::ApprovalNote) (classifier verdicts, pauses, the classifier's work),
 /// and count each classifier call in `ledger` for the conversation whose
-/// call it judged, until the engine is gone.
+/// call it judged, until the engine is gone. A grant's note goes to the
+/// agent it is for (`granted`: the mob and the helper registry).
 fn forward_approval_notes(
     decisions: &Arc<Decisions>,
     ledger: &Arc<super::usage::Ledger>,
     engine: &Arc<ApprovalEngine>,
     events: Option<tokio::sync::mpsc::UnboundedReceiver<crate::approval::ApprovalEvent>>,
+    granted: Option<(Arc<MobMcpState>, Arc<HelperRegistry>)>,
 ) -> tokio::task::JoinHandle<()> {
     let decisions = Arc::clone(decisions);
     let ledger = Arc::clone(ledger);
@@ -878,6 +886,23 @@ fn forward_approval_notes(
             return;
         };
         while let Some(event) = events.recv().await {
+            if let crate::approval::ApprovalEvent::Granted { session_id, note } = &event {
+                // The agent the grant is for is told what is now allowed,
+                // so it stops avoiding it.
+                if let Some((state, registry)) = granted.as_ref()
+                    && let Some(key) = registry.root_of_session(session_id)
+                    && let Err(err) = super::agents::append_note(
+                        state,
+                        key.member.as_str(),
+                        super::local::SYSTEM_CONTEXT_SOURCE,
+                        note.clone(),
+                    )
+                    .await
+                {
+                    tracing::warn!(error = %err, "the agent could not be told about a grant");
+                }
+                continue;
+            }
             if let crate::approval::ApprovalEvent::ClassifierUsage {
                 session_id,
                 model,

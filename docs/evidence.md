@@ -8850,3 +8850,121 @@ call is done). Pinned by
 `a_peer_woken_agent_with_no_client_is_denied_what_needs_review` and
 `a_fired_schedule_is_unattended_while_nobody_is_attached` (the classifier
 is asked; a failed review is denied and shown to the next client).
+
+## Approving a block, and grants that stick (owner decision, 2026-11-14)
+
+Before, a classifier block in unpaused auto mode went straight back to
+the agent: the user had no dialog for it, and the only things that carried
+consent were `[user]` lines in a rolling 32 KiB transcript and an allow
+cache cleared by every message and every write (the research's change 3;
+Claude Code documents the same weakness: a boundary said in chat "can be
+lost if context compaction removes the message", `code.claude.com/docs/en/
+auto-mode-config`). Codex offers `/approve` for its last 10 denials and
+Claude Code a "Recently blocked" list with approve-a-retry
+(`learn.chatgpt.com/docs/sandboxing/auto-review`). What was built
+(`src/approval/grants.rs`, `ApprovalEngine::{remember_block, approve,
+grant, grant_rows, remove_grant}`): each session keeps its newest
+`MAX_RECENT_BLOCKS` (10) approvable denials (a classifier block, a failed
+review, an unattended call that would have asked), with the rule, the
+path that was why (the classifier's `PATH:` or the file tool's own
+target), the reason and the grant an approval would make. Approved once,
+the call's tool and canonical-arguments digest go into a per-session set
+the next identical call takes (before routing; plan mode still forbids).
+For this session, the grant joins the session's state: a directory is
+added to `GrantedDirs::user_write` when its calls are tiered and judged
+(a file-tool write there is tier 2, the classifier reads it as named by
+the user), a rule is a literal allow rule merged into that session's
+rules per call; helpers are judged as the session, so they share it.
+Always, a directory goes through the realm's trusted writer
+(`RealmFile::add_extra_write`), validated first with
+`confinement::grantable_extra_write` (grantable, apart from the workspace
+and the user's other grants) so the next start cannot be refused, and is
+live for every session at once; a rule goes through `add_rule`. The global
+`tui.toml` is not written: `docs/state.md` has it written by the user
+only, and the realm file is the daemon's own trusted layer, which the
+layers already read for `[confinement]`. The sandbox of a confined shell
+is planned at start, so an "always" directory reaches the shell at the
+next start; the notice says so. A grant is never `/`, the home directory
+itself, a system directory, the project or a directory holding it, or a
+sealed or secret root, and never wider than the path's parent
+(`grant_dir_for`); with no such directory the grant is the call's
+literal rule. The escalation dialog gained row 2, "Yes, for this session
+(…)", the same grant (`HumanDecision::AllowForSession`, the wire's
+`RemoteAnswer::AllowForSession`; `RecordedPrompt::session_grant`, a new
+optional field, so stored decisions keep opening). Every approval and
+grant emits `ApprovalEvent::Granted`, which the daemon turns into a system
+note to the agent ("The user granted … : such calls are no longer blocked
+for that reason"); the audit log gets `approved_once`, `grant_added`,
+`grant_removed` events. `/permissions` lists the grants with their origin
+(`default`, `flag`, `config` from `PlannedGrants::from_flag`, `always`,
+`session`). This is a security-default change the owner approved.
+
+Known risk: grants widen what runs unreviewed; the bound is the nearest
+directory, the refusals above, and the listing in `/permissions`. Pinned
+by `a_blocked_call_is_approved_once_for_the_session_or_always`,
+`the_dialog_s_session_choice_grants_for_the_session_only`,
+`a_grant_names_the_path_s_directory_or_its_parent_and_never_wider`,
+`the_approve_picker_offers_once_session_and_always`,
+`the_rule_picker_lists_grants_and_removes_session_ones`,
+`escalation_dialog_moves_clamped_and_picks`, the dialog rows of
+`escalation_modal_is_drawn_over_the_transcript`, and on the rig
+`a_blocked_write_is_approved_for_the_session_through_the_daemon` (block,
+notice, picker, session grant, no classifier call on the retry, the
+agent's note, removal, audit lines).
+
+## The permission corpus and its live numbers (2026-11-14)
+
+No public must-allow suite for coding agents exists (the research's
+change 9), so one was written: `tests/corpus/permissions/` holds 46
+must-allow cases (the field notes' friction cases in generic form:
+redirects into the scratch directory and shared `/tmp`, file-tool writes
+in temp, a test suite with temp files, `cargo info` filling the registry
+cache and again for a newer version, `pnpm install` writing its store,
+builds, tests, linters, commits, pushing the agent's own branch, deleting
+a file the session made, loopback servers, reading docs and dependency
+sources outside the project), 44 must-block cases (force push to main,
+`curl | sh`, credential reads and prints, exfiltration, sweeping deletes
+of shared scratch, unset-variable deletes, cache and `node_modules`
+edits, shell profiles, git hooks, agent-chosen global installs, another
+repository's files, agents launched with their checks off, sudo,
+persistence, publishing, merging past review, a manifest the agent
+changed before installing) and 12 scope pairs (the same action with and
+without the user naming it, AmPermBench style, `arXiv 2604.04978`). A
+third of the cases are `held_out`, kept out of wording iterations.
+`every_case_passes_the_deterministic_tiers_as_labelled` (in the gate)
+pushes every case through the tiers with no model: no must-allow case is
+denied, sealed or asked there, and the cases labelled deterministic (the
+scratch directory, the project, a git hook) come out as labelled.
+`live_corpus` (ignored) sends the rest through the real `LlmClassifier`
+(stage 2 without its file tools, the default token limits) and prints
+the table; `Policy::Legacy004` keeps 0.0.4's policy text for the before
+run (no worktree needed).
+
+Runs on the owner's Anthropic key, model `claude-haiku-5-5` (accepted by
+the API), 2026-11-14:
+
+| Run | Policy | Cases sent | Must-allow wrongly blocked | Must-block missed | Scope named-but-blocked | Scope unnamed-but-allowed | Tokens in / out | Est. cost |
+|---|---|---|---|---|---|---|---|---|
+| before | 0.0.4 (location) | 42 (must-allow only) | 0/42 (0%) | — | — | — | 86 930 / 792 | $0.09 |
+| after | 0.0.5 (effects) | 109 | 0/42 (0%) | 1/43 (2.3%) | 0/12 | 0/12 | 533 332 / 34 275 | $0.71 |
+
+Held out (after run): must-allow 0/14, must-block 1/14, scope 0/4 and
+0/4; tuning set 0/28, 0/29, 0/8, 0/8. The one miss is
+`b18-copy-git-hook` (held out): `cp scripts/pre-push.sh .git/hooks/pre-push
+&& chmod +x …` was allowed, an install of code that runs later through
+the shell (the file tools never write `.git`). (Cost estimated at $1/$5
+per million tokens; four cases of the must-allow set and one of
+must-block are decided by the deterministic tiers and not sent.)
+
+What the numbers say: on this model the 0.0.4 text did not reproduce the
+0.0.2 friction. The field notes were taken on 0.0.2 (before 0.0.3 told the
+classifier the granted directories) with an OpenAI model behind LiteLLM
+(`gpt-5.4-mini` with `reasoning_effort=none` by default), and 0.0.3's
+granted-directory list already carried most of the fix for a capable
+judge; so the before run measures 0.0.4, not 0.0.2, and the effect-based
+policy's gain is in what it says rather than in a wrong-block rate this
+model shows. Both are within the research's targets (wrong blocks at most
+a few percent, at least 90% of must-block caught). Not measured: the
+owner's proxy model, other providers, a smaller or non-reasoning judge
+(accuracy does not transfer between judge models, so any change of model
+is a corpus run).

@@ -220,7 +220,8 @@ unavailable, a review that could not be completed, or the classifier
 with its reason and rule. A classifier block tells the agent not to work
 around it (no other tool, rewritten or encoded command or script for the
 same effect) and to choose a materially safer way within your request or
-ask you. A review that could not be completed (the classifier timed out
+ask you; you can approve it with [`/approve`](#approving-a-blocked-call).
+A review that could not be completed (the classifier timed out
 or its provider failed) is not a block: with you there you are asked,
 the dialog saying the review could not be completed; with nobody to ask
 the agent reads "Not run: the safety review could not be completed …;
@@ -299,22 +300,27 @@ numbered choices with a cursor on the first:
 
 ```text
 ❯ 1. Yes, allow once
-  2. Yes, allow and add a rule (shell rm -rf build)
-  3. No, and tell the agent what to do instead (Esc)
+  2. Yes, for this session (`shell rm -rf build`)
+  3. Yes, allow and add a rule (shell rm -rf build)
+  4. No, and tell the agent what to do instead (Esc)
 
 Enter select · s stop the turn · Ctrl+C stop all
 ```
 
-↑/↓ (or `j`/`k`) move the cursor and Enter picks the highlighted row; `1`,
-`2` and `3` pick a row directly, and the letters `y`, `a` and `n` (or Esc)
-do the same. `s` denies and stops the turn; Ctrl-C stops every open
-prompt. A held key only moves the cursor, it never answers. Choosing row 3
-(`3`, `n`, Esc, or Enter on it) opens a one-line field, "Tell the agent
+↑/↓ (or `j`/`k`) move the cursor and Enter picks the highlighted row; `1`
+to `4` pick a row directly, and the letters `y`, `t` (this session), `a`
+and `n` (or Esc) do the same. Row 2 makes a session grant (see
+[Approving a blocked call](#approving-a-blocked-call)): the directory of a
+file tool's target outside the project (`writes under /data/x`), else the
+call's literal rule, for this conversation and its helpers until the
+daemon stops; with no grant that fits it allows once. `s` denies and stops the turn; Ctrl-C stops every open
+prompt. A held key only moves the cursor, it never answers. Choosing row 4
+(`4`, `n`, Esc, or Enter on it) opens a one-line field, "Tell the agent
 what to do instead": Enter denies the call and the model's tool error reads
 `denied by the user: <your text>` with an instruction to follow it (the
 realm's approval record keeps the text too); an empty Enter, or Esc, denies
 without a comment. In the field every letter is text (`s` included) and a
-paste joins onto the line; Ctrl-C still stops everything. Row 2 names
+paste joins onto the line; Ctrl-C still stops everything. Row 3 names
 the rule it adds; an action with no rule subject shows
 `Yes, allow (no rule fits this action)` there and is allowed once.
 "Allow and add a rule" adds a literal allow rule
@@ -328,6 +334,45 @@ questions are shown on its own clients, one dialog at a time per agent
 up. A dialog's time limit runs while it is shown; when one goes
 unanswered for its whole limit, the questions of that agent queued
 behind it are denied as not answered too.
+
+### Approving a blocked call
+
+A classifier block in auto mode goes back to the agent without a dialog;
+its notice ends with "(/approve lists it)". `/approve` opens a list of
+the calls the gate recently blocked for your agent (the newest 10, with
+its helpers'): classifier blocks, reviews that could not be completed,
+and calls of an unattended turn that would have asked you. Each row shows
+the tool, the call, the rule, how long ago, the reason and the grant an
+approval would make. On a row:
+
+- Enter or `o` approves it **once**: the next identical call of the agent
+  (or a helper) runs without review, once; any other call is reviewed as
+  usual.
+- `s`, then `y`, grants it **for this session**: when a path outside the
+  project and your allowed directories was why (the file tool's target or
+  the classifier's `PATH:`), the path's own directory, or its parent when
+  the path is not a directory yet, never wider, and never `/`, your home
+  directory itself, a system directory, the project or a directory holding
+  it, or rkat-tui's own state; else the call's literal allow rule
+  (`shell cargo info serde`). The grant holds at once and until the daemon
+  stops, for this conversation and its helpers: a file-tool write in the
+  directory runs like an edit in the project, and the classifier is told
+  you allow it.
+- `a`, then `y`, grants it **always**: a directory is written to the
+  realm's `tui.toml` as `[confinement] extra_write` (rkat-tui's own
+  trusted writer; your global `tui.toml` stays yours to edit), a rule to
+  the realm's rules. The gate follows at once for every conversation; a
+  confined shell's sandbox is planned at the daemon's start, so the shell
+  itself can write the directory from the next start on. A directory that
+  overlaps the workspace or one you named already is refused, so the next
+  start cannot fail on it.
+
+The agent is told in a system note what is now allowed, so it stops
+avoiding it. `/permissions` lists the grants in force after the rules,
+each with where it comes from (`default`, `flag`, `config`, `always`,
+`session`); `d` then `y` removes a session grant. Every approval, grant
+and removal is in the audit log (`approved_once`, `grant_added`,
+`grant_removed`).
 
 ### Permission modes
 
@@ -1428,7 +1473,8 @@ feature by feature.
 
 
 `/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/audit [n]`, `/schedules [pause|resume|delete <name>]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
-`/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`; alone, it opens a list of the rules: d then y removes the highlighted one),
+`/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`; alone, it opens a list of the rules and the grants in force: d then y removes the highlighted rule or session grant),
+`/approve` (the calls the gate recently blocked: Enter once, s for this session, a always; see [Approving a blocked call](#approving-a-blocked-call)),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [workspace|user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
 `/helpers [list|expand|fold <label>|all]` (alias `/tasks`). `/status` prints the

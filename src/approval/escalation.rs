@@ -22,6 +22,10 @@ use tokio::sync::{Mutex, OwnedMutexGuard, mpsc, oneshot};
 pub enum HumanDecision {
     /// Allow this one call.
     AllowOnce,
+    /// Allow it, and make the session grant the dialog named
+    /// ([`RecordedPrompt::session_grant`]): the call's directory or literal
+    /// rule, for this session and its helpers.
+    AllowForSession,
     /// Allow and add the given (narrow) allow rule.
     AllowAndAddRule(Box<Rule>),
     /// Deny this call.
@@ -74,6 +78,10 @@ pub struct RecordedPrompt {
     /// (a protected path: [`super::policy::Tier::AskUser`]), if it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_reason: Option<String>,
+    /// What "Yes, for this session" grants (`writes under /x`, `` `shell
+    /// cargo info serde` ``), when a grant fits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_grant: Option<String>,
 }
 
 impl RecordedPrompt {

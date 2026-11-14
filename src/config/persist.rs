@@ -123,6 +123,23 @@ impl RealmFile {
         persist_realm_mode(&self.path, mode)
     }
 
+    /// Add `dir` to its `[confinement] extra_write` (a grant the user made
+    /// "always" with `/approve`), keeping everything else; a directory
+    /// already listed is not added twice.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::write_rules_with`].
+    pub fn add_extra_write(&self, dir: &Path) -> Result<(), RulesError> {
+        let _one = self.lock.lock();
+        let mut file = RulesFile::load(&self.path)?;
+        let section = file.confinement.get_or_insert_with(Default::default);
+        if !section.extra_write.iter().any(|known| known == dir) {
+            section.extra_write.push(dir.to_path_buf());
+        }
+        save_realm(&self.path, &file)
+    }
+
     /// Write `view` as its `[ui] checklist`.
     ///
     /// # Errors

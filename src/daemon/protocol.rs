@@ -116,6 +116,13 @@ methods! {
     /// The `/permissions` picker's rows: every rule of the daemon's
     /// engine with its number, its patterns and its layer.
     RuleRows = "rkat/rule_rows" (Empty) -> crate::approval::desk::RuleRows;
+    /// The calls the gate recently blocked for this client's agent that the
+    /// user can approve (`/approve`), oldest first.
+    Blocked = "rkat/blocked" (Empty) -> BlockedList;
+    /// Approve a blocked call once, for this session or always.
+    Approve = "rkat/approve" (ApproveParams) -> crate::approval::desk::RuleOutcome;
+    /// Remove a session grant of this client's agent (`/permissions`).
+    RemoveGrant = "rkat/remove_grant" (GrantParams) -> crate::approval::desk::RuleOutcome;
     /// The agents' conversations, last used first, the caller's agent's
     /// current one marked ([`crate::daemon::conversations`]).
     Conversations = "rkat/conversations" (Empty) -> ConversationList;
@@ -740,6 +747,29 @@ pub struct ShutdownParams {
     pub retire: bool,
 }
 
+/// [`method::Blocked`]'s result.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockedList {
+    /// The blocked calls, oldest first.
+    pub calls: Vec<crate::approval::grants::BlockedCall>,
+}
+
+/// [`method::Approve`]'s parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApproveParams {
+    /// The blocked call's number.
+    pub id: u64,
+    /// How long the approval holds.
+    pub scope: crate::approval::grants::GrantScope,
+}
+
+/// [`method::RemoveGrant`]'s parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantParams {
+    /// The grant's number, as `/permissions` lists it.
+    pub id: u64,
+}
+
 /// [`method::Recall`]'s and [`method::Inputs`]'s parameters: the inputs
 /// `mob/member_send` admitted (`admission.input_id`), oldest first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1259,7 +1289,9 @@ impl ApprovalNote {
             },
             ApprovalEvent::Classifying(running) => Self::Classifying { running },
             ApprovalEvent::Notice(text) => Self::Notice { text },
-            ApprovalEvent::EscalationWithdrawn(_) | ApprovalEvent::ClassifierUsage { .. } => {
+            ApprovalEvent::EscalationWithdrawn(_)
+            | ApprovalEvent::ClassifierUsage { .. }
+            | ApprovalEvent::Granted { .. } => {
                 return None;
             }
         })

@@ -24,6 +24,7 @@ mod client_turns;
 mod compact;
 mod confinement;
 mod conversations;
+mod corpus;
 mod councils;
 mod cross_workspace;
 mod daemon;

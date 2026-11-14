@@ -57,12 +57,13 @@ use super::classifier::{
 };
 use super::counters::{AutoMode, DenialCounters, PauseCause};
 use super::escalation::{EscalationBroker, EscalationPrompt, HumanDecision, RecordedPrompt};
+use super::grants::{BlockedCall, GrantRow, GrantScope, GrantTarget, MAX_RECENT_BLOCKS};
 use super::mode::PermissionMode;
 use super::policy::{
     Action, ActionKind, Decider, PolicyContext, Tier, TierDecision, classify_tier_with,
 };
 use super::prompts::MAX_REVIEWED_ACTION_BYTES;
-use super::rules::{Rule, RuleId, RuleOrigin, RuleSet, RulesError};
+use super::rules::{Rule, RuleId, RuleKind, RuleOrigin, RuleSet, RulesError};
 use super::transcript::{ApprovalTranscript, InputKey};
 use super::{ApprovalEvent, DenyReason, Verdict, prompts, shell};
 use crate::config::{self, AutoSettings};
@@ -214,6 +215,32 @@ struct SessionState {
     /// The last [`RUNS_REMEMBERED`] runs that started with a client's input
     /// waiting: runs a user started.
     human_runs: VecDeque<RunId>,
+    /// The newest calls the gate blocked that the user can approve
+    /// ([`super::grants`]), oldest first.
+    recent: VecDeque<Blocked>,
+    /// Calls the user approved once (`/approve`): the next identical call
+    /// passes and uses the approval up.
+    approved_once: HashSet<CacheKey>,
+    /// The grants the user made for this session and its helpers, by id.
+    grants: Vec<(u64, GrantTarget)>,
+}
+
+/// What an approval or a grant tells the user (`notice`) and the agent
+/// (`note`, a system note: what is now allowed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Approved {
+    /// For the user.
+    pub notice: String,
+    /// For the agent.
+    pub note: String,
+}
+
+/// A blocked call as the engine keeps it: what `/approve` shows, and the
+/// key an approval once matches.
+#[derive(Debug, Clone)]
+struct Blocked {
+    call: BlockedCall,
+    key: CacheKey,
 }
 
 impl Default for SessionState {
@@ -228,6 +255,9 @@ impl Default for SessionState {
             facts: SessionFacts::default(),
             human_pending: false,
             human_runs: VecDeque::new(),
+            recent: VecDeque::new(),
+            approved_once: HashSet::new(),
+            grants: Vec::new(),
         }
     }
 }
@@ -283,6 +313,11 @@ pub struct ApprovalEngine {
     /// Each session's scratch directory ([`Self::set_scratch`]); unset:
     /// none has one.
     scratch: OnceLock<ScratchLookup>,
+    /// The numbers of blocked calls and grants.
+    next_id: AtomicU64,
+    /// Directories the user granted "always" while this daemon runs (the
+    /// realm's `tui.toml` holds them for the next start), by id.
+    always_dirs: RwLock<Vec<(u64, PathBuf)>>,
 }
 
 impl fmt::Debug for ApprovalEngine {
@@ -303,6 +338,9 @@ struct Facts<'a> {
     allow_rule: Mutex<Option<RuleId>>,
     /// Who answered the call's escalation, when the desk said.
     answerer: Mutex<Option<String>>,
+    /// The path outside the allowed scope the classifier named as why it
+    /// blocked, if it did.
+    blocked_path: Mutex<Option<String>>,
 }
 
 impl ApprovalEngine {
@@ -349,6 +387,8 @@ impl ApprovalEngine {
             answerers: Mutex::new(HashMap::new()),
             forget_hooks: RwLock::new(Vec::new()),
             scratch: OnceLock::new(),
+            next_id: AtomicU64::new(1),
+            always_dirs: RwLock::new(Vec::new()),
         })
     }
 
@@ -377,7 +417,36 @@ impl ApprovalEngine {
     fn granted_for(&self, session_id: &SessionId) -> GrantedDirs {
         let mut granted = self.environment.granted.clone();
         granted.scratch = self.scratch.get().and_then(|lookup| lookup(session_id));
+        // What the user granted while the daemon runs: "always" for every
+        // session, "for this session" for this one and its helpers.
         granted
+            .user_write
+            .extend(self.always_dirs.read().iter().map(|(_, dir)| dir.clone()));
+        if let Some(state) = self.sessions.lock().get(session_id) {
+            for (_, grant) in &state.grants {
+                if let GrantTarget::Dir { path } = grant {
+                    granted.user_write.push(path.clone());
+                }
+            }
+        }
+        granted
+    }
+
+    /// The rules for `session_id`'s calls: the layered ones, and the allow
+    /// rules the user granted for this session.
+    fn rules_for(&self, session_id: &SessionId) -> RuleSet {
+        let mut rules = self.rules.read().clone();
+        if let Some(state) = self.sessions.lock().get(session_id) {
+            for (_, grant) in &state.grants {
+                if let GrantTarget::Rule { tool, subject } = grant
+                    && let Ok(rule) =
+                        Rule::literal(RuleKind::Allow, tool, subject, RuleOrigin::Session)
+                {
+                    rules.push(rule);
+                }
+            }
+        }
+        rules
     }
 
     /// The project root.
@@ -762,8 +831,12 @@ impl ApprovalEngine {
             subjects,
             allow_rule: Mutex::new(None),
             answerer: Mutex::new(None),
+            blocked_path: Mutex::new(None),
         };
         let verdict = self.evaluate(session_id, agent, run, &facts).await;
+        if let Verdict::Deny { reason, .. } = &verdict {
+            self.remember_block(session_id, agent, &facts, reason);
+        }
         let (tier, reason) = match &verdict {
             // A classifier allow carries the classifier's stated reason;
             // other allows carry none.
@@ -871,6 +944,297 @@ impl ApprovalEngine {
         }
     }
 
+    /// Keep a denial the user can approve (`/approve`): a classifier block,
+    /// a failed review, an unattended call that would have asked. The
+    /// newest [`MAX_RECENT_BLOCKS`] are kept.
+    fn remember_block(
+        &self,
+        session_id: &SessionId,
+        agent: Option<&str>,
+        facts: &Facts<'_>,
+        reason: &DenyReason,
+    ) {
+        let rule = match reason {
+            DenyReason::Classifier { rule, .. } => rule.clone(),
+            DenyReason::ReviewIncomplete(_)
+            | DenyReason::ClassifierUnavailable(_)
+            | DenyReason::Unattended => None,
+            _ => return,
+        };
+        let path = facts.blocked_path.lock().clone().or_else(|| {
+            self.outside_target(session_id, facts)
+                .map(|(abs, _)| abs.display().to_string())
+        });
+        let summary = truncate_at(&decisive_argument(facts), 200).to_string();
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        let call = BlockedCall {
+            id: self.next_id.fetch_add(1, Ordering::Relaxed),
+            tool: facts.action.name.to_string(),
+            helper: agent.map(str::to_string),
+            summary,
+            rule,
+            grant: self.grant_for(facts, path.as_deref()),
+            path,
+            reason: reason.to_string(),
+            at,
+        };
+        let key = CacheKey {
+            tool: facts.action.name.to_string(),
+            args: canonical_args_digest(facts.action.args),
+            payload: [0; 32],
+        };
+        let mut state = self.session(session_id);
+        if state.recent.len() == MAX_RECENT_BLOCKS {
+            state.recent.pop_front();
+        }
+        state.recent.push_back(Blocked { call, key });
+    }
+
+    /// The grant "for this session" or "always" makes for `facts`' call:
+    /// the directory of the path outside the allowed scope that was why
+    /// (`path`, else a file tool's own target), else the literal allow rule
+    /// of its tool and first subject.
+    fn grant_for(&self, facts: &Facts<'_>, path: Option<&str>) -> Option<GrantTarget> {
+        if let Some(dir) = path.and_then(|path| super::grants::grant_dir_for(&self.root, path).ok())
+        {
+            return Some(GrantTarget::Dir { path: dir });
+        }
+        let subject = facts.subjects.first()?;
+        Some(GrantTarget::Rule {
+            tool: facts.action.name.to_string(),
+            subject: subject.clone(),
+        })
+    }
+
+    /// The calls of `session_id` the gate recently blocked that the user
+    /// can approve, oldest first.
+    #[must_use]
+    pub fn blocked(&self, session_id: &SessionId) -> Vec<BlockedCall> {
+        self.sessions
+            .lock()
+            .get(session_id)
+            .map(|state| state.recent.iter().map(|b| b.call.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The user approves blocked call `id` of `session_id` for `scope`: once
+    /// (the next identical call passes), for this session (its grant joins
+    /// the session's, live) or always (its grant is written through the
+    /// realm's trusted writer as well). Returns what the user and the agent
+    /// are told.
+    ///
+    /// # Errors
+    ///
+    /// Why nothing was granted (no such call, no grant fits, the realm file
+    /// could not be written), in words for the user.
+    pub fn approve(
+        &self,
+        session_id: &SessionId,
+        id: u64,
+        scope: GrantScope,
+    ) -> Result<Approved, String> {
+        let blocked = {
+            let mut state = self.session(session_id);
+            let at = state
+                .recent
+                .iter()
+                .position(|blocked| blocked.call.id == id)
+                .ok_or_else(|| format!("no blocked call #{id} (`/approve` lists them)"))?;
+            let blocked = state.recent[at].clone();
+            if scope != GrantScope::Once && blocked.call.grant.is_none() {
+                return Err(format!(
+                    "no grant fits blocked call #{id}; approve it once instead"
+                ));
+            }
+            state.recent.remove(at);
+            blocked
+        };
+        let what = format!("`{} {}`", blocked.call.tool, blocked.call.summary);
+        let target = match scope {
+            GrantScope::Once => {
+                self.session(session_id).approved_once.insert(blocked.key);
+                self.audit_event("approved_once", what.clone());
+                let approved = Approved {
+                    notice: format!("approved once: {what} runs when the agent tries it again"),
+                    note: format!(
+                        "The user approved your blocked call {what} once: run it again exactly as before (any other call is reviewed as usual)."
+                    ),
+                };
+                self.emit(ApprovalEvent::Granted {
+                    session_id: session_id.clone(),
+                    note: approved.note.clone(),
+                });
+                return Ok(approved);
+            }
+            GrantScope::Session | GrantScope::Always => blocked.call.grant,
+        };
+        let Some(target) = target else {
+            return Err(format!("no grant fits blocked call #{id}"));
+        };
+        self.grant(session_id, target, scope)
+    }
+
+    /// Make `target` a grant of `session_id` for `scope` (session or
+    /// always), live; an "always" grant is written to the realm too.
+    ///
+    /// # Errors
+    ///
+    /// Why it was not made, for the user.
+    pub fn grant(
+        &self,
+        session_id: &SessionId,
+        target: GrantTarget,
+        scope: GrantScope,
+    ) -> Result<Approved, String> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        match (scope, &target) {
+            (GrantScope::Once, _) => return Err("a grant is for this session or always".into()),
+            (GrantScope::Session, _) => {
+                self.session(session_id).grants.push((id, target.clone()));
+            }
+            (GrantScope::Always, GrantTarget::Dir { path }) => {
+                let granted = &self.environment.granted;
+                let named: Vec<PathBuf> = granted
+                    .user_write
+                    .iter()
+                    .chain(&granted.user_read)
+                    .cloned()
+                    .chain(self.always_dirs.read().iter().map(|(_, dir)| dir.clone()))
+                    .collect();
+                let dir = crate::bootstrap::confinement::grantable_extra_write(
+                    path,
+                    self.root.as_path(),
+                    &named,
+                )
+                .map_err(|problem| {
+                    format!(
+                        "`{}` cannot be granted always ({problem}); grant it for this session instead",
+                        path.display()
+                    )
+                })?;
+                if let Some(file) = &self.realm_file {
+                    file.add_extra_write(&dir)
+                        .map_err(|err| format!("the grant was not saved: {err}"))?;
+                }
+                self.always_dirs.write().push((id, dir));
+            }
+            (GrantScope::Always, GrantTarget::Rule { tool, subject }) => {
+                let rule = Rule::literal(RuleKind::Allow, tool, subject, RuleOrigin::Realm)
+                    .map_err(|err| format!("no rule fits: {err}"))?;
+                self.add_rule(rule)
+                    .map_err(|err| format!("the rule is active but was not saved: {err}"))?;
+            }
+        }
+        let what = target.describe();
+        self.audit_event("grant_added", format!("{} {what}", scope.words()));
+        // A grant may change what a cached denial would be; allows stay.
+        let lasting = match (scope, &target) {
+            (GrantScope::Always, GrantTarget::Dir { .. }) => {
+                " (the sandbox of a confined shell lets it write there from the next daemon start; the file tools and the classifier follow at once)"
+            }
+            _ => "",
+        };
+        let approved = Approved {
+            notice: format!("granted {}: {what}{lasting}", scope.words()),
+            note: format!(
+                "The user granted {what} {}: such calls are no longer blocked for that reason, so you need not avoid them.",
+                scope.words()
+            ),
+        };
+        self.emit(ApprovalEvent::Granted {
+            session_id: session_id.clone(),
+            note: approved.note.clone(),
+        });
+        Ok(approved)
+    }
+
+    /// The grants in force for `session_id`, as `/permissions` lists them:
+    /// the sandbox's defaults, the user's from the command line and the
+    /// `tui.toml` files, the "always" ones of this run, and the session's.
+    #[must_use]
+    pub fn grant_rows(&self, session_id: Option<&SessionId>) -> Vec<GrantRow> {
+        let granted = &self.environment.granted;
+        let dir = |path: &PathBuf| GrantTarget::Dir { path: path.clone() };
+        let mut rows: Vec<GrantRow> = granted
+            .baseline_write
+            .iter()
+            .map(|path| GrantRow {
+                id: 0,
+                target: dir(path),
+                origin: "default".into(),
+                removable: false,
+            })
+            .collect();
+        for path in &granted.user_write {
+            rows.push(GrantRow {
+                id: 0,
+                target: dir(path),
+                origin: if granted.from_flag.contains(path) {
+                    "flag".into()
+                } else {
+                    "config".into()
+                },
+                removable: false,
+            });
+        }
+        for (id, path) in self.always_dirs.read().iter() {
+            rows.push(GrantRow {
+                id: *id,
+                target: dir(path),
+                origin: "always".into(),
+                removable: false,
+            });
+        }
+        if let Some(state) =
+            session_id.and_then(|s| self.sessions.lock().get(s).map(|st| st.grants.clone()))
+        {
+            for (id, target) in state {
+                rows.push(GrantRow {
+                    id,
+                    target,
+                    origin: "session".into(),
+                    removable: true,
+                });
+            }
+        }
+        rows
+    }
+
+    /// Remove session grant `id` of `session_id`.
+    ///
+    /// # Errors
+    ///
+    /// When the session has no such grant.
+    pub fn remove_grant(&self, session_id: &SessionId, id: u64) -> Result<String, String> {
+        let mut state = self.session(session_id);
+        let at = state
+            .grants
+            .iter()
+            .position(|(grant, _)| *grant == id)
+            .ok_or_else(|| format!("no session grant #{id}"))?;
+        let (_, target) = state.grants.remove(at);
+        drop(state);
+        let what = target.describe();
+        self.audit_event("grant_removed", format!("for this session {what}"));
+        Ok(format!("removed the session grant of {what}"))
+    }
+
+    /// Whether the user approved `facts`' call once for `session_id`; the
+    /// approval is used up.
+    fn take_approved(&self, session_id: &SessionId, facts: &Facts<'_>) -> bool {
+        let key = CacheKey {
+            tool: facts.action.name.to_string(),
+            args: canonical_args_digest(facts.action.args),
+            payload: [0; 32],
+        };
+        self.sessions
+            .lock()
+            .get_mut(session_id)
+            .is_some_and(|state| state.approved_once.remove(&key))
+    }
+
     /// What the gate saw `session_id`'s file tools do (tests).
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
@@ -903,7 +1267,12 @@ impl ApprovalEngine {
             posix_shell: self.posix_shell,
             granted: &granted,
         };
-        classify_tier_with(&facts.action, &facts.subjects, &self.rules.read(), &ctx)
+        classify_tier_with(
+            &facts.action,
+            &facts.subjects,
+            &self.rules_for(session_id),
+            &ctx,
+        )
     }
 
     /// The deny verdict of user deny rule `id`.
@@ -1017,6 +1386,18 @@ impl ApprovalEngine {
             }
         }
         let mode = self.mode();
+        // The user approved this very call once (`/approve`): it runs,
+        // unless plan mode forbids it.
+        if matches!(decision.tier, Tier::Classifier | Tier::AskUser)
+            && !(mode == PermissionMode::Plan && plan_forbids(&facts.action, &decision))
+            && self.take_approved(session_id, facts)
+        {
+            return allow_at(
+                decision.tier,
+                Decider::Human,
+                "approved once by the user (/approve)",
+            );
+        }
         match self.route(facts, decision, mode) {
             Route::Settled(verdict) => return verdict,
             Route::Ask(asking) => {
@@ -1151,6 +1532,7 @@ impl ApprovalEngine {
                 if let Some(cause) = paused {
                     self.emit(ApprovalEvent::Paused(cause));
                 }
+                facts.blocked_path.lock().clone_from(&path);
                 deny3(DenyReason::Classifier {
                     rule,
                     explanation: reason,
@@ -1172,28 +1554,11 @@ impl ApprovalEngine {
         named: Option<&str>,
     ) -> Option<String> {
         let granted = &self.granted_for(session_id);
-        let outside = |raw: &str, write: bool| {
-            let resolved = self.root.resolve(raw).ok()?;
-            let allowed = resolved.inside()
-                || if write {
-                    granted.user_write_dir_of(&resolved.abs).is_some()
-                } else {
-                    granted.user_dir_of(&resolved.abs).is_some()
-                };
-            (!allowed).then_some((resolved.abs, write))
-        };
-        let target = match &facts.action.kind {
-            ActionKind::FileWrite { paths } => paths.iter().find_map(|path| outside(path, true)),
-            ActionKind::FileRead { path }
-            | ActionKind::Search {
-                path: Some(path), ..
-            } => outside(path, false),
-            // A command's paths are the classifier's to name; a grant to
-            // write a directory lets the command read it too.
-            _ => None,
-        }
-        .or_else(|| named.and_then(|path| outside(path, true)))?;
-        let (abs, write) = target;
+        let (abs, write) = self.outside_target(session_id, facts).or_else(|| {
+            let resolved = self.root.resolve(named?).ok()?;
+            (!resolved.inside() && granted.user_write_dir_of(&resolved.abs).is_none())
+                .then_some((resolved.abs, true))
+        })?;
         let rule = facts
             .subjects
             .first()
@@ -1217,6 +1582,32 @@ impl ApprovalEngine {
             rule.as_deref(),
             temp.as_deref(),
         ))
+    }
+
+    /// A file tool's own target outside the project and the directories
+    /// the user allows (with whether it is written), if the call has one.
+    fn outside_target(&self, session_id: &SessionId, facts: &Facts<'_>) -> Option<(PathBuf, bool)> {
+        let granted = &self.granted_for(session_id);
+        let outside = |raw: &str, write: bool| {
+            let resolved = self.root.resolve(raw).ok()?;
+            let allowed = resolved.inside()
+                || if write {
+                    granted.user_write_dir_of(&resolved.abs).is_some()
+                } else {
+                    granted.user_dir_of(&resolved.abs).is_some()
+                };
+            (!allowed).then_some((resolved.abs, write))
+        };
+        match &facts.action.kind {
+            ActionKind::FileWrite { paths } => paths.iter().find_map(|path| outside(path, true)),
+            ActionKind::FileRead { path }
+            | ActionKind::Search {
+                path: Some(path), ..
+            } => outside(path, false),
+            // A command's paths are the classifier's to name; a grant to
+            // write a directory lets the command read it too.
+            _ => None,
+        }
     }
 
     /// Run the classifier on `action` with the session's transcript.
@@ -1332,6 +1723,15 @@ impl ApprovalEngine {
                 (None, Some(reason.clone()))
             }
         };
+        // What "for this session" would grant: the directory of a file
+        // tool's target outside the allowed scope, else the call's literal
+        // rule.
+        let session_grant = self.grant_for(
+            facts,
+            self.outside_target(session_id, facts)
+                .map(|(abs, _)| abs.display().to_string())
+                .as_deref(),
+        );
         let prompt = EscalationPrompt {
             id,
             session_id: session_id.clone(),
@@ -1343,6 +1743,7 @@ impl ApprovalEngine {
                 subjects: facts.subjects.clone(),
                 classifier_hint,
                 policy_reason,
+                session_grant: session_grant.as_ref().map(GrantTarget::describe),
             },
         };
         let asked =
@@ -1368,6 +1769,17 @@ impl ApprovalEngine {
             HumanDecision::AllowOnce => {
                 self.human_allowed(counted);
                 allow_at(tier, Decider::Human, "allowed once by the user")
+            }
+            HumanDecision::AllowForSession => {
+                if let Some(target) = session_grant
+                    && let Err(err) = self.grant(session_id, target, GrantScope::Session)
+                {
+                    self.emit(ApprovalEvent::Notice(format!(
+                        "allowed once; no session grant was made: {err}"
+                    )));
+                }
+                self.human_allowed(counted);
+                allow_at(tier, Decider::Human, "allowed by the user for this session")
             }
             HumanDecision::AllowAndAddRule(rule) => {
                 self.audit_event("rule_added", describe_rule(&rule));
@@ -3341,6 +3753,183 @@ mod tests {
             prompt.contains(&format!("- {} (default)", tmp.display()))
                 && prompt.contains(&format!("- {} (named by the user)", named.display())),
             "{prompt}"
+        );
+    }
+
+    /// The dialog's "Yes, for this session": the grant it named holds for
+    /// the session (a protected write asked once is not asked again) and
+    /// for no other session.
+    #[tokio::test]
+    async fn the_dialog_s_session_choice_grants_for_the_session_only() {
+        let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        let env = json!({"path": ".env", "content": "X=1"});
+        let engine = Arc::clone(&rig.engine);
+        let session = rig.session.clone();
+        let args = env.clone();
+        let task =
+            tokio::spawn(
+                async move { call_as(&engine, &session, "e1", "write_file", &args).await },
+            );
+        let request = rig.escalations.recv().await.unwrap();
+        assert_eq!(
+            request.prompt.shown.session_grant.as_deref(),
+            Some("`write_file .env`")
+        );
+        request
+            .respond
+            .send(HumanDecision::AllowForSession)
+            .unwrap();
+        assert!(task.await.unwrap().is_allowed());
+        assert!(call(&rig, "e2", "write_file", &env).await.is_allowed());
+        assert!(rig.escalations.try_recv().is_err(), "not asked again");
+        let other = SessionId::new();
+        let engine = Arc::clone(&rig.engine);
+        let task =
+            tokio::spawn(async move { call_as(&engine, &other, "e3", "write_file", &env).await });
+        let request = rig.escalations.recv().await.unwrap();
+        request
+            .respond
+            .send(HumanDecision::Deny { comment: None })
+            .unwrap();
+        assert!(!task.await.unwrap().is_allowed());
+    }
+
+    /// `/approve`: a classifier block is kept (newest ten); approved once,
+    /// the next identical call runs without the classifier and only once;
+    /// for this session, a directory grant makes writes there in-project
+    /// edits and a rule grant runs the command, live and for that session
+    /// only; always, the directory holds for every session; the grants
+    /// are listed and a session grant removed; the agent is told each.
+    #[tokio::test]
+    async fn a_blocked_call_is_approved_once_for_the_session_or_always() {
+        let base = tempfile::tempdir().unwrap();
+        let base_path = std::fs::canonicalize(base.path()).unwrap();
+        let store = base_path.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let blocked = |path: Option<String>| {
+            Ok(ClassifierVerdict::Block {
+                rule: Some("T3".into()),
+                reason: "it writes outside the project".into(),
+                annotation: None,
+                path,
+            })
+        };
+        let mut rig = rig(
+            vec![
+                blocked(None),
+                blocked(Some(store.join("x").display().to_string())),
+                blocked(None),
+            ],
+            DEFAULT_ESCALATION_TIMEOUT,
+        );
+        let info = json!({"command": "cargo info serde"});
+        assert!(!decide(&rig, "b1", &info).await.is_allowed());
+        let listed = rig.engine.blocked(&rig.session);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].rule.as_deref(), Some("T3"));
+        assert_eq!(
+            listed[0].grant,
+            Some(GrantTarget::Rule {
+                tool: "shell".into(),
+                subject: "cargo info serde".into()
+            })
+        );
+        // Once: the same call runs, once, without the classifier.
+        let approved = rig
+            .engine
+            .approve(&rig.session, listed[0].id, GrantScope::Once)
+            .unwrap();
+        assert!(approved.note.contains("once"), "{}", approved.note);
+        assert!(rig.engine.blocked(&rig.session).is_empty());
+        let calls = rig.classifier.calls();
+        assert!(matches!(
+            decide(&rig, "b2", &info).await,
+            Verdict::Allow {
+                by: Decider::Human,
+                ..
+            }
+        ));
+        assert_eq!(rig.classifier.calls(), calls);
+        // A write into a store the classifier named: its directory.
+        let write = json!({"path": store.join("x").display().to_string(), "content": "x"});
+        assert!(!call(&rig, "b3", "write_file", &write).await.is_allowed());
+        let listed = rig.engine.blocked(&rig.session);
+        assert_eq!(
+            listed[0].grant,
+            Some(GrantTarget::Dir {
+                path: store.clone()
+            }),
+            "the path's own directory"
+        );
+        rig.engine
+            .approve(&rig.session, listed[0].id, GrantScope::Session)
+            .unwrap();
+        assert!(matches!(
+            call(&rig, "b4", "write_file", &write).await,
+            Verdict::Allow {
+                tier: Tier::InProjectEdit,
+                ..
+            }
+        ));
+        // Another session has no such grant.
+        let other = SessionId::new();
+        let calls = rig.classifier.calls();
+        assert!(
+            !call_as(&rig.engine, &other, "b5", "write_file", &write)
+                .await
+                .is_allowed()
+        );
+        assert_eq!(rig.classifier.calls(), calls + 1);
+        // A rule for this session; then always for the directory.
+        let fetch = json!({"command": "cargo fetch"});
+        rig.engine
+            .grant(
+                &rig.session,
+                GrantTarget::Rule {
+                    tool: "shell".into(),
+                    subject: "cargo fetch".into(),
+                },
+                GrantScope::Session,
+            )
+            .unwrap();
+        assert!(matches!(
+            decide(&rig, "b6", &fetch).await,
+            Verdict::Allow {
+                tier: Tier::AlwaysAllow,
+                ..
+            }
+        ));
+        rig.engine
+            .grant(
+                &rig.session,
+                GrantTarget::Dir {
+                    path: store.clone(),
+                },
+                GrantScope::Always,
+            )
+            .unwrap();
+        assert!(
+            call_as(&rig.engine, &other, "b7", "write_file", &write)
+                .await
+                .is_allowed()
+        );
+        let rows = rig.engine.grant_rows(Some(&rig.session));
+        let origins: Vec<&str> = rows.iter().map(|r| r.origin.as_str()).collect();
+        assert_eq!(origins, ["always", "session", "session"]);
+        let session_dir = rows.iter().find(|r| r.removable).unwrap().id;
+        rig.engine.remove_grant(&rig.session, session_dir).unwrap();
+        assert_eq!(rig.engine.grant_rows(Some(&rig.session)).len(), 2);
+        assert!(rig.engine.remove_grant(&rig.session, 999).is_err());
+        let notes = drain(&mut rig.events)
+            .into_iter()
+            .filter(|e| matches!(e, ApprovalEvent::Granted { .. }))
+            .count();
+        assert_eq!(notes, 4, "the agent is told each approval and grant");
+        // Nothing to approve: said so.
+        assert!(
+            rig.engine
+                .approve(&rig.session, 4242, GrantScope::Once)
+                .is_err()
         );
     }
 

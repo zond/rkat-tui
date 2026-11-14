@@ -761,7 +761,9 @@ impl Decisions {
         if let Some(answer) = request.answer {
             let approves = matches!(
                 answer,
-                RemoteAnswer::AllowOnce | RemoteAnswer::AllowAndAddRule
+                RemoteAnswer::AllowOnce
+                    | RemoteAnswer::AllowForSession
+                    | RemoteAnswer::AllowAndAddRule
             );
             if approves != request.approve {
                 return Err((

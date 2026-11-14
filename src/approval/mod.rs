@@ -47,6 +47,7 @@ pub mod counters;
 pub mod desk;
 pub mod engine;
 pub mod escalation;
+pub mod grants;
 pub mod mode;
 pub mod policy;
 pub mod prompts;
@@ -300,7 +301,8 @@ pub const REVIEW_INCOMPLETE: &str = "the safety review could not be completed";
 /// or the user.
 pub const BLOCK_GUIDANCE: &str = "Do not work around this block: do not try to reach the same \
 effect another way (a different tool, a rewritten or encoded command, a script). Choose a \
-materially safer alternative within the user's request, or stop and ask the user";
+materially safer alternative within the user's request, or stop and ask the user (the user \
+can approve this call with /approve)";
 
 impl DenyReason {
     /// The reason as the agent reads it: what was denied, by whom and why,
@@ -403,7 +405,8 @@ pub fn scope_hint(
     });
     format!(
         "`{}` is outside the project and the directories the user allows. The user can allow \
-         `{dir}` by starting rkat-tui with `{flag} {dir}`, or with `{key} = [\"{dir}\"]` under \
+         it at once with `/approve` (once, for this session or always), or allow `{dir}` by \
+         starting rkat-tui with `{flag} {dir}`, or with `{key} = [\"{dir}\"]` under \
          `[confinement]` in their own tui.toml (`~/.rkat/tui/tui.toml`) and a daemon restart \
          (`/daemon stop`){rule}; or use a directory inside the project{temp} instead",
         path.display()
@@ -452,6 +455,14 @@ pub enum ApprovalEvent {
     /// An escalation ended without the human's answer (it timed out or its
     /// tool call was abandoned): the dialog for it should close.
     EscalationWithdrawn(u64),
+    /// The user approved a blocked call or made a grant: `note` tells the
+    /// agent of `session_id` what is now allowed.
+    Granted {
+        /// The session (the agent's, for its helpers' grants too).
+        session_id: SessionId,
+        /// What the agent is told.
+        note: String,
+    },
     /// Something the human should know about the approval machinery (an
     /// allow rule could not be saved, a rules file was not trusted).
     Notice(String),
@@ -487,7 +498,12 @@ mod tests {
             "{msg}"
         );
         assert!(msg.contains("materially safer alternative"), "{msg}");
-        assert!(msg.ends_with("or stop and ask the user."));
+        assert!(
+            msg.ends_with(
+                "or stop and ask the user (the user can approve this call with /approve)."
+            ),
+            "{msg}"
+        );
         // How the classifier checked is the user's: in the notice, never
         // in the model's text.
         assert!(

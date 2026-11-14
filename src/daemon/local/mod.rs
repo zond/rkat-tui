@@ -55,7 +55,7 @@ use super::agents::Agents;
 use super::approvals::Desk;
 use super::conversations::Target;
 use crate::approval::InputKey;
-use crate::approval::desk::{ModeStatus, RuleOutcome, mode_notice, rule_rows, run_rule_command};
+use crate::approval::desk::{ModeStatus, RuleOutcome, mode_notice, run_rule_command};
 use crate::approval::mode::PermissionMode;
 use crate::bootstrap::project_trust::ProjectInputs;
 use crate::endpoints::{WireDialect, is_endpoint_realm};
@@ -71,8 +71,8 @@ use super::protocol::{
 };
 use super::serve::Observed;
 
-/// The source of the daemon's plan-mode notes.
-const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
+/// The source of the daemon's plan-mode and grant notes.
+pub(crate) const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
 
 /// What the local methods and the observer act on.
 pub struct Local {
@@ -298,7 +298,10 @@ impl Local {
             method::Report, Empty {} => Ok(self.report(self.agent_of(&caller).ok().as_deref()));
             method::SetMode, protocol::SetModeParams { mode } => Ok(self.set_mode(mode).await);
             method::Rules, command => self.rules(command).await;
-            method::RuleRows, Empty {} => Ok(rule_rows(&self.core.engine));
+            method::RuleRows, Empty {} => Ok(self.rule_and_grant_rows(&caller));
+            method::Blocked, Empty {} => self.blocked(&caller);
+            method::Approve, protocol::ApproveParams { id, scope } => self.approve(&caller, id, scope);
+            method::RemoveGrant, protocol::GrantParams { id } => self.remove_grant(&caller, id);
             method::Conversations, Empty {} => Ok(self.conversation_list(&caller).await);
             method::New, Empty {} => self.switch(&self.agent_of(&caller)?, Target::Fresh).await;
             method::Resume, protocol::SessionParams { session_id } => self.switch(&self.agent_of(&caller)?, Target::Resume(session_id)).await;
