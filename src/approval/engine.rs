@@ -70,6 +70,7 @@ use super::statements::{MAX_STATEMENTS, StatementOrigin, StatementRefusal, State
 use super::stats::{ReviewStats, StatsBook};
 use super::transcript::{ApprovalTranscript, InputKey};
 use super::{ApprovalEvent, DenyReason, Verdict, prompts, shell};
+use crate::config::registry::Level;
 use crate::config::{self, AutoSettings};
 use crate::paths::ProjectRoot;
 
@@ -116,9 +117,10 @@ pub struct ApprovalConfig {
     pub posix_shell: bool,
     /// UI notifications.
     pub events: mpsc::UnboundedSender<ApprovalEvent>,
-    /// The realm's `tui.toml`: rules added at run time and the permission
-    /// mode are written there when set (each write recorded as trusted).
-    pub realm_file: Option<config::RealmFile>,
+    /// The user's and the realm's `tui.toml`: rules, "always" grants and
+    /// statements added at run time are written to the one the user
+    /// picked (the workspace's unless they said `--user`).
+    pub files: Option<config::SettingsFiles>,
 }
 
 /// One tool call to decide.
@@ -412,7 +414,7 @@ pub struct ApprovalEngine {
     environment: Environment,
     posix_shell: bool,
     events: mpsc::UnboundedSender<ApprovalEvent>,
-    realm_file: Option<config::RealmFile>,
+    files: Option<config::SettingsFiles>,
     origins: OnceLock<Arc<dyn ToolOrigins>>,
     /// Who is with each agent ([`super::attendance`]); unset: nobody is
     /// attached, and only a run a client's input started is attended.
@@ -502,7 +504,7 @@ impl ApprovalEngine {
             environment,
             posix_shell,
             events,
-            realm_file,
+            files,
         } = config;
         let dropped = rules.sanitize_for_auto();
         if !dropped.is_empty() {
@@ -533,7 +535,7 @@ impl ApprovalEngine {
             environment,
             posix_shell,
             events,
-            realm_file,
+            files,
             origins: OnceLock::new(),
             attendance: OnceLock::new(),
             agent_peers: OnceLock::new(),
@@ -577,8 +579,8 @@ impl ApprovalEngine {
     /// `/auto model`: review with `model` of `endpoint` from now on, live
     /// (a review that started finishes on the old one), named `label` (the
     /// `endpoint:model` reference) in `/status`, `/auto stats` and the
-    /// checks; written to the realm's `tui.toml` (`[auto] classifier_model`)
-    /// and audited. The caller runs the start-up check against it
+    /// checks; audited (the setting's file is written by the daemon's
+    /// settings path, `crate::daemon::settings`). The caller runs the start-up check against it
     /// ([`Self::probe_classifier`]). Returns the notice.
     ///
     /// # Errors
@@ -599,19 +601,12 @@ impl ApprovalEngine {
         *self.check_classifier.write() = Some(built.check);
         *self.classifier_model.write() = Some((label.clone(), true));
         *self.probe_notice.lock() = None;
-        let saved = match &self.realm_file {
-            Some(file) => file
-                .write_classifier_model(&label)
-                .map_err(|err| format!("; it applies to this run but was not saved: {err}")),
-            None => Ok(()),
-        };
         self.audit_event(
             "classifier_model",
             format!("{} -> {label}", previous.as_deref().unwrap_or("none")),
         );
-        let unsaved = saved.err().unwrap_or_default();
         Ok(format!(
-            "the classifier now reviews with {label} (written to the realm's tui.toml as [auto] classifier_model){unsaved}; its start-up check runs now, and /auto check measures it on more cases"
+            "the classifier now reviews with {label}; its start-up check runs now, and /auto check measures it on more cases"
         ))
     }
 
@@ -1093,55 +1088,91 @@ impl ApprovalEngine {
         self.forget_hooks.write().push(hook);
     }
 
-    /// Add a rule, persisting it to the realm rules file when configured.
+    /// Add a rule, written to the file of `level` (the user's own
+    /// `tui.toml` for [`Level::User`], else the realm's) when the engine
+    /// has its files; it is that layer's rule from then on.
     ///
     /// # Errors
     ///
-    /// Returns [`RulesError`] when persistence fails (the rule stays active).
-    pub fn add_rule(&self, rule: Rule) -> Result<(), RulesError> {
+    /// Returns [`RulesError`] when the file was not written (the rule stays
+    /// active).
+    pub fn add_rule(&self, rule: Rule, level: Level) -> Result<(), RulesError> {
         self.audit_event("rule_added", describe_rule(&rule));
-        self.push_rule(rule);
-        self.persist()
+        let rule = self.push_rule(rule, level);
+        self.write_rule(&rule, level, true)
     }
 
-    fn push_rule(&self, mut rule: Rule) {
-        if self.realm_file.is_some() {
-            rule.origin = RuleOrigin::Realm;
+    /// Push `rule` as a rule of `level`'s layer (when the engine has its
+    /// files); the rule as pushed.
+    fn push_rule(&self, mut rule: Rule, level: Level) -> Rule {
+        if self.files.is_some() {
+            rule.origin = match level {
+                Level::User => RuleOrigin::Global,
+                _ => RuleOrigin::Realm,
+            };
         }
-        self.rules.write().push(rule);
+        self.rules.write().push(rule.clone());
+        rule
     }
 
-    /// Remove a rule (global and project rules are removed for this process only).
+    /// Add `rule` to (or remove it from, `!add`) the file of `level`.
+    fn write_rule(&self, rule: &Rule, level: Level, add: bool) -> Result<(), RulesError> {
+        let Some(files) = &self.files else {
+            return Ok(());
+        };
+        let list = match rule.kind {
+            RuleKind::Allow => "allow",
+            RuleKind::Deny => "deny",
+        };
+        let file = files.of(level);
+        let entry = rule.to_entry();
+        if add {
+            file.add_rule(list, &entry)?;
+        } else {
+            file.remove_rule(list, &entry)?;
+        }
+        Ok(())
+    }
+
+    /// Remove a rule: one of the realm or of the user's own `tui.toml`
+    /// leaves its file too; one of the command line or the project's file
+    /// is removed for this process only.
     ///
     /// # Errors
     ///
-    /// Returns [`RulesError`] when persistence fails.
+    /// Returns [`RulesError`] when the file was not written.
     pub fn remove_rule(&self, id: RuleId) -> Result<Option<Rule>, RulesError> {
         let removed = self.rules.write().remove(id);
         if let Some(rule) = &removed {
             self.audit_event("rule_removed", describe_rule(rule));
-            self.persist()?;
+            match rule.origin {
+                RuleOrigin::Realm | RuleOrigin::Session => {
+                    self.write_rule(rule, Level::Workspace, false)?;
+                }
+                RuleOrigin::Global => self.write_rule(rule, Level::User, false)?,
+                RuleOrigin::Cli | RuleOrigin::Project => {}
+            }
         }
         Ok(removed)
     }
 
-    /// Write the rules as they are when the realm file's lock is taken
-    /// (a later change is then written by its own call, after this one).
-    fn persist(&self) -> Result<(), RulesError> {
-        match &self.realm_file {
-            Some(file) => file.write_rules_with(|| self.rules.read().clone()),
-            None => Ok(()),
-        }
-    }
-
-    /// [`Self::persist`] off the async executor (the escalation path).
-    async fn persist_blocking(&self) -> Result<(), PersistError> {
-        let Some(file) = self.realm_file.clone() else {
+    /// [`Self::write_rule`] off the async executor (the escalation path).
+    async fn write_rule_blocking(&self, rule: Rule, level: Level) -> Result<(), PersistError> {
+        let Some(files) = self.files.clone() else {
             return Ok(());
         };
-        let rules = Arc::clone(&self.rules);
-        tokio::task::spawn_blocking(move || file.write_rules_with(|| rules.read().clone()))
-            .await??;
+        tokio::task::spawn_blocking(move || {
+            let list = match rule.kind {
+                RuleKind::Allow => "allow",
+                RuleKind::Deny => "deny",
+            };
+            files
+                .of(level)
+                .add_rule(list, &rule.to_entry())
+                .map(|_| ())
+                .map_err(RulesError::from)
+        })
+        .await??;
         Ok(())
     }
 
@@ -1176,17 +1207,13 @@ impl ApprovalEngine {
         previous
     }
 
-    /// Record the mode in the realm rules file (`[auto] mode`), so the next
-    /// start comes back in it; a no-op without a realm rules file.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RulesError`] when the file cannot be written.
-    pub fn persist_mode(&self) -> Result<(), RulesError> {
-        match &self.realm_file {
-            Some(file) => file.write_mode_with(|| self.mode()),
-            None => Ok(()),
-        }
+    /// `[auto] trust_project_builds` changed while the daemon runs
+    /// (`/set`, a file): `None` is unset (trusted while a sandbox contains
+    /// the shell).
+    pub fn set_trust_project_builds(&self, trust: Option<bool>) {
+        let mut settings = self.settings.write();
+        settings.trust_project_builds = trust.unwrap_or(false);
+        settings.trust_project_builds_given = trust.is_some();
     }
 
     fn emit(&self, event: ApprovalEvent) {
@@ -1472,7 +1499,7 @@ impl ApprovalEngine {
                 });
                 return Ok(approved);
             }
-            GrantScope::Session | GrantScope::Always => blocked.call.grant,
+            GrantScope::Session | GrantScope::Always | GrantScope::AlwaysUser => blocked.call.grant,
         };
         let Some(target) = target else {
             return Err(format!("no grant fits blocked call #{id}"));
@@ -1492,13 +1519,22 @@ impl ApprovalEngine {
         target: GrantTarget,
         scope: GrantScope,
     ) -> Result<Approved, String> {
+        if let GrantTarget::Dir { path } = &target
+            && let Some(held) = self.settings_dir_in(path)
+        {
+            return Err(format!(
+                "`{}` cannot be granted: it reaches {}, which holds your rkat-tui settings (a grant there would let the agent change them)",
+                path.display(),
+                held.display()
+            ));
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         match (scope, &target) {
             (GrantScope::Once, _) => return Err("a grant is for this session or always".into()),
             (GrantScope::Session, _) => {
                 self.session(session_id).grants.push((id, target.clone()));
             }
-            (GrantScope::Always, GrantTarget::Dir { path }) => {
+            (GrantScope::Always | GrantScope::AlwaysUser, GrantTarget::Dir { path }) => {
                 let granted = &self.environment.granted;
                 let named: Vec<PathBuf> = granted
                     .user_write
@@ -1518,19 +1554,21 @@ impl ApprovalEngine {
                         path.display()
                     )
                 })?;
-                if let Some(file) = &self.realm_file {
-                    file.add_extra_write(&dir)
+                if let Some(files) = &self.files {
+                    files
+                        .of(scope.level())
+                        .add_to_list("confinement.extra_write", &dir.display().to_string())
                         .map_err(|err| format!("the grant was not saved: {err}"))?;
                 }
                 self.always_dirs.write().push((id, dir));
             }
-            (GrantScope::Always, GrantTarget::Builds) => {
+            (GrantScope::Always | GrantScope::AlwaysUser, GrantTarget::Builds) => {
                 return Err("builds after a dependency change are allowed for a session at a time; allow this kind of effect always with /approve's e instead".into());
             }
-            (GrantScope::Always, GrantTarget::Rule { tool, subject }) => {
+            (GrantScope::Always | GrantScope::AlwaysUser, GrantTarget::Rule { tool, subject }) => {
                 let rule = Rule::literal(RuleKind::Allow, tool, subject, RuleOrigin::Realm)
                     .map_err(|err| format!("no rule fits: {err}"))?;
-                self.add_rule(rule)
+                self.add_rule(rule, scope.level())
                     .map_err(|err| format!("the rule is active but was not saved: {err}"))?;
             }
         }
@@ -1538,7 +1576,7 @@ impl ApprovalEngine {
         self.audit_event("grant_added", format!("{} {what}", scope.words()));
         // A grant may change what a cached denial would be; allows stay.
         let lasting = match (scope, &target) {
-            (GrantScope::Always, GrantTarget::Dir { .. }) => {
+            (GrantScope::Always | GrantScope::AlwaysUser, GrantTarget::Dir { .. }) => {
                 " (the sandbox of a confined shell lets it write there from the next daemon start; the file tools and the classifier follow at once)"
             }
             _ => "",
@@ -1555,6 +1593,21 @@ impl ApprovalEngine {
             note: approved.note.clone(),
         });
         Ok(approved)
+    }
+
+    /// The directory of a settings file (the user's own `tui.toml`, the
+    /// realm's) that `dir` holds or lies in, when one does: no grant may
+    /// let the agent write the files the daemon reads with the user's
+    /// authority.
+    fn settings_dir_in(&self, dir: &std::path::Path) -> Option<PathBuf> {
+        let files = self.files.as_ref()?;
+        let canonical = |path: &std::path::Path| crate::bootstrap::scope::canonical_prefix(path);
+        let dir = canonical(dir);
+        [files.user.path(), files.workspace.path()]
+            .into_iter()
+            .filter_map(std::path::Path::parent)
+            .map(canonical)
+            .find(|held| held.starts_with(&dir) || dir.starts_with(held))
     }
 
     /// The grants in force for `session_id`, as `/permissions` lists them:
@@ -1700,15 +1753,21 @@ impl ApprovalEngine {
                 );
             }
             GrantScope::Session => self.session(session_id).statements.push((id, text.clone())),
-            GrantScope::Always => {
-                if let Some(file) = &self.realm_file {
-                    file.add_allow_statement(&text)
+            GrantScope::Always | GrantScope::AlwaysUser => {
+                if let Some(files) = &self.files {
+                    files
+                        .of(scope.level())
+                        .add_to_list("auto.allow", &text)
                         .map_err(|err| format!("the statement was not saved: {err}"))?;
                 }
                 self.lasting_statements.write().push(StatementRow {
                     id,
                     text: text.clone(),
-                    origin: StatementOrigin::Always,
+                    origin: if scope == GrantScope::AlwaysUser {
+                        StatementOrigin::Config
+                    } else {
+                        StatementOrigin::Always
+                    },
                 });
             }
         }
@@ -1791,15 +1850,27 @@ impl ApprovalEngine {
                 .find(|row| row.id == id)
                 .cloned()
                 .ok_or_else(|| format!("no statement #{id}"))?;
-            if row.origin == StatementOrigin::Config {
+            if self.files.is_none() && row.origin == StatementOrigin::Config {
                 return Err(format!(
                     "\"{}\" comes from your own tui.toml ([auto] allow): remove it there",
                     row.text
                 ));
             }
-            if let Some(file) = &self.realm_file {
-                file.remove_allow_statement(&row.text)
+            if let Some(files) = &self.files {
+                let level = match row.origin {
+                    StatementOrigin::Config => Level::User,
+                    _ => Level::Workspace,
+                };
+                let removed = files
+                    .of(level)
+                    .remove_from_list("auto.allow", &row.text)
                     .map_err(|err| format!("the statement was not removed: {err}"))?;
+                if !removed && row.origin == StatementOrigin::Config {
+                    return Err(format!(
+                        "\"{}\" comes from the daemon's command line (--set auto.allow): it ends when the daemon stops",
+                        row.text
+                    ));
+                }
             }
             self.lasting_statements
                 .write()
@@ -2638,8 +2709,8 @@ impl ApprovalEngine {
             }
             HumanDecision::AllowAndAddRule(rule) => {
                 self.audit_event("rule_added", describe_rule(&rule));
-                self.push_rule(*rule);
-                if let Err(err) = self.persist_blocking().await {
+                let rule = self.push_rule(*rule, Level::Workspace);
+                if let Err(err) = self.write_rule_blocking(rule, Level::Workspace).await {
                     tracing::warn!(error = %err, "failed to persist rule");
                     self.emit(ApprovalEvent::Notice(format!(
                         "the allow rule is active for this run but was not saved: {err}"
@@ -3139,6 +3210,24 @@ fn hash_value(value: &Value, hasher: &mut Sha256) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    /// The engine's files in a test: the realm's at `path`, the user's
+    /// beside it.
+    fn test_files(path: std::path::PathBuf) -> config::SettingsFiles {
+        config::SettingsFiles::new(path.with_file_name("user-tui.toml"), path)
+    }
+
+    /// Record the engine's mode as the daemon's settings path does.
+    fn persist_mode(engine: &ApprovalEngine, path: &std::path::Path) {
+        test_files(path.to_path_buf())
+            .workspace
+            .set(
+                "auto.mode",
+                Some(&toml::Value::String(engine.mode().name().to_string())),
+                &["auto.enabled"],
+            )
+            .unwrap();
+    }
+
     use super::super::catalog::{StaticToolOrigins, ToolCatalog};
     use super::super::classifier::ClassifierError;
     use super::super::escalation::EscalationRequest;
@@ -3284,7 +3373,7 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()).with_granted(granted),
             posix_shell: true,
             events: tx,
-            realm_file: None,
+            files: None,
         });
         Rig {
             dir,
@@ -4163,7 +4252,7 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
             events: tx,
-            realm_file: Some(config::RealmFile::new(blocker.join("tui.toml"))),
+            files: Some(test_files(blocker.join("tui.toml"))),
         });
         attended(&engine);
         let session = SessionId::new();
@@ -4666,7 +4755,7 @@ mod tests {
                     .with_containment(containment),
                 posix_shell: true,
                 events: tx,
-                realm_file: None,
+                files: None,
             });
             rig.events = events;
             rig.escalations = escalations;
@@ -4919,7 +5008,7 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
             events: tx,
-            realm_file: Some(config::RealmFile::new(realm.clone())),
+            files: Some(test_files(realm.clone())),
         });
         rig.events = events;
         rig.present = attended(&rig.engine);
@@ -4987,11 +5076,8 @@ mod tests {
             rig.engine.classifier_model().as_deref(),
             Some("anthropic:m-new")
         );
-        assert!(
-            std::fs::read_to_string(&realm)
-                .unwrap()
-                .contains("classifier_model = \"anthropic:m-new\"")
-        );
+        // The setting's file is the daemon's settings path's to write.
+        assert!(!realm.exists());
         assert!(
             audit
                 .lock()
@@ -5195,7 +5281,7 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
             events: tx,
-            realm_file: Some(config::RealmFile::new(realm.clone())),
+            files: Some(test_files(realm.clone())),
         });
         rig.events = events;
         rig.present = attended(&rig.engine);
@@ -5341,12 +5427,13 @@ mod tests {
             .allow_statement(&rig.session, "one more kind of action", GrantScope::Session)
             .unwrap_err();
         assert!(err.contains("remove one in /permissions"), "{err}");
-        // Removal: the user's own file says to edit it; always and session go.
+        // Removal: one of the command line (not in the user's own file)
+        // says when it ends; always and session go.
         assert!(
             rig.engine
                 .remove_statement(&rig.session, rows[0].id)
                 .unwrap_err()
-                .contains("your own tui.toml")
+                .contains("the daemon's command line")
         );
         rig.engine
             .remove_statement(&rig.session, rows[1].id)
@@ -5363,6 +5450,34 @@ mod tests {
             rig.engine
                 .remove_statement(&rig.session, rows[2].id)
                 .is_err()
+        );
+        // One added always in every workspace lands in the user's own file
+        // and leaves it again.
+        let user_file = realm.with_file_name("user-tui.toml");
+        rig.engine
+            .allow_statement(
+                &rig.session,
+                "network requests to crates.io",
+                GrantScope::AlwaysUser,
+            )
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(&user_file)
+                .unwrap()
+                .contains("network requests to crates.io")
+        );
+        let mine = rig
+            .engine
+            .statement_rows(Some(&rig.session))
+            .into_iter()
+            .find(|row| row.text == "network requests to crates.io")
+            .unwrap();
+        assert_eq!(mine.origin, StatementOrigin::Config);
+        rig.engine.remove_statement(&rig.session, mine.id).unwrap();
+        assert!(
+            !std::fs::read_to_string(&user_file)
+                .unwrap()
+                .contains("network requests to crates.io")
         );
         let lines = audit.0.lock().clone();
         assert!(lines.iter().any(
@@ -5868,6 +5983,7 @@ mod tests {
                     RuleOrigin::Realm,
                 )
                 .unwrap(),
+                Level::Workspace,
             )
             .unwrap();
         rig.engine.set_mode(PermissionMode::Plan);
@@ -6067,7 +6183,7 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
             events: tx,
-            realm_file: Some(config::RealmFile::new(path.clone())),
+            files: Some(test_files(path.clone())),
         });
         const N: usize = 40;
         let rules = {
@@ -6081,12 +6197,13 @@ mod tests {
                         RuleOrigin::Realm,
                     )
                     .unwrap();
-                    engine.add_rule(rule).unwrap();
+                    engine.add_rule(rule, Level::Workspace).unwrap();
                 }
             })
         };
         let modes = {
             let engine = Arc::clone(&engine);
+            let path = path.clone();
             std::thread::spawn(move || {
                 for n in 0..N {
                     let mode = if n % 2 == 0 {
@@ -6095,7 +6212,7 @@ mod tests {
                         PermissionMode::Manual
                     };
                     engine.set_mode(mode);
-                    engine.persist_mode().unwrap();
+                    persist_mode(&engine, &path);
                 }
             })
         };
@@ -6129,11 +6246,11 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
             events: tx,
-            realm_file: Some(config::RealmFile::new(path.clone())),
+            files: Some(test_files(path.clone())),
         });
         attended(&engine);
         engine.set_mode(PermissionMode::Plan);
-        engine.persist_mode().unwrap();
+        persist_mode(&engine, &path);
         let file = config::RulesFile::load(&path).unwrap();
         let auto = file.auto.unwrap();
         assert_eq!(auto.mode, Some(PermissionMode::Plan));
@@ -6248,7 +6365,7 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
             events: tx,
-            realm_file: None,
+            files: None,
         });
         attended(&engine);
         let verdict = call_as(

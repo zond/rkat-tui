@@ -13,6 +13,7 @@ the test protocol for working on rkat-tui itself.
 - [How approval works](#how-approval-works) ([Permission modes](#permission-modes))
 - [Confinement](#confinement) ([Security decisions](#security-decisions), [Security model and its limits](#security-model-and-its-limits))
 - [Helpers](#helpers)
+- [Settings](#settings)
 - [Rules](#rules) ([Configuration reference](#configuration-reference-tuitoml))
 - [Models, endpoints and cost](#models-endpoints-and-cost) ([Setting up an endpoint](#setting-up-an-endpoint))
 - [Instructions and memory](#instructions-and-memory) ([Context and compaction](#context-and-compaction))
@@ -380,10 +381,12 @@ behind it are denied as not answered too.
 model, and `/auto model` changes it from the TUI: alone it opens the model
 picker, titled "Classifier model", over the same lists `/model` shows (the
 classifier's model marked); `/auto model <endpoint>:<id>` (or a bare id,
-looked up as `/model` does) sets it directly. The daemon builds the new
-classifier at once, no restart (a review already running finishes on the
-old one), writes the choice to the realm's `tui.toml` as `[auto]
-classifier_model = "<endpoint>:<id>"` (never a project file), audits it
+looked up as `/model` does) sets it directly; `--user` writes it to your
+own `tui.toml` instead, for every workspace. The daemon writes the choice
+to the realm's `tui.toml` as `[auto] classifier_model =
+"<endpoint>:<id>"` (never a project file), builds the new classifier at
+once when that changes the model in force, no restart (a review already
+running finishes on the old one), audits it
 (`classifier_model`), runs the two-case check below against the new
 model in the background and shows its result ("… passed the start-up
 check", or what it misjudged), and suggests `/auto check`. A model of an
@@ -508,10 +511,13 @@ approval would make. On a row:
   stops, for this conversation and its helpers: a file-tool write in the
   directory runs like an edit in the project, and the classifier is told
   you allow it.
-- `a`, then `y`, grants it **always**: a directory is written to the
-  realm's `tui.toml` as `[confinement] extra_write` (rkat-tui's own
-  trusted writer; your global `tui.toml` stays yours to edit), a rule to
-  the realm's rules. The gate follows at once for every conversation; a
+- `a`, then `y`, grants it **always for this workspace**: a directory is
+  written to the realm's `tui.toml` as `[confinement] extra_write`, a rule
+  to the realm's rules. `A`, then `y`, grants it **always, in every
+  workspace**: the same written to your own `tui.toml`. A directory that
+  holds (or lies in) the directory of your own `tui.toml` or of the
+  realm's is never granted, for a session neither: the agent could then
+  change your settings. The gate follows at once for every conversation; a
   confined shell's sandbox is planned at the daemon's start, so the shell
   itself can write the directory from the next start on. A directory that
   overlaps the workspace or one you named already is refused, so the next
@@ -520,7 +526,8 @@ approval would make. On a row:
 - `e` allows **this kind of effect**: see below.
 
 The footer spells the choices: "Enter approve once · s grant this
-session · a grant always · e allow this kind of effect · Esc close". `s`
+session · a grant always here · A always in every workspace · e allow
+this kind of effect · Esc close". `s`
 and `a` ask first, on a line of their own that names what will happen
 ("Grant writes under `/data/store` for this session? y yes · n or Esc
 no"). While that question is up only `y` (grants), `n` and Esc (cancel the
@@ -554,7 +561,8 @@ changed its dependencies" or "installing a package the agent chose with a
 global scope". `/approve` shows it on the row (`e judged: "…"`); `e` opens
 a one-line field with the sentence, which you edit as you like (a block
 without one opens it empty, to type your own), Tab switches between for
-this session and always, Enter allows it, Esc leaves it. That is a
+this session, always for this workspace and always in every workspace,
+Enter allows it, Esc leaves it. That is a
 **statement**: the classifier reads the active statements in its
 environment, beside the directories you allow, under "The user allows
 these kinds of action (statements in their own words)". A statement
@@ -568,6 +576,8 @@ too widely or not at all (`/auto check statements` measures that).
   its helpers' and forks' calls are judged under it, so they have it too.
 - **always**: written to the realm's `tui.toml` as `[auto] allow = ["…"]`
   by the daemon's trusted writer, active at once for every conversation.
+- **always, in every workspace**: the same written to your own
+  `tui.toml`.
 
 You can also write them yourself in your own `~/.rkat/tui/tui.toml` (or
 the realm's) under `[auto] allow`; a project's `.rkat/tui.toml` cannot
@@ -579,7 +589,8 @@ everything", "do whatever you want") is refused with the reason. The
 agent gets one system note when a statement is added ("The user now
 allows: …"). `/permissions` lists them with their origin (`session`,
 `always`, `config`); `d` removes a session or always one (the realm file
-too), and one of your own file says to edit that file.
+too) and one of your own file from that file; one given on the daemon's
+command line ends when the daemon stops, as the refusal says.
 
 ### Permission modes
 
@@ -1231,6 +1242,84 @@ status and error unfolded. An outcome of another shape is shown as the
 engine wrote it. What the agent itself reads is the engine's notice,
 unchanged.
 
+## Settings
+
+Every setting has three forms with the same dotted key: in a file
+(`[auto]` `compact_prepare_at = "65%"` in a `tui.toml`), on the daemon's
+command line (`--set auto.compact_prepare_at=65%`, and the dedicated
+flags the [configuration reference](#configuration-reference-tuitoml)
+lists as shorthands), and in the TUI (`/set auto.compact_prepare_at
+65%`). Each setting is declared once, with what it takes, its default,
+what a project file may do with it and when a change applies; the
+reference table is generated from that declaration.
+
+**Two levels you write.** Your own `~/.rkat/tui/tui.toml` (the user
+level: every workspace) and the workspace's realm `tui.toml` (the
+workspace level). Precedence, lowest first: the default, your file, the
+workspace's, the command line; a project's `.rkat/tui.toml` counts only
+for the keys it may set, as the reference says (where it may set a key,
+the command line still wins; where it may only lower a value, its lower
+value wins over every layer). rkat-tui never writes a project's file.
+
+**From the TUI.**
+
+- `/set <key> <value>` writes the workspace's file; `/set <key> <value>
+  --user` writes yours (`--global` is the same). The value is typed as
+  the setting takes it (`true`/`false`/`on`/`off`, a number, `65%` or
+  `300k`, a word, text; quotes are optional).
+- `/unset <key> [--user]` removes that level's value: the next layer's
+  applies.
+- `/settings [filter]` opens a list of every setting (those whose key
+  holds the filter): the key, the value in force and the layer it comes
+  from; the line under each says what every layer holds, the default,
+  when a change applies, what it does and what it takes. Enter opens a
+  one-line field for the workspace's value, `u` for yours (Tab switches
+  between the two, Esc cancels, Enter writes); `d` then `y` removes the
+  value at the layer in force when that is yours or the workspace's (a
+  command-line or project value is not rkat-tui's to remove, and the
+  list says so). The structured sections (rules, statements, directory
+  grants, endpoints, prices, thinking) are listed last with the commands
+  that change them. The footer names both files.
+
+The friendly commands are shorthands for the same path and take
+`--user` too: `/compact prepare … [--user]` (`auto.compact_prepare`,
+`auto.compact_prepare_at`), `/auto model <ref> [--user]`
+(`auto.classifier_model`), `/mode <mode> --user` (`auto.mode`; `/mode`
+and Shift+Tab record the workspace's), Ctrl-T (the workspace's
+`ui.checklist`), `/permissions add … --user` (a rule in your file), and
+`/approve`'s `A` (always, in every workspace).
+
+**What a change says.** Every change answers with the key and value,
+the level and the file written, the value now in force and the layer it
+comes from, and when it applies: "auto.compact_prepare_at = 65%:
+written to your tui.toml (~/.rkat/tui/tui.toml); in force: 65% (from
+your tui.toml); applied at once; the agents are asked at 65% of the
+window (about 650k tokens for <model>) to: "update PLAN.md"". When a
+higher layer keeps another value in force it says so ("the value in
+force did not change; this workspace's tui.toml sets it (300000), which
+wins here: /unset auto.compact_prepare_at removes it", or "the daemon's
+command line sets it (80%), which wins until the daemon restarts"). A
+value the setting does not take is refused with what it takes and
+nothing is written. Each change is in the audit log (`setting`).
+
+**When it applies.** "At once" settings (the mode, the classifier
+model, `trust_project_builds`, the prepare instruction and threshold,
+the `[ui]` settings) apply in the daemon as soon as the value in force
+changes, and every attached client follows a `[ui]` setting. The others
+apply at the next start of the daemon (or, for a client-side setting
+such as `shell.user_timeout_secs`, the next start of rkat-tui); the
+answer says which. A change that a higher layer overrides is written but
+changes nothing in force.
+
+**How the files are written.** Only the one key changes: comments, the
+order of keys and the formatting of the rest of the file stay as they
+were. The result must read as a `tui.toml` before anything is written
+(else nothing is), the file is replaced atomically, a symlinked file is
+refused, and a lock on the file's directory keeps two daemons writing
+your file from losing each other's change. A daemon reads the files at
+its start; one that is running does not notice a hand edit or another
+daemon's change yet.
+
 ## Rules
 
 Rules live in TOML, layered (later settings win): the user-global
@@ -1245,12 +1334,14 @@ commands) are dropped when auto mode starts.
 **`/permissions`** opens a list of the rules in effect: each row's number,
 allow or deny, tool, pattern or literal, and the layer it came from. `d`
 asks, and `y` removes the highlighted rule, as `/permissions rm <n>`
-does: a rule of the realm (or one added during this run) is gone for
-good; one written in your global `tui.toml`, the project's
-`.rkat/tui.toml` or on the daemon's command line is removed until the
-daemon restarts, and the question says so. Adding stays typed:
-`/permissions add allow|deny <tool> [pattern]` (the list's last line says
-so). `/permissions list` prints the rules as a notice.
+does: a rule of the realm (or one added during this run) or of your own
+`tui.toml` is gone for good (removed from its file); one written in the
+project's `.rkat/tui.toml` or on the daemon's command line is removed
+until the daemon restarts, and the question says so. Adding stays typed:
+`/permissions add allow|deny <tool> [pattern] [--user]` (the list's last line says
+so; `--user` writes the rule to your own `tui.toml`, for every
+workspace). Removing a rule of your own `tui.toml` removes it from that
+file. `/permissions list` prints the rules as a notice.
 
 **The realm file.** The workspace's realm `tui.toml` lives in its state
 directory under the config directory, out of the agent's and a
@@ -1304,7 +1395,7 @@ it may only lower a value, its lowering applies over every layer).
 |---|---|---|---|---|---|
 | `auto.mode`: The permission mode at start (`enabled = false` is the older `mode = "default"`). | `default`, `accept-edits`, `plan`, `auto` | auto | may only turn auto mode off (`enabled = false`) | at once | `--no-auto`, `/mode`, Shift+Tab |
 | `auto.classifier_model`: The model that reviews the agent's actions in auto mode. | a model, `[endpoint:]model` | the start-up endpoint's per-dialect default | may not set it | at once | `--classifier-model`, `/auto model` |
-| `auto.trust_project_builds`: Whether `cargo build\|test\|nextest\|check\|clippy` are tier 1. | `true` or `false` | unset: trusted while a sandbox contains the shell; uncontained, a build after a dependency change asks | may only set `false` | at the next start | `--trust-project-builds`, `--no-trust-project-builds` |
+| `auto.trust_project_builds`: Whether `cargo build\|test\|nextest\|check\|clippy` are tier 1. | `true` or `false` | unset: trusted while a sandbox contains the shell; uncontained, a build after a dependency change asks | may only set `false` | at once | `--trust-project-builds`, `--no-trust-project-builds` |
 | `auto.classifier_tools`: Whether the classifier's second stage may read project files. | `true` or `false` | true | may only set `false` | at the next start | — |
 | `auto.classifier_probe`: Whether the daemon checks the classifier model at start with two fixed cases. | `true` or `false` | true | may set it (the command line wins) | at the next start | — |
 | `auto.compact`: When the context fills up: the engine's own threshold, only warn, or compact at `compact_auto_percent`. | `native`, `warn`, `auto` | native | may set it (the command line wins) | at the next start | `--auto-compact`, `--no-auto-compact` |
@@ -1316,8 +1407,8 @@ it may only lower a value, its lowering applies over every layer).
 | `shell.user_timeout_secs`: How long a `!` command may run, in seconds. | a whole number from 1 | 120 | may only lower it | at the next start | — |
 | `search.budget_secs`: How long one `glob` or `grep` may run before it answers with what it found, in seconds. | a whole number from 1 | 10 | may only lower it | at the next start | — |
 | `search.max_entries`: How many files and directories one `glob` or `grep` may examine. | a whole number from 1 | 500000 | may only lower it | at the next start | — |
-| `ui.helpers`: How helper headers start in the transcript. | `folded`, `expanded` | folded | may set it (the command line wins) | at the next start | — |
-| `ui.bell`: Ring the bell when a turn ends or a prompt opens while the terminal is not focused. | `true` or `false` | true | may set it (the command line wins) | at the next start | — |
+| `ui.helpers`: How helper headers start in the transcript. | `folded`, `expanded` | folded | may set it (the command line wins) | at once | — |
+| `ui.bell`: Ring the bell when a turn ends or a prompt opens while the terminal is not focused. | `true` or `false` | true | may set it (the command line wins) | at once | — |
 | `ui.checklist`: Whether the task checklist shows under the input. | `hidden`, `shown` | hidden | may set it (the command line wins) | at once | Ctrl+T |
 | `pricing.fetch`: Whether the community price list is fetched for the cost readout. | `true` or `false` | true | may only set `false` | at the next start | `--no-pricing-fetch` |
 | `daemon.principal`: The person every attached client decides approval requests as. | text (at most 200 characters) | the login name ($USER, else $LOGNAME, else owner) | may not set it | at the next start | — |
@@ -1745,9 +1836,12 @@ PLAN.md'`, `--set auto.compact_prepare_at=60%`), or a project's
 compaction keys. The threshold reads as tokens (`300000`, `300k`,
 `1.2m`) or a share of the window (`"65%"`).
 
-**From inside the TUI.** Every form applies at once, without a restart,
-arms the trigger of every agent against what is now set, and is written
-for this workspace to the realm's `tui.toml`:
+**From inside the TUI.** Each form is a shorthand for `/set` of
+`auto.compact_prepare` and `auto.compact_prepare_at` (see
+[Settings](#settings)): written for this workspace to the realm's
+`tui.toml`, or with `--user` to your own; when the value in force
+changes it applies at once, without a restart, and arms the trigger of
+every agent against what is now set:
 
 - `/compact prepare <text>` sets the instruction; `/compact prepare off`
   turns it off for this workspace, also when your own `tui.toml` has one
@@ -1764,18 +1858,17 @@ for this workspace to the realm's `tui.toml`:
   `/compact prepare default all` resets both.
 
 `/compact prepare` alone prints what is set, its state and the three
-forms. The confirmations and `/compact status` give the threshold as set
-and in tokens for the model ("prepare instruction set: "update PLAN.md",
-from this workspace (/compact prepare); the agent is asked at 65% of the
-window (about 650k tokens for <model>), from this workspace (/compact
-prepare)") and name where each value in force comes from: from this
+forms. The confirmations say what [every change](#settings) says, and
+what the agents are now asked and where ("the agents are asked at 65% of
+the window (about 650k tokens for <model>) to: "update PLAN.md""); `/compact
+status` names where each value in force comes from: from this
 workspace, from your tui.toml, from the command line, from the project's
 .rkat/tui.toml, or default. Off says what `default` would bring back
 ("off for this workspace (your tui.toml has one: /compact prepare
 default uses it)"). A threshold at or above the automatic compaction's
 is applied with the start-up notice's warning. A value from the command
-line or the project's file is over the workspace's: a change says it
-applies again at the next start.
+line or the project's file is over the workspace's: a change is written
+but not applied, and the answer names the layer that wins.
 
 ## Skills
 
@@ -2122,7 +2215,9 @@ has some. The list is the engine's own task store (the realm's `tasks.db`,
 scoped to the session), read when a session opens and after each task call,
 so a resumed session gets its list back and a new one starts empty. Ctrl-T
 saves the choice as `[ui] checklist = "shown"` (or `"hidden"`, the default)
-in the realm `tui.toml`; the daemon reads the list and saves the choice.
+in the realm `tui.toml` (`/set ui.checklist shown --user` sets yours);
+the daemon reads the list and saves the choice, and every attached client
+follows it.
 
 ## Where things live
 

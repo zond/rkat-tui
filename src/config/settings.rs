@@ -298,9 +298,8 @@ impl<T> Sourced<T> {
     }
 }
 
-/// The prepare instruction and its threshold as the daemon starts with
-/// them, and what the lower layers give (`/compact prepare default`
-/// goes back to those, live).
+/// The prepare instruction and its threshold in force, with where each
+/// comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrepareSetting {
     /// The instruction in force (`None` from a layer: off there; from
@@ -308,10 +307,6 @@ pub struct PrepareSetting {
     pub instruction: Sourced<Option<String>>,
     /// Its threshold in force.
     pub at: Sourced<PrepareAt>,
-    /// The instruction without the realm file's `compact_prepare`.
-    pub default_instruction: Sourced<Option<String>>,
-    /// The threshold without the realm file's `compact_prepare_at`.
-    pub default_at: Sourced<PrepareAt>,
 }
 
 impl Default for PrepareSetting {
@@ -319,8 +314,40 @@ impl Default for PrepareSetting {
         Self {
             instruction: Sourced::new(None, PrepareSource::Default),
             at: Sourced::new(DEFAULT_PREPARE_AT, PrepareSource::Default),
-            default_instruction: Sourced::new(None, PrepareSource::Default),
-            default_at: Sourced::new(DEFAULT_PREPARE_AT, PrepareSource::Default),
+        }
+    }
+}
+
+impl PrepareSetting {
+    /// The instruction and its threshold the layers `layers` give.
+    #[must_use]
+    pub fn of(layers: &super::registry::Layers) -> Self {
+        use super::registry::Setting;
+        let read = |key| Setting::find(key).map(|setting| setting.resolve(layers));
+        let instruction = read("auto.compact_prepare");
+        let at = read("auto.compact_prepare_at");
+        Self {
+            instruction: instruction.map_or_else(
+                || Sourced::new(None, PrepareSource::Default),
+                |resolved| {
+                    Sourced::new(
+                        prepare_instruction(resolved.value.as_ref().and_then(toml::Value::as_str)),
+                        resolved.source,
+                    )
+                },
+            ),
+            at: at.map_or_else(
+                || Sourced::new(DEFAULT_PREPARE_AT, PrepareSource::Default),
+                |resolved| {
+                    Sourced::new(
+                        resolved
+                            .value
+                            .and_then(|value| value.try_into().ok())
+                            .unwrap_or(DEFAULT_PREPARE_AT),
+                        resolved.source,
+                    )
+                },
+            ),
         }
     }
 }
@@ -367,6 +394,39 @@ pub struct PrepareChange {
     /// The instruction's change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<InstructionChange>,
+    /// Written to the user's own `tui.toml` (`--user`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub user: bool,
+}
+
+impl PrepareChange {
+    /// The settings it changes, in order (the threshold first): each key
+    /// and its value as typed (`None`: remove the level's value; an empty
+    /// instruction is off).
+    #[must_use]
+    pub fn settings(&self) -> Vec<(String, Option<String>)> {
+        let mut changes = Vec::new();
+        if let Some(at) = self.at {
+            changes.push((
+                "auto.compact_prepare_at".to_string(),
+                match at {
+                    ThresholdChange::To(at) => Some(at.to_string()),
+                    ThresholdChange::Default => None,
+                },
+            ));
+        }
+        if let Some(instruction) = &self.instruction {
+            changes.push((
+                "auto.compact_prepare".to_string(),
+                match instruction {
+                    InstructionChange::To(text) => Some(text.trim().to_string()),
+                    InstructionChange::Off => Some(String::new()),
+                    InstructionChange::Default => None,
+                },
+            ));
+        }
+        changes
+    }
 }
 
 impl CompactionPolicy {

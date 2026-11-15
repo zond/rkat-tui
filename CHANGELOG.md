@@ -4,6 +4,24 @@
 
 ### Added
 
+- `/set <key> <value> [--user]` and `/unset <key> [--user]` change any
+  setting by its `tui.toml` key, for this workspace or (with `--user`)
+  in your own `~/.rkat/tui/tui.toml` for every workspace. The answer
+  names the file written, the value in force and its layer, when it
+  applies, and the higher layer that wins over it when one does; a value
+  the setting does not take is refused with what it takes.
+- `/settings [filter]` lists every setting: the value in force and its
+  layer, what each layer holds, the default and when a change applies;
+  Enter edits the workspace's value, `u` your own, `d` then `y` removes
+  the value at the layer in force.
+- `--user` on `/compact prepare`, `/auto model`, `/mode <mode>` and
+  `/permissions add`; `/approve`'s `A` grants a directory or a rule
+  always in every workspace, and its kind-of-effect field's Tab reaches
+  "always, in every workspace" (written to your own `tui.toml`).
+- The mode, the classifier model, `trust_project_builds`, the prepare
+  instruction and threshold and the `[ui]` settings apply at once when a
+  change moves the value in force; attached clients follow a `[ui]`
+  change.
 - `/compact prepare at <N | Nk | N%>` sets where the agent is asked to
   prepare for a compaction (`300000`, `300k`, `1.2m`, `65%`), live and
   for the workspace; `/compact prepare at 65% <text>` sets the threshold
@@ -19,6 +37,19 @@
 
 ### Changed
 
+- rkat-tui's writes to `tui.toml` change only the key they set: the
+  comments, order and formatting of the rest of the file stay, and a
+  change that would leave a file `tui.toml` cannot read is refused.
+- A `/compact prepare`, `/auto model` or mode change for the workspace
+  that the daemon's command line (or a project's file) overrides is
+  written but no longer applied live over that layer; the answer names
+  the layer that wins.
+- Removing a rule or a statement of your own `tui.toml` (`/permissions`)
+  removes it from that file instead of until the daemon restarts.
+- A directory that holds or lies in your config directory or the
+  workspace's realm is never granted (`/approve`, for a session too),
+  and the daemon refuses to start when its confined shell is granted
+  your `tui.toml`.
 - A `--set` value for a setting is checked as the settings table says
   and refused naming what the key takes
   (`auto.compact_warn_percent takes a whole number from 1 to 100`,

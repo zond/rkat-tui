@@ -70,20 +70,104 @@ pub struct AgentNotice {
     pub text: String,
 }
 
-/// What [`method::CompactPrepare`] takes: the threshold's change and the
-/// instruction's, either left out to leave it.
-pub type CompactPrepareParams = crate::config::settings::PrepareChange;
+/// The notification that a setting in force changed for the clients to
+/// follow (a live `[ui]` setting a client applies): [`SettingNote`].
+pub const SETTING: &str = "rkat/setting";
 
-/// What [`method::CompactPrepare`] answers: what is now set, and the
-/// start-up notice's warning when the threshold is at or above the
-/// automatic compaction's.
+/// What [`SETTING`] carries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CompactPrepareOutcome {
-    /// What is now set.
+pub struct SettingNote {
+    /// The setting's dotted key.
+    pub key: String,
+    /// Its value in force as the file holds it (`None`: unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// The layer it comes from.
+    pub source: crate::config::registry::Level,
+    /// What to show the user (`None`: nothing, the client that changed it
+    /// has its own confirmation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
+}
+
+/// [`method::SetSetting`]'s parameters: `/set`, `/unset` and the commands
+/// that are shorthands for them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetSettingParams {
+    /// The setting's dotted key.
+    pub key: String,
+    /// The value as typed (`None`: remove the level's value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// The user's own `tui.toml` (else the workspace's).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub user: bool,
+}
+
+/// [`method::SetSetting`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingOutcome {
+    /// It was written.
+    pub ok: bool,
+    /// The confirmation, or why nothing was written.
     pub text: String,
-    /// The warning, when there is one.
+    /// What applying it had to warn about.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+}
+
+/// [`method::Settings`]'s result: every setting as `/settings` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingsList {
+    /// One row per scalar setting, in the table's order.
+    pub rows: Vec<SettingRow>,
+    /// The structured sections, with the commands that change them.
+    pub sections: Vec<SectionRow>,
+    /// The user's own `tui.toml`.
+    pub user_file: std::path::PathBuf,
+    /// The workspace's realm `tui.toml`.
+    pub workspace_file: std::path::PathBuf,
+}
+
+/// One setting of [`SettingsList`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingRow {
+    /// The dotted key.
+    pub key: String,
+    /// What it does.
+    pub about: String,
+    /// What it takes.
+    pub takes: String,
+    /// When a change takes effect.
+    pub applies: crate::config::registry::Applies,
+    /// The value in force, as shown.
+    pub value: String,
+    /// The layer it comes from.
+    pub source: crate::config::registry::Level,
+    /// Each layer that holds a value, with it.
+    pub levels: Vec<(crate::config::registry::Level, String)>,
+    /// The default, in words.
+    pub default: String,
+    /// What a project file may do with it.
+    pub project: String,
+    /// The friendly command, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+/// One structured section of [`SettingsList`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SectionRow {
+    /// How it is written.
+    pub key: String,
+    /// What it holds.
+    pub about: String,
+    /// What a project file may do with it.
+    pub project: String,
+    /// Its command-line flags.
+    pub flags: String,
+    /// The commands that change it.
+    pub commands: String,
 }
 
 /// The notification of the permission mode and the denial counters
@@ -158,16 +242,14 @@ methods! {
     /// Remove a statement of this client's agent's session, or one added
     /// always (`/permissions`).
     RemoveStatement = "rkat/remove_statement" (GrantParams) -> crate::approval::desk::RuleOutcome;
-    /// `/auto model`: review with another classifier model from now on
-    /// (live, written to the realm's `tui.toml`, audited, its start-up
-    /// check run in the background); refused for an endpoint this daemon
-    /// does not have.
-    SetClassifierModel = "rkat/set_classifier_model" (ClassifierModelParams) -> crate::approval::desk::RuleOutcome;
-    /// `/compact prepare [at <threshold>|default] [<text>|off]`: the
-    /// threshold and the instruction every agent gets before an automatic
-    /// compaction, set (written to the realm's `tui.toml`, live, the
-    /// trigger armed against them) or cleared.
-    CompactPrepare = "rkat/compact_prepare" (CompactPrepareParams) -> CompactPrepareOutcome;
+    /// `/set`, `/unset` and their shorthands (`/compact prepare`, `/auto
+    /// model`, Ctrl+T): one setting at the user's or the workspace's
+    /// level, checked, written to that `tui.toml`, and applied when the
+    /// value in force changed (`crate::daemon::settings`).
+    SetSetting = "rkat/set_setting" (SetSettingParams) -> SettingOutcome;
+    /// `/settings`: every setting, the value in force, its layer and what
+    /// each layer holds.
+    Settings = "rkat/settings" (Empty) -> SettingsList;
     /// `/compact status`'s daemon side: the prepare instruction, its
     /// threshold and whether it is armed for this client's agent.
     CompactStatus = "rkat/compact_status" (Empty) -> crate::approval::desk::RuleOutcome;
@@ -216,9 +298,6 @@ methods! {
     /// the project inputs, the helpers' depth limit, the caller's agent's
     /// file watches.
     Report = "rkat/report" (Empty) -> DaemonReport;
-    /// Ctrl+T's choice saved as the realm's `[ui] checklist`, through the
-    /// engine that owns the realm file and its trust record.
-    ChecklistView = "rkat/checklist_view" (ChecklistViewParams) -> Empty;
     /// `/model`: the caller's agent's current session on another model in
     /// place, with the endpoint's auth binding and the model's `[thinking]`
     /// setting.
@@ -847,16 +926,6 @@ pub struct ApproveParams {
     pub effect: Option<String>,
 }
 
-/// [`method::SetClassifierModel`]'s parameters: a model of an endpoint,
-/// as the client resolved the user's `endpoint:model` reference.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClassifierModelParams {
-    /// The endpoint's name.
-    pub endpoint: String,
-    /// The model's id there.
-    pub model: String,
-}
-
 /// [`method::RemoveGrant`]'s parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrantParams {
@@ -1129,6 +1198,10 @@ pub struct Report {
 pub struct SetModeParams {
     /// The mode.
     pub mode: crate::approval::mode::PermissionMode,
+    /// Recorded in the user's own `tui.toml` (`/mode <mode> --user`)
+    /// instead of the workspace's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub user: bool,
 }
 
 /// [`method::SetMode`]'s result.
@@ -1464,13 +1537,6 @@ pub struct Usage {
 pub struct Tasks {
     /// The conversation's tasks as the store lists them.
     pub tasks: Vec<meerkat_tools::builtin::types::Task>,
-}
-
-/// [`method::ChecklistView`]'s parameters.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct ChecklistViewParams {
-    /// `hidden` or `shown`.
-    pub view: crate::config::ChecklistView,
 }
 
 /// [`method::SetModel`]'s parameters.

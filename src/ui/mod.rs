@@ -400,6 +400,14 @@ pub enum Msg {
     },
     /// Status-bar update.
     Status(StatusUpdate),
+    /// A `[ui]` setting in force changed (`rkat/setting`): the key and its
+    /// value as the file holds it (`None`: the default).
+    Setting {
+        /// The dotted key.
+        key: String,
+        /// The value.
+        value: Option<String>,
+    },
     /// Open the resume picker with `(ref, label)` items.
     ShowResumePicker(Vec<(String, String)>),
     /// Open the model picker (answer to [`Effect::RequestModelPicker`]): one
@@ -668,10 +676,29 @@ pub enum Effect {
     ResumeSession(String),
     /// Load session list; answer with [`Msg::ShowResumePicker`].
     RequestResumePicker,
-    /// `/compact prepare [at <threshold>|default] [<text>|off]`: change
-    /// the threshold and the instruction the agents get before an
-    /// automatic compaction (`rkat/compact_prepare`).
-    CompactPrepare(crate::config::settings::PrepareChange),
+    /// `/set`, `/unset` and their shorthands (`/compact prepare`, `/mode
+    /// <mode> --user`): each `(key, value)` in order (`rkat/set_setting`;
+    /// `None` removes the level's value), at the user's level (`user`) or
+    /// the workspace's; each answer a notice.
+    SetSettings {
+        /// The changes.
+        changes: Vec<(String, Option<String>)>,
+        /// The user's own `tui.toml`.
+        user: bool,
+    },
+    /// `/settings [filter]`: open the settings picker (answered with
+    /// [`Msg::ShowPicker`]).
+    RequestSettingsPicker(Option<String>),
+    /// The settings picker's change: as [`Self::SetSettings`] of one
+    /// change, then the picker's list again.
+    PickedSetting {
+        /// The key.
+        key: String,
+        /// The value (`None`: remove it).
+        value: Option<String>,
+        /// The user's own `tui.toml`.
+        user: bool,
+    },
     /// `/compact status`: the daemon's side of it, the prepare instruction
     /// (`rkat/compact_status`), as a notice.
     CompactPrepareStatus,
@@ -690,6 +717,8 @@ pub enum Effect {
         tool: String,
         /// Optional argument pattern.
         pattern: Option<String>,
+        /// Written to the user's own `tui.toml`.
+        user: bool,
     },
     /// Remove rule number `n`.
     RemoveRule(usize),
@@ -733,9 +762,10 @@ pub enum Effect {
     /// `/auto model`: open the model picker for the classifier (answered
     /// with [`Msg::ShowClassifierPicker`]).
     RequestClassifierPicker,
-    /// `/auto model <ref>` or the classifier picker's choice: the
-    /// classifier reviews with that model (`rkat/set_classifier_model`).
-    SetClassifierModel(String),
+    /// `/auto model <ref> [--user]` or the classifier picker's choice:
+    /// the classifier reviews with that model (`rkat/set_setting` of
+    /// `auto.classifier_model`, at the user's level with `true`).
+    SetClassifierModel(String, bool),
     /// Load the provider's model list (cached for the session unless
     /// `refresh`); answer with [`Msg::ShowModelPicker`].
     RequestModelPicker {
@@ -1449,6 +1479,22 @@ impl App {
         }
     }
 
+    /// A live `[ui]` setting the daemon pushed: the view follows it at once
+    /// (`None`: the default).
+    pub fn apply_setting(&mut self, key: &str, value: Option<&str>) {
+        fn read<T: serde::de::DeserializeOwned + Default>(value: Option<&str>) -> T {
+            value
+                .and_then(|value| toml::Value::String(value.to_string()).try_into().ok())
+                .unwrap_or_default()
+        }
+        match key {
+            "ui.bell" => self.bell = value != Some("false"),
+            "ui.checklist" => self.checklist.view = read(value),
+            "ui.helpers" => self.transcript.set_helper_view(read(value)),
+            _ => {}
+        }
+    }
+
     /// Whether the task checklist starts shown (`[ui] checklist`).
     #[must_use]
     pub fn with_checklist_view(mut self, view: ChecklistView) -> Self {
@@ -1736,6 +1782,7 @@ impl App {
             Msg::Notice { level, text } => {
                 self.transcript.push_notice(level, text);
             }
+            Msg::Setting { key, value } => self.apply_setting(&key, value.as_deref()),
             Msg::Status(update) => {
                 // Envelope sequence numbers restart with every session task.
                 if matches!(update, StatusUpdate::Session(_)) {

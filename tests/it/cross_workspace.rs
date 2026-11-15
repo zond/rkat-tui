@@ -677,6 +677,7 @@ async fn the_daemon_wires_unwires_and_refuses() {
         &bound,
         &protocol::SetModeParams {
             mode: rkat_tui::approval::mode::PermissionMode::Plan,
+            user: false,
         },
     )
     .await

@@ -35,6 +35,8 @@ pub enum Push {
     Idle(protocol::IdleNote),
     /// A notice for one agent's clients ([`protocol::AGENT_NOTICE`]).
     AgentNotice(protocol::AgentNotice),
+    /// A setting in force changed ([`protocol::SETTING`]).
+    Setting(protocol::SettingNote),
     /// An event of the stream `stream` (the conversation's own, or a mob's;
     /// which one decides how `event` reads).
     Stream {
@@ -81,6 +83,7 @@ impl Push {
             protocol::IDLE => Self::Idle(read(note)?),
             protocol::AGENT_NOTICE => Self::AgentNotice(read(note)?),
             protocol::MODE => Self::Mode(read(note)?),
+            protocol::SETTING => Self::Setting(read(note)?),
             STREAM_EVENT => {
                 let StreamEvent {
                     stream_id,

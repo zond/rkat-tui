@@ -16,6 +16,9 @@ use std::path::PathBuf;
 /// Errors from rule parsing and persistence.
 #[derive(Debug, thiserror::Error)]
 pub enum RulesError {
+    /// The settings writer refused or failed.
+    #[error(transparent)]
+    Settings(#[from] crate::config::write::WriteError),
     /// A rules file could not be written.
     #[error("cannot write {}: {source}", path.display())]
     Write {
@@ -572,18 +575,6 @@ impl RuleSet {
             .partition(|(_, r)| r.broad_reason().is_none());
         self.allow = keep;
         dropped.into_iter().map(|(_, r)| r).collect()
-    }
-
-    /// Rules from one layer, as a serializable file body (without `[auto]`).
-    pub fn layer_entries(&self, origin: RuleOrigin) -> (Vec<RuleEntry>, Vec<RuleEntry>) {
-        let pick = |rules: &[(u64, Rule)]| {
-            rules
-                .iter()
-                .filter(|(_, r)| r.origin == origin)
-                .map(|(_, r)| r.to_entry())
-                .collect()
-        };
-        (pick(&self.allow), pick(&self.deny))
     }
 }
 

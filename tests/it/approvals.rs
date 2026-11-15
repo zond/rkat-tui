@@ -435,6 +435,7 @@ async fn a_deny_rule_added_in_attach_mode_refuses_the_next_call() {
         effect: RuleEffect::Deny,
         tool: "write_file".into(),
         pattern: None,
+        user: false,
     });
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "rule added"))
@@ -469,6 +470,7 @@ async fn the_rule_picker_removes_a_rule_from_the_daemon() {
         effect: RuleEffect::Deny,
         tool: "write_file".into(),
         pattern: Some("*.lock".into()),
+        user: false,
     });
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "rule added"))
@@ -746,6 +748,7 @@ async fn a_restarted_daemon_keeps_the_application_policy_binding() {
         effect: RuleEffect::Deny,
         tool: "write_file".into(),
         pattern: None,
+        user: false,
     });
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "rule added"))
@@ -1806,10 +1809,11 @@ async fn every_gate_decision_is_one_audit_line_naming_who_decided() {
     client.quit().await;
 }
 
-/// `/auto model` reaches the daemon (`rkat/set_classifier_model`): a model
-/// of an endpoint the daemon does not have is refused with what to do,
-/// and a daemon whose classifier is fixed (a test's) keeps it, saying so;
-/// neither changes the model `/status` names.
+/// `/auto model` reaches the daemon (`rkat/set_setting` of
+/// `auto.classifier_model`): a model of an endpoint the daemon does not
+/// have is refused with what to do and nothing written; a daemon whose
+/// classifier is fixed (a test's) writes the setting but keeps its
+/// classifier, saying so; neither changes the model `/status` names.
 #[tokio::test]
 async fn the_classifier_model_change_is_refused_for_an_unknown_endpoint() {
     let ws = Workspace::new();
@@ -1821,8 +1825,8 @@ async fn the_classifier_model_change_is_refused_for_an_unknown_endpoint() {
         connection.call("rkat/report", json!({})).await.unwrap()["classifier_model"].clone();
     let unknown = connection
         .call(
-            "rkat/set_classifier_model",
-            json!({"endpoint": "nowhere", "model": "m"}),
+            "rkat/set_setting",
+            json!({"key": "auto.classifier_model", "value": "nowhere:m"}),
         )
         .await
         .unwrap();
@@ -1834,12 +1838,19 @@ async fn the_classifier_model_change_is_refused_for_an_unknown_endpoint() {
     );
     let fixed = connection
         .call(
-            "rkat/set_classifier_model",
-            json!({"endpoint": "anthropic", "model": "claude-haiku-5-5"}),
+            "rkat/set_setting",
+            json!({"key": "auto.classifier_model", "value": "anthropic:claude-haiku-5-5"}),
         )
         .await
         .unwrap();
-    assert_eq!(fixed["ok"], false, "{fixed}");
+    assert_eq!(fixed["ok"], true, "{fixed}");
+    assert!(
+        fixed["warning"]
+            .as_str()
+            .unwrap()
+            .contains("the classifier model was not changed: this daemon's classifier is fixed"),
+        "{fixed}"
+    );
     let after =
         connection.call("rkat/report", json!({})).await.unwrap()["classifier_model"].clone();
     assert_eq!(before, after);

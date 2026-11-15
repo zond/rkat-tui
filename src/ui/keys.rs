@@ -439,7 +439,7 @@ impl App {
                     self.modal = None;
                     let current = format!("{}:{}", self.status.endpoint, self.status.model);
                     if classifier {
-                        fx.push(Effect::SetClassifierModel(model));
+                        fx.push(Effect::SetClassifierModel(model, false));
                     } else if model != current {
                         self.switch_model(model, fx);
                     }

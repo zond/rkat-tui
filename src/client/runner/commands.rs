@@ -155,10 +155,11 @@ impl Runner {
         });
     }
 
-    /// `/auto model <ref>` or the classifier picker's choice: resolve the
-    /// reference as `/model` does and have the daemon review with it
-    /// (`rkat/set_classifier_model`); its answer is a notice.
-    pub(super) fn set_classifier_model(&self, reference: &str) {
+    /// `/auto model <ref> [--user]` or the classifier picker's choice:
+    /// resolve the reference as `/model` does and set
+    /// `auto.classifier_model` to `endpoint:model` (the daemon reviews with
+    /// it at once); its answer is a notice.
+    pub(super) fn set_classifier_model(&self, reference: &str, user: bool) {
         let switch = match super::turn::model_switch(
             reference,
             &self.config.endpoints,
@@ -174,13 +175,71 @@ impl Runner {
                 return;
             }
         };
-        self.outcome_command::<protocol::method::SetClassifierModel>(
-            protocol::ClassifierModelParams {
-                endpoint: switch.endpoint,
-                model: switch.model,
-            },
-            "/auto model",
+        self.set_settings(
+            vec![(
+                "auto.classifier_model".to_string(),
+                Some(format!("{}:{}", switch.endpoint, switch.model)),
+            )],
+            user,
         );
+    }
+
+    /// `/set`, `/unset` and their shorthands: each change in order
+    /// (`rkat/set_setting`), each answer a notice (a refusal stops the
+    /// rest).
+    pub(super) fn set_settings(&self, changes: Vec<(String, Option<String>)>, user: bool) {
+        let Some(connection) = self.link_or_say("the setting was not changed") else {
+            return;
+        };
+        let say = self.say();
+        tokio::spawn(async move {
+            for (key, value) in changes {
+                let ok = set_setting(&connection, &say, key, value, user).await;
+                if !ok {
+                    break;
+                }
+            }
+        });
+    }
+
+    /// `/settings [filter]`: the picker over every setting; with a change
+    /// (the picker's), make it first and show the list again.
+    pub(super) fn settings_picker(
+        &self,
+        filter: Option<String>,
+        change: Option<(String, Option<String>, bool)>,
+    ) {
+        let Some(connection) = self.link_or_say("/settings needs it") else {
+            return;
+        };
+        let say = self.say();
+        tokio::spawn(async move {
+            let refresh = change.is_some();
+            let mut done = None;
+            if let Some((key, value, user)) = change
+                && set_setting(&connection, &say, key.clone(), value, user).await
+            {
+                done = Some(format!(
+                    "{key} changed: the confirmation is in the transcript"
+                ));
+            }
+            match bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Settings>(&connection, &protocol::Empty {}),
+            )
+            .await
+            {
+                Ok(list) => {
+                    let picker = settings_picker(&list, filter.as_deref());
+                    let _ = say.ui_tx.send(Msg::ShowPicker { picker, refresh });
+                    say.picker_done(crate::ui::PickerKind::Settings, done);
+                }
+                Err(err) => say.notice(
+                    NoticeLevel::Warn,
+                    format!("the settings were not listed: {err}"),
+                ),
+            }
+        });
     }
 
     /// `/audit [n]`: the audit log's last lines for this agent
@@ -513,7 +572,7 @@ impl Runner {
 
     /// Shift+Tab, `/mode`, `/auto resume`: switch the daemon's mode.
     pub(super) fn set_mode(&mut self, mode: crate::approval::mode::PermissionMode) {
-        let params = SetModeParams { mode };
+        let params = SetModeParams { mode, user: false };
         self.ask::<protocol::method::SetMode>(params, "the mode was not changed", move |set| {
             match set {
                 Ok(set) => {
@@ -549,24 +608,6 @@ impl Runner {
                 Err(err) => (NoticeLevel::Error, format!("{failed}: {err}")),
             }]
         });
-    }
-
-    /// `/compact prepare`'s change: what is now set, and the warning when
-    /// the threshold comes too late to run first.
-    pub(super) fn compact_prepare(&self, change: protocol::CompactPrepareParams) {
-        self.ask::<protocol::method::CompactPrepare>(
-            change,
-            "/compact prepare needs it",
-            |answer| match answer {
-                Ok(outcome) => std::iter::once((NoticeLevel::Info, outcome.text))
-                    .chain(outcome.warning.map(|warning| (NoticeLevel::Warn, warning)))
-                    .collect(),
-                Err(err) => vec![(
-                    NoticeLevel::Error,
-                    format!("/compact prepare failed: {err}"),
-                )],
-            },
-        );
     }
 
     /// `/compact prepare` alone: what is set and its state, as `/compact
@@ -738,15 +779,24 @@ impl Runner {
         });
     }
 
-    /// Ctrl+T: the daemon records the view as the realm's `[ui] checklist`
-    /// (the realm file and its trust record are the daemon's).
+    /// Ctrl+T: the daemon records the view as the workspace's `[ui]
+    /// checklist` (`rkat/set_setting`); only what went wrong is shown.
     pub(super) fn set_checklist_view(&self, view: ChecklistView) {
         const UNSAVED: &str = "the checklist view applies to this run but was not saved";
-        self.ask::<protocol::method::ChecklistView>(
-            protocol::ChecklistViewParams { view },
+        let value = match view {
+            ChecklistView::Shown => "shown",
+            ChecklistView::Hidden => "hidden",
+        };
+        self.ask::<protocol::method::SetSetting>(
+            protocol::SetSettingParams {
+                key: "ui.checklist".to_string(),
+                value: Some(value.to_string()),
+                user: false,
+            },
             UNSAVED,
             |saved| match saved {
-                Ok(_) => Vec::new(),
+                Ok(outcome) if outcome.ok => Vec::new(),
+                Ok(outcome) => vec![(NoticeLevel::Warn, format!("{UNSAVED}: {}", outcome.text))],
                 Err(err) => vec![(NoticeLevel::Warn, format!("{UNSAVED}: {err}"))],
             },
         );
@@ -973,7 +1023,7 @@ pub(super) fn rule_picker(
                 RuleOrigin::Realm | RuleOrigin::Session => {
                     "It leaves the workspace's rules for good".to_string()
                 }
-                RuleOrigin::Global => "It is written in your global tui.toml, so it is removed until the daemon restarts (edit that file to drop it for good)".to_string(),
+                RuleOrigin::Global => "It is written in your own tui.toml: it is removed from that file, for every workspace".to_string(),
                 RuleOrigin::Project => "It is written in the project's .rkat/tui.toml, so it is removed until the daemon restarts (edit that file to drop it for good)".to_string(),
                 RuleOrigin::Cli => "It comes from the daemon's command line, so it is removed until the daemon restarts".to_string(),
             };
@@ -998,9 +1048,182 @@ pub(super) fn rule_picker(
     )
 }
 
+/// One `rkat/set_setting`: its confirmation (or refusal) and its warning
+/// as notices; whether it was written.
+async fn set_setting(
+    connection: &Connection,
+    say: &Say,
+    key: String,
+    value: Option<String>,
+    user: bool,
+) -> bool {
+    let answer = bounded(
+        CALL_TIMEOUT,
+        remote::call::<protocol::method::SetSetting>(
+            connection,
+            &protocol::SetSettingParams { key, value, user },
+        ),
+    )
+    .await;
+    match answer {
+        Ok(outcome) => {
+            say.notice(
+                if outcome.ok {
+                    NoticeLevel::Info
+                } else {
+                    NoticeLevel::Error
+                },
+                outcome.text,
+            );
+            if let Some(warning) = outcome.warning {
+                say.notice(NoticeLevel::Warn, warning);
+            }
+            outcome.ok
+        }
+        Err(err) => {
+            say.notice(
+                NoticeLevel::Error,
+                format!("the setting was not changed: {err}"),
+            );
+            false
+        }
+    }
+}
+
+/// The `/settings` picker: one row per setting whose key holds `filter`
+/// (the key, the value in force and its layer), its note what each layer
+/// holds, when a change applies and what it does; then the structured
+/// sections, each with the commands that change it. Enter edits the
+/// workspace's value, `u` the user's, `d` (then `y`) removes the value at
+/// the layer it comes from when that is the user's or the workspace's.
+pub(super) fn settings_picker(
+    list: &protocol::SettingsList,
+    filter: Option<&str>,
+) -> crate::ui::ListPicker {
+    use crate::config::registry::Level;
+    use crate::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
+    use ratatui::crossterm::event::KeyCode;
+    let wanted = |key: &str| filter.is_none_or(|filter| key.contains(filter));
+    let held = |row: &protocol::SettingRow, level: Level| {
+        row.levels
+            .iter()
+            .find(|(at, _)| *at == level)
+            .map(|(_, value)| value.clone())
+    };
+    let mut rows: Vec<PickRow> = list
+        .rows
+        .iter()
+        .filter(|row| wanted(&row.key))
+        .map(|row| {
+            let levels = [
+                Level::User,
+                Level::Workspace,
+                Level::CommandLine,
+                Level::Project,
+            ]
+            .into_iter()
+            .map(|level| {
+                format!(
+                    "{} {}",
+                    level.label(),
+                    held(row, level).unwrap_or_else(|| "—".to_string())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+            let note = format!(
+                "{levels} · default {}; a change applies {}; {} (takes {}; a project {})",
+                row.default,
+                row.applies.describe(),
+                row.about,
+                row.takes,
+                row.project
+            );
+            let remove = match row.source {
+                level @ (Level::User | Level::Workspace) => PickKey::confirmed(
+                    KeyCode::Char('d'),
+                    PickAct::SetSetting {
+                        key: row.key.clone(),
+                        value: None,
+                        user: level == Level::User,
+                    },
+                    format!(
+                        "Remove {} from {}? The next layer's value applies.",
+                        row.key,
+                        if level == Level::User {
+                            "your tui.toml"
+                        } else {
+                            "this workspace's tui.toml"
+                        }
+                    ),
+                ),
+                Level::Default => PickKey::refused(
+                    KeyCode::Char('d'),
+                    "no layer sets it: the default is in force",
+                ),
+                level => PickKey::refused(
+                    KeyCode::Char('d'),
+                    format!("{} sets it, which rkat-tui does not write", level.name()),
+                ),
+            };
+            let edit = |code, user: bool| {
+                PickKey::now(
+                    code,
+                    PickAct::EditSetting {
+                        key: row.key.clone(),
+                        user,
+                        current: held(row, if user { Level::User } else { Level::Workspace })
+                            .unwrap_or_default(),
+                    },
+                )
+            };
+            PickRow::new(
+                format!("{}  {}  ({})", row.key, row.value, row.source.label()),
+                vec![
+                    edit(KeyCode::Enter, false),
+                    edit(KeyCode::Char('u'), true),
+                    remove,
+                ],
+            )
+            .noted(note)
+        })
+        .collect();
+    rows.extend(
+        list.sections
+            .iter()
+            .filter(|section| wanted(&section.key))
+            .map(|section| {
+                let why = format!("a section: change it with {}", section.commands);
+                PickRow::new(
+                    format!("{}  (section)", section.key),
+                    vec![
+                        PickKey::refused(KeyCode::Enter, why.clone()),
+                        PickKey::refused(KeyCode::Char('u'), why.clone()),
+                        PickKey::refused(KeyCode::Char('d'), why),
+                    ],
+                )
+                .noted(format!(
+                    "{} (a project file {}; flags: {})",
+                    section.about, section.project, section.flags
+                ))
+            }),
+    );
+    ListPicker::new(
+        PickerKind::Settings,
+        rows,
+        "no setting's key holds that",
+        format!(
+            "↑/↓ move · Enter edit for this workspace · u edit in your tui.toml · d remove · Esc close · user: {} · workspace: {}",
+            list.user_file.display(),
+            list.workspace_file.display()
+        ),
+    )
+}
+
 /// The `/approve` picker: the calls the gate recently blocked, newest
 /// first; Enter or `o` approves one once, `s` for this session, `a`
-/// always (a call no grant fits says so): each exact, the call itself or
+/// always for this workspace, `A` always in every workspace (the user's own
+/// `tui.toml`; a call no grant fits says so): each exact, the call itself or
 /// its directory or literal command. `e` opens a one-line field with the
 /// kind of effect the classifier objected to (empty when it named none),
 /// to edit and allow for this session or always: a statement the
@@ -1034,9 +1257,16 @@ pub(super) fn approve_picker(
                         PickAct::Approve(call.id, GrantScope::Always),
                         format!("Grant {what} always (written to the realm's tui.toml)?"),
                     ));
+                    keys.push(PickKey::confirmed(
+                        KeyCode::Char('A'),
+                        PickAct::Approve(call.id, GrantScope::AlwaysUser),
+                        format!(
+                            "Grant {what} always, in every workspace (written to your own tui.toml)?"
+                        ),
+                    ));
                 }
                 None => {
-                    for code in ['s', 'a'] {
+                    for code in ['s', 'a', 'A'] {
                         keys.push(PickKey::refused(
                             KeyCode::Char(code),
                             "no grant fits this call; Enter approves it once",
@@ -1081,7 +1311,7 @@ pub(super) fn approve_picker(
         PickerKind::Approve,
         rows,
         "nothing was blocked recently",
-        "Enter approve once · s grant this session · a grant always · e allow this kind of effect · Esc close",
+        "Enter approve once · s grant this session · a grant always here · A always in every workspace · e allow this kind of effect · Esc close",
     )
 }
 

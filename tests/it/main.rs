@@ -51,6 +51,7 @@ mod rehome;
 mod render;
 mod schedules;
 mod semantic_recall;
+mod settings;
 mod shell_jobs;
 mod skills;
 mod tool_costs;

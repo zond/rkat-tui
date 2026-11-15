@@ -192,23 +192,20 @@ fn every_setting_layers_as_it_always_did() {
             match setting.key {
                 "auto.compact_prepare" => {
                     assert_eq!(layered.settings.compact_prepare_source, source, "{what}");
-                    let (beneath, from) = oracle(setting, [layers[0], None, layers[2], layers[3]]);
-                    let default = &layered.settings.compact_prepare_default;
-                    assert_eq!(
-                        default.value,
-                        beneath.map(|v| v.as_str().unwrap().to_string())
-                    );
-                    assert_eq!(default.source, from, "{what}");
                 }
                 "auto.compact_prepare_at" => {
                     assert_eq!(layered.settings.compact_prepare_at_source, source, "{what}");
-                    let (beneath, from) = oracle(setting, [layers[0], None, layers[2], layers[3]]);
-                    let default = &layered.settings.compact_prepare_at_default;
-                    assert_eq!(Some(threshold_value(default.value)), beneath, "{what}");
-                    assert_eq!(default.source, from, "{what}");
                 }
                 _ => {}
             }
+            // What removing the workspace's value leaves.
+            let (beneath, from) = oracle(setting, [layers[0], None, layers[2], layers[3]]);
+            let without = setting.resolve_without(&tables, Some(Level::Workspace));
+            assert_eq!(
+                (without.value, without.source),
+                (beneath, from),
+                "without: {what}"
+            );
             checked += 1;
         }
     }

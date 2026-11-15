@@ -44,6 +44,8 @@ pub enum PickerKind {
     Agents,
     /// `/approve`.
     Approve,
+    /// `/settings`.
+    Settings,
 }
 
 impl PickerKind {
@@ -60,9 +62,13 @@ impl PickerKind {
             Self::Unwire => " Wires to other workspaces ",
             Self::Agents => " Agents ",
             Self::Approve => " Recently blocked ",
+            Self::Settings => " Settings ",
         }
     }
 }
+
+/// The most characters the settings picker's field takes.
+const SETTING_CHARS: usize = 2_000;
 
 /// What a pending question's keys are, as its line says them.
 const ANSWERS: &str = "y yes · n or Esc no";
@@ -108,6 +114,27 @@ pub enum PickAct {
     },
     /// `/mode <mode>` (`/auto resume` for a paused auto mode).
     SetMode(PermissionMode),
+    /// Open the one-line field to edit setting `key` at the user's level
+    /// (`user`) or the workspace's, filled with `current`; the field's
+    /// Enter is [`Self::SetSetting`].
+    EditSetting {
+        /// The setting's key.
+        key: String,
+        /// The user's own `tui.toml`.
+        user: bool,
+        /// The value the field starts with.
+        current: String,
+    },
+    /// `/set <key> <value>` (`None`: `/unset <key>`), `--user` with
+    /// `user`, then the list again.
+    SetSetting {
+        /// The setting's key.
+        key: String,
+        /// The value (`None`: remove the level's value).
+        value: Option<String>,
+        /// The user's own `tui.toml`.
+        user: bool,
+    },
     /// `/memory [workspace | user | system]`.
     OpenMemory(MemoryTarget),
     /// The helper's full view (Ctrl+Up/Down, then Enter).
@@ -154,6 +181,7 @@ impl PickAct {
                 | Self::Wire { .. }
                 | Self::Unwire { .. }
                 | Self::RetireAgent(_)
+                | Self::SetSetting { .. }
         )
     }
 }
@@ -253,6 +281,17 @@ pub enum PickerLine {
     Refused(String),
     /// What the last act did ("approved once: …", "retired main-ab12").
     Done(String),
+    /// A one-line field: setting `key`'s value at the user's level
+    /// (`user`) or the workspace's (Enter writes it, Tab switches the
+    /// level, Esc keeps things).
+    EditSetting {
+        /// The setting's key.
+        key: String,
+        /// The user's own `tui.toml`.
+        user: bool,
+        /// The value as typed so far.
+        text: String,
+    },
     /// A one-line field: the kind of action blocked call `id` is to be
     /// allowed for (Enter allows it for `scope`, Tab switches the scope,
     /// Esc keeps things).
@@ -365,6 +404,42 @@ impl ListPicker {
         if (held && !moves) || has_ctrl_or_alt(key) {
             return ModalKey::Stay;
         }
+        if let Some(PickerLine::EditSetting {
+            key: setting,
+            user,
+            text,
+        }) = &mut self.line
+        {
+            return match key.code {
+                KeyCode::Enter => {
+                    let act = PickAct::SetSetting {
+                        key: setting.clone(),
+                        value: Some(text.trim().to_string()),
+                        user: *user,
+                    };
+                    self.line = None;
+                    ModalKey::Choose(act)
+                }
+                KeyCode::Esc => {
+                    self.line = None;
+                    ModalKey::Stay
+                }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    *user = !*user;
+                    ModalKey::Stay
+                }
+                KeyCode::Backspace => {
+                    text.pop();
+                    ModalKey::Stay
+                }
+                KeyCode::Char(c) => {
+                    let mut buf = [0; 4];
+                    push_line_text(text, c.encode_utf8(&mut buf), SETTING_CHARS);
+                    ModalKey::Stay
+                }
+                _ => ModalKey::Stay,
+            };
+        }
         if let Some(PickerLine::Edit { id, scope, text }) = &mut self.line {
             return match key.code {
                 KeyCode::Enter => {
@@ -382,8 +457,9 @@ impl ListPicker {
                 }
                 KeyCode::Tab | KeyCode::BackTab => {
                     *scope = match scope {
-                        GrantScope::Always => GrantScope::Session,
-                        _ => GrantScope::Always,
+                        GrantScope::Session => GrantScope::Always,
+                        GrantScope::Always => GrantScope::AlwaysUser,
+                        _ => GrantScope::Session,
                     };
                     ModalKey::Stay
                 }
@@ -421,6 +497,16 @@ impl ListPicker {
                     });
                 }
                 Some(PickKey {
+                    act: Ok(PickAct::EditSetting { key, user, current }),
+                    ..
+                }) => {
+                    self.line = Some(PickerLine::EditSetting {
+                        key,
+                        user,
+                        text: current,
+                    });
+                }
+                Some(PickKey {
                     act: Ok(act),
                     confirm: None,
                     ..
@@ -446,18 +532,25 @@ impl ListPicker {
     /// Whether a one-line field is open (a paste goes into it).
     #[must_use]
     pub fn editing(&self) -> bool {
-        matches!(self.line, Some(PickerLine::Edit { .. }))
+        matches!(
+            self.line,
+            Some(PickerLine::Edit { .. } | PickerLine::EditSetting { .. })
+        )
     }
 
     /// Type (or paste) `text` into the open one-line field, on one line,
     /// without control characters; nothing while none is open.
     pub fn type_text(&mut self, text: &str) {
-        if let Some(PickerLine::Edit { text: field, .. }) = &mut self.line {
-            push_line_text(
+        match &mut self.line {
+            Some(PickerLine::Edit { text: field, .. }) => push_line_text(
                 field,
                 text,
                 crate::approval::statements::MAX_STATEMENT_CHARS,
-            );
+            ),
+            Some(PickerLine::EditSetting { text: field, .. }) => {
+                push_line_text(field, text, SETTING_CHARS);
+            }
+            _ => {}
         }
     }
 
@@ -517,10 +610,37 @@ pub(super) fn list_picker_lines(
                 .into_iter()
                 .map(|line| Line::styled(line, Style::default().fg(Color::Green))),
         ),
+        Some(PickerLine::EditSetting { key, user, text }) => {
+            let (now, other) = if *user {
+                ("your tui.toml (every workspace)", "this workspace")
+            } else {
+                ("this workspace's tui.toml", "your tui.toml")
+            };
+            tail.extend(
+                wrap_text(
+                    &format!("{key} in {now} (Enter writes it · Tab: {other} · Esc cancels):"),
+                    width,
+                )
+                .into_iter()
+                .map(|line| Line::styled(line, warn)),
+            );
+            tail.extend(
+                wrap_text(&format!("> {text}▏"), width)
+                    .into_iter()
+                    .map(Line::from),
+            );
+        }
         Some(PickerLine::Edit { scope, text, .. }) => {
             let (now, other) = match scope {
-                GrantScope::Always => ("always (the realm's tui.toml)", "for this session"),
-                _ => ("for this session", "always"),
+                GrantScope::Always => (
+                    "always for this workspace (the realm's tui.toml)",
+                    "always in every workspace",
+                ),
+                GrantScope::AlwaysUser => (
+                    "always in every workspace (your tui.toml)",
+                    "for this session",
+                ),
+                _ => ("for this session", "always for this workspace"),
             };
             tail.extend(
                 wrap_text(
@@ -845,6 +965,11 @@ impl App {
             // The picker opens its field itself; never chosen.
             PickAct::EditEffect { .. } => {}
             PickAct::SetMode(mode) => fx.push(Effect::SetMode(mode)),
+            // The picker opens its field itself; never chosen.
+            PickAct::EditSetting { .. } => {}
+            PickAct::SetSetting { key, value, user } => {
+                fx.push(Effect::PickedSetting { key, value, user });
+            }
             PickAct::OpenMemory(target) => fx.push(Effect::OpenMemory(target)),
             PickAct::Wire { workspace, agent } => fx.push(Effect::WireTo { workspace, agent }),
             PickAct::Unwire { workspace, agent } => {

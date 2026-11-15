@@ -33,6 +33,34 @@ fn ctrl_t_toggles_the_checklist_and_records_the_view() {
     assert!(shown.input.is_empty());
 }
 
+/// A live `[ui]` setting the daemon pushes (`rkat/setting`): the view
+/// follows it at once; unset is the default.
+#[test]
+fn a_pushed_ui_setting_applies_at_once() {
+    let mut app = App::new(StatusInfo::default());
+    let list = Checklist::from_items(vec![ChecklistItem {
+        text: "write the fix".into(),
+        state: ItemState::InProgress,
+    }]);
+    app.update(Msg::Checklist(list.clone()));
+    assert_eq!(app.checklist_panel(), None);
+    app.update(Msg::Setting {
+        key: "ui.checklist".into(),
+        value: Some("shown".into()),
+    });
+    assert_eq!(app.checklist_panel(), Some(&list));
+    app.update(Msg::Setting {
+        key: "ui.checklist".into(),
+        value: None,
+    });
+    assert_eq!(app.checklist_panel(), None);
+    app.update(Msg::Setting {
+        key: "ui.bell".into(),
+        value: Some("false".into()),
+    });
+    assert!(!app.bell);
+}
+
 #[test]
 fn an_unreadable_task_store_is_named_once_at_the_next_ctrl_t() {
     let mut app = App::new(StatusInfo::default());

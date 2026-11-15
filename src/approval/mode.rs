@@ -56,8 +56,7 @@ impl PermissionMode {
 
     /// The name `/mode` and `tui.toml` (`[auto] mode`) take.
     #[must_use]
-    #[cfg(test)]
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Manual => "default",
             Self::AcceptEdits => "accept-edits",

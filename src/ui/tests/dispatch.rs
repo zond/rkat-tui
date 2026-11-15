@@ -591,7 +591,10 @@ fn the_classifier_model_is_picked_or_set_from_the_tui() {
     type_str(&mut app, "/auto model openai:gpt-5.4-mini");
     assert_eq!(
         app.update(key(KeyCode::Enter)),
-        vec![Effect::SetClassifierModel("openai:gpt-5.4-mini".into())]
+        vec![Effect::SetClassifierModel(
+            "openai:gpt-5.4-mini".into(),
+            false
+        )]
     );
     let mut running = running_app();
     type_str(&mut running, "/auto model");
@@ -612,7 +615,8 @@ fn the_classifier_model_is_picked_or_set_from_the_tui() {
     assert_eq!(
         app.update(key(KeyCode::Enter)),
         vec![Effect::SetClassifierModel(
-            "anthropic:claude-haiku-4-5".into()
+            "anthropic:claude-haiku-4-5".into(),
+            false
         )]
     );
     assert!(app.modal.is_none());
@@ -901,7 +905,6 @@ fn session_commands_share_one_idle_guard() {
 
 #[test]
 fn compact_status_reports_the_policy_and_compact_needs_context() {
-    use crate::config::settings::{InstructionChange, PrepareAt, PrepareChange, ThresholdChange};
     let mut app = gauge_app(CompactMode::Auto);
     // The prepare instruction is the daemon's to report.
     assert_eq!(
@@ -920,24 +923,65 @@ fn compact_status_reports_the_policy_and_compact_needs_context() {
     );
     assert_eq!(
         submit(&mut app, "/compact prepare update PLAN.md"),
-        vec![Effect::CompactPrepare(PrepareChange {
-            at: None,
-            instruction: Some(InstructionChange::To("update PLAN.md".into())),
-        })]
+        vec![Effect::SetSettings {
+            changes: vec![("auto.compact_prepare".into(), Some("update PLAN.md".into()))],
+            user: false,
+        }]
     );
     assert_eq!(
         submit(&mut app, "/compact prepare off"),
-        vec![Effect::CompactPrepare(PrepareChange {
-            at: None,
-            instruction: Some(InstructionChange::Off),
-        })]
+        vec![Effect::SetSettings {
+            changes: vec![("auto.compact_prepare".into(), Some(String::new()))],
+            user: false,
+        }]
+    );
+    // The threshold first, then the instruction; --user writes the
+    // user's own file.
+    assert_eq!(
+        submit(&mut app, "/compact prepare at 65% update PLAN.md --user"),
+        vec![Effect::SetSettings {
+            changes: vec![
+                ("auto.compact_prepare_at".into(), Some("65%".into())),
+                ("auto.compact_prepare".into(), Some("update PLAN.md".into())),
+            ],
+            user: true,
+        }]
     );
     assert_eq!(
-        submit(&mut app, "/compact prepare at 65% update PLAN.md"),
-        vec![Effect::CompactPrepare(PrepareChange {
-            at: Some(ThresholdChange::To(PrepareAt::Percent(65))),
-            instruction: Some(InstructionChange::To("update PLAN.md".into())),
-        })]
+        submit(&mut app, "/compact prepare default all"),
+        vec![Effect::SetSettings {
+            changes: vec![
+                ("auto.compact_prepare_at".into(), None),
+                ("auto.compact_prepare".into(), None),
+            ],
+            user: false,
+        }]
+    );
+    // The generic forms.
+    assert_eq!(
+        submit(&mut app, "/set ui.bell false --user"),
+        vec![Effect::SetSettings {
+            changes: vec![("ui.bell".into(), Some("false".into()))],
+            user: true,
+        }]
+    );
+    assert_eq!(
+        submit(&mut app, "/unset auto.compact"),
+        vec![Effect::SetSettings {
+            changes: vec![("auto.compact".into(), None)],
+            user: false,
+        }]
+    );
+    assert_eq!(
+        submit(&mut app, "/mode plan --user"),
+        vec![Effect::SetSettings {
+            changes: vec![("auto.mode".into(), Some("plan".into()))],
+            user: true,
+        }]
+    );
+    assert_eq!(
+        submit(&mut app, "/settings compact"),
+        vec![Effect::RequestSettingsPicker(Some("compact".into()))]
     );
     assert!(last_notice(&app).is_some_and(|(_, text)| text.contains("auto-compaction is off")));
     // Alone it asks the daemon for the state (and lists the forms).

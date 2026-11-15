@@ -9552,3 +9552,98 @@ the prepare keys' sources and "without the workspace" values). Also
 between its `settings-table` markers is the generated one) and
 `overlay::tests::invalid_settings_name_the_argument`. The existing layering
 tests in `src/config/tests.rs` and the state fixtures pass unchanged.
+
+## One table of settings, step 2: one writer, one apply path, the TUI forms (2026-11-15)
+
+What was replaced. `config::persist::RealmFile` (one bespoke
+read-modify-write of the whole serialised `RulesFile` per setting:
+rules, mode, classifier model, checklist view, prepare instruction and
+threshold, extra_write grants, statements) is gone; every write goes
+through `config::write::SettingsFile`, which edits the file's
+`toml_edit` document in place (only the key it sets; comments, order and
+formatting stay; a replaced value keeps its key's comment), refuses a
+result that does not read as `RulesFile`, replaces the file through
+`paths::write_atomic` (symlink refused, the realm's Private, the user's
+mode preserved) and holds an in-process lock plus `flock` on the file's
+directory (several daemons write the user's file). `config::persist::SettingsFiles`
+pairs the user's (`<config>/tui.toml`, now written on the user's command:
+the owner's decision of 2026-11-15) and the realm's. `daemon::settings::Settings`
+holds every layer's raw table as the daemon has it and is the one path
+of a change (`write`/`write_value`: check with `Setting::parse`, write,
+replace the layer's table with the file as now read, resolve before and
+after); `daemon::local::settings` runs the setting's hook when the
+value in force (or, for the prepare keys, its layer) changed: the mode
+(`switch_mode`, the old `set_mode`'s live half), the classifier model
+(`switch_classifier_model`, the old `set_classifier_model` minus its
+write; `ApprovalEngine::switch_classifier` no longer writes), the new
+`ApprovalEngine::set_trust_project_builds`, `Prepare::apply` (replacing
+`Prepare::set` and its `default_instruction`/`default_at` copies of the
+lower layers: `/compact status` asks the settings for the value without
+the workspace's), and a `rkat/setting` push the clients apply
+(`App::apply_setting`) for `[ui]`. `rkat/compact_prepare`,
+`rkat/set_classifier_model` and `rkat/checklist_view` went; `/compact
+prepare`, `/auto model` and Ctrl+T send `rkat/set_setting`; `rkat/set_mode`
+records through `record_setting`. `AutoSettings::compact_prepare_default`
+and `compact_prepare_at_default` went. A behaviour change follows from
+"apply when the value in force changed": a workspace value the command
+line (or a project) overrides is written but not applied live; the
+answer names the winning layer (`compact_prepare::a_late_threshold_is_set_with_the_start_up_warning`).
+
+The level choice for lists: `GrantScope::AlwaysUser` (`/approve`'s `A`,
+the effect field's Tab) writes grants, rules and statements to the
+user's file; `RuleCommand::Add { user }` for `/permissions add --user`; a
+rule or statement of the user's file is removed from it
+(`ApprovalEngine::remove_rule`, `remove_statement`; a command-line
+statement says it ends with the daemon).
+
+Security invariants and their tests:
+- A project file cannot set what it could not before (grants, the
+  classifier model, statements, endpoints, prices but `fetch = false`,
+  the lower-only limits): the table's `ProjectRule`s, pinned for every
+  setting and every layer combination by
+  `config::registry::tests::every_setting_layers_as_it_always_did`, and
+  by the notices' tests in `config::tests`
+  (`a_project_file_cannot_pick_the_classifier_model`,
+  `allow_statements_come_from_the_user_s_layers_only`,
+  `confinement_grants_come_from_user_layers_only`,
+  `pricing_layers_merge_by_field_and_only_user_layers_count`). The
+  writer never writes a project's file (`SettingsFiles::of` has no
+  project level).
+- Nothing the agent can write is a settings file the daemon reads with
+  the user's authority: the realm and the user's config directory are
+  outside the workspace; the start refuses a confinement plan that
+  reaches the realm (`confinement::a_shell_that_could_reach_the_realm_refuses_the_start`)
+  and now also one that reaches the user's `tui.toml`
+  (`TuiError::SettingsExposed`: defence in depth, untested, since a
+  grant is a directory and one holding the config directory reaches the
+  realm first); no grant, for a session or always, may
+  hold or lie in either file's directory
+  (`settings::always_in_every_workspace_writes_the_users_file_and_settings_dirs_are_never_granted`);
+  the project's own `.rkat/tui/tui.toml` and `.rkat/tui.toml` are sealed
+  for the file tools (`approval_policy::sealed_paths_are_denied_before_rules_and_classifier`).
+- `/set` is the user's authority: only a connection that proved the
+  attach token reaches `rkat/set_setting`
+  (`daemon::a_connection_without_the_token_never_reaches_the_router`
+  now sends one and checks nothing was written), and the token's
+  endpoint file is refused when the confined shell could read it
+  (`daemon::an_endpoint_file_the_confined_shell_could_read_is_refused`).
+- The classifier model and the permission keys are user-authority only:
+  `ProjectRule::Never`/`OnlyManual`/`OnlyFalse`, as above.
+
+Tests: `config::write::tests::*` (comments and order kept, a missing file
+created, an older spelling dropped, lists and rules once, an invalid
+result or broken file refused with nothing written, a symlink refused,
+two handles of one file losing nothing), `daemon::settings::tests::*`
+(the confirmation's file, value in force, timing and winning layer;
+refusals; the mode's older spelling dropped; the rows), the rig's
+`settings::set_writes_either_file_keeps_the_rest_and_applies_at_once`
+and `the_settings_picker_shows_and_changes_a_setting` (two levels, the
+user's comments kept, applied live, `/unset`, the next daemon reading
+the user's file, the picker's rows and edit, the `[ui]` push),
+`client::runner::tests::the_settings_picker_edits_either_level_and_removes_the_one_in_force`,
+`ui::tests::keys::a_pushed_ui_setting_applies_at_once`,
+`approval::engine::tests::a_kind_of_effect_is_allowed_for_the_session_or_always`
+(always in every workspace into and out of the user's file), and the
+existing `realm_settings` and `compact_prepare` rig tests moved onto
+`rkat/set_setting`.
+

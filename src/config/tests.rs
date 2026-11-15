@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::settings::{ChecklistView, CompactMode, HelperView};
+use super::write::SettingsFile;
 use super::*;
 use crate::approval::mode::PermissionMode;
 use crate::approval::rules::{ArgPattern, Rule, RuleKind, RuleOrigin, RuleSet, RulesError};
@@ -214,34 +215,28 @@ fn invalid_file_is_an_error() {
     ));
 }
 
+/// A rule written to the realm keeps the rest of the file, and nothing
+/// is left beside it.
 #[test]
-fn save_and_persist_preserve_auto_section() {
+fn a_rule_write_preserves_the_auto_section() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("deep/realm").join(RULES_FILE_NAME);
-    save_realm(
-        &path,
-        &RulesFile {
-            auto: Some(AutoSection {
-                enabled: Some(false),
-                ..AutoSection::default()
-            }),
-            ..RulesFile::default()
-        },
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "[auto]\nenabled = false\n").unwrap();
+    let file = SettingsFile::new(registry::Level::Workspace, path.clone());
+    file.add_rule("allow", &allow("shell", Some("make lint")).to_entry())
+        .unwrap();
+    file.add_rule(
+        "deny",
+        &Rule::new(RuleKind::Deny, "shell", Some("rm *"), RuleOrigin::Session)
+            .unwrap()
+            .to_entry(),
     )
     .unwrap();
-    let mut set = RuleSet::default();
-    set.push(allow("shell", Some("make lint")));
-    set.push(Rule::new(RuleKind::Deny, "shell", Some("rm *"), RuleOrigin::Session).unwrap());
-    set.push(Rule::new(RuleKind::Deny, "shell", Some("x"), RuleOrigin::Project).unwrap());
-    persist_realm_rules(&path, &set).unwrap();
     let back = RulesFile::load(&path).unwrap();
     assert_eq!(back.auto.unwrap().enabled, Some(false));
     assert_eq!(back.allow.len(), 1);
-    assert_eq!(
-        back.deny.len(),
-        1,
-        "project rules are not copied into the realm file"
-    );
+    assert_eq!(back.deny.len(), 1);
     let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
         .unwrap()
         .filter_map(Result::ok)
@@ -610,7 +605,13 @@ fn ui_checklist_defaults_to_hidden_layers_and_persists() {
     let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.ui.checklist, ChecklistView::Hidden);
     let realm_file = realm.join(RULES_FILE_NAME);
-    persist_realm_checklist(&realm_file, ChecklistView::Shown).unwrap();
+    SettingsFile::new(registry::Level::Workspace, realm_file.clone())
+        .set(
+            "ui.checklist",
+            Some(&toml::Value::String("shown".into())),
+            &[],
+        )
+        .unwrap();
     let text = std::fs::read_to_string(&realm_file).unwrap();
     assert!(text.contains("checklist = \"shown\""), "{text}");
     let layered = load_layered_with(&realm, None, &project, None).unwrap();
@@ -848,19 +849,6 @@ fn thinking_layers_replace_by_key_and_only_user_layers_count() {
 }
 
 #[test]
-fn cli_rules_are_never_persisted() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join(RULES_FILE_NAME);
-    let mut set = RuleSet::default();
-    set.push(Rule::new(RuleKind::Allow, "shell", Some("ls*"), RuleOrigin::Cli).unwrap());
-    set.push(Rule::new(RuleKind::Allow, "read_file", None, RuleOrigin::Realm).unwrap());
-    persist_realm_rules(&path, &set).unwrap();
-    let file = RulesFile::load(&path).unwrap();
-    assert_eq!(file.allow.len(), 1);
-    assert_eq!(file.allow[0].tool, "read_file");
-}
-
-#[test]
 fn endpoints_layer_by_name() {
     let tmp = tempfile::tempdir().unwrap();
     let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
@@ -1004,14 +992,22 @@ fn allow_statements_come_from_the_user_s_layers_only() {
             .contains("only your own tui.toml says which kinds of action you allow")
     }));
 
-    let file = RealmFile::new(realm.join(RULES_FILE_NAME));
-    file.add_allow_statement("network requests to api.example.com")
+    let file = SettingsFile::new(registry::Level::Workspace, realm.join(RULES_FILE_NAME));
+    file.add_to_list("auto.allow", "network requests to api.example.com")
         .unwrap();
-    file.add_allow_statement("network requests to api.example.com")
+    file.add_to_list("auto.allow", "network requests to api.example.com")
         .unwrap();
-    file.write_classifier_model("claude-haiku-5-5").unwrap();
-    file.remove_allow_statement("building the project after the agent changed its dependencies")
-        .unwrap();
+    file.set(
+        "auto.classifier_model",
+        Some(&toml::Value::String("claude-haiku-5-5".into())),
+        &[],
+    )
+    .unwrap();
+    file.remove_from_list(
+        "auto.allow",
+        "building the project after the agent changed its dependencies",
+    )
+    .unwrap();
     let written = RulesFile::load(&realm.join(RULES_FILE_NAME)).unwrap();
     let auto = written.auto.unwrap();
     assert_eq!(
@@ -1029,7 +1025,7 @@ fn allow_statements_come_from_the_user_s_layers_only() {
 /// without the key leaves the user's in force.
 #[test]
 fn the_prepare_setting_knows_its_sources_and_the_lower_layers() {
-    use super::settings::{DEFAULT_PREPARE_AT, PrepareAt, PrepareSource, Sourced};
+    use super::settings::{DEFAULT_PREPARE_AT, PrepareAt, PrepareSetting, PrepareSource, Sourced};
     let tmp = tempfile::tempdir().unwrap();
     let (home, realm, project) = (
         tmp.path().join("home"),
@@ -1054,27 +1050,42 @@ fn the_prepare_setting_knows_its_sources_and_the_lower_layers() {
         Sourced::new(PrepareAt::Percent(60), PrepareSource::User)
     );
     // Off for the workspace, the threshold the workspace's.
-    let file = RealmFile::new(realm.join(RULES_FILE_NAME));
-    file.write_compact_prepare(Some("")).unwrap();
-    file.write_compact_prepare_at(Some(PrepareAt::Tokens(50_000)))
-        .unwrap();
-    let setting = load_layered_with(&realm, Some(&global), &project, None)
-        .unwrap()
-        .settings
-        .prepare_setting();
+    let file = SettingsFile::new(registry::Level::Workspace, realm.join(RULES_FILE_NAME));
+    file.set(
+        "auto.compact_prepare",
+        Some(&toml::Value::String(String::new())),
+        &[],
+    )
+    .unwrap();
+    file.set(
+        "auto.compact_prepare_at",
+        Some(&toml::Value::Integer(50_000)),
+        &[],
+    )
+    .unwrap();
+    let layered = load_layered_with(&realm, Some(&global), &project, None).unwrap();
+    let setting = layered.settings.prepare_setting();
     assert_eq!(
         setting.instruction,
         Sourced::new(None, PrepareSource::Workspace)
     );
-    assert_eq!(setting.default_instruction, user);
     assert_eq!(
         setting.at,
         Sourced::new(PrepareAt::Tokens(50_000), PrepareSource::Workspace)
     );
+    assert_eq!(PrepareSetting::of(&layered.layers), setting);
+    // Without the workspace's, the user's.
+    let beneath = registry::Setting::find("auto.compact_prepare")
+        .unwrap()
+        .resolve_without(&layered.layers, Some(registry::Level::Workspace));
     assert_eq!(
-        setting.default_at,
-        Sourced::new(PrepareAt::Percent(60), PrepareSource::User)
+        (
+            beneath.value.as_ref().and_then(toml::Value::as_str),
+            beneath.source
+        ),
+        (Some("update PLAN.md"), PrepareSource::User)
     );
+    assert_eq!(user.source, PrepareSource::User);
     // The command line and the project file are over the realm's.
     let overlay = cli("[auto]\ncompact_prepare_at = \"80%\"\n");
     let setting = load_layered_with(&realm, Some(&global), &project, Some(&overlay))
@@ -1085,14 +1096,12 @@ fn the_prepare_setting_knows_its_sources_and_the_lower_layers() {
         setting.at,
         Sourced::new(PrepareAt::Percent(80), PrepareSource::CommandLine)
     );
-    assert_eq!(setting.default_at, setting.at);
     write(&project, "[auto]\ncompact_prepare = \"write NOTES.md\"\n");
     let setting = load_layered_with(&realm, Some(&global), &project, None)
         .unwrap()
         .settings
         .prepare_setting();
     assert_eq!(setting.instruction.source, PrepareSource::Project);
-    assert_eq!(setting.default_instruction.source, PrepareSource::Project);
     // No layer: the default, and none.
     let none = load_layered_with(&tmp.path().join("r2"), None, &tmp.path().join("p2"), None)
         .unwrap()
@@ -1173,13 +1182,18 @@ fn the_prepare_instruction_layers_like_the_compaction_keys() {
     assert_eq!(PrepareAt::Percent(70).tokens(Some(1_000_000)), 700_000);
     assert_eq!(PrepareAt::Percent(50).tokens(None), 100_000);
     // The realm's writer sets and clears it, keeping the rest.
-    let file = RealmFile::new(realm.join(RULES_FILE_NAME));
-    file.write_compact_prepare(Some("write NOTES.md")).unwrap();
+    let file = SettingsFile::new(registry::Level::Workspace, realm.join(RULES_FILE_NAME));
+    file.set(
+        "auto.compact_prepare",
+        Some(&toml::Value::String("write NOTES.md".into())),
+        &[],
+    )
+    .unwrap();
     let written = RulesFile::load(&realm.join(RULES_FILE_NAME)).unwrap();
     let auto = written.auto.unwrap();
     assert_eq!(auto.compact_prepare.as_deref(), Some("write NOTES.md"));
     assert_eq!(auto.compact_prepare_at, Some(PrepareAt::Tokens(300_000)));
-    file.write_compact_prepare(None).unwrap();
+    file.set("auto.compact_prepare", None, &[]).unwrap();
     let written = RulesFile::load(&realm.join(RULES_FILE_NAME)).unwrap();
     assert_eq!(written.auto.unwrap().compact_prepare, None);
 }

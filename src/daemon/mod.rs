@@ -47,6 +47,7 @@ pub mod protocol;
 pub mod schedules;
 pub mod schema_compat;
 pub mod serve;
+pub mod settings;
 pub mod tasks;
 pub mod usage;
 pub mod watches;
@@ -542,6 +543,10 @@ impl Daemon {
             conversations,
             audit,
             prepare: Arc::clone(&composed.prepare),
+            settings: Arc::new(settings::Settings::new(
+                composed.files.clone(),
+                std::mem::take(&mut composed.layers),
+            )),
         });
         let agents = agents::Agents::new(Arc::clone(&core));
         attach_engine(&core, &agents, &workspace)?;
@@ -555,7 +560,6 @@ impl Daemon {
                 thinking: composed.thinking,
                 project: composed.project_inputs,
                 tasks_db: composed.tasks_db,
-                realm_file: composed.realm_file,
                 machine: composed.runtime.runtime_adapter(),
                 realm_config: composed.realm_config,
                 skills: composed.skills,

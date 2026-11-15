@@ -485,6 +485,15 @@ impl Runner {
                 }
             }
             Push::Mode(status) => self.push_mode(status),
+            Push::Setting(note) => {
+                if let Some(notice) = note.notice {
+                    self.notice(NoticeLevel::Info, notice);
+                }
+                self.send(Msg::Setting {
+                    key: note.key,
+                    value: note.value,
+                });
+            }
             Push::Idle(note)
                 if note.agent == link.connection.agent() && note.session_id == link.session =>
             {

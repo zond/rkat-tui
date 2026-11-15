@@ -259,6 +259,9 @@ async fn a_connection_without_the_token_never_reaches_the_router() {
         json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
         json!({"jsonrpc": "2.0", "id": 1, "method": "rkat/attach", "params": {"token": "wrong"}}),
         json!({"jsonrpc": "2.0", "id": 1, "method": "rkat/attach", "params": {}}),
+        // A setting change is the user's: never from a connection without
+        // the token.
+        json!({"jsonrpc": "2.0", "id": 1, "method": "rkat/set_setting", "params": {"key": "auto.mode", "value": "auto"}}),
     ];
     for request in requests {
         let (mut reader, mut writer) = Client::raw(&endpoint).await;
@@ -278,6 +281,10 @@ async fn a_connection_without_the_token_never_reaches_the_router() {
         let read = within(reader.read_line(&mut rest)).await.unwrap_or(0);
         assert_eq!(read, 0, "{request}: answered after the refusal: {rest}");
     }
+    assert!(
+        !crate::common::realm_of(&ws.root).join("tui.toml").exists(),
+        "a refused connection wrote a setting"
+    );
     // The daemon still serves a client that holds the token.
     let mut client = connect(&daemon).await;
     let members = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;

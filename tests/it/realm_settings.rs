@@ -126,32 +126,34 @@ async fn survives(way: Stop) {
     // `/compact prepare at 65%`, then `/compact prepare <text>`.
     call(
         &daemon,
-        "rkat/compact_prepare",
-        json!({"at": {"to": "65%"}}),
+        "rkat/set_setting",
+        json!({"key": "auto.compact_prepare_at", "value": "65%"}),
     )
     .await;
     let set = call(
         &daemon,
-        "rkat/compact_prepare",
-        json!({"instruction": {"to": INSTRUCTION}}),
+        "rkat/set_setting",
+        json!({"key": "auto.compact_prepare", "value": INSTRUCTION}),
     )
     .await;
-    assert!(
-        !set["text"].as_str().unwrap().contains("not saved"),
-        "{set}"
-    );
+    assert_eq!(set["ok"], true, "{set}");
     // `/auto model`.
-    let (endpoint, model) = CLASSIFIER.split_once(':').unwrap();
     let switched = call(
         &daemon,
-        "rkat/set_classifier_model",
-        json!({"endpoint": endpoint, "model": model}),
+        "rkat/set_setting",
+        json!({"key": "auto.classifier_model", "value": CLASSIFIER}),
     )
     .await;
     assert_eq!(switched["ok"], true, "{switched}");
+    assert!(switched.get("warning").is_none(), "{switched}");
     // Shift+Tab's mode, Ctrl+T's checklist view.
     call(&daemon, "rkat/set_mode", json!({"mode": "accept-edits"})).await;
-    call(&daemon, "rkat/checklist_view", json!({"view": "shown"})).await;
+    call(
+        &daemon,
+        "rkat/set_setting",
+        json!({"key": "ui.checklist", "value": "shown"}),
+    )
+    .await;
     // `/approve`'s "always" for a directory and for a kind of action.
     let engine = daemon.engine();
     engine

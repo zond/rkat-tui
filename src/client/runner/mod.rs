@@ -1144,7 +1144,11 @@ impl Runner {
             Effect::NewSession => self.switch_conversation(None),
             Effect::ResumeSession(reference) => self.resume_session(reference),
             Effect::RequestResumePicker => self.show_resume_picker(),
-            Effect::CompactPrepare(change) => self.compact_prepare(change),
+            Effect::SetSettings { changes, user } => self.set_settings(changes, user),
+            Effect::RequestSettingsPicker(filter) => self.settings_picker(filter, None),
+            Effect::PickedSetting { key, value, user } => {
+                self.settings_picker(None, Some((key, value, user)));
+            }
             Effect::CompactPrepareShow => self.compact_prepare_show(),
             Effect::CompactPrepareStatus => {
                 self.outcome_command::<protocol::method::CompactStatus>(
@@ -1164,7 +1168,9 @@ impl Runner {
                 self.bench.request_model_picker(refresh, current, false);
             }
             Effect::RequestClassifierPicker => self.classifier_picker(),
-            Effect::SetClassifierModel(reference) => self.set_classifier_model(&reference),
+            Effect::SetClassifierModel(reference, user) => {
+                self.set_classifier_model(&reference, user);
+            }
             Effect::Remember(text) => self.bench.remember(&text, &self.linked()),
             Effect::OpenMemory(target) => self.bench.open_memory(target),
             Effect::RequestMemoryPicker => self
@@ -1182,11 +1188,13 @@ impl Runner {
                 effect,
                 tool,
                 pattern,
+                user,
             } => {
                 let command = RuleCommand::Add {
                     deny: effect == RuleEffect::Deny,
                     tool,
                     pattern,
+                    user,
                 };
                 self.outcome_command::<protocol::method::Rules>(command, "/permissions");
             }
@@ -1275,6 +1283,7 @@ async fn sleep_until(deadline: Option<Instant>) {
 mod tests {
     use super::commands::{
         agent_entries, approve_picker, others_notice, report_lines, rule_picker, schedule_picker,
+        settings_picker,
     };
     use super::turn::model_switch;
     use super::*;
@@ -1403,7 +1412,7 @@ mod tests {
         picker.key(&press(KeyCode::Char('d')));
         let asked = question(&picker);
         assert!(
-            asked.contains("global tui.toml") && asked.contains("until the daemon restarts"),
+            asked.contains("your own tui.toml") && asked.contains("removed from that file"),
             "{asked}"
         );
         assert_eq!(
@@ -1535,6 +1544,120 @@ mod tests {
         );
     }
 
+    /// `/settings`: one row per setting (key, value, layer), filtered by a
+    /// substring; Enter opens the workspace's field, `u` the user's (Tab
+    /// switches), Enter writes it; `d` asks before removing the value at
+    /// the layer in force and says why when rkat-tui does not write it.
+    #[test]
+    fn the_settings_picker_edits_either_level_and_removes_the_one_in_force() {
+        use crate::config::registry::{Applies, Level};
+        use crate::daemon::protocol::{SectionRow, SettingRow, SettingsList};
+        use crate::ui::{ModalKey, PickAct, PickerLine};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let row = |key: &str, value: &str, source, levels: Vec<(Level, String)>| SettingRow {
+            key: key.into(),
+            about: "what it does".into(),
+            takes: "a whole number".into(),
+            applies: Applies::Live,
+            value: value.into(),
+            source,
+            levels,
+            default: "1".into(),
+            project: "may only lower it".into(),
+            command: None,
+        };
+        let list = SettingsList {
+            rows: vec![
+                row(
+                    "helpers.max_depth",
+                    "2",
+                    Level::User,
+                    vec![(Level::User, "2".into())],
+                ),
+                row(
+                    "search.max_entries",
+                    "10",
+                    Level::Project,
+                    vec![(Level::Project, "10".into())],
+                ),
+                row("ui.bell", "true", Level::Default, vec![]),
+            ],
+            sections: vec![SectionRow {
+                key: "endpoints.<name>".into(),
+                about: "endpoints".into(),
+                project: "may not set it".into(),
+                flags: "--endpoint-def".into(),
+                commands: "—".into(),
+            }],
+            user_file: "/u/tui.toml".into(),
+            workspace_file: "/r/tui.toml".into(),
+        };
+        let all = settings_picker(&list, None);
+        assert_eq!(all.rows.len(), 4);
+        assert_eq!(all.rows[0].text, "helpers.max_depth  2  (user)");
+        assert!(
+            all.rows[0]
+                .note
+                .as_deref()
+                .unwrap()
+                .starts_with("user 2 · workspace — · command line — · project — · default 1; a change applies at once"),
+            "{:?}",
+            all.rows[0].note
+        );
+        assert!(all.footer.contains("/u/tui.toml") && all.footer.contains("/r/tui.toml"));
+        let mut picker = settings_picker(&list, Some("helpers"));
+        assert_eq!(picker.rows.len(), 1);
+        let press = |code| KeyEvent::from(code);
+        // `u`: the user's value, Tab to the workspace's, typed, written.
+        assert_eq!(picker.key(&press(KeyCode::Char('u'))), ModalKey::Stay);
+        assert!(matches!(
+            &picker.line,
+            Some(PickerLine::EditSetting { user: true, text, .. }) if text == "2"
+        ));
+        picker.key(&press(KeyCode::Backspace));
+        picker.type_text("3");
+        picker.key(&press(KeyCode::Tab));
+        assert_eq!(
+            picker.key(&press(KeyCode::Enter)),
+            ModalKey::Choose(PickAct::SetSetting {
+                key: "helpers.max_depth".into(),
+                value: Some("3".into()),
+                user: false,
+            })
+        );
+        // `d` removes the user's (where the value in force comes from).
+        picker.key(&press(KeyCode::Char('d')));
+        assert!(
+            matches!(&picker.line, Some(PickerLine::Confirm { question, .. }) if question.contains("your tui.toml"))
+        );
+        assert_eq!(
+            picker.key(&press(KeyCode::Char('y'))),
+            ModalKey::Choose(PickAct::SetSetting {
+                key: "helpers.max_depth".into(),
+                value: None,
+                user: true,
+            })
+        );
+        // A project's value is not rkat-tui's to remove; the default has
+        // nothing to remove.
+        let mut picker = settings_picker(&list, Some("search"));
+        picker.key(&press(KeyCode::Char('d')));
+        assert!(
+            matches!(&picker.line, Some(PickerLine::Refused(why)) if why.contains("the project's .rkat/tui.toml sets it"))
+        );
+        let mut picker = settings_picker(&list, Some("ui.bell"));
+        picker.key(&press(KeyCode::Char('d')));
+        assert!(
+            matches!(&picker.line, Some(PickerLine::Refused(why)) if why.contains("the default is in force"))
+        );
+        // A section says where it is changed.
+        let mut picker = settings_picker(&list, Some("endpoints"));
+        picker.key(&press(KeyCode::Enter));
+        assert!(
+            matches!(&picker.line, Some(PickerLine::Refused(why)) if why.contains("a section"))
+        );
+    }
+
     /// `/approve` lists the blocked calls newest first; Enter approves once,
     /// `s` and `a` ask before a session or lasting grant, and a call no
     /// grant fits says so.
@@ -1649,7 +1772,7 @@ mod tests {
         );
         assert_eq!(
             picker.footer,
-            "Enter approve once · s grant this session · a grant always · e allow this kind of effect · Esc close"
+            "Enter approve once · s grant this session · a grant always here · A always in every workspace · e allow this kind of effect · Esc close"
         );
         assert!(
             picker.rows[0]

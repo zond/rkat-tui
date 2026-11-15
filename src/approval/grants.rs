@@ -46,6 +46,9 @@ pub enum GrantScope {
     Session,
     /// The grant is written to the realm and holds for every session.
     Always,
+    /// The grant is written to the user's own `tui.toml` and holds for
+    /// every session of every workspace.
+    AlwaysUser,
 }
 
 impl GrantScope {
@@ -56,6 +59,17 @@ impl GrantScope {
             Self::Once => "once",
             Self::Session => "for this session",
             Self::Always => "always",
+            Self::AlwaysUser => "always, in every workspace",
+        }
+    }
+
+    /// The file an "always" grant is written to: the user's own for
+    /// [`Self::AlwaysUser`], else the workspace's.
+    #[must_use]
+    pub fn level(self) -> crate::config::registry::Level {
+        match self {
+            Self::AlwaysUser => crate::config::registry::Level::User,
+            _ => crate::config::registry::Level::Workspace,
         }
     }
 }

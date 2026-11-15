@@ -56,9 +56,9 @@ pub struct ApprovalParts {
     pub events: Option<mpsc::UnboundedReceiver<ApprovalEvent>>,
     /// Observations from loading the rules, shown once.
     pub notices: Vec<String>,
-    /// The realm's `tui.toml` as rkat-tui writes it (the daemon saves the
-    /// checklist view through it).
-    pub realm_file: Option<crate::config::RealmFile>,
+    /// The user's and the realm's `tui.toml` as rkat-tui writes them (the
+    /// daemon's settings, rules, grants and statements).
+    pub files: Option<crate::config::SettingsFiles>,
 }
 
 impl std::fmt::Debug for ApprovalParts {
@@ -141,7 +141,8 @@ pub(crate) async fn build(
     overrides: &ApprovalOverrides,
 ) -> Result<ApprovalParts, TuiError> {
     let realm_dir = scope.realm_root();
-    let realm_file = config::RealmFile::new(realm_dir.join(RULES_FILE_NAME));
+    let files =
+        config::SettingsFiles::new(scope.global.rules_file(), realm_dir.join(RULES_FILE_NAME));
     let (events_tx, events_rx) = mpsc::unbounded_channel();
     let (broker, escalations) = EscalationBroker::new(ESCALATION_CAPACITY);
     let cwd = std::env::current_dir().map_err(|e| TuiError::io("read current directory", e))?;
@@ -199,7 +200,7 @@ pub(crate) async fn build(
         environment,
         posix_shell: shell_is_posix(),
         events: events_tx,
-        realm_file: Some(realm_file.clone()),
+        files: Some(files.clone()),
     });
     if let Some((model, probe)) = model {
         engine.set_classifier_model(model, probe);
@@ -212,7 +213,7 @@ pub(crate) async fn build(
     }
     Ok(ApprovalParts {
         engine,
-        realm_file: Some(realm_file),
+        files: Some(files),
         escalations: Some(escalations),
         events: Some(events_rx),
         notices,

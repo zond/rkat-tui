@@ -61,12 +61,6 @@ pub struct AutoSettings {
     pub compact_prepare_source: PrepareSource,
     /// Which layer [`Self::compact_prepare_at`] comes from.
     pub compact_prepare_at_source: PrepareSource,
-    /// What [`Self::compact_prepare`] would be without the realm file's
-    /// (`/compact prepare default` goes back to it).
-    pub compact_prepare_default: Sourced<Option<String>>,
-    /// What [`Self::compact_prepare_at`] would be without the realm
-    /// file's (`/compact prepare at default` goes back to it).
-    pub compact_prepare_at_default: Sourced<PrepareAt>,
 }
 
 impl Default for AutoSettings {
@@ -86,8 +80,6 @@ impl Default for AutoSettings {
             compact_prepare_at: DEFAULT_PREPARE_AT,
             compact_prepare_source: PrepareSource::Default,
             compact_prepare_at_source: PrepareSource::Default,
-            compact_prepare_default: Sourced::new(None, PrepareSource::Default),
-            compact_prepare_at_default: Sourced::new(DEFAULT_PREPARE_AT, PrepareSource::Default),
         }
     }
 }
@@ -116,11 +108,6 @@ impl AutoSettings {
                 self.compact_prepare_source,
             ),
             at: Sourced::new(self.compact_prepare_at, self.compact_prepare_at_source),
-            default_instruction: Sourced::new(
-                prepare_instruction(self.compact_prepare_default.value.as_deref()),
-                self.compact_prepare_default.source,
-            ),
-            default_at: self.compact_prepare_at_default.clone(),
         }
     }
 }

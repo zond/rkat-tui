@@ -112,14 +112,16 @@ pub struct Composed {
     pub project_inputs: crate::bootstrap::project_trust::ProjectInputs,
     /// The engine's task store (`rkat/tasks`).
     pub tasks_db: std::path::PathBuf,
-    /// The realm's `tui.toml` as rkat-tui writes it.
-    pub realm_file: Option<crate::config::RealmFile>,
+    /// The user's and the realm's `tui.toml` as rkat-tui writes them.
+    pub files: Option<crate::config::SettingsFiles>,
     /// What the start-up had to say (`rkat/notices`).
     pub startup_notices: Vec<StartupNotice>,
     /// `[helpers] max_depth` (`rkat/report`).
     pub helper_max_depth: u8,
     /// The agents' smart compaction (`[auto] compact_prepare`).
     pub prepare: Arc<super::prepare::Prepare>,
+    /// Every `tui.toml` layer's raw table as read at start.
+    pub layers: crate::config::registry::Layers,
 }
 
 /// How the daemon composes its approval side (tests vary it).
@@ -164,6 +166,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         compaction,
         compact_prepare,
         context_window,
+        layers,
         ..
     } = parts;
     // The `[auto]` compaction policy as the agent's threshold, for
@@ -177,7 +180,6 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         &compaction,
         (context_window, &choice.model),
         memory,
-        approval.realm_file.clone(),
     ));
     let mut notices = notices;
     notices.extend(prepare.startup_notice());
@@ -409,10 +411,11 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         endpoints: daemon_endpoints,
         project_inputs,
         tasks_db,
-        realm_file: approval.realm_file.take(),
+        files: approval.files.take(),
         startup_notices,
         helper_max_depth,
         prepare,
+        layers,
     })
 }
 

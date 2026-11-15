@@ -288,10 +288,12 @@ pub struct Assembled {
     pub tasks_db: PathBuf,
     /// The context-compaction policy of the `tui.toml` `[auto]` settings.
     pub compaction: crate::ui::compaction::CompactionPolicy,
-    /// `[auto] compact_prepare` and `compact_prepare_at`, and what
-    /// `/compact prepare at default` goes back to
+    /// `[auto] compact_prepare` and `compact_prepare_at`
     /// (`crate::daemon::prepare`).
     pub compact_prepare: crate::config::settings::PrepareSetting,
+    /// Every `tui.toml` layer's raw table as read at start: what the
+    /// daemon's settings resolve from (`crate::daemon::settings`).
+    pub layers: crate::config::registry::Layers,
     /// The start-up model's context window ([`model_window`]): what the
     /// compaction threshold is computed from.
     pub context_window: Option<u64>,
@@ -481,6 +483,13 @@ pub async fn assemble(
 
     let realm_root = realm_paths_in(&scope.realms_root, &scope.realm_id).root;
     check_realm_private(&confinement, &realm_root)?;
+    let settings_file = scope.global.rules_file();
+    if let Some(grant) = realm_home::exposing_grant(&confinement, &settings_file) {
+        return Err(TuiError::SettingsExposed {
+            file: settings_file,
+            grant,
+        });
+    }
     let (manifest, persistence, realm_lease) = open_realm(&scope, lease_surface).await?;
     let store_path = persistence
         .store_path()
@@ -501,6 +510,7 @@ pub async fn assemble(
     );
     let compaction = layered.settings.compaction_policy(None);
     let compact_prepare = layered.settings.prepare_setting();
+    let layers = layered.layers.clone();
     approval_notices.extend(endpoint_notices.iter().map(ToString::to_string));
     approval_notices.extend(thinking_notices);
     let helper_depth = layered.helpers.max_depth;
@@ -566,6 +576,7 @@ pub async fn assemble(
         tasks_db,
         compaction,
         compact_prepare,
+        layers,
         context_window,
         helper_max_depth: helper_depth,
         search_limits,

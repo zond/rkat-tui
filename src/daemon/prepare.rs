@@ -36,8 +36,7 @@ use parking_lot::{Mutex, RwLock};
 
 use super::MOB_ID;
 use crate::config::settings::{
-    CompactionPolicy, FALLBACK_PREPARE_WINDOW, InstructionChange, PrepareAt, PrepareChange,
-    PrepareSetting, PrepareSource, Sourced, ThresholdChange,
+    CompactionPolicy, FALLBACK_PREPARE_WINDOW, PrepareAt, PrepareSetting, PrepareSource, Sourced,
 };
 use crate::text::tokens as fmt_ctx_tokens;
 
@@ -116,14 +115,9 @@ struct Live {
 
 /// The smart auto-compaction of the workspace's agents.
 pub struct Prepare {
-    /// The instruction and its threshold (`/compact prepare` changes them).
+    /// The instruction and its threshold in force (the settings path
+    /// changes them, [`Self::apply`]).
     setting: RwLock<Live>,
-    /// The instruction without the workspace's (`/compact prepare
-    /// default`).
-    default_instruction: Sourced<Option<String>>,
-    /// The threshold without the workspace's (`/compact prepare at
-    /// default`).
-    default_at: Sourced<PrepareAt>,
     /// The start-up model's context window.
     window: Option<u64>,
     /// The start-up model (whose window a percentage is taken of).
@@ -133,8 +127,6 @@ pub struct Prepare {
     /// Whether semantic memory is on (`memory_search`, compaction
     /// indexing).
     memory: bool,
-    /// The realm's `tui.toml` (`/compact prepare` writes it).
-    realm_file: Option<crate::config::RealmFile>,
     /// Each agent's trigger, by name.
     agents: Mutex<HashMap<String, Trigger>>,
     /// The mob host (set once it exists).
@@ -160,20 +152,16 @@ impl Prepare {
         policy: &CompactionPolicy,
         (window, model): (Option<u64>, &str),
         memory: bool,
-        realm_file: Option<crate::config::RealmFile>,
     ) -> Self {
         Self {
             setting: RwLock::new(Live {
                 instruction: setting.instruction,
                 at: setting.at,
             }),
-            default_instruction: setting.default_instruction,
-            default_at: setting.default_at,
             window,
             model: model.to_string(),
             backstop: policy.backstop_tokens(window),
             memory,
-            realm_file,
             agents: Mutex::new(HashMap::new()),
             state: OnceLock::new(),
         }
@@ -436,54 +424,22 @@ impl Prepare {
         }
     }
 
-    /// `/compact prepare`: apply `change` (the threshold first, then the
-    /// instruction), live and in the realm's `tui.toml`, and arm the
-    /// trigger of every agent against what is now set. `default` goes
-    /// back, live, to what the lower layers give.
-    pub fn set(&self, change: PrepareChange) -> super::protocol::CompactPrepareOutcome {
-        let PrepareChange { at, instruction } = change;
-        let instruction = instruction.map(|change| match change {
-            InstructionChange::To(text) => match text.trim() {
-                "" => InstructionChange::Off,
-                text => InstructionChange::To(text.to_string()),
-            },
-            other => other,
-        });
-        let mut unsaved = Vec::new();
-        if let Some(at) = at {
-            let written = match at {
-                ThresholdChange::To(at) => Some(at),
-                ThresholdChange::Default => None,
-            };
-            unsaved.extend(self.save(|file| file.write_compact_prepare_at(written)));
-        }
-        if let Some(change) = &instruction {
-            let written = match change {
-                InstructionChange::To(text) => Some(text.as_str()),
-                // An empty instruction: off here, whatever is beneath.
-                InstructionChange::Off => Some(""),
-                InstructionChange::Default => None,
-            };
-            unsaved.extend(self.save(|file| file.write_compact_prepare(written)));
-        }
-        let now = {
+    /// The settings path's hook for `[auto] compact_prepare` and
+    /// `compact_prepare_at` (`/set`, `/compact prepare`, a changed file):
+    /// the instruction and the threshold in force from now on, and every
+    /// agent's trigger armed against them. The start-up notice's warning
+    /// when an instruction is set (or the threshold moved) and the
+    /// threshold comes too late to run first.
+    pub fn apply(
+        &self,
+        instruction: Sourced<Option<String>>,
+        at: Sourced<PrepareAt>,
+    ) -> Option<String> {
+        let moved = {
             let mut live = self.setting.write();
-            if let Some(at) = at {
-                live.at = match at {
-                    ThresholdChange::To(at) => Sourced::new(at, PrepareSource::Workspace),
-                    ThresholdChange::Default => self.default_at.clone(),
-                };
-            }
-            if let Some(change) = &instruction {
-                live.instruction = match change {
-                    InstructionChange::To(text) => {
-                        Sourced::new(Some(text.clone()), PrepareSource::Workspace)
-                    }
-                    InstructionChange::Off => Sourced::new(None, PrepareSource::Workspace),
-                    InstructionChange::Default => self.default_instruction.clone(),
-                };
-            }
-            live.clone()
+            let moved = live.at.value != at.value;
+            *live = Live { instruction, at };
+            moved
         };
         // What is now set is armed for every agent.
         for trigger in self.agents.lock().values_mut() {
@@ -492,81 +448,27 @@ impl Prepare {
                 ..Trigger::default()
             };
         }
-        let what = self.instruction_words(&now.instruction);
-        let asked = self.threshold_words(&now.at);
-        let set = now.instruction.value.is_some();
-        let tail = if set {
-            format!("the agent is asked at {asked}")
-        } else {
-            format!("the threshold is {asked}")
-        };
-        let mut text = match (&instruction, at) {
-            (Some(InstructionChange::To(_)), _) => {
-                format!("prepare instruction set: {what}; {tail}")
-            }
-            (Some(InstructionChange::Off), _) => format!("prepare instruction {what}; {tail}"),
-            (Some(InstructionChange::Default), _) => {
-                format!("prepare instruction back to the lower layers: {what}; {tail}")
-            }
-            (None, Some(change)) => {
-                let head = match change {
-                    ThresholdChange::To(_) => "prepare threshold set",
-                    ThresholdChange::Default => "prepare threshold back to the lower layers",
-                };
-                if set {
-                    format!("{head}: the agent is asked at {asked} to: {what}")
-                } else {
-                    format!("{head}: {asked}; instruction: {what}")
-                }
-            }
-            (None, None) => format!("prepare instruction: {what}; {tail}"),
-        };
-        // A layer over the workspace's wins again at the next start.
-        for (changed, beneath, key) in [
-            (
-                matches!(at, Some(ThresholdChange::To(_))),
-                self.default_at.source,
-                "compact_prepare_at",
-            ),
-            (
-                matches!(
-                    instruction,
-                    Some(InstructionChange::To(_) | InstructionChange::Off)
-                ),
-                self.default_instruction.source,
-                "compact_prepare",
-            ),
-        ] {
-            if changed && beneath.over_workspace() {
-                text.push_str(&format!(
-                    " ({} sets {key} too: it applies again at the next start)",
-                    beneath.name()
-                ));
-            }
-        }
-        if !unsaved.is_empty() {
-            text.push_str(&format!(
-                " (for this run only: it was not saved: {})",
-                unsaved.join("; ")
-            ));
-        }
-        let warning = (set || at.is_some())
-            .then(|| self.late_notice(now.at.value))
-            .flatten();
-        super::protocol::CompactPrepareOutcome { text, warning }
+        let live = self.setting.read().clone();
+        (live.instruction.value.is_some() || moved)
+            .then(|| self.late_notice(live.at.value))
+            .flatten()
     }
 
     /// The instruction in force in words, with where it comes from:
     /// `"update PLAN.md", from your tui.toml`, `none`, or `off for this
-    /// workspace` with what `default` would bring back.
-    fn instruction_words(&self, instruction: &Sourced<Option<String>>) -> String {
+    /// workspace` with what removing the workspace's would bring back
+    /// (`beneath`).
+    fn instruction_words(
+        instruction: &Sourced<Option<String>>,
+        beneath: &Sourced<Option<String>>,
+    ) -> String {
         match (&instruction.value, instruction.source) {
             (Some(text), source) => format!("\"{text}\", {}", source.describe()),
             (None, PrepareSource::Default) => "none".to_string(),
-            (None, PrepareSource::Workspace) => match &self.default_instruction.value {
+            (None, PrepareSource::Workspace) => match &beneath.value {
                 Some(_) => format!(
                     "off for this workspace ({} has one: /compact prepare default uses it)",
-                    self.default_instruction.source.name()
+                    beneath.source.name()
                 ),
                 None => "off for this workspace".to_string(),
             },
@@ -579,21 +481,9 @@ impl Prepare {
         format!("{}, {}", self.describe(at.value), at.source.describe())
     }
 
-    /// Write the realm's `tui.toml` with `write`: what went wrong, if
-    /// anything.
-    fn save(
-        &self,
-        write: impl FnOnce(&crate::config::RealmFile) -> Result<(), crate::approval::rules::RulesError>,
-    ) -> Option<String> {
-        match &self.realm_file {
-            Some(file) => write(file).err().map(|err| err.to_string()),
-            None => Some("this daemon has no realm tui.toml to write".to_string()),
-        }
-    }
-
     /// `at` in words: `65% of the window (about 650k tokens for <model>)`
     /// or `300k tokens`.
-    fn describe(&self, at: PrepareAt) -> String {
+    pub fn describe(&self, at: PrepareAt) -> String {
         match at {
             PrepareAt::Tokens(tokens) => format!("{} tokens", fmt_ctx_tokens(tokens)),
             PrepareAt::Percent(percent) => {
@@ -613,9 +503,10 @@ impl Prepare {
         }
     }
 
-    /// `/compact status`'s daemon side for `agent`.
+    /// `/compact status`'s daemon side for `agent`; `beneath` is the
+    /// instruction the layers under the workspace's give.
     #[must_use]
-    pub fn status(&self, agent: Option<&str>) -> String {
+    pub fn status(&self, agent: Option<&str>, beneath: &Sourced<Option<String>>) -> String {
         let backstop = match self.backstop {
             Some(tokens) => format!(
                 "the engine compacts on its own at {} tokens",
@@ -628,7 +519,7 @@ impl Prepare {
         let Some(instruction) = live.instruction.value.clone() else {
             let what = match live.instruction.source {
                 PrepareSource::Default => "none ([auto] compact_prepare, or /compact prepare <text>, sets an instruction the agent gets first)".to_string(),
-                _ => self.instruction_words(&live.instruction),
+                _ => Self::instruction_words(&live.instruction, beneath),
             };
             return format!("compact prepare: {what}; its threshold is {asked}; {backstop}");
         };
@@ -681,7 +572,6 @@ mod tests {
             PrepareSetting {
                 instruction: Sourced::new(Some("update PLAN.md".into()), PrepareSource::User),
                 at: Sourced::new(at, PrepareSource::User),
-                ..PrepareSetting::default()
             },
             &CompactionPolicy {
                 mode,
@@ -689,7 +579,6 @@ mod tests {
             },
             (Some(1_000_000), "big-model"),
             true,
-            None,
         )
     }
 
@@ -727,10 +616,10 @@ mod tests {
             Crossing::Steer { .. }
         ));
         assert!(
-            p.status(Some("main-a"))
+            p.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
                 .contains("compaction requested of the agent at 330k tokens; it prepares when it reaches a stopping point"),
             "{}",
-            p.status(Some("main-a"))
+            p.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
         );
     }
 
@@ -763,12 +652,12 @@ mod tests {
         let q = prepare(PrepareAt::Tokens(300_000), CompactMode::Native);
         q.reading("main-a", 310_000, true);
         assert!(
-            q.status(Some("main-a"))
+            q.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
                 .contains("compaction requested of the agent")
         );
         assert_eq!(q.ready("main-a"), Ready::Request);
         assert!(
-            !q.status(Some("main-a"))
+            !q.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
                 .contains("compaction requested of the agent")
         );
         assert_eq!(q.reading("main-a", 600_000, true), Crossing::Nothing);
@@ -777,7 +666,7 @@ mod tests {
         r.reading("main-a", 310_000, true);
         r.compaction_started("main-a");
         assert!(
-            !r.status(Some("main-a"))
+            !r.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
                 .contains("compaction requested of the agent")
         );
         // Warn mode: at the threshold plus 10% of the window; a held
@@ -799,13 +688,16 @@ mod tests {
     fn an_idle_agent_gets_it_at_its_next_run() {
         let p = prepare(PrepareAt::Percent(30), CompactMode::Native);
         assert_eq!(p.reading("main-a", 310_000, false), Crossing::Nothing);
-        assert!(p.status(Some("main-a")).contains("next turn"));
+        assert!(
+            p.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
+                .contains("next turn")
+        );
         let (text, tokens, reminder) = p.run_started("main-a").unwrap();
         assert_eq!(tokens, 310_000);
         assert!(!reminder);
         assert!(text.contains("update PLAN.md"));
         assert!(
-            p.status(Some("main-a"))
+            p.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
                 .contains("compaction requested of the agent at 310k")
         );
         assert_eq!(p.run_started("main-a"), None);
@@ -828,11 +720,13 @@ mod tests {
             &CompactionPolicy::default(),
             (Some(1_000_000), "big-model"),
             true,
-            None,
         );
         none.reading("main-a", 500_000, true);
         assert_eq!(none.ready("main-a"), Ready::Request);
-        assert!(none.status(None).starts_with("compact prepare: none"));
+        assert!(
+            none.status(None, &Sourced::new(None, PrepareSource::Default))
+                .starts_with("compact prepare: none")
+        );
     }
 
     /// The start-up notice names a threshold the engine reaches first.
@@ -853,32 +747,21 @@ mod tests {
         );
     }
 
-    fn change(
-        at: Option<ThresholdChange>,
-        instruction: Option<InstructionChange>,
-    ) -> PrepareChange {
-        PrepareChange { at, instruction }
-    }
-
-    /// `/compact prepare at` applies live, says what is now set (as given
-    /// and in tokens for the model, and where it comes from) and arms the
-    /// trigger against the new threshold.
+    /// A new threshold applies live and arms the trigger against it; a
+    /// late one warns with the start-up notice's text.
     #[test]
-    fn a_new_threshold_applies_live_and_re_arms() {
+    fn a_new_threshold_applies_live_re_arms_and_warns_when_late() {
         let p = prepare(PrepareAt::Tokens(300_000), CompactMode::Native);
         assert!(matches!(
             p.reading("main-a", 310_000, true),
             Crossing::Steer { .. }
         ));
-        let outcome = p.set(change(
-            Some(ThresholdChange::To(PrepareAt::Percent(65))),
-            None,
-        ));
-        assert_eq!(
-            outcome.text,
-            "prepare threshold set: the agent is asked at 65% of the window (about 650k tokens for big-model), from this workspace (/compact prepare) to: \"update PLAN.md\", from your tui.toml (for this run only: it was not saved: this daemon has no realm tui.toml to write)"
+        let user = Sourced::new(Some("update PLAN.md".to_string()), PrepareSource::User);
+        let warning = p.apply(
+            user.clone(),
+            Sourced::new(PrepareAt::Percent(65), PrepareSource::Workspace),
         );
-        assert_eq!(outcome.warning, None);
+        assert_eq!(warning, None);
         assert_eq!(p.threshold(), Some(650_000));
         // Armed again, against 650k: below it nothing, above it the request.
         assert_eq!(p.reading("main-a", 640_000, true), Crossing::Nothing);
@@ -886,153 +769,46 @@ mod tests {
             p.reading("main-a", 660_000, true),
             Crossing::Steer { .. }
         ));
-        // Both at once: the threshold first, then the instruction.
-        let outcome = p.set(change(
-            Some(ThresholdChange::To(PrepareAt::Tokens(400_000))),
-            Some(InstructionChange::To("write NOTES.md".into())),
-        ));
+        let none = Sourced::new(None, PrepareSource::Default);
+        let status = p.status(Some("main-a"), &none);
         assert!(
-            outcome.text.starts_with("prepare instruction set: \"write NOTES.md\", from this workspace (/compact prepare); the agent is asked at 400k tokens, from this workspace (/compact prepare)"),
-            "{}",
-            outcome.text
-        );
-        let status = p.status(Some("main-a"));
-        assert!(
-            status.starts_with("compact prepare: \"write NOTES.md\", from this workspace (/compact prepare); asked at 400k tokens, from this workspace (/compact prepare): armed, the context is at 660k"),
+            status.starts_with("compact prepare: \"update PLAN.md\", from your tui.toml; asked at 65% of the window (about 650k tokens for big-model), from this workspace (/compact prepare): compaction requested of the agent at 660k tokens"),
             "{status}"
         );
-    }
-
-    /// A threshold at or above the engine's own applies and warns with
-    /// the start-up notice's text.
-    #[test]
-    fn a_late_threshold_applies_and_warns() {
-        let p = prepare(PrepareAt::Percent(70), CompactMode::Native);
-        let outcome = p.set(change(
-            Some(ThresholdChange::To(PrepareAt::Percent(85))),
-            None,
-        ));
-        assert_eq!(p.threshold(), Some(850_000));
+        let warning = p.apply(
+            user,
+            Sourced::new(PrepareAt::Percent(85), PrepareSource::Workspace),
+        );
         let late = prepare(PrepareAt::Percent(85), CompactMode::Native);
-        assert_eq!(outcome.warning, late.startup_notice());
-        assert!(
-            outcome.warning.unwrap().contains("would never run first"),
-            "a warning"
-        );
+        assert_eq!(warning, late.startup_notice());
+        assert!(warning.unwrap().contains("would never run first"));
     }
 
-    /// `default` goes back, live, to the lower layers' (your tui.toml);
-    /// `off` is none in this workspace although your tui.toml has one,
-    /// and says so; the realm file holds the workspace's, an empty
-    /// instruction for off, nothing for default.
+    /// Off for the workspace says what removing it would bring back; with
+    /// nothing beneath, off is just off.
     #[test]
-    fn default_falls_back_live_and_off_overrides_the_users() {
-        use crate::config::{RULES_FILE_NAME, RealmFile, RulesFile};
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join(RULES_FILE_NAME);
-        let user = Sourced::new(Some("update PLAN.md".to_string()), PrepareSource::User);
-        let p = Prepare::new(
-            PrepareSetting {
-                instruction: Sourced::new(Some("ws".into()), PrepareSource::Workspace),
-                at: Sourced::new(PrepareAt::Tokens(300_000), PrepareSource::Workspace),
-                default_instruction: user,
-                default_at: Sourced::new(PrepareAt::Percent(60), PrepareSource::User),
-            },
-            &CompactionPolicy::default(),
-            (Some(1_000_000), "big-model"),
-            true,
-            Some(RealmFile::new(path.clone())),
+    fn off_for_the_workspace_names_what_is_beneath() {
+        let p = prepare(PrepareAt::Tokens(300_000), CompactMode::Native);
+        p.apply(
+            Sourced::new(None, PrepareSource::Workspace),
+            Sourced::new(PrepareAt::Tokens(300_000), PrepareSource::Workspace),
         );
-        let stored = || RulesFile::load(&path).unwrap().auto.unwrap_or_default();
-        let outcome = p.set(change(None, Some(InstructionChange::Off)));
-        assert_eq!(
-            outcome.text,
-            "prepare instruction off for this workspace (your tui.toml has one: /compact prepare default uses it); the threshold is 300k tokens, from this workspace (/compact prepare)"
-        );
-        assert_eq!(stored().compact_prepare.as_deref(), Some(""));
         assert_eq!(p.threshold(), None);
         assert_eq!(p.reading("main-a", 900_000, true), Crossing::Nothing);
+        let user = Sourced::new(Some("update PLAN.md".to_string()), PrepareSource::User);
         assert!(
-            p.status(None).starts_with(
+            p.status(None, &user).starts_with(
                 "compact prepare: off for this workspace (your tui.toml has one: /compact prepare default uses it); its threshold is 300k tokens"
             ),
             "{}",
-            p.status(None)
+            p.status(None, &user)
         );
-        let outcome = p.set(change(
-            Some(ThresholdChange::Default),
-            Some(InstructionChange::Default),
-        ));
-        assert_eq!(
-            outcome.text,
-            "prepare instruction back to the lower layers: \"update PLAN.md\", from your tui.toml; the agent is asked at 60% of the window (about 600k tokens for big-model), from your tui.toml"
-        );
-        assert_eq!(stored().compact_prepare, None);
-        assert_eq!(stored().compact_prepare_at, None);
-        assert_eq!(p.threshold(), Some(600_000));
-        assert!(matches!(
-            p.reading("main-a", 610_000, true),
-            Crossing::Steer { text, .. } if text.contains("update PLAN.md")
-        ));
-        p.set(change(
-            Some(ThresholdChange::To(PrepareAt::Percent(65))),
-            Some(InstructionChange::To("x".into())),
-        ));
-        assert_eq!(stored().compact_prepare_at, Some(PrepareAt::Percent(65)));
-        assert_eq!(stored().compact_prepare.as_deref(), Some("x"));
-        // Nothing beneath: off is just off, default is the default.
-        let bare = Prepare::new(
-            PrepareSetting::default(),
-            &CompactionPolicy::default(),
-            (None, "small-model"),
-            true,
-            None,
-        );
+        let none = Sourced::new(None, PrepareSource::Default);
         assert!(
-            bare.set(change(None, Some(InstructionChange::Off)))
-                .text
-                .starts_with("prepare instruction off for this workspace; the threshold is 70% of the window (about 140k tokens: the window of small-model is unknown, taken as 200k), default")
-        );
-        let outcome = bare.set(change(
-            Some(ThresholdChange::To(PrepareAt::Tokens(50_000))),
-            None,
-        ));
-        assert!(
-            outcome.text.starts_with("prepare threshold set: 50k tokens, from this workspace (/compact prepare); instruction: off for this workspace"),
+            p.status(None, &none)
+                .starts_with("compact prepare: off for this workspace; its threshold"),
             "{}",
-            outcome.text
-        );
-    }
-
-    /// A value from the command line or the project file wins again at
-    /// the next start: a change says so.
-    #[test]
-    fn a_layer_over_the_workspace_is_named() {
-        let p = Prepare::new(
-            PrepareSetting {
-                default_at: Sourced::new(PrepareAt::Percent(60), PrepareSource::CommandLine),
-                at: Sourced::new(PrepareAt::Percent(60), PrepareSource::CommandLine),
-                ..PrepareSetting::default()
-            },
-            &CompactionPolicy::default(),
-            (Some(1_000_000), "big-model"),
-            true,
-            None,
-        );
-        assert!(p.status(None).contains(
-            "its threshold is 60% of the window (about 600k tokens for big-model), from the command line (applies until the daemon restarts)"
-        ), "{}", p.status(None));
-        let text = p
-            .set(change(
-                Some(ThresholdChange::To(PrepareAt::Percent(50))),
-                None,
-            ))
-            .text;
-        assert!(
-            text.contains(
-                "(the command line sets compact_prepare_at too: it applies again at the next start)"
-            ),
-            "{text}"
+            p.status(None, &none)
         );
     }
 }

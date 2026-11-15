@@ -52,6 +52,9 @@ pub struct Core {
     pub audit: Option<Arc<AuditLog>>,
     /// The agents' smart compaction (`[auto] compact_prepare`).
     pub prepare: Arc<super::prepare::Prepare>,
+    /// Every `tui.toml` layer's values now and the one path a change of a
+    /// setting takes.
+    pub settings: Arc<super::settings::Settings>,
 }
 
 impl std::fmt::Debug for Core {

@@ -45,6 +45,7 @@ mod inputs;
 mod lifecycle;
 mod model;
 mod report;
+mod settings;
 mod wires;
 
 use std::sync::Arc;
@@ -122,8 +123,6 @@ pub struct LocalParts {
     pub project: ProjectInputs,
     /// The engine's task store (`rkat/tasks`).
     pub tasks_db: std::path::PathBuf,
-    /// The realm's `tui.toml` as rkat-tui writes it (the checklist view).
-    pub realm_file: Option<crate::config::RealmFile>,
     /// The runtime the agents' sessions live in (`rkat/set_model`).
     pub machine: Arc<meerkat_runtime::MeerkatMachine>,
     /// The realm config (a switched-to model's profile is written there).
@@ -388,7 +387,7 @@ impl Local {
             method::Schedules, Empty {} => self.schedules(&caller).await;
             method::Schedule, protocol::ScheduleAction { op, schedule } => self.schedule(&caller, op, &schedule).await;
             method::Report, Empty {} => Ok(self.report(self.agent_of(&caller).ok().as_deref()));
-            method::SetMode, protocol::SetModeParams { mode } => Ok(self.set_mode(mode).await);
+            method::SetMode, protocol::SetModeParams { mode, user } => Ok(self.set_mode(mode, user).await);
             method::Rules, command => self.rules(command).await;
             method::RuleRows, Empty {} => Ok(self.rule_and_grant_rows(&caller));
             method::Blocked, Empty {} => self.blocked(&caller);
@@ -405,14 +404,13 @@ impl Local {
             method::Tasks, protocol::SessionParams { session_id } => self.tasks(&session_id).await;
             method::Notices, Empty {} => Ok(self.notices());
             method::AutoStats, Empty {} => Ok(self.auto_stats(&caller));
-            method::CompactPrepare, change => Ok(self.core.prepare.set(change));
-            method::CompactStatus, Empty {} => Ok(crate::approval::desk::RuleOutcome { ok: true, text: self.core.prepare.status(self.agent_of(&caller).ok().as_deref()) });
-            method::SetClassifierModel, protocol::ClassifierModelParams { endpoint, model } => Ok(self.set_classifier_model(&endpoint, &model).await);
+            method::CompactStatus, Empty {} => Ok(self.compact_status(&caller));
+            method::SetSetting, params => Ok(self.set_setting(params).await);
+            method::Settings, Empty {} => Ok(self.settings_rows());
             method::ClassifierCheck, selection => self.classifier_check(&selection).await;
             method::Audit, protocol::AuditParams { lines } => self.audit_tail(&self.agent_of(&caller)?, lines.unwrap_or(AUDIT_LINES));
             method::Missed, Empty {} => self.missed(&caller);
             method::SetModel, params => self.set_model(&self.agent_of(&caller)?, params).await;
-            method::ChecklistView, protocol::ChecklistViewParams { view } => self.checklist_view(view).await;
             method::Trust, Empty {} => Ok(self.trust_project());
             method::Card, protocol::WireAgentParams { agent } => self.card(&caller, agent).await;
             method::Wire, protocol::WireParams { agent, card } => self.wire(&caller, agent, card).await;

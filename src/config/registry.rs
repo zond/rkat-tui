@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use toml::{Table, Value};
 
 use super::layers::Layered;
-use super::settings::{DEFAULT_AUTO_PERCENT, DEFAULT_WARN_PERCENT, PrepareAt, Sourced};
+use super::settings::{DEFAULT_AUTO_PERCENT, DEFAULT_WARN_PERCENT, PrepareAt};
 use crate::cli::Args;
 
 /// Where a setting's value comes from: the layers in precedence order
@@ -52,6 +52,14 @@ pub enum Level {
 }
 
 impl Level {
+    /// The layers a file or the command line holds, lowest first.
+    pub const LAYERS: [Self; 4] = [
+        Self::User,
+        Self::Workspace,
+        Self::CommandLine,
+        Self::Project,
+    ];
+
     /// Where the value comes from, as the notices end with it.
     #[must_use]
     pub fn describe(self) -> &'static str {
@@ -78,7 +86,6 @@ impl Level {
 
     /// A short label (`/settings` columns).
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn label(self) -> &'static str {
         match self {
             Self::Default => "default",
@@ -87,12 +94,6 @@ impl Level {
             Self::CommandLine => "command line",
             Self::Project => "project",
         }
-    }
-
-    /// A layer over the workspace's (it wins again at the next start).
-    #[must_use]
-    pub fn over_workspace(self) -> bool {
-        matches!(self, Self::CommandLine | Self::Project)
     }
 }
 
@@ -116,7 +117,6 @@ pub enum ProjectRule {
 
 impl ProjectRule {
     /// The rule in words (the manual's table).
-    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn describe(self) -> &'static str {
         match self {
@@ -130,7 +130,6 @@ impl ProjectRule {
 }
 
 /// When a change of a setting takes effect in a running daemon.
-#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Applies {
@@ -143,10 +142,8 @@ pub enum Applies {
     NextStart,
 }
 
-#[cfg(any(test, feature = "test-support"))]
 impl Applies {
     /// In words (the manual's table, the confirmations).
-    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn describe(self) -> &'static str {
         match self {
@@ -234,7 +231,6 @@ impl Fallback {
     }
 
     /// The default in words.
-    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn describe(self) -> String {
         match self {
@@ -294,16 +290,13 @@ pub struct Setting {
     /// What a project file may do with it.
     pub project: ProjectRule,
     /// When a change takes effect.
-    #[cfg(any(test, feature = "test-support"))]
     pub applies: Applies,
     /// One line on what it does.
-    #[cfg(any(test, feature = "test-support"))]
     pub about: &'static str,
     /// The dedicated flags that are shorthands for it.
     pub flags: &'static [Flag],
     /// The friendly command that sets it, when there is one (Markdown:
     /// commands in backticks).
-    #[cfg(any(test, feature = "test-support"))]
     pub command: Option<&'static str>,
     /// An older spelling it also reads (the same file's own key wins).
     pub alias: Option<Alias>,
@@ -345,6 +338,17 @@ impl Layers {
             Level::Project => Some(&self.project),
         }
     }
+
+    /// The table of `level`, to replace (none for the default).
+    pub fn of_mut(&mut self, level: Level) -> Option<&mut Table> {
+        match level {
+            Level::Default => None,
+            Level::User => Some(&mut self.user),
+            Level::Workspace => Some(&mut self.workspace),
+            Level::CommandLine => Some(&mut self.cli),
+            Level::Project => Some(&mut self.project),
+        }
+    }
 }
 
 /// The value at the dotted `key` of `table`.
@@ -360,7 +364,6 @@ pub fn lookup<'a>(table: &'a Table, key: &str) -> Option<&'a Value> {
 
 /// `value` as the setting files and commands show it (`true`, `65%`,
 /// `auto`, `"update PLAN.md"` for text with spaces).
-#[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn show(value: &Value) -> String {
     match value {
@@ -371,7 +374,6 @@ pub fn show(value: &Value) -> String {
 
 impl Setting {
     /// The setting `key` names.
-    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn find(key: &str) -> Option<&'static Self> {
         SETTINGS.iter().find(|setting| setting.key == key)
@@ -503,7 +505,6 @@ impl Setting {
     /// # Errors
     ///
     /// As [`Self::check`].
-    #[cfg(any(test, feature = "test-support"))]
     pub fn parse(&self, text: &str) -> Result<Value, String> {
         let text = text.trim();
         let value = match self.kind {
@@ -529,7 +530,6 @@ impl Setting {
 }
 
 /// `"text"` without its quotes (a typed value may be quoted).
-#[cfg(any(test, feature = "test-support"))]
 fn unquote(text: &str) -> &str {
     text.strip_prefix('"')
         .and_then(|text| text.strip_suffix('"'))
@@ -626,18 +626,12 @@ fn store_prepare(layered: &mut Layered, resolved: &Resolved) {
     let settings = &mut layered.settings;
     settings.compact_prepare = as_string(resolved);
     settings.compact_prepare_source = resolved.source;
-    let beneath = PREPARE.resolve_without(&layered.layers, Some(Level::Workspace));
-    settings.compact_prepare_default = Sourced::new(as_string(&beneath), beneath.source);
 }
 
 fn store_prepare_at(layered: &mut Layered, resolved: &Resolved) {
     let settings = &mut layered.settings;
-    let at =
-        |resolved: &Resolved| as_typed(resolved).unwrap_or(super::settings::DEFAULT_PREPARE_AT);
-    settings.compact_prepare_at = at(resolved);
+    settings.compact_prepare_at = as_typed(resolved).unwrap_or(super::settings::DEFAULT_PREPARE_AT);
     settings.compact_prepare_at_source = resolved.source;
-    let beneath = PREPARE_AT.resolve_without(&layered.layers, Some(Level::Workspace));
-    settings.compact_prepare_at_default = Sourced::new(at(&beneath), beneath.source);
 }
 
 fn store_helper_depth(layered: &mut Layered, resolved: &Resolved) {
@@ -693,12 +687,9 @@ const PREPARE: Setting = Setting {
     kind: Kind::Text { max: TEXT_MAX },
     default: Fallback::Unset("none"),
     project: ProjectRule::Takes,
-    #[cfg(any(test, feature = "test-support"))]
     applies: Applies::Live,
-    #[cfg(any(test, feature = "test-support"))]
     about: "What every agent is asked to do before an automatic compaction (empty: none here).",
     flags: &[],
-    #[cfg(any(test, feature = "test-support"))]
     command: Some("`/compact prepare <text>|off|default`"),
     alias: None,
     store: store_prepare,
@@ -709,12 +700,9 @@ const PREPARE_AT: Setting = Setting {
     kind: Kind::Threshold,
     default: Fallback::Text("70%"),
     project: ProjectRule::Takes,
-    #[cfg(any(test, feature = "test-support"))]
     applies: Applies::Live,
-    #[cfg(any(test, feature = "test-support"))]
     about: "Where the agents are asked to prepare: tokens, or a share of the window.",
     flags: &[],
-    #[cfg(any(test, feature = "test-support"))]
     command: Some("`/compact prepare at <threshold>|default`"),
     alias: None,
     store: store_prepare_at,
@@ -728,9 +716,7 @@ pub static SETTINGS: &[Setting] = &[
         kind: Kind::Choice(MODES),
         default: Fallback::Text("auto"),
         project: ProjectRule::OnlyManual,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::Live,
-        #[cfg(any(test, feature = "test-support"))]
         about: "The permission mode at start (`enabled = false` is the older `mode = \"default\"`).",
         flags: &[Flag {
             flag: "--no-auto",
@@ -738,7 +724,6 @@ pub static SETTINGS: &[Setting] = &[
             value: FlagValue::Fixed("false"),
             given: |args| args.no_auto.then(String::new),
         }],
-        #[cfg(any(test, feature = "test-support"))]
         command: Some("`/mode`, Shift+Tab"),
         alias: Some(Alias {
             key: "auto.enabled",
@@ -751,9 +736,7 @@ pub static SETTINGS: &[Setting] = &[
         kind: Kind::Model,
         default: Fallback::Unset("the start-up endpoint's per-dialect default"),
         project: ProjectRule::Never,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::Live,
-        #[cfg(any(test, feature = "test-support"))]
         about: "The model that reviews the agent's actions in auto mode.",
         flags: &[Flag {
             flag: "--classifier-model",
@@ -761,7 +744,6 @@ pub static SETTINGS: &[Setting] = &[
             value: FlagValue::Argument,
             given: |args| args.classifier_model.clone(),
         }],
-        #[cfg(any(test, feature = "test-support"))]
         command: Some("`/auto model`"),
         alias: None,
         store: store_classifier_model,
@@ -773,9 +755,7 @@ pub static SETTINGS: &[Setting] = &[
             "unset: trusted while a sandbox contains the shell; uncontained, a build after a dependency change asks",
         ),
         project: ProjectRule::OnlyFalse,
-        #[cfg(any(test, feature = "test-support"))]
-        applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
+        applies: Applies::Live,
         about: "Whether `cargo build|test|nextest|check|clippy` are tier 1.",
         flags: &[
             Flag {
@@ -791,7 +771,6 @@ pub static SETTINGS: &[Setting] = &[
                 given: |args| args.no_trust_project_builds.then(String::new),
             },
         ],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_trust,
@@ -801,12 +780,9 @@ pub static SETTINGS: &[Setting] = &[
         kind: Kind::Bool,
         default: Fallback::Bool(true),
         project: ProjectRule::OnlyFalse,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
         about: "Whether the classifier's second stage may read project files.",
         flags: &[],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_classifier_tools,
@@ -816,12 +792,9 @@ pub static SETTINGS: &[Setting] = &[
         kind: Kind::Bool,
         default: Fallback::Bool(true),
         project: ProjectRule::Takes,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
         about: "Whether the daemon checks the classifier model at start with two fixed cases.",
         flags: &[],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_classifier_probe,
@@ -831,9 +804,7 @@ pub static SETTINGS: &[Setting] = &[
         kind: Kind::Choice(COMPACT_MODES),
         default: Fallback::Text("native"),
         project: ProjectRule::Takes,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
         about: "When the context fills up: the engine's own threshold, only warn, or compact at `compact_auto_percent`.",
         flags: &[
             Flag {
@@ -849,7 +820,6 @@ pub static SETTINGS: &[Setting] = &[
                 given: |args| args.no_auto_compact.then(String::new),
             },
         ],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_compact,
@@ -863,12 +833,9 @@ pub static SETTINGS: &[Setting] = &[
         },
         default: Fallback::Int(DEFAULT_WARN_PERCENT as u64),
         project: ProjectRule::Takes,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
         about: "Context usage (percent of the window) at which to warn once.",
         flags: &[],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_warn_percent,
@@ -882,12 +849,9 @@ pub static SETTINGS: &[Setting] = &[
         },
         default: Fallback::Int(DEFAULT_AUTO_PERCENT as u64),
         project: ProjectRule::Takes,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
         about: "Context usage (percent of the window) at which to compact (`compact = \"auto\"`) or warn every turn.",
         flags: &[],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_auto_percent,
@@ -903,12 +867,9 @@ pub static SETTINGS: &[Setting] = &[
         },
         default: Fallback::Int(super::DEFAULT_HELPER_MAX_DEPTH as u64),
         project: ProjectRule::OnlyLower,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
         about: "How many levels of helpers a session may have (0: none).",
         flags: &[],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_helper_depth,
@@ -922,12 +883,9 @@ pub static SETTINGS: &[Setting] = &[
         },
         default: Fallback::Int(crate::user_shell::DEFAULT_USER_TIMEOUT_SECS),
         project: ProjectRule::OnlyLower,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
         about: "How long a `!` command may run, in seconds.",
         flags: &[],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_user_timeout,
@@ -941,12 +899,9 @@ pub static SETTINGS: &[Setting] = &[
         },
         default: Fallback::Int(crate::tools::DEFAULT_SEARCH_BUDGET_SECS),
         project: ProjectRule::OnlyLower,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
         about: "How long one `glob` or `grep` may run before it answers with what it found, in seconds.",
         flags: &[],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_search_budget,
@@ -960,12 +915,9 @@ pub static SETTINGS: &[Setting] = &[
         },
         default: Fallback::Int(crate::tools::DEFAULT_SEARCH_MAX_ENTRIES),
         project: ProjectRule::OnlyLower,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
         about: "How many files and directories one `glob` or `grep` may examine.",
         flags: &[],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_search_entries,
@@ -975,12 +927,9 @@ pub static SETTINGS: &[Setting] = &[
         kind: Kind::Choice(&["folded", "expanded"]),
         default: Fallback::Text("folded"),
         project: ProjectRule::Takes,
-        #[cfg(any(test, feature = "test-support"))]
-        applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
+        applies: Applies::Live,
         about: "How helper headers start in the transcript.",
         flags: &[],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_ui_helpers,
@@ -990,12 +939,9 @@ pub static SETTINGS: &[Setting] = &[
         kind: Kind::Bool,
         default: Fallback::Bool(true),
         project: ProjectRule::Takes,
-        #[cfg(any(test, feature = "test-support"))]
-        applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
+        applies: Applies::Live,
         about: "Ring the bell when a turn ends or a prompt opens while the terminal is not focused.",
         flags: &[],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_ui_bell,
@@ -1005,12 +951,9 @@ pub static SETTINGS: &[Setting] = &[
         kind: Kind::Choice(&["hidden", "shown"]),
         default: Fallback::Text("hidden"),
         project: ProjectRule::Takes,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::Live,
-        #[cfg(any(test, feature = "test-support"))]
         about: "Whether the task checklist shows under the input.",
         flags: &[],
-        #[cfg(any(test, feature = "test-support"))]
         command: Some("Ctrl+T"),
         alias: None,
         store: store_ui_checklist,
@@ -1020,9 +963,7 @@ pub static SETTINGS: &[Setting] = &[
         kind: Kind::Bool,
         default: Fallback::Bool(true),
         project: ProjectRule::OnlyFalse,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
         about: "Whether the community price list is fetched for the cost readout.",
         flags: &[Flag {
             flag: "--no-pricing-fetch",
@@ -1030,7 +971,6 @@ pub static SETTINGS: &[Setting] = &[
             value: FlagValue::Fixed("false"),
             given: |args| args.no_pricing_fetch.then(String::new),
         }],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_pricing_fetch,
@@ -1040,12 +980,9 @@ pub static SETTINGS: &[Setting] = &[
         kind: Kind::Text { max: 200 },
         default: Fallback::Unset("the login name ($USER, else $LOGNAME, else owner)"),
         project: ProjectRule::Never,
-        #[cfg(any(test, feature = "test-support"))]
         applies: Applies::NextStart,
-        #[cfg(any(test, feature = "test-support"))]
         about: "The person every attached client decides approval requests as.",
         flags: &[],
-        #[cfg(any(test, feature = "test-support"))]
         command: None,
         alias: None,
         store: store_principal,
@@ -1054,7 +991,6 @@ pub static SETTINGS: &[Setting] = &[
 
 /// A structured section of `tui.toml`: not a scalar setting, with its own
 /// commands.
-#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, Copy)]
 pub struct Section {
     /// How it is written (`[[allow]]` / `[[deny]]`).
@@ -1070,11 +1006,9 @@ pub struct Section {
 }
 
 /// The structured sections, in the order the manual lists them.
-#[cfg(any(test, feature = "test-support"))]
 pub static SECTIONS: &[Section] = &[
     Section {
         key: "[[allow]] / [[deny]]",
-        #[cfg(any(test, feature = "test-support"))]
         about: "Rules: `tool`, then `arg` (a glob) or `literal`.",
         project: "may only add deny rules",
         flags: "`--allow` / `--deny <tool>[=<glob>]`",
@@ -1082,7 +1016,6 @@ pub static SECTIONS: &[Section] = &[
     },
     Section {
         key: "auto.allow",
-        #[cfg(any(test, feature = "test-support"))]
         about: "Statements: kinds of action you allow, which the classifier reads.",
         project: "may not set it",
         flags: "—",
@@ -1090,7 +1023,6 @@ pub static SECTIONS: &[Section] = &[
     },
     Section {
         key: "confinement.extra_read / extra_write",
-        #[cfg(any(test, feature = "test-support"))]
         about: "Extra directories for the confined shell.",
         project: "may not set it",
         flags: "`--confinement-read` / `--confinement-write <dir>`",
@@ -1098,7 +1030,6 @@ pub static SECTIONS: &[Section] = &[
     },
     Section {
         key: "endpoints.<name>",
-        #[cfg(any(test, feature = "test-support"))]
         about: "`dialect`, `base_url`, `api_key_env`, `priority`, `api_style` (an inline `api_key` is refused).",
         project: "may not set it",
         flags: "`--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]`",
@@ -1106,7 +1037,6 @@ pub static SECTIONS: &[Section] = &[
     },
     Section {
         key: "pricing.\"<model id>\"",
-        #[cfg(any(test, feature = "test-support"))]
         about: "`input`, `output`, `cached_input`, `cache_write` in USD per million tokens.",
         project: "may not set it",
         flags: "`--set 'pricing.\"<id>\".input=15'`",
@@ -1114,7 +1044,6 @@ pub static SECTIONS: &[Section] = &[
     },
     Section {
         key: "thinking.\"<endpoint:id or id>\"",
-        #[cfg(any(test, feature = "test-support"))]
         about: "Anthropic thinking: `\"adaptive\"`, `{ enabled = <budget tokens> }` or `\"default\"`.",
         project: "may not set it",
         flags: "`--set 'thinking.\"proxy:my-alias\"=adaptive'`",

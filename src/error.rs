@@ -129,6 +129,19 @@ pub enum TuiError {
         /// The shell's grant that reaches it.
         grant: PathBuf,
     },
+    /// The shell's confinement plan reaches the user's own `tui.toml`,
+    /// which the daemon reads (and follows) with the user's authority.
+    #[error(
+        "refusing to start: the confined shell is granted {}, which reaches your settings file {} (the agent could change your settings); drop that grant",
+        grant.display(),
+        file.display()
+    )]
+    SettingsExposed {
+        /// The user's `tui.toml`.
+        file: PathBuf,
+        /// The shell's grant that reaches it.
+        grant: PathBuf,
+    },
     /// `--attach=DIRECTORY`: no daemon has an endpoint file for that
     /// workspace.
     #[error(
@@ -173,6 +186,7 @@ impl TuiError {
             | Self::RealmHome(_)
             | Self::Rehome(_)
             | Self::RealmExposed { .. }
+            | Self::SettingsExposed { .. }
             | Self::NoDaemonAt { .. }
             | Self::AttachAddress { .. }
             | Self::NotATerminal => 2,

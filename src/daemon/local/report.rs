@@ -63,9 +63,14 @@ impl Local {
         command: crate::approval::desk::RuleCommand,
     ) -> Result<RuleOutcome, Refusal> {
         let engine = Arc::clone(&self.core.engine);
-        tokio::task::spawn_blocking(move || run_rule_command(&engine, &command))
-            .await
-            .map_err(Refusal::internal)
+        let settings = Arc::clone(&self.core.settings);
+        tokio::task::spawn_blocking(move || {
+            let outcome = run_rule_command(&engine, &command);
+            reload_lists(&settings);
+            outcome
+        })
+        .await
+        .map_err(Refusal::internal)
     }
 
     /// `rkat/conversations`: the conversations, the caller's agent's own
@@ -181,20 +186,41 @@ impl Local {
         })
     }
 
-    /// `rkat/checklist_view`: the checklist view, written to the realm's
-    /// `tui.toml` (when there is one).
-    pub(super) async fn checklist_view(
-        &self,
-        view: crate::config::ChecklistView,
-    ) -> Result<Empty, Refusal> {
-        if let Some(file) = self.parts.realm_file.clone() {
-            tokio::task::spawn_blocking(move || file.write_checklist(view))
-                .await
-                .map_err(Refusal::internal)?
-                .map_err(Refusal::internal)?;
+    /// `/compact status`'s daemon side: the prepare instruction and its
+    /// threshold for the caller's agent, and what is beneath the
+    /// workspace's instruction.
+    pub(super) fn compact_status(&self, caller: &Caller) -> RuleOutcome {
+        use crate::config::registry::{Level, Setting};
+        use crate::config::settings::{Sourced, prepare_instruction};
+        let beneath = Setting::find("auto.compact_prepare").map_or_else(
+            || Sourced::new(None, Level::Default),
+            |setting| {
+                let resolved = self
+                    .core
+                    .settings
+                    .resolve_without(setting, Level::Workspace);
+                Sourced::new(
+                    prepare_instruction(resolved.value.as_ref().and_then(toml::Value::as_str)),
+                    resolved.source,
+                )
+            },
+        );
+        RuleOutcome {
+            ok: true,
+            text: self
+                .core
+                .prepare
+                .status(self.agent_of(caller).ok().as_deref(), &beneath),
         }
-        Ok(Empty {})
     }
+}
+
+/// Read both settings files again after a rule, grant or statement was
+/// written to one of them (`/settings` shows what the files hold).
+fn reload_lists(settings: &crate::daemon::settings::Settings) {
+    use crate::config::registry::Level;
+    settings.reload(Level::User);
+    settings.reload(Level::Workspace);
 }
 
 /// A trust state in words.
@@ -404,6 +430,7 @@ impl Local {
             Some(text) => self.core.engine.approve_effect(&session, id, text, scope),
             None => self.core.engine.approve(&session, id, scope),
         };
+        reload_lists(&self.core.settings);
         Ok(match done {
             Ok(approved) => RuleOutcome {
                 ok: true,
@@ -424,7 +451,9 @@ impl Local {
         id: u64,
     ) -> Result<RuleOutcome, Refusal> {
         let session = self.session_of_caller(caller)?;
-        Ok(match self.core.engine.remove_statement(&session, id) {
+        let removed = self.core.engine.remove_statement(&session, id);
+        reload_lists(&self.core.settings);
+        Ok(match removed {
             Ok(text) => RuleOutcome { ok: true, text },
             Err(text) => RuleOutcome { ok: false, text },
         })

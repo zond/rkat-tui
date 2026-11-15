@@ -161,13 +161,12 @@ impl Local {
             .resolve(Some(endpoint.unwrap_or(provider)), dialect.into(), model)
     }
 
-    /// `rkat/set_classifier_model`: `/auto model`. The classifier reviews
-    /// with `model` of `endpoint` from now on (a review that started
-    /// finishes on the old one); the choice is written to the realm's
-    /// `tui.toml` and audited, and the start-up check runs against it in
-    /// the background, its result a notice. An endpoint this daemon does
-    /// not have is refused with what to do.
-    pub(super) async fn set_classifier_model(&self, endpoint: &str, model: &str) -> RuleOutcome {
+    /// `[auto] classifier_model`'s hook (`/auto model`, `/set`): the
+    /// classifier reviews with `model` of `endpoint` from now on (a review
+    /// that started finishes on the old one), audited, and the start-up
+    /// check runs against it in the background, its result a notice. An
+    /// endpoint this daemon does not have is refused with what to do.
+    pub(super) async fn switch_classifier_model(&self, endpoint: &str, model: &str) -> RuleOutcome {
         let refused = |text: String| RuleOutcome { ok: false, text };
         let model = model.trim();
         if model.is_empty() {
@@ -224,33 +223,38 @@ impl Local {
         ModeStatus::of(&self.core.engine)
     }
 
-    pub(super) async fn set_mode(&self, mode: PermissionMode) -> ModeSet {
-        self.core.engine.set_mode(mode);
-        // Every client shows it.
-        self.core
-            .decisions
-            .broadcast(protocol::MODE, &ModeStatus::of(&self.core.engine));
+    /// `rkat/set_mode` (Shift+Tab, `/mode`): the mode switched live
+    /// ([`Self::switch_mode`]) and recorded as `[auto] mode` in the
+    /// workspace's `tui.toml`, or the user's own (`user`).
+    pub(super) async fn set_mode(&self, mode: PermissionMode, user: bool) -> ModeSet {
         let mut warnings = Vec::new();
-        let engine = Arc::clone(&self.core.engine);
-        let persisted = tokio::task::spawn_blocking(move || engine.persist_mode())
-            .await
-            .map_err(|err| err.to_string())
-            .and_then(|written| written.map_err(|err| err.to_string()));
-        if let Err(err) = persisted {
-            warnings.push(format!(
-                "the mode applies to this run but was not saved: {err}"
-            ));
-        }
-        #[cfg(any(test, feature = "test-support"))]
-        let _held = self.mode_hold.read().await;
-        if let Some(warning) = self.note_plan_mode().await {
-            warnings.push(warning);
-        }
+        let level = if user {
+            crate::config::registry::Level::User
+        } else {
+            crate::config::registry::Level::Workspace
+        };
+        let value =
+            toml::Value::try_from(mode).unwrap_or_else(|_| toml::Value::String(mode.to_string()));
+        warnings.extend(self.record_setting("auto.mode", value, level).await);
+        warnings.extend(self.switch_mode(mode).await);
         ModeSet {
             status: ModeStatus::of(&self.core.engine),
             notice: mode_notice(mode).to_string(),
             warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
         }
+    }
+
+    /// The mode switched live: the engine's, every client's push, and the
+    /// agents' plan-mode notes. The warnings.
+    pub(super) async fn switch_mode(&self, mode: PermissionMode) -> Vec<String> {
+        self.core.engine.set_mode(mode);
+        // Every client shows it.
+        self.core
+            .decisions
+            .broadcast(protocol::MODE, &ModeStatus::of(&self.core.engine));
+        #[cfg(any(test, feature = "test-support"))]
+        let _held = self.mode_hold.read().await;
+        self.note_plan_mode().await.into_iter().collect()
     }
 
     /// At start: when the persisted mode is plan, tell every agent (a

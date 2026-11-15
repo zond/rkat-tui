@@ -1,234 +1,40 @@
-//! Writes to the realm's `tui.toml`.
+//! The two files rkat-tui writes on the user's command: the user's own
+//! `tui.toml` and the workspace's realm `tui.toml`, each through the one
+//! writer ([`super::write::SettingsFile`]).
 
-use super::file::{AutoSection, RulesFile, UiSection};
-use super::settings::ChecklistView;
-use crate::approval::mode::PermissionMode;
-use crate::approval::rules::{RuleOrigin, RuleSet, RulesError};
-use parking_lot::Mutex;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
 
-/// Atomically write a rules file (temp file in the same directory + rename).
-///
-/// # Errors
-///
-/// Returns [`RulesError`] on serialization or I/O failures.
-pub fn save_realm(path: &Path, file: &RulesFile) -> Result<(), RulesError> {
-    let text = toml::to_string_pretty(file)?;
-    // The user's rules and settings: owner-only, never through a symlink.
-    let trusted = path.parent().and_then(Path::parent);
-    crate::paths::write_atomic(
-        path,
-        text.as_bytes(),
-        crate::paths::FileMode::Private,
-        trusted,
-    )
-    .map_err(|source| RulesError::Write {
-        path: path.to_path_buf(),
-        source,
-    })
-}
+use super::registry::Level;
+use super::write::SettingsFile;
 
-/// Rewrite the rule lists of the realm file from the realm/session rules in
-/// `rules`, preserving its `[auto]` section.
-///
-/// # Errors
-///
-/// Returns [`RulesError`] on I/O, parse or serialization failures.
-pub fn persist_realm_rules(path: &Path, rules: &RuleSet) -> Result<(), RulesError> {
-    let mut file = RulesFile::load(path)?;
-    let (mut allow, mut deny) = rules.layer_entries(RuleOrigin::Realm);
-    let (session_allow, session_deny) = rules.layer_entries(RuleOrigin::Session);
-    allow.extend(session_allow);
-    deny.extend(session_deny);
-    file.allow = allow;
-    file.deny = deny;
-    save_realm(path, &file)
-}
-
-/// Record `mode` as the realm's `[auto] mode` (the older `enabled` key is
-/// dropped: `mode` says it), keeping everything else in the file.
-///
-/// # Errors
-///
-/// Returns [`RulesError`] when the file cannot be read, parsed or written.
-pub fn persist_realm_mode(path: &Path, mode: PermissionMode) -> Result<(), RulesError> {
-    let mut file = RulesFile::load(path)?;
-    let auto = file.auto.get_or_insert_with(AutoSection::default);
-    auto.enabled = None;
-    auto.mode = Some(mode);
-    save_realm(path, &file)
-}
-
-/// Record `view` as the realm's `[ui] checklist`, keeping everything else
-/// in the file.
-///
-/// # Errors
-///
-/// Returns [`RulesError`] when the file cannot be read, parsed or written.
-pub fn persist_realm_checklist(path: &Path, view: ChecklistView) -> Result<(), RulesError> {
-    let mut file = RulesFile::load(path)?;
-    file.ui.get_or_insert_with(UiSection::default).checklist = Some(view);
-    save_realm(path, &file)
-}
-
-/// The realm's `tui.toml` as rkat-tui writes it: the rules added at run
-/// time, the permission mode, the checklist panel's view. The daemon owns
-/// it; the approval
-/// engine is handed it for the rules and the mode, and `rkat/checklist_view`
-/// writes through it.
-///
-/// Every write is a read-modify-write of the whole file under one lock
-/// shared by every clone, and what it writes is read under that lock
-/// ([`Self::write_rules_with`], [`Self::write_mode_with`]), so two writers
-/// (a rule added while the mode changes) cannot write in the other order
-/// and drop one's change from the file.
+/// The user's `~/.rkat/tui/tui.toml` and the workspace's realm
+/// `tui.toml`: what the daemon writes for a `/set`, a mode change, a rule,
+/// an "always" grant or statement. Clones share each file's lock.
 #[derive(Debug, Clone)]
-pub struct RealmFile {
-    path: PathBuf,
-    lock: Arc<Mutex<()>>,
+pub struct SettingsFiles {
+    /// The user's own file (every workspace).
+    pub user: SettingsFile,
+    /// The workspace's realm file.
+    pub workspace: SettingsFile,
 }
 
-impl RealmFile {
-    /// The file at `path`.
+impl SettingsFiles {
+    /// The user's file at `user` and the realm's at `workspace`.
     #[must_use]
-    pub fn new(path: PathBuf) -> Self {
+    pub fn new(user: PathBuf, workspace: PathBuf) -> Self {
         Self {
-            path,
-            lock: Arc::new(Mutex::new(())),
+            user: SettingsFile::new(Level::User, user),
+            workspace: SettingsFile::new(Level::Workspace, workspace),
         }
     }
 
-    /// Write the rules `rules` gives as the file's rules, called under the
-    /// file's lock (so the last writer writes the newest rules).
-    ///
-    /// # Errors
-    ///
-    /// [`RulesError`] when the file cannot be read, parsed or written.
-    pub fn write_rules_with(&self, rules: impl FnOnce() -> RuleSet) -> Result<(), RulesError> {
-        let _one = self.lock.lock();
-        let rules = rules();
-        persist_realm_rules(&self.path, &rules)
-    }
-
-    /// Write the mode `mode` gives as its `[auto] mode`, called under the
-    /// file's lock.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::write_rules_with`].
-    pub fn write_mode_with(&self, mode: impl FnOnce() -> PermissionMode) -> Result<(), RulesError> {
-        let _one = self.lock.lock();
-        let mode = mode();
-        persist_realm_mode(&self.path, mode)
-    }
-
-    /// Add `dir` to its `[confinement] extra_write` (a grant the user made
-    /// "always" with `/approve`), keeping everything else; a directory
-    /// already listed is not added twice.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::write_rules_with`].
-    pub fn add_extra_write(&self, dir: &Path) -> Result<(), RulesError> {
-        let _one = self.lock.lock();
-        let mut file = RulesFile::load(&self.path)?;
-        let section = file.confinement.get_or_insert_with(Default::default);
-        if !section.extra_write.iter().any(|known| known == dir) {
-            section.extra_write.push(dir.to_path_buf());
+    /// The file of `level`: the user's for [`Level::User`], the
+    /// workspace's for every other (a project's file is never written).
+    #[must_use]
+    pub fn of(&self, level: Level) -> &SettingsFile {
+        match level {
+            Level::User => &self.user,
+            _ => &self.workspace,
         }
-        save_realm(&self.path, &file)
-    }
-
-    /// Add `text` to its `[auto] allow` (a statement the user allowed
-    /// "always" with `/approve`), keeping everything else; one already
-    /// listed is not added twice.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::write_rules_with`].
-    pub fn add_allow_statement(&self, text: &str) -> Result<(), RulesError> {
-        let _one = self.lock.lock();
-        let mut file = RulesFile::load(&self.path)?;
-        let auto = file.auto.get_or_insert_with(AutoSection::default);
-        if !auto.allow.iter().any(|known| known == text) {
-            auto.allow.push(text.to_string());
-        }
-        save_realm(&self.path, &file)
-    }
-
-    /// Remove `text` from its `[auto] allow`, keeping everything else.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::write_rules_with`].
-    pub fn remove_allow_statement(&self, text: &str) -> Result<(), RulesError> {
-        let _one = self.lock.lock();
-        let mut file = RulesFile::load(&self.path)?;
-        if let Some(auto) = &mut file.auto {
-            auto.allow.retain(|known| known != text);
-        }
-        save_realm(&self.path, &file)
-    }
-
-    /// Write `model` as its `[auto] classifier_model` (`/auto model`),
-    /// keeping everything else.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::write_rules_with`].
-    pub fn write_classifier_model(&self, model: &str) -> Result<(), RulesError> {
-        let _one = self.lock.lock();
-        let mut file = RulesFile::load(&self.path)?;
-        file.auto
-            .get_or_insert_with(AutoSection::default)
-            .classifier_model = Some(model.to_string());
-        save_realm(&self.path, &file)
-    }
-
-    /// Write `text` as its `[auto] compact_prepare` (`/compact prepare`;
-    /// an empty one is off for the workspace, `/compact prepare off`), or
-    /// remove the key (`None`, `/compact prepare default`), keeping
-    /// everything else.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::write_rules_with`].
-    pub fn write_compact_prepare(&self, text: Option<&str>) -> Result<(), RulesError> {
-        let _one = self.lock.lock();
-        let mut file = RulesFile::load(&self.path)?;
-        file.auto
-            .get_or_insert_with(AutoSection::default)
-            .compact_prepare = text.map(str::to_string);
-        save_realm(&self.path, &file)
-    }
-
-    /// Write `at` as its `[auto] compact_prepare_at` (`/compact prepare
-    /// at`), or remove the key (`None`, `/compact prepare at default`),
-    /// keeping everything else.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::write_rules_with`].
-    pub fn write_compact_prepare_at(
-        &self,
-        at: Option<crate::config::settings::PrepareAt>,
-    ) -> Result<(), RulesError> {
-        let _one = self.lock.lock();
-        let mut file = RulesFile::load(&self.path)?;
-        file.auto
-            .get_or_insert_with(AutoSection::default)
-            .compact_prepare_at = at;
-        save_realm(&self.path, &file)
-    }
-
-    /// Write `view` as its `[ui] checklist`.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::write_rules_with`].
-    pub fn write_checklist(&self, view: ChecklistView) -> Result<(), RulesError> {
-        let _one = self.lock.lock();
-        persist_realm_checklist(&self.path, view)
     }
 }

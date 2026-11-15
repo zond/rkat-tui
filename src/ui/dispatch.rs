@@ -189,8 +189,13 @@ impl App {
                 fx.push(Effect::CompactPrepareStatus);
             }
             Command::Compact(CompactCommand::Prepare(change)) => {
-                fx.push(Effect::CompactPrepare(change));
+                fx.push(Effect::SetSettings {
+                    changes: change.settings(),
+                    user: change.user,
+                });
             }
+            Command::Set { changes, user } => fx.push(Effect::SetSettings { changes, user }),
+            Command::Settings(filter) => fx.push(Effect::RequestSettingsPicker(filter)),
             Command::Compact(CompactCommand::PrepareShow) => {
                 fx.push(Effect::CompactPrepareShow);
             }
@@ -257,9 +262,9 @@ impl App {
             }
             Command::Auto(AutoCommand::Off) => fx.push(Effect::SetMode(PermissionMode::Manual)),
             Command::Auto(AutoCommand::Stats) => fx.push(Effect::AutoStats),
-            Command::Auto(AutoCommand::Model(None)) => fx.push(Effect::RequestClassifierPicker),
-            Command::Auto(AutoCommand::Model(Some(reference))) => {
-                fx.push(Effect::SetClassifierModel(reference));
+            Command::Auto(AutoCommand::Model(None, _)) => fx.push(Effect::RequestClassifierPicker),
+            Command::Auto(AutoCommand::Model(Some(reference), user)) => {
+                fx.push(Effect::SetClassifierModel(reference, user));
             }
             Command::Auto(AutoCommand::Check(selection)) => {
                 fx.push(Effect::ClassifierCheck(selection));
@@ -272,10 +277,12 @@ impl App {
                 effect,
                 tool,
                 pattern,
+                user,
             }) => fx.push(Effect::AddRule {
                 effect,
                 tool,
                 pattern,
+                user,
             }),
             Command::Rules(RulesCommand::Remove(n)) => fx.push(Effect::RemoveRule(n)),
             Command::TrustProject => fx.push(Effect::TrustProject),

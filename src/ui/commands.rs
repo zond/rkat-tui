@@ -29,6 +29,8 @@ pub enum RulesCommand {
         tool: String,
         /// Optional argument pattern (rest of the line).
         pattern: Option<String>,
+        /// Written to the user's own `tui.toml` (`--user`).
+        user: bool,
     },
     /// Remove rule number `n` (as shown by `/permissions list`).
     Remove(usize),
@@ -51,8 +53,9 @@ pub enum AutoCommand {
     /// check`).
     Check(crate::approval::corpus::Selection),
     /// `/auto model`: pick the classifier's model; with a reference, set
-    /// it.
-    Model(Option<String>),
+    /// it (for the workspace, or with `--user` in the user's own
+    /// `tui.toml`).
+    Model(Option<String>, bool),
 }
 
 /// `/model` subcommands.
@@ -109,6 +112,33 @@ pub const PREPARE_USAGE: &str = "/compact prepare <text> | off | default: set th
 /// like a number but is no threshold is refused; any other text is the
 /// instruction, `at` and all.
 fn parse_prepare(text: &str) -> CompactCommand {
+    let (text, user) = split_user(text);
+    match parse_prepare_change(&text) {
+        CompactCommand::Prepare(change) => {
+            CompactCommand::Prepare(PrepareChange { user, ..change })
+        }
+        other => other,
+    }
+}
+
+/// `--user` (or `--global`) taken out of `text`: the rest, and whether it
+/// was there (the commands that set something write the user's own
+/// `tui.toml` with it).
+#[must_use]
+pub fn split_user(text: &str) -> (String, bool) {
+    let mut user = false;
+    let rest: Vec<&str> = text
+        .split(' ')
+        .filter(|word| {
+            let flag = matches!(*word, "--user" | "--global");
+            user |= flag;
+            !flag
+        })
+        .collect();
+    (rest.join(" ").trim().to_string(), user)
+}
+
+fn parse_prepare_change(text: &str) -> CompactCommand {
     let instruction = |text: &str| match text {
         "" => None,
         "off" => Some(InstructionChange::Off),
@@ -121,6 +151,7 @@ fn parse_prepare(text: &str) -> CompactCommand {
             return CompactCommand::Prepare(PrepareChange {
                 at: Some(ThresholdChange::Default),
                 instruction: Some(InstructionChange::Default),
+                user: false,
             });
         }
         _ => {}
@@ -156,12 +187,14 @@ fn parse_prepare(text: &str) -> CompactCommand {
             return CompactCommand::Prepare(PrepareChange {
                 at,
                 instruction: instruction(rest),
+                user: false,
             });
         }
     }
     CompactCommand::Prepare(PrepareChange {
         at: None,
         instruction: instruction(text),
+        user: false,
     })
 }
 
@@ -283,6 +316,19 @@ pub enum Command {
     DaemonStop,
     /// `/daemon start`: connect again, starting the daemon when needed.
     DaemonStart,
+    /// `/set <key> <value>`, `/unset <key>` and the shorthands that are
+    /// one or two of them (`/mode <mode> --user`): each `(key, value)`
+    /// (`None`: remove the level's value), written to the workspace's
+    /// `tui.toml`, or the user's own (`user`).
+    Set {
+        /// The changes, in order.
+        changes: Vec<(String, Option<String>)>,
+        /// The user's own `tui.toml` (`--user`).
+        user: bool,
+    },
+    /// `/settings [filter]`: the settings picker, its rows filtered by a
+    /// substring of the key.
+    Settings(Option<String>),
 }
 
 /// Slash-command parse failure.
@@ -370,6 +416,43 @@ impl CommandSpec {
 
 /// Every slash command, in `/help` order.
 pub static COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        name: "settings",
+        aliases: &[],
+        usage: "[filter]",
+        summary: "every setting: its value, where it comes from, edit it",
+        help: &[(
+            "/settings [filter]",
+            "open a list of every setting (those whose key holds filter):\nthe value in force and its layer, what each layer holds and\nwhen a change applies; Enter edits the workspace's value, u\nyour own tui.toml's, d then y removes the value at the layer\nin force (user or workspace)",
+        )],
+        parse: |rest| {
+            Some(Command::Settings(
+                (!rest.trim().is_empty()).then(|| rest.trim().to_string()),
+            ))
+        },
+    },
+    CommandSpec {
+        name: "set",
+        aliases: &[],
+        usage: "<key> <value> [--user]",
+        summary: "set a setting for this workspace, or with --user for you",
+        help: &[(
+            "/set <key> <value> [--user]",
+            "write a setting to this workspace's tui.toml (with --user to\nyour own, every workspace); the answer says the file, the value\nin force and its layer, and when it applies",
+        )],
+        parse: parse_set,
+    },
+    CommandSpec {
+        name: "unset",
+        aliases: &[],
+        usage: "<key> [--user]",
+        summary: "remove a setting from this workspace's tui.toml, or with --user from yours",
+        help: &[(
+            "/unset <key> [--user]",
+            "remove the workspace's value (with --user your own): the next\nlayer's applies",
+        )],
+        parse: parse_unset,
+    },
     CommandSpec {
         name: "help",
         aliases: &["?"],
@@ -517,17 +600,17 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "permissions",
         aliases: &[],
-        usage: "[list | add allow|deny <tool> [pattern] | rm <n>]",
+        usage: "[list | add allow|deny <tool> [pattern] [--user] | rm <n>]",
         summary: "pick an approval rule to remove, or list or add rules",
         help: &[
             (
                 "/permissions",
-                "open a list of the approval rules (allow or deny, tool,\npattern or literal, layer); d then y removes one (for good for\nthe workspace's own rules, until the daemon restarts for one\nwritten in another layer)",
+                "open a list of the approval rules (allow or deny, tool,\npattern or literal, layer); d then y removes one (for good for\nthe workspace's and your own tui.toml's rules, until the daemon\nrestarts for one of the command line or the project)",
             ),
             ("/permissions list", "list approval rules"),
             (
-                "/permissions add allow|deny <tool> [pattern]",
-                "add an approval rule",
+                "/permissions add allow|deny <tool> [pattern] [--user]",
+                "add an approval rule (with --user to your own tui.toml, for\nevery workspace)",
             ),
             ("/permissions rm <n>", "remove rule n (rm or remove)"),
         ],
@@ -540,7 +623,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "approve a call the gate blocked: once, for this session or always",
         help: &[(
             "/approve",
-            "open a list of the calls the classifier recently blocked (the\nnewest 10): Enter or o runs one once, s allows its directory or\ncall for this session, a always (the realm's tui.toml)",
+            "open a list of the calls the classifier recently blocked (the\nnewest 10): Enter or o runs one once, s allows its directory or\ncall for this session, a always for this workspace (the realm's\ntui.toml), A always in every workspace (your own tui.toml)",
         )],
         parse: |rest| arg_free(rest, Command::Approve),
     },
@@ -558,7 +641,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "mode",
         aliases: &[],
-        usage: "[default | accept-edits | plan | auto]",
+        usage: "[default | accept-edits | plan | auto] [--user]",
         summary: "pick or set the permission mode",
         help: &[
             (
@@ -567,7 +650,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             ),
             (
                 "/mode default|accept-edits|plan|auto",
-                "set it: default (manual) asks for every edit and command,\naccept-edits allows in-project edits, plan is read-only and\nends in a plan to approve, auto has the classifier review",
+                "set it: default (manual) asks for every edit and command,\naccept-edits allows in-project edits, plan is read-only and\nends in a plan to approve, auto has the classifier review;\nrecorded for this workspace, with --user in your own tui.toml",
             ),
         ],
         parse: parse_mode,
@@ -591,8 +674,8 @@ pub static COMMANDS: &[CommandSpec] = &[
                 "the classifier's reviews, stage-1 flags, blocks by rule, pauses,\n/approve overrides, how often you allow what is asked, its tokens\nand time, for this conversation and since the daemon started",
             ),
             (
-                "/auto model [[endpoint:]<id>]",
-                "the classifier's model: pick it from every endpoint's list (the\ncurrent one marked), or set it; live, written to the realm's\ntui.toml, its two-case check run in the background",
+                "/auto model [[endpoint:]<id>] [--user]",
+                "the classifier's model: pick it from every endpoint's list (the\ncurrent one marked), or set it; live, written to the realm's\ntui.toml (with --user to your own), its two-case check run in\nthe background",
             ),
             (
                 "/auto check [all | statements | <n> | <case id>…]",
@@ -636,7 +719,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "compact",
         aliases: &[],
-        usage: "[now | status | prepare [at <N | Nk | N%>|default] [<text>|off|default] | <instructions>]",
+        usage: "[now | status | prepare [at <N | Nk | N%>|default] [<text>|off|default] [--user] | <instructions>]",
         summary: "compact the context (during a turn: before its next step)",
         help: &[
             (
@@ -661,7 +744,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             ),
             (
                 "/compact prepare at <threshold> <text>",
-                "set both; /compact prepare default all resets both;\n/compact prepare alone shows what is set and where from",
+                "set both; /compact prepare default all resets both;\n/compact prepare alone shows what is set and where from;\n--user on any of them writes your own tui.toml instead",
             ),
         ],
         parse: |rest| {
@@ -882,10 +965,16 @@ fn parse_auto(rest: &str) -> Option<Command> {
         ["off"] => Some(Command::Auto(AutoCommand::Off)),
         ["resume"] => Some(Command::Auto(AutoCommand::Resume)),
         ["stats"] => Some(Command::Auto(AutoCommand::Stats)),
-        ["model"] => Some(Command::Auto(AutoCommand::Model(None))),
-        ["model", reference] => Some(Command::Auto(AutoCommand::Model(Some(
-            (*reference).to_string(),
-        )))),
+        ["model"] => Some(Command::Auto(AutoCommand::Model(None, false))),
+        ["model", reference] => Some(Command::Auto(AutoCommand::Model(
+            Some((*reference).to_string()),
+            false,
+        ))),
+        ["model", reference, "--user" | "--global"]
+        | ["model", "--user" | "--global", reference] => Some(Command::Auto(AutoCommand::Model(
+            Some((*reference).to_string()),
+            true,
+        ))),
         ["check", rest @ ..] => {
             parse_check(rest).map(|selection| Command::Auto(AutoCommand::Check(selection)))
         }
@@ -915,9 +1004,38 @@ fn parse_check(words: &[&str]) -> Option<crate::approval::corpus::Selection> {
 }
 
 fn parse_mode(rest: &str) -> Option<Command> {
-    match words(rest).as_slice() {
-        [] => Some(Command::Mode(None)),
-        [name] => PermissionMode::parse(name).map(|mode| Command::Mode(Some(mode))),
+    let (rest, user) = split_user(rest);
+    match (words(&rest).as_slice(), user) {
+        ([], false) => Some(Command::Mode(None)),
+        ([name], false) => PermissionMode::parse(name).map(|mode| Command::Mode(Some(mode))),
+        // In the user's own tui.toml: the setting it is a shorthand for.
+        ([name], true) => PermissionMode::parse(name).map(|mode| Command::Set {
+            changes: vec![("auto.mode".to_string(), Some(mode.name().to_string()))],
+            user: true,
+        }),
+        _ => None,
+    }
+}
+
+/// `/set <key> <value> [--user]`: the value is the rest of the line.
+fn parse_set(rest: &str) -> Option<Command> {
+    let (rest, user) = split_user(rest);
+    let (key, value) = rest.split_once(char::is_whitespace)?;
+    let value = value.trim();
+    (!key.is_empty() && !value.is_empty()).then(|| Command::Set {
+        changes: vec![(key.to_string(), Some(value.to_string()))],
+        user,
+    })
+}
+
+/// `/unset <key> [--user]`.
+fn parse_unset(rest: &str) -> Option<Command> {
+    let (rest, user) = split_user(rest);
+    match words(&rest).as_slice() {
+        [key] => Some(Command::Set {
+            changes: vec![((*key).to_string(), None)],
+            user,
+        }),
         _ => None,
     }
 }
@@ -1156,7 +1274,18 @@ pub fn parse(input: &str) -> Option<Result<Command, CommandError>> {
 }
 
 fn parse_rules(args: &[&str]) -> Option<RulesCommand> {
-    match args {
+    let user = args
+        .iter()
+        .any(|word| matches!(*word, "--user" | "--global"));
+    let args: Vec<&str> = args
+        .iter()
+        .copied()
+        .filter(|word| !matches!(*word, "--user" | "--global"))
+        .collect();
+    if user && !matches!(args.first(), Some(&"add")) {
+        return None;
+    }
+    match args.as_slice() {
         [] => Some(RulesCommand::Pick),
         ["list"] => Some(RulesCommand::List),
         ["add", effect, tool, pattern @ ..] => {
@@ -1170,6 +1299,7 @@ fn parse_rules(args: &[&str]) -> Option<RulesCommand> {
                 effect,
                 tool: (*tool).to_string(),
                 pattern,
+                user,
             })
         }
         ["rm" | "remove", n] => n.parse::<usize>().ok().map(RulesCommand::Remove),
@@ -1217,6 +1347,8 @@ mod tests {
         let args = |name: &str| match name {
             "remember" => " a note",
             "daemon" => " stop",
+            "set" => " ui.bell false",
+            "unset" => " ui.bell",
             _ => "",
         };
         let mut seen = std::collections::HashSet::new();
@@ -1278,7 +1410,7 @@ mod tests {
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 35);
+        assert_eq!(seen.len(), 38);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;
@@ -1421,6 +1553,7 @@ mod tests {
             Command::Compact(CompactCommand::Prepare(PrepareChange {
                 at: None,
                 instruction: Some(InstructionChange::Off),
+                user: false,
             }))
         );
         assert_eq!(
@@ -1433,6 +1566,7 @@ mod tests {
         Command::Compact(CompactCommand::Prepare(PrepareChange {
             at,
             instruction: text.map(|text| InstructionChange::To(text.to_string())),
+            user: false,
         }))
     }
 
@@ -1481,6 +1615,7 @@ mod tests {
             Command::Compact(CompactCommand::Prepare(PrepareChange {
                 at: to(PrepareAt::Tokens(300_000)),
                 instruction: Some(InstructionChange::Off),
+                user: false,
             }))
         );
         // "at" and no threshold: the instruction, "at" and all.
@@ -1525,11 +1660,13 @@ mod tests {
             Command::Compact(CompactCommand::Prepare(PrepareChange {
                 at: None,
                 instruction: Some(InstructionChange::Default),
+                user: false,
             }))
         );
         let both = Command::Compact(CompactCommand::Prepare(PrepareChange {
             at: Some(ThresholdChange::Default),
             instruction: Some(InstructionChange::Default),
+            user: false,
         }));
         assert_eq!(ok("/compact prepare default all"), both);
         assert_eq!(ok("/compact prepare at default default"), both);
@@ -1601,7 +1738,7 @@ mod tests {
         for bad in ["/mode yolo", "/mode plan auto"] {
             assert_eq!(
                 usage_of(bad),
-                "/mode [default | accept-edits | plan | auto]",
+                "/mode [default | accept-edits | plan | auto] [--user]",
                 "{bad}"
             );
         }
@@ -1651,12 +1788,23 @@ mod tests {
                 ..crate::approval::corpus::Selection::default()
             }))
         );
-        assert_eq!(ok("/auto model"), Command::Auto(AutoCommand::Model(None)));
+        assert_eq!(
+            ok("/auto model"),
+            Command::Auto(AutoCommand::Model(None, false))
+        );
         assert_eq!(
             ok("/auto model anthropic:claude-haiku-5-5"),
-            Command::Auto(AutoCommand::Model(Some(
-                "anthropic:claude-haiku-5-5".into()
-            )))
+            Command::Auto(AutoCommand::Model(
+                Some("anthropic:claude-haiku-5-5".into()),
+                false
+            ))
+        );
+        assert_eq!(
+            ok("/auto model anthropic:claude-haiku-5-5 --user"),
+            Command::Auto(AutoCommand::Model(
+                Some("anthropic:claude-haiku-5-5".into()),
+                true
+            ))
         );
         assert!(matches!(
             parse("/auto model a b"),
@@ -1678,6 +1826,7 @@ mod tests {
                 effect: RuleEffect::Allow,
                 tool: "shell".into(),
                 pattern: Some("cargo test *".into()),
+                user: false,
             })
         );
         assert_eq!(
@@ -1686,6 +1835,7 @@ mod tests {
                 effect: RuleEffect::Deny,
                 tool: "web_fetch".into(),
                 pattern: None,
+                user: false,
             })
         );
         assert_eq!(
@@ -1816,7 +1966,7 @@ mod tests {
         }
         assert_eq!(
             usage_of("/permissions rm x"),
-            "/permissions [list | add allow|deny <tool> [pattern] | rm <n>]"
+            "/permissions [list | add allow|deny <tool> [pattern] [--user] | rm <n>]"
         );
     }
 

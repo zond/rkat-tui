@@ -34,8 +34,10 @@ pub mod registry;
 pub mod settings;
 #[cfg(test)]
 mod tests;
+pub mod write;
 
 pub use file::*;
 pub use layers::*;
 pub use persist::*;
+#[cfg(any(test, feature = "test-support"))]
 pub use settings::ChecklistView;

@@ -362,11 +362,12 @@ async fn the_workspace_sets_off_and_defaults_over_the_users_file_live() {
     );
     assert!(start.contains("), default: armed"), "{start}");
     // The threshold, live: the next reading over it asks the agent.
-    let answer = set(&rig, json!({"at": {"to": 50_000}})).await;
+    let answer = set(&rig, "auto.compact_prepare_at", Some("50000")).await;
+    let realm_toml_shown = realm_toml.display().to_string();
     assert_eq!(
         answer["text"],
         format!(
-            "prepare threshold set: the agent is asked at 50k tokens, from this workspace (/compact prepare) to: \"{INSTRUCTION}\", from your tui.toml"
+            "auto.compact_prepare_at = 50000: written to this workspace's tui.toml ({realm_toml_shown}); in force: 50000 (from this workspace); applied at once; the agents are asked at 50k tokens to: \"{INSTRUCTION}\""
         )
     );
     assert!(answer.get("warning").is_none(), "{answer}");
@@ -383,10 +384,10 @@ async fn the_workspace_sets_off_and_defaults_over_the_users_file_live() {
         status(&rig).await
     );
     // Off for the workspace, over the user's file.
-    let answer = set(&rig, json!({"instruction": "off"})).await;
+    let answer = set(&rig, "auto.compact_prepare", Some("")).await;
     assert!(
-        answer["text"].as_str().unwrap().starts_with(
-            "prepare instruction off for this workspace (your tui.toml has one: /compact prepare default uses it)"
+        answer["text"].as_str().unwrap().contains(
+            "in force: \"\" (off) (from this workspace); applied at once; no instruction is in force; the threshold is 50k tokens"
         ),
         "{answer}"
     );
@@ -405,12 +406,14 @@ async fn the_workspace_sets_off_and_defaults_over_the_users_file_live() {
         "{off}"
     );
     // Both back to the user's file, live, and gone from the realm's.
-    let answer = set(&rig, json!({"at": "default", "instruction": "default"})).await;
+    set(&rig, "auto.compact_prepare_at", None).await;
+    let answer = set(&rig, "auto.compact_prepare", None).await;
     let text = answer["text"].as_str().unwrap();
     assert!(
-        text.starts_with(&format!(
-            "prepare instruction back to the lower layers: \"{INSTRUCTION}\", from your tui.toml; the agent is asked at 70% of the window"
-        )) && text.ends_with("), default"),
+        text.starts_with("auto.compact_prepare: removed from this workspace's tui.toml")
+            && text.contains(&format!(
+                "in force: {INSTRUCTION} (from your tui.toml); applied at once; the agents are asked at 70% of the window"
+            )),
         "{text}"
     );
     let auto = stored()
@@ -424,30 +427,48 @@ async fn the_workspace_sets_off_and_defaults_over_the_users_file_live() {
     rig.quit().await;
 }
 
-/// `rkat/compact_prepare` with `params`, as `/compact prepare` sends it.
-async fn set(rig: &Attached, params: serde_json::Value) -> serde_json::Value {
+/// `rkat/set_setting` of `key` for the workspace, as `/compact prepare`
+/// sends it.
+async fn set(rig: &Attached, key: &str, value: Option<&str>) -> serde_json::Value {
     rig.daemon
         .connect_bound()
         .await
-        .call("rkat/compact_prepare", params)
+        .call("rkat/set_setting", json!({"key": key, "value": value}))
         .await
         .unwrap()
 }
 
 /// A threshold at or above the automatic compaction applies and warns
-/// with the start-up notice's text.
+/// with the start-up notice's text; one the command line overrides is
+/// written, not applied, and the answer names the command line.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_late_threshold_is_set_with_the_start_up_warning() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![]);
     let rig = rig(&llm, &ws, "auto", 30_000).await;
-    let answer = rig
-        .daemon
-        .connect_bound()
-        .await
-        .call("rkat/compact_prepare", json!({"at": {"to": "90%"}}))
-        .await
-        .unwrap();
+    let over = set(&rig, "auto.compact_prepare_at", Some("90%")).await;
+    let text = over["text"].as_str().unwrap();
+    assert!(
+        text.contains("in force: 30000 (from the command line); the value in force did not change; the daemon's command line sets it (30000), which wins until the daemon restarts"),
+        "{text}"
+    );
+    assert!(over.get("warning").is_none(), "{over}");
+    rig.quit().await;
+    // Without the command line's threshold: applied, with the warning.
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let setup = Setup::args(&[
+        "--set",
+        "auto.compact=auto",
+        "--set",
+        "auto.compact_auto_percent=5",
+        "--set",
+        "auto.compact_warn_percent=5",
+        "--set",
+        &format!("auto.compact_prepare={INSTRUCTION}"),
+    ]);
+    let rig = Attached::start_with(&ws.root, &llm, setup).await;
+    let answer = set(&rig, "auto.compact_prepare_at", Some("90%")).await;
     let warning = answer["warning"].as_str().unwrap();
     assert!(
         warning.starts_with("[auto] compact_prepare_at = 90% (900k tokens) is at or above the automatic compaction at 50k tokens, so the prepare instruction would never run first"),
@@ -457,7 +478,7 @@ async fn a_late_threshold_is_set_with_the_start_up_warning() {
         answer["text"]
             .as_str()
             .unwrap()
-            .contains("90% of the window (about 900k tokens for "),
+            .contains("the agents are asked at 90% of the window (about 900k tokens for "),
         "{answer}"
     );
     rig.quit().await;

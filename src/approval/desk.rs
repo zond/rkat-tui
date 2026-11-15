@@ -256,6 +256,10 @@ pub enum RuleCommand {
         /// Argument pattern.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pattern: Option<String>,
+        /// Written to the user's own `tui.toml` (`--user`) instead of the
+        /// workspace's.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        user: bool,
     },
     /// `/permissions remove <n>`.
     Remove {
@@ -300,15 +304,22 @@ pub fn run_rule_command(engine: &ApprovalEngine, command: &RuleCommand) -> RuleO
             deny,
             tool,
             pattern,
+            user,
         } => {
             let kind = if *deny {
                 RuleKind::Deny
             } else {
                 RuleKind::Allow
             };
+            let level = if *user {
+                crate::config::registry::Level::User
+            } else {
+                crate::config::registry::Level::Workspace
+            };
             match Rule::new(kind, tool, pattern.as_deref(), RuleOrigin::Realm)
-                .and_then(|rule| engine.add_rule(rule))
+                .and_then(|rule| engine.add_rule(rule, level))
             {
+                Ok(()) if *user => RuleOutcome::ok("rule added to your tui.toml (every workspace)"),
                 Ok(()) => RuleOutcome::ok("rule added"),
                 Err(err) => RuleOutcome::failed(format!("rule not added: {err}")),
             }
@@ -528,6 +539,7 @@ mod tests {
             deny: true,
             tool: "write_file".into(),
             pattern: None,
+            user: false,
         };
         let wire = serde_json::to_value(&add).unwrap();
         assert_eq!(

@@ -1,0 +1,293 @@
+//! The settings framework through the daemon: `/set` and `/unset` at the
+//! user's and the workspace's level (`rkat/set_setting`), each through the
+//! one writer and the one apply path; `/settings` (`rkat/settings` and its
+//! picker); the "always" choices in every workspace; and the refusals that
+//! keep the settings files the user's.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use crate::common;
+use crate::rig;
+
+use common::{ScriptedLlmClient, Workspace};
+use rig::{Attached, Running, Setup};
+use rkat_tui::approval::grants::{GrantScope, GrantTarget};
+use rkat_tui::ui::{Effect, Msg, PickerKind};
+use serde_json::json;
+
+const USER_FILE: &str = "# my own settings\n[ui]\nbell = true # ring\n\n[auto]\n# what the agents do first\ncompact_prepare = \"update PLAN.md\"\n";
+
+async fn set(daemon: &Running, key: &str, value: Option<&str>, user: bool) -> serde_json::Value {
+    daemon
+        .connect_bound()
+        .await
+        .call(
+            "rkat/set_setting",
+            json!({"key": key, "value": value, "user": user}),
+        )
+        .await
+        .unwrap()
+}
+
+async fn status(daemon: &Running) -> String {
+    daemon
+        .connect_bound()
+        .await
+        .call("rkat/compact_status", json!({}))
+        .await
+        .unwrap()["text"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// `/set --user` writes the user's own `tui.toml` (only its key: the
+/// comments and the rest stay), applies at once and says so; the
+/// workspace's value wins over it and the answer says that; `/unset`
+/// removes each level's again; the next daemon reads the user's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn set_writes_either_file_keeps_the_rest_and_applies_at_once() {
+    let ws = Workspace::new();
+    let cfg = common::config_dir_for(&ws.root);
+    std::fs::create_dir_all(&cfg).unwrap();
+    let user_file = cfg.join("tui.toml");
+    std::fs::write(&user_file, USER_FILE).unwrap();
+    let realm_file = common::realm_of(&ws.root).join("tui.toml");
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let answer = set(&daemon, "auto.compact_prepare_at", Some("65%"), true).await;
+    assert_eq!(answer["ok"], true, "{answer}");
+    let text = answer["text"].as_str().unwrap();
+    assert!(
+        text.starts_with(&format!(
+            "auto.compact_prepare_at = 65%: written to your tui.toml ({}); in force: 65% (from your tui.toml); applied at once; the agents are asked at 65% of the window",
+            user_file.display()
+        )),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&user_file).unwrap(),
+        format!("{USER_FILE}compact_prepare_at = \"65%\"\n")
+    );
+    assert!(
+        status(&daemon).await.contains("asked at 65% of the window"),
+        "{}",
+        status(&daemon).await
+    );
+    // The workspace's wins; a user value under it is written, not applied.
+    set(&daemon, "auto.compact_prepare_at", Some("300k"), false).await;
+    let under = set(&daemon, "auto.compact_prepare_at", Some("50%"), true).await;
+    let text = under["text"].as_str().unwrap();
+    assert!(
+        text.contains("the value in force did not change; this workspace's tui.toml sets it (300000), which wins here: /unset auto.compact_prepare_at removes it"),
+        "{text}"
+    );
+    assert!(realm_file.exists());
+    // `/settings` has every layer's value.
+    let list = daemon
+        .connect_bound()
+        .await
+        .call("rkat/settings", json!({}))
+        .await
+        .unwrap();
+    let row = list["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["key"] == "auto.compact_prepare_at")
+        .unwrap()
+        .clone();
+    assert_eq!(row["value"], "300000", "{row}");
+    assert_eq!(row["source"], "workspace", "{row}");
+    assert_eq!(
+        row["levels"],
+        json!([["user", "50%"], ["workspace", "300000"]]),
+        "{row}"
+    );
+    // Removed from the workspace: the user's applies at once.
+    let back = set(&daemon, "auto.compact_prepare_at", None, false).await;
+    assert!(
+        back["text"]
+            .as_str()
+            .unwrap()
+            .contains("in force: 50% (from your tui.toml); applied at once"),
+        "{back}"
+    );
+    assert!(status(&daemon).await.contains("asked at 50% of the window"));
+    daemon.stop().await;
+    // The next daemon reads the user's.
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    assert!(
+        status(&daemon)
+            .await
+            .contains("asked at 50% of the window (about"),
+        "{}",
+        status(&daemon).await
+    );
+    let gone = set(&daemon, "auto.compact_prepare_at", None, true).await;
+    assert!(
+        gone["text"]
+            .as_str()
+            .unwrap()
+            .contains("in force: 70% (the default)"),
+        "{gone}"
+    );
+    assert_eq!(std::fs::read_to_string(&user_file).unwrap(), USER_FILE);
+    // A bad value or key writes nothing.
+    let refused = set(&daemon, "ui.bell", Some("loud"), true).await;
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["text"], "ui.bell takes `true` or `false`");
+    assert_eq!(std::fs::read_to_string(&user_file).unwrap(), USER_FILE);
+    daemon.stop().await;
+}
+
+/// The client's `/settings` picker lists every setting with its value and
+/// layer; its change (`u`'s field, then Enter) writes the user's file and
+/// the list comes again with the new value; a live `[ui]` setting reaches
+/// every attached client.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_settings_picker_shows_and_changes_a_setting() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let mut rig = Attached::start_with(&ws.root, &llm, Setup::default()).await;
+    rig.send(Effect::RequestSettingsPicker(Some("ui.".into())));
+    let shown = rig
+        .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, .. } if picker.kind == PickerKind::Settings))
+        .await;
+    let Msg::ShowPicker { picker, .. } = shown else {
+        unreachable!()
+    };
+    let rows: Vec<&str> = picker.rows.iter().map(|row| row.text.as_str()).collect();
+    assert_eq!(
+        rows,
+        vec![
+            "ui.helpers  folded  (default)",
+            "ui.bell  true  (default)",
+            "ui.checklist  hidden  (default)",
+        ]
+    );
+    rig.send(Effect::PickedSetting {
+        key: "ui.checklist".into(),
+        value: Some("shown".into()),
+        user: true,
+    });
+    rig.wait_for(|msg| {
+        matches!(msg, Msg::Notice { text, .. } if text.starts_with("ui.checklist = shown: written to your tui.toml"))
+    })
+    .await;
+    // Every client follows the live `[ui]` setting.
+    rig.wait_for(|msg| matches!(msg, Msg::Setting { key, value } if key == "ui.checklist" && value.as_deref() == Some("shown")))
+        .await;
+    let again = rig
+        .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, refresh: true } if picker.kind == PickerKind::Settings))
+        .await;
+    let Msg::ShowPicker { picker, .. } = again else {
+        unreachable!()
+    };
+    assert!(
+        picker
+            .rows
+            .iter()
+            .any(|row| row.text == "ui.checklist  shown  (user)"),
+        "{:?}",
+        picker.rows
+    );
+    let user_file = common::config_dir_for(&ws.root).join("tui.toml");
+    assert_eq!(
+        std::fs::read_to_string(&user_file).unwrap(),
+        "[ui]\nchecklist = \"shown\"\n"
+    );
+    rig.quit().await;
+}
+
+/// `/approve`'s "always, in every workspace" and `/permissions add
+/// --user` write the user's own `tui.toml`; a grant that reaches the
+/// settings files' directories is refused, for a session too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn always_in_every_workspace_writes_the_users_file_and_settings_dirs_are_never_granted() {
+    let ws = Workspace::new();
+    let granted = ws.sibling("granted");
+    std::fs::create_dir_all(&granted).unwrap();
+    let granted = std::fs::canonicalize(&granted).unwrap();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let engine = daemon.engine();
+    engine
+        .grant(
+            &daemon.session,
+            GrantTarget::Dir {
+                path: granted.clone(),
+            },
+            GrantScope::AlwaysUser,
+        )
+        .unwrap();
+    engine
+        .allow_statement(
+            &daemon.session,
+            "network requests to api.example.com",
+            GrantScope::AlwaysUser,
+        )
+        .unwrap();
+    let cfg = common::config_dir_for(&ws.root);
+    for dir in [
+        cfg.clone(),
+        cfg.parent().unwrap().to_path_buf(),
+        common::realm_of(&ws.root),
+    ] {
+        for scope in [
+            GrantScope::Session,
+            GrantScope::Always,
+            GrantScope::AlwaysUser,
+        ] {
+            let refused = engine
+                .grant(
+                    &daemon.session,
+                    GrantTarget::Dir { path: dir.clone() },
+                    scope,
+                )
+                .unwrap_err();
+            assert!(
+                refused.contains("holds your rkat-tui settings"),
+                "{dir:?} {scope:?}: {refused}"
+            );
+        }
+    }
+    drop(engine);
+    let added = daemon
+        .connect_bound()
+        .await
+        .call(
+            "rkat/rules",
+            json!({"op": "add", "deny": true, "tool": "shell", "pattern": "git push*", "user": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(added["ok"], true, "{added}");
+    let user: toml::Table =
+        toml::from_str(&std::fs::read_to_string(cfg.join("tui.toml")).unwrap()).unwrap();
+    assert_eq!(
+        user["confinement"]["extra_write"],
+        toml::Value::Array(vec![toml::Value::String(granted.display().to_string())])
+    );
+    assert_eq!(
+        user["auto"]["allow"],
+        toml::Value::Array(vec![toml::Value::String(
+            "network requests to api.example.com".into()
+        )])
+    );
+    assert_eq!(user["deny"][0]["arg"].as_str(), Some("git push*"));
+    // The realm's file has none of them.
+    let realm = common::realm_of(&ws.root).join("tui.toml");
+    let realm_text = std::fs::read_to_string(&realm).unwrap_or_default();
+    assert!(!realm_text.contains("api.example.com"), "{realm_text}");
+    // `/settings` reads the user's file again after each.
+    let list = daemon
+        .connect_bound()
+        .await
+        .call("rkat/settings", json!({}))
+        .await
+        .unwrap();
+    assert!(list["user_file"].as_str().unwrap().ends_with("tui.toml"));
+    daemon.stop().await;
+}
