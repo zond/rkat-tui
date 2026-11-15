@@ -908,24 +908,29 @@ impl Runner {
             }
             Report::RehomeStopped(stopped) => self.rehome_stopped(stopped),
             Report::ClassifierModel(label) => {
-                let (endpoint, model) = label
+                let named = label
                     .as_deref()
-                    .and_then(|label| label.split_once(':'))
-                    .unwrap_or_default();
-                // A bare model (the start-up endpoint's) is marked on the
-                // agent's endpoint.
-                let bare = label.as_deref().filter(|l| !l.contains(':'));
+                    .and_then(crate::endpoints::EndpointRef::parse);
                 let shown = self
                     .model
                     .as_ref()
                     .map(|m| m.endpoint.clone())
                     .unwrap_or_default();
-                let current = match bare {
-                    Some(model) => Current {
+                let current = match (&named, label.as_deref()) {
+                    (Some(named), _) => Current {
+                        endpoint: &named.endpoint,
+                        model: &named.model,
+                    },
+                    // A bare model (the start-up endpoint's) is marked on
+                    // the agent's endpoint.
+                    (None, Some(model)) => Current {
                         endpoint: &shown,
                         model,
                     },
-                    None => Current { endpoint, model },
+                    (None, None) => Current {
+                        endpoint: "",
+                        model: "",
+                    },
                 };
                 self.bench.request_model_picker(false, current, true);
             }
@@ -1146,8 +1151,13 @@ impl Runner {
             Effect::RequestResumePicker => self.show_resume_picker(),
             Effect::SetSettings { changes, user } => self.set_settings(changes, user),
             Effect::RequestSettingsPicker(filter) => self.settings_picker(filter, None),
-            Effect::PickedSetting { key, value, user } => {
-                self.settings_picker(None, Some((key, value, user)));
+            Effect::PickedSetting {
+                key,
+                value,
+                user,
+                filter,
+            } => {
+                self.settings_picker(filter, Some((key, value, user)));
             }
             Effect::CompactPrepareShow => self.compact_prepare_show(),
             Effect::CompactPrepareStatus => {
@@ -1436,24 +1446,24 @@ mod tests {
     /// where to drop them.
     #[test]
     fn the_rule_picker_lists_grants_and_removes_session_ones() {
-        use crate::approval::grants::{GrantRow, GrantTarget};
+        use crate::approval::grants::{GrantOrigin, GrantRow, GrantTarget};
         use crate::ui::{ModalKey, PickAct, PickerLine};
         use ratatui::crossterm::event::{KeyCode, KeyEvent};
-        let grant = |id, origin: &str, removable| GrantRow {
+        let grant = |id, origin: GrantOrigin, removable| GrantRow {
             id,
             target: GrantTarget::Dir {
-                path: format!("/data/{origin}").into(),
+                path: format!("/data/{}", origin.word()).into(),
             },
-            origin: origin.into(),
+            origin,
             removable,
         };
         let mut picker = rule_picker(
             &[],
             &[
-                grant(0, "default", false),
-                grant(0, "flag", false),
-                grant(5, "always", false),
-                grant(9, "session", true),
+                grant(0, GrantOrigin::Default, false),
+                grant(0, GrantOrigin::Flag, false),
+                grant(5, GrantOrigin::Always, false),
+                grant(9, GrantOrigin::Session, true),
             ],
             &[],
         );
@@ -1612,7 +1622,7 @@ mod tests {
         assert_eq!(picker.key(&press(KeyCode::Char('u'))), ModalKey::Stay);
         assert!(matches!(
             &picker.line,
-            Some(PickerLine::EditSetting { user: true, text, .. }) if text == "2"
+            Some(PickerLine::Field(crate::ui::Field { what: crate::ui::FieldFor::Setting { user: true, .. }, text })) if text == "2"
         ));
         picker.key(&press(KeyCode::Backspace));
         picker.type_text("3");
@@ -1623,6 +1633,7 @@ mod tests {
                 key: "helpers.max_depth".into(),
                 value: Some("3".into()),
                 user: false,
+                filter: Some("helpers".into()),
             })
         );
         // `d` removes the user's (where the value in force comes from).
@@ -1636,6 +1647,7 @@ mod tests {
                 key: "helpers.max_depth".into(),
                 value: None,
                 user: true,
+                filter: Some("helpers".into()),
             })
         );
         // A project's value is not rkat-tui's to remove; the default has
@@ -1819,7 +1831,7 @@ mod tests {
         picker.key(&press(KeyCode::Down));
         picker.key(&press(KeyCode::Char('e')));
         assert!(
-            matches!(&picker.line, Some(PickerLine::Edit { id: 1, scope: GrantScope::Session, text }) if text.is_empty())
+            matches!(&picker.line, Some(PickerLine::Field(crate::ui::Field { what: crate::ui::FieldFor::Effect { id: 1, scope: GrantScope::Session }, text })) if text.is_empty())
         );
         assert!(
             picker.rows[1]

@@ -144,8 +144,9 @@ async fn set_writes_either_file_keeps_the_rest_and_applies_at_once() {
 
 /// The client's `/settings` picker lists every setting with its value and
 /// layer; its change (`u`'s field, then Enter) writes the user's file and
-/// the list comes again with the new value; a live `[ui]` setting reaches
-/// every attached client.
+/// the list comes again with the new value and the picker's filter (before,
+/// unfiltered, and the highlight landed on another setting); a live `[ui]`
+/// setting reaches every attached client.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_settings_picker_shows_and_changes_a_setting() {
     let ws = Workspace::new();
@@ -171,27 +172,38 @@ async fn the_settings_picker_shows_and_changes_a_setting() {
         key: "ui.checklist".into(),
         value: Some("shown".into()),
         user: true,
+        filter: Some("ui.".into()),
     });
-    rig.wait_for(|msg| {
+    // The confirmation, the daemon's push and the refreshed list come in
+    // no fixed order.
+    rig.saw(|msg| {
         matches!(msg, Msg::Notice { text, .. } if text.starts_with("ui.checklist = shown: written to your tui.toml"))
     })
     .await;
     // Every client follows the live `[ui]` setting.
-    rig.wait_for(|msg| matches!(msg, Msg::Setting { key, value } if key == "ui.checklist" && value.as_deref() == Some("shown")))
+    rig.saw(|msg| matches!(msg, Msg::Setting { key, value } if key == "ui.checklist" && value.as_deref() == Some("shown")))
         .await;
     let again = rig
-        .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, refresh: true } if picker.kind == PickerKind::Settings))
+        .saw(|msg| matches!(msg, Msg::ShowPicker { picker, refresh: true } if picker.kind == PickerKind::Settings))
         .await;
-    let Msg::ShowPicker { picker, .. } = again else {
+    let Msg::ShowPicker { picker: fresh, .. } = again else {
         unreachable!()
     };
-    assert!(
-        picker
-            .rows
-            .iter()
-            .any(|row| row.text == "ui.checklist  shown  (user)"),
-        "{:?}",
-        picker.rows
+    // The list comes again with the filter it was opened with, so the
+    // highlight (kept by its index) stays on the setting changed.
+    let rows: Vec<&str> = fresh.rows.iter().map(|row| row.text.as_str()).collect();
+    assert_eq!(
+        rows,
+        vec![
+            "ui.helpers  folded  (default)",
+            "ui.bell  true  (default)",
+            "ui.checklist  shown  (user)",
+        ]
+    );
+    let refreshed = picker.at(2).refreshed(fresh);
+    assert_eq!(
+        refreshed.selected().map(|row| row.text.as_str()),
+        Some("ui.checklist  shown  (user)")
     );
     let user_file = common::config_dir_for(&ws.root).join("tui.toml");
     assert_eq!(

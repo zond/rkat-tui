@@ -22,8 +22,7 @@
 //!
 //!   `RKAT_CORPUS_PROVIDER` (`anthropic`, `openai`, `gemini`; default
 //!   anthropic) and the provider's usual key variable choose the endpoint,
-//!   `RKAT_CORPUS_POLICY=legacy` judges with 0.0.4's policy text (the
-//!   "before" run), `RKAT_CORPUS_SETS`
+//!   `RKAT_CORPUS_SETS`
 //!   (`must_allow,must_block,scope,statements`; the statement triples go
 //!   only when named)
 //!   and `RKAT_CORPUS_CASES` (ids) narrow the run, `RKAT_CORPUS_MAX` caps
@@ -197,7 +196,6 @@ async fn live_corpus() {
     use meerkat::AgentFactory;
     use meerkat_core::{Config, Provider, SessionLlmIdentity};
     use rkat_tui::approval::classifier::LlmClassifier;
-    use rkat_tui::approval::prompts::Policy;
 
     let provider = match std::env::var("RKAT_CORPUS_PROVIDER").as_deref() {
         Ok("openai") => Provider::OpenAI,
@@ -209,10 +207,6 @@ async fn live_corpus() {
             .unwrap()
             .to_string()
     });
-    let policy = match std::env::var("RKAT_CORPUS_POLICY").as_deref() {
-        Ok("legacy") => Policy::Legacy004,
-        _ => Policy::Current,
-    };
     let selection = corpus::Selection {
         sets: env_list("RKAT_CORPUS_SETS")
             .map(|sets| sets.iter().filter_map(|s| Set::parse(s)).collect())
@@ -255,7 +249,7 @@ async fn live_corpus() {
             return;
         }
     };
-    let classifier = LlmClassifier::new(client, provider, model.clone()).with_policy(policy);
+    let classifier = LlmClassifier::new(client, provider, model.clone());
     let cases = corpus::select(&selection).unwrap();
     let deterministic = corpus::cases()
         .unwrap()
@@ -268,7 +262,7 @@ async fn live_corpus() {
     }
 
     println!(
-        "\ncorpus run: model {model}, policy {policy:?}, {} cases sent, {deterministic} decided deterministically\n",
+        "\ncorpus run: model {model}, {} cases sent, {deterministic} decided deterministically\n",
         report.outcomes.len()
     );
     println!("| set | case | held out | label | verdict | rule | stage | ms | ok |");

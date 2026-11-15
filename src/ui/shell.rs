@@ -16,7 +16,7 @@ impl App {
 
     /// The editor title in shell mode.
     pub fn shell_mode_hint(&self) -> &'static str {
-        if self.running || self.shell_busy() {
+        if self.turn_or_shell() {
             " shell mode: Enter runs it after the current work · output joins the context "
         } else {
             " shell mode: Enter runs it as you, no sandbox · output joins the context "
@@ -54,7 +54,7 @@ impl App {
             self.scroll.bottom();
             return;
         }
-        if self.running || self.shell_busy() {
+        if self.turn_or_shell() {
             self.pending
                 .add(&mut self.transcript, raw, PendingState::Shell);
         } else {

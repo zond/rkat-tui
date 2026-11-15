@@ -67,8 +67,10 @@ pub use modal::{
     PlanDialog, QuitChoice, QuitDialog, ResumePicker,
 };
 #[cfg(any(test, feature = "test-support"))]
+pub use picker::Does;
+#[cfg(any(test, feature = "test-support"))]
 pub use picker::PickerLine;
-pub use picker::{AgentEntry, ListPicker, PickAct, PickKey, PickRow, PickerKind};
+pub use picker::{AgentEntry, Field, FieldFor, ListPicker, PickAct, PickKey, PickRow, PickerKind};
 
 /// A picker's lines as text, `width` wide (tests of pickers built
 /// elsewhere).
@@ -698,6 +700,9 @@ pub enum Effect {
         value: Option<String>,
         /// The user's own `tui.toml`.
         user: bool,
+        /// The filter the picker was opened with (its list comes again
+        /// with it).
+        filter: Option<String>,
     },
     /// `/compact status`: the daemon's side of it, the prepare instruction
     /// (`rkat/compact_status`), as a notice.

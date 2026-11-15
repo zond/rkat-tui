@@ -222,7 +222,7 @@ impl App {
         }
         self.compacting = false;
         self.status.compacting_since = None;
-        if self.running || self.shell_busy() {
+        if self.agent_busy() {
             return;
         }
         if self.has_held_command() && self.send_next.is_none() {
@@ -299,7 +299,7 @@ impl App {
             }
             // The turn ended before the message reached the runtime: hold it
             // for the turn's end (the runner's `TurnFinished` follows).
-            Err(SteerFailure::NotRunning) if self.running || self.shell_busy() => {
+            Err(SteerFailure::NotRunning) if self.turn_or_shell() => {
                 self.pending
                     .set_state(&mut self.transcript, id, PendingState::Deferred);
             }
@@ -488,9 +488,7 @@ impl App {
             self.run_held(now, fx);
         } else {
             self.next_after_turn(unsent, interrupted, succeeded, now, fx);
-            if !self.running && !self.shell_busy() {
-                self.run_held(now, fx);
-            }
+            self.run_held(now, fx);
         }
         if self.shell.running.is_none() && !self.running {
             self.run_next_shell(now, fx);

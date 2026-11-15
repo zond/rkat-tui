@@ -1,8 +1,11 @@
-//! The review numbers `/auto stats` shows (the research's change 9): how
-//! often the classifier reviews, flags and blocks (by rule), how often
-//! auto mode pauses, how often the user overrides a block with `/approve`,
-//! how often the user allows what is put to them, and what the classifier
-//! costs in tokens and time, since the daemon started and per session.
+//! The review numbers `/auto stats` shows: how often the classifier
+//! reviews, flags and blocks (by rule), how often auto mode pauses, how
+//! often the user overrides a block with `/approve`, how often the user
+//! allows what is put to them, and what the classifier costs in tokens and
+//! time, since the daemon started and per session. They are there to tell
+//! whether the policy fits this user's work: a rule that blocks often and
+//! is overridden as often asks for a statement or a rule, a high flag rate
+//! for a cheaper first stage.
 
 use std::collections::BTreeMap;
 

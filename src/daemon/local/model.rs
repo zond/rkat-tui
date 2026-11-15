@@ -223,19 +223,32 @@ impl Local {
         ModeStatus::of(&self.core.engine)
     }
 
-    /// `rkat/set_mode` (Shift+Tab, `/mode`): the mode switched live
-    /// ([`Self::switch_mode`]) and recorded as `[auto] mode` in the
-    /// workspace's `tui.toml`, or the user's own (`user`).
+    /// `rkat/set_mode` (Shift+Tab, `/mode`): `[auto] mode` written to the
+    /// workspace's `tui.toml`, or the user's own (`user`), and the mode
+    /// switched live ([`Self::switch_mode`], the one switch `/set
+    /// auto.mode` takes too) whatever the write did: a failed write, or a
+    /// higher layer that wins at the next start, is the warning.
     pub(super) async fn set_mode(&self, mode: PermissionMode, user: bool) -> ModeSet {
-        let mut warnings = Vec::new();
-        let level = if user {
-            crate::config::registry::Level::User
-        } else {
-            crate::config::registry::Level::Workspace
-        };
+        use crate::config::registry::{Level, MODE};
+        let level = if user { Level::User } else { Level::Workspace };
         let value =
             toml::Value::try_from(mode).unwrap_or_else(|_| toml::Value::String(mode.to_string()));
-        warnings.extend(self.record_setting("auto.mode", value, level).await);
+        let settings = Arc::clone(&self.core.settings);
+        let written =
+            tokio::task::spawn_blocking(move || settings.write_value(&MODE, Some(value), level))
+                .await
+                .map_err(|err| err.to_string())
+                .and_then(|written| written);
+        let mut warnings = Vec::new();
+        match written {
+            Ok(written) => {
+                self.audit_setting(&written);
+                if written.after.source > written.level {
+                    warnings.push(written.confirmation());
+                }
+            }
+            Err(why) => warnings.push(format!("it applies to this run but was not saved: {why}")),
+        }
         warnings.extend(self.switch_mode(mode).await);
         ModeSet {
             status: ModeStatus::of(&self.core.engine),

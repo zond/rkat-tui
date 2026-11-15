@@ -559,8 +559,9 @@ pub trait LocalMethods: Send + Sync {
     /// The refusal, answered to the client; the request is not forwarded.
     fn observe(&self, caller: &Caller, request: Value) -> Result<Observed, Refusal>;
     /// The proxy read the local call `method` and is about to run it on
-    /// its own task (a mode change is counted before it runs).
-    fn routing_local(&self, _method: &str) {}
+    /// its own task with `params` (a call that may switch the mode is
+    /// counted before it runs).
+    fn routing_local(&self, _method: &str, _params: &Value) {}
     /// `caller` attached: the daemon's consent surface offers it decisions
     /// and the other pushes through `out` until the guard is dropped.
     fn connect(&self, caller: &Caller, out: ClientOut) -> ClientGuard;
@@ -583,8 +584,8 @@ impl LocalMethods for Local {
         Local::observe(self, caller, request)
     }
 
-    fn routing_local(&self, method: &str) {
-        Local::routing_local(self, method);
+    fn routing_local(&self, method: &str, params: &Value) {
+        Local::routing_local(self, method, params);
     }
 
     fn connect(&self, caller: &Caller, out: ClientOut) -> ClientGuard {
@@ -1138,11 +1139,12 @@ pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L, caller: &Caller) -
             params: request.get("params").cloned().unwrap_or(Value::Null),
         },
         method if method.starts_with(protocol::PREFIX) => {
-            local.routing_local(method);
+            let params = request.get("params").cloned().unwrap_or(Value::Null);
+            local.routing_local(method, &params);
             Routed::Local {
                 id: id(),
                 method: method.to_string(),
-                params: request.get("params").cloned().unwrap_or(Value::Null),
+                params,
             }
         }
         method if !protocol::engine::serves(method) => Routed::Refused {

@@ -58,6 +58,10 @@ pub enum RulesError {
         #[source]
         source: toml::de::Error,
     },
+    /// The scalar settings in force, merged from every layer, do not read
+    /// as their types.
+    #[error("the settings in force do not read: {0}")]
+    Scalars(#[source] toml::de::Error),
     /// Serializing a rules file failed.
     #[error("failed to serialize rules: {0}")]
     Serialize(#[from] toml::ser::Error),

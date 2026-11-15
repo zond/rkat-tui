@@ -1454,3 +1454,45 @@ async fn file_tool_failures_say_what_to_do_next() {
         "{reason}"
     );
 }
+
+/// The transcript's one-line outcome of each file tool, read from the real
+/// tool's answer (the tool exports the words the line reads): a reworded
+/// answer fails here rather than losing its numbers silently.
+#[tokio::test]
+async fn each_tool_s_real_answer_renders_its_line() {
+    use rkat_tui::ui::transcript::tool_line::outcome;
+    let fx = Fixture::new();
+    let said = |name: &str, args: &Value, result: &str| outcome(name, args, result).text;
+    let args = json!({"path": "src/new.rs", "content": "a\nb\n"});
+    let created = fx.ok("write_file", args.clone()).await;
+    assert_eq!(
+        said("write_file", &args, &created).as_deref(),
+        Some("new, 2 lines")
+    );
+    fx.write("three.txt", "1\n2\n3\n");
+    let args = json!({"path": "three.txt"});
+    let read = fx.ok("read_file", args.clone()).await;
+    assert_eq!(said("read_file", &args, &read).as_deref(), Some("3 lines"));
+    let args = json!({"path": "three.txt", "limit": 2});
+    let read = fx.ok("read_file", args.clone()).await;
+    assert_eq!(
+        said("read_file", &args, &read).as_deref(),
+        Some("lines 1–2")
+    );
+    fx.write("empty.txt", "");
+    let args = json!({"path": "empty.txt"});
+    let read = fx.ok("read_file", args.clone()).await;
+    assert_eq!(said("read_file", &args, &read).as_deref(), Some("empty"));
+    let args = json!({"pattern": "nowhere-to-be-found"});
+    let none = fx.ok("grep", args.clone()).await;
+    assert_eq!(said("grep", &args, &none).as_deref(), Some("no matches"));
+    let args = json!({"pattern": "^2$"});
+    let found = fx.ok("grep", args.clone()).await;
+    assert_eq!(said("grep", &args, &found).as_deref(), Some("1 file"));
+    let args = json!({"pattern": "**/*.txt"});
+    let globbed = fx.ok("glob", args.clone()).await;
+    assert_eq!(said("glob", &args, &globbed).as_deref(), Some("2 files"));
+    let args = json!({"pattern": "**/*.nothing"});
+    let none = fx.ok("glob", args.clone()).await;
+    assert_eq!(said("glob", &args, &none).as_deref(), Some("no files"));
+}

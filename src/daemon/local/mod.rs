@@ -95,12 +95,13 @@ pub struct Local {
     /// cannot interleave their check and their note.
     plan_noted: tokio::sync::Mutex<std::collections::HashMap<String, bool>>,
     inputs: AtomicU64,
-    /// The `rkat/set_mode` calls routed so far ([`Local::routing_local`]),
-    /// counted when the proxy reads them, before their task runs.
+    /// The calls that may switch the mode ([`may_switch_mode`]) routed so
+    /// far ([`Local::routing_local`]), counted when the proxy reads them,
+    /// before their task runs.
     modes_routed: AtomicU64,
-    /// The `rkat/set_mode` calls that ended (their note in the agents'
-    /// context): a prompt to an idle agent waits until every mode change
-    /// routed before it ended ([`Local::observe`]).
+    /// Those calls that ended (their note in the agents' context): a
+    /// prompt to an idle agent waits until every one routed before it
+    /// ended ([`Local::observe`]).
     modes_done: tokio::sync::watch::Sender<u64>,
     /// Tests: how many times each engine method was forwarded.
     #[cfg(any(test, feature = "test-support"))]
@@ -160,6 +161,21 @@ impl std::fmt::Debug for Local {
     }
 }
 
+/// Whether the local call `method` with `params` may switch the
+/// permission mode: `rkat/set_mode`, or `rkat/set_setting` of a setting
+/// whose hook is the mode's (`/set auto.mode …`). The proxy counts such a
+/// call when it routes it and the call counts itself ended, by this one
+/// test, so both always agree.
+fn may_switch_mode(method: &str, params: &Value) -> bool {
+    method == <method::SetMode as Method>::NAME
+        || (method == <method::SetSetting as Method>::NAME
+            && params
+                .get("key")
+                .and_then(Value::as_str)
+                .and_then(|key| crate::config::registry::Setting::find(key.trim()))
+                .is_some_and(|setting| setting.hook == crate::config::registry::Hook::Mode))
+}
+
 impl Local {
     /// The local surface over `agents` (and the core they share) and
     /// `parts`.
@@ -206,10 +222,11 @@ impl Local {
     }
 
     /// The proxy read `caller`'s local call `method` and is about to run
-    /// it on its own task: a mode change is counted now, so a prompt the
-    /// same client sends right after it waits for it ([`Self::observe`]).
-    pub fn routing_local(&self, method: &str) {
-        if method == <method::SetMode as Method>::NAME {
+    /// it on its own task: a call that may switch the mode is counted now,
+    /// so a prompt the same client sends right after it waits for it
+    /// ([`Self::observe`]).
+    pub fn routing_local(&self, method: &str, params: &Value) {
+        if may_switch_mode(method, params) {
             self.modes_routed.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -340,9 +357,9 @@ impl Local {
         method: &str,
         params: Value,
     ) -> Result<Value, Refusal> {
-        /// Counts a mode change as ended however its call ends (answered,
-        /// refused, or dropped unfinished), so no prompt waits for one
-        /// that never will.
+        /// Counts a call that may switch the mode as ended however it ends
+        /// (answered, refused, or dropped unfinished), so no prompt waits
+        /// for one that never will.
         struct Ended<'a>(Option<&'a tokio::sync::watch::Sender<u64>>);
         impl Drop for Ended<'_> {
             fn drop(&mut self) {
@@ -351,8 +368,7 @@ impl Local {
                 }
             }
         }
-        let _ended =
-            Ended((method == <method::SetMode as Method>::NAME).then_some(&self.modes_done));
+        let _ended = Ended(may_switch_mode(method, &params).then_some(&self.modes_done));
         self.dispatch(caller, method, params).await
     }
 

@@ -190,20 +190,13 @@ impl Local {
     /// threshold for the caller's agent, and what is beneath the
     /// workspace's instruction.
     pub(super) fn compact_status(&self, caller: &Caller) -> RuleOutcome {
-        use crate::config::registry::{Level, Setting};
-        use crate::config::settings::{Sourced, prepare_instruction};
-        let beneath = Setting::find("auto.compact_prepare").map_or_else(
-            || Sourced::new(None, Level::Default),
-            |setting| {
-                let resolved = self
-                    .core
-                    .settings
-                    .resolve_without(setting, Level::Workspace);
-                Sourced::new(
-                    prepare_instruction(resolved.value.as_ref().and_then(toml::Value::as_str)),
-                    resolved.source,
-                )
-            },
+        use crate::config::registry::{Level, PREPARE};
+        use crate::config::settings::Sourced;
+        let beneath = Sourced::instruction(
+            &self
+                .core
+                .settings
+                .resolve_without(&PREPARE, Level::Workspace),
         );
         RuleOutcome {
             ok: true,

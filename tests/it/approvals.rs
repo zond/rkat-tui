@@ -495,10 +495,11 @@ async fn the_rule_picker_removes_a_rule_from_the_daemon() {
         .iter()
         .find(|key| key.code == KeyCode::Char('d'))
         .unwrap();
-    assert!(remove.confirm.as_deref().unwrap().contains("for good"));
-    let Ok(PickAct::RemoveRule(n)) = remove.act.clone() else {
+    let rkat_tui::ui::Does::Ask(PickAct::RemoveRule(n), question) = &remove.does else {
         panic!("{remove:?}")
     };
+    assert!(question.contains("for good"));
+    let n = *n;
     client.send(Effect::PickedRuleRemoval(n));
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "removed deny write_file *.lock"))
@@ -610,7 +611,7 @@ async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
     let rows = daemon.engine().grant_rows(Some(&daemon.session));
     let grant = rows
         .iter()
-        .find(|row| row.origin == "session")
+        .find(|row| row.origin == rkat_tui::approval::grants::GrantOrigin::Session)
         .unwrap_or_else(|| panic!("{rows:?}"));
     assert_eq!(
         grant.target,
@@ -1863,6 +1864,22 @@ async fn the_classifier_model_change_is_refused_for_an_unknown_endpoint() {
 /// Before the fix the prompt went at once and its request had no note.
 #[tokio::test]
 async fn a_prompt_after_a_mode_change_waits_for_its_note() {
+    prompt_waits_for_the_note_of("rkat/set_mode", json!({"mode": "plan"})).await;
+}
+
+/// The same for a mode change made as a setting (`/set auto.mode plan`):
+/// it takes the one switch `rkat/set_mode` takes, and the prompt after it
+/// waits for it too. Before, only `rkat/set_mode` was waited for.
+#[tokio::test]
+async fn a_prompt_after_a_mode_set_as_a_setting_waits_for_its_note() {
+    prompt_waits_for_the_note_of(
+        "rkat/set_setting",
+        json!({"key": "auto.mode", "value": "plan"}),
+    )
+    .await;
+}
+
+async fn prompt_waits_for_the_note_of(method: &'static str, params: serde_json::Value) {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("planned")]);
     let setup = Setup::default();
@@ -1872,11 +1889,7 @@ async fn a_prompt_after_a_mode_change_waits_for_its_note() {
     let hold = local.hold_mode_notes().await;
     let set = {
         let connection = Arc::clone(&connection);
-        tokio::spawn(async move {
-            connection
-                .call("rkat/set_mode", json!({"mode": "plan"}))
-                .await
-        })
+        tokio::spawn(async move { connection.call(method, params).await })
     };
     // The change is under way (the mode is set before its note).
     within(async {
@@ -1896,7 +1909,8 @@ async fn a_prompt_after_a_mode_change_waits_for_its_note() {
         drop(hold);
     };
     tokio::join!(daemon.prompt(&connection, "plan it"), release);
-    set.await.unwrap().unwrap();
+    let answer = set.await.unwrap().unwrap();
+    assert_ne!(answer["ok"], false, "{answer}");
     let system = llm.recorded()[0].system();
     assert!(system.contains("# Plan mode is on"), "{system}");
 }

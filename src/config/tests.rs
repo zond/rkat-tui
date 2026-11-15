@@ -145,7 +145,7 @@ fn layered_loading() {
     assert_eq!(rules.allow().len(), 1);
     assert_eq!(rules.allow().next().unwrap().1.origin, RuleOrigin::Realm);
     assert_eq!(rules.deny().len(), 2);
-    assert!(!settings.trust_project_builds);
+    assert_ne!(settings.trust_project_builds, Some(true));
     assert_eq!(settings.classifier_model.as_deref(), Some("gpt-5.2"));
     assert_eq!(notices.len(), 2);
     assert!(
@@ -336,7 +336,7 @@ fn compaction_settings_default_layer_and_clamp() {
 
 #[test]
 fn trust_defaults_off_and_project_can_only_lower_it() {
-    assert!(!AutoSettings::default().trust_project_builds);
+    assert_eq!(AutoSettings::default().trust_project_builds, None);
     let tmp = tempfile::tempdir().unwrap();
     let realm = tmp.path().join("realm");
     let project = tmp.path().join("project");
@@ -348,7 +348,7 @@ fn trust_defaults_off_and_project_can_only_lower_it() {
     )
     .unwrap();
     let (_, settings, notices) = load_layered(&realm, None, &project).unwrap();
-    assert!(!settings.trust_project_builds);
+    assert_ne!(settings.trust_project_builds, Some(true));
     assert!(matches!(notices[..], [Notice::ProjectTrustIgnored { .. }]));
 
     std::fs::write(
@@ -362,11 +362,16 @@ fn trust_defaults_off_and_project_can_only_lower_it() {
     )
     .unwrap();
     let (_, settings, _) = load_layered(&realm, None, &project).unwrap();
-    assert!(!settings.trust_project_builds, "project lowers trust");
+    assert_eq!(
+        settings.trust_project_builds,
+        Some(false),
+        "project lowers trust"
+    );
     std::fs::remove_file(project.join(RULES_FILE_NAME)).unwrap();
     let (_, settings, _) = load_layered(&realm, None, &project).unwrap();
-    assert!(
+    assert_eq!(
         settings.trust_project_builds,
+        Some(true),
         "the user's realm may raise it"
     );
 }
@@ -729,7 +734,11 @@ fn cli_layer_beats_realm_but_project_deny_and_lowering_still_apply() {
         s.compact_warn_percent, 50,
         "project fills what cli left unset"
     );
-    assert!(!s.trust_project_builds, "project may lower trust");
+    assert_eq!(
+        s.trust_project_builds,
+        Some(false),
+        "project may lower trust"
+    );
     let allow: Vec<(RuleOrigin, &str)> = layered
         .rules
         .allow()
@@ -1025,7 +1034,7 @@ fn allow_statements_come_from_the_user_s_layers_only() {
 /// without the key leaves the user's in force.
 #[test]
 fn the_prepare_setting_knows_its_sources_and_the_lower_layers() {
-    use super::settings::{DEFAULT_PREPARE_AT, PrepareAt, PrepareSetting, PrepareSource, Sourced};
+    use super::settings::{DEFAULT_PREPARE_AT, PrepareAt, PrepareSetting, Sourced};
     let tmp = tempfile::tempdir().unwrap();
     let (home, realm, project) = (
         tmp.path().join("home"),
@@ -1039,15 +1048,16 @@ fn the_prepare_setting_knows_its_sources_and_the_lower_layers() {
     );
     write(&project, "");
     write(&realm, "");
-    let setting = load_layered_with(&realm, Some(&global), &project, None)
-        .unwrap()
-        .settings
-        .prepare_setting();
-    let user = Sourced::new(Some("update PLAN.md".to_string()), PrepareSource::User);
+    let setting = PrepareSetting::of(
+        &load_layered_with(&realm, Some(&global), &project, None)
+            .unwrap()
+            .layers,
+    );
+    let user = Sourced::new(Some("update PLAN.md".to_string()), registry::Level::User);
     assert_eq!(setting.instruction, user);
     assert_eq!(
         setting.at,
-        Sourced::new(PrepareAt::Percent(60), PrepareSource::User)
+        Sourced::new(PrepareAt::Percent(60), registry::Level::User)
     );
     // Off for the workspace, the threshold the workspace's.
     let file = SettingsFile::new(registry::Level::Workspace, realm.join(RULES_FILE_NAME));
@@ -1064,16 +1074,15 @@ fn the_prepare_setting_knows_its_sources_and_the_lower_layers() {
     )
     .unwrap();
     let layered = load_layered_with(&realm, Some(&global), &project, None).unwrap();
-    let setting = layered.settings.prepare_setting();
+    let setting = PrepareSetting::of(&layered.layers);
     assert_eq!(
         setting.instruction,
-        Sourced::new(None, PrepareSource::Workspace)
+        Sourced::new(None, registry::Level::Workspace)
     );
     assert_eq!(
         setting.at,
-        Sourced::new(PrepareAt::Tokens(50_000), PrepareSource::Workspace)
+        Sourced::new(PrepareAt::Tokens(50_000), registry::Level::Workspace)
     );
-    assert_eq!(PrepareSetting::of(&layered.layers), setting);
     // Without the workspace's, the user's.
     let beneath = registry::Setting::find("auto.compact_prepare")
         .unwrap()
@@ -1083,40 +1092,46 @@ fn the_prepare_setting_knows_its_sources_and_the_lower_layers() {
             beneath.value.as_ref().and_then(toml::Value::as_str),
             beneath.source
         ),
-        (Some("update PLAN.md"), PrepareSource::User)
+        (Some("update PLAN.md"), registry::Level::User)
     );
-    assert_eq!(user.source, PrepareSource::User);
+    assert_eq!(user.source, registry::Level::User);
     // The command line and the project file are over the realm's.
     let overlay = cli("[auto]\ncompact_prepare_at = \"80%\"\n");
-    let setting = load_layered_with(&realm, Some(&global), &project, Some(&overlay))
-        .unwrap()
-        .settings
-        .prepare_setting();
+    let setting = PrepareSetting::of(
+        &load_layered_with(&realm, Some(&global), &project, Some(&overlay))
+            .unwrap()
+            .layers,
+    );
     assert_eq!(
         setting.at,
-        Sourced::new(PrepareAt::Percent(80), PrepareSource::CommandLine)
+        Sourced::new(PrepareAt::Percent(80), registry::Level::CommandLine)
     );
     write(&project, "[auto]\ncompact_prepare = \"write NOTES.md\"\n");
-    let setting = load_layered_with(&realm, Some(&global), &project, None)
-        .unwrap()
-        .settings
-        .prepare_setting();
-    assert_eq!(setting.instruction.source, PrepareSource::Project);
+    let setting = PrepareSetting::of(
+        &load_layered_with(&realm, Some(&global), &project, None)
+            .unwrap()
+            .layers,
+    );
+    assert_eq!(setting.instruction.source, registry::Level::Project);
     // No layer: the default, and none.
-    let none = load_layered_with(&tmp.path().join("r2"), None, &tmp.path().join("p2"), None)
-        .unwrap()
-        .settings
-        .prepare_setting();
-    assert_eq!(none.instruction, Sourced::new(None, PrepareSource::Default));
+    let none = PrepareSetting::of(
+        &load_layered_with(&tmp.path().join("r2"), None, &tmp.path().join("p2"), None)
+            .unwrap()
+            .layers,
+    );
+    assert_eq!(
+        none.instruction,
+        Sourced::new(None, registry::Level::Default)
+    );
     assert_eq!(
         none.at,
-        Sourced::new(DEFAULT_PREPARE_AT, PrepareSource::Default)
+        Sourced::new(DEFAULT_PREPARE_AT, registry::Level::Default)
     );
     // `300k` and `1.2m` read in a file too.
     write(&project, "[auto]\ncompact_prepare_at = \"1.2m\"\n");
     let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(
-        layered.settings.compact_prepare_at,
+        PrepareSetting::of(&layered.layers).at.value,
         PrepareAt::Tokens(1_200_000)
     );
 }
@@ -1128,39 +1143,47 @@ fn the_prepare_setting_knows_its_sources_and_the_lower_layers() {
 /// trusted writer sets and clears the instruction, keeping the rest.
 #[test]
 fn the_prepare_instruction_layers_like_the_compaction_keys() {
-    use super::settings::{DEFAULT_PREPARE_AT, PrepareAt};
+    use super::settings::{DEFAULT_PREPARE_AT, PrepareAt, PrepareSetting};
     let tmp = tempfile::tempdir().unwrap();
     let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
     write(&realm, "");
     write(&project, "");
     let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.settings.prepare_setting().instruction.value, None);
-    assert_eq!(layered.settings.compact_prepare_at, DEFAULT_PREPARE_AT);
+    assert_eq!(PrepareSetting::of(&layered.layers).instruction.value, None);
+    assert_eq!(
+        PrepareSetting::of(&layered.layers).at.value,
+        DEFAULT_PREPARE_AT
+    );
     assert_eq!(DEFAULT_PREPARE_AT, PrepareAt::Percent(70));
 
     write(
         &realm,
         "[auto]\ncompact_prepare = \"update PLAN.md\"\ncompact_prepare_at = 300000\n",
     );
-    let prepare = load_layered_with(&realm, None, &project, None)
-        .unwrap()
-        .settings
-        .prepare_setting();
+    let prepare = PrepareSetting::of(
+        &load_layered_with(&realm, None, &project, None)
+            .unwrap()
+            .layers,
+    );
     assert_eq!(prepare.instruction.value.as_deref(), Some("update PLAN.md"));
     assert_eq!(prepare.at.value, PrepareAt::Tokens(300_000));
     // The project file may set them...
     write(&project, "[auto]\ncompact_prepare_at = \"60%\"\n");
     let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.settings.compact_prepare_at, PrepareAt::Percent(60));
+    assert_eq!(
+        PrepareSetting::of(&layered.layers).at.value,
+        PrepareAt::Percent(60)
+    );
     // ...unless the command line did (`--set auto.compact_prepare_at=80%`
     // reaches it as a string).
     let overlay = cli("[auto]\ncompact_prepare_at = \"80%\"\ncompact_prepare = \"x\"\n");
     let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
-    assert_eq!(layered.settings.compact_prepare_at, PrepareAt::Percent(80));
     assert_eq!(
-        layered
-            .settings
-            .prepare_setting()
+        PrepareSetting::of(&layered.layers).at.value,
+        PrepareAt::Percent(80)
+    );
+    assert_eq!(
+        PrepareSetting::of(&layered.layers)
             .instruction
             .value
             .as_deref(),
@@ -1169,7 +1192,7 @@ fn the_prepare_instruction_layers_like_the_compaction_keys() {
     // An empty instruction is none.
     let overlay = cli("[auto]\ncompact_prepare = \"  \"\n");
     let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
-    assert_eq!(layered.settings.prepare_setting().instruction.value, None);
+    assert_eq!(PrepareSetting::of(&layered.layers).instruction.value, None);
     // Bad thresholds are parse errors.
     for bad in ["0", "\"0%\"", "\"101%\"", "\"soon\""] {
         write(&project, &format!("[auto]\ncompact_prepare_at = {bad}\n"));

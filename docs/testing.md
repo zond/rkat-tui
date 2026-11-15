@@ -99,8 +99,7 @@ The permission corpus's live run costs one classifier review per case
 tools). Run it before a policy or classifier-model change, and when a
 policy wording changes rerun only the cases that came out wrong
 (`RKAT_CORPUS_CASES`); the module docs of `tests/it/corpus.rs` list the
-variables (model, provider, `RKAT_CORPUS_POLICY=legacy` for 0.0.4's
-text, sets, a case cap):
+variables (model, provider, sets, a case cap):
 
 ```bash
 ANTHROPIC_API_KEY=… RKAT_CORPUS_MODEL=claude-haiku-5-5 cargo nextest run --all-features \
@@ -190,6 +189,15 @@ output now says why; report it rather than retrying silently:
   by `the_write_mark_comes_before_the_file_changes`) and a change is judged
   by when it was seen (`an_own_write_flushed_late_is_still_the_agent_s`).
   No bound was raised.
+- `a_timed_out_delegate_leaves_no_helper_seated` (`tests/it/helpers.rs`):
+  its script assumed the helper's model call came second; when the helper
+  was not seated within the 3 s timeout, the agent's next call took the
+  helper's hang and the turn never ended. The script is now keyed on the
+  messages, and the test no longer waits for the helper to show.
+- `the_settings_picker_shows_and_changes_a_setting` (`tests/it/settings.rs`):
+  the call's confirmation and the daemon's `[ui]` push arrive in either
+  order, and `wait_for` (new messages only) consumed the one awaited next.
+  Waits whose order is not fixed use `saw` (seen before or arriving).
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a

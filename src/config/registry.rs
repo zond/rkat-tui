@@ -5,10 +5,11 @@
 //! project's `.rkat/tui.toml` may do with it ([`ProjectRule`]), when a
 //! change takes effect ([`Applies`]), a one-line description, and the
 //! dedicated command-line flags and friendly commands that are shorthands
-//! for it. [`SETTINGS`] is the table; everything that handles a setting by
-//! its key reads it: the layering of the typed view
-//! ([`super::load_layered_with`] resolves each setting with
-//! [`Setting::resolve`] and stores the value), `--set` and the flags
+//! for it, and what the daemon does when it changes ([`Hook`]).
+//! [`SETTINGS`] is the table; everything that handles a setting by its key
+//! reads it: the layering of the typed view ([`super::load_layered_with`]
+//! resolves every setting with [`Setting::resolve`] into one table,
+//! [`merged`], and the typed settings deserialize from it), `--set` and the flags
 //! ([`crate::overlay`]), and the manual's settings table (generated from
 //! it, a test keeps `docs/manual.md` in step).
 //!
@@ -27,8 +28,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use toml::{Table, Value};
 
-use super::layers::Layered;
-use super::settings::{DEFAULT_AUTO_PERCENT, DEFAULT_WARN_PERCENT, PrepareAt};
+use super::settings::{DEFAULT_AUTO_PERCENT, DEFAULT_PREPARE_AT, DEFAULT_WARN_PERCENT, PrepareAt};
 use crate::cli::Args;
 
 /// Where a setting's value comes from: the layers in precedence order
@@ -60,15 +60,25 @@ impl Level {
         Self::Project,
     ];
 
-    /// Where the value comes from, as the notices end with it.
+    /// Where a value in force comes from, as the notices say it: `the
+    /// default`, `from your tui.toml`.
     #[must_use]
-    pub fn describe(self) -> &'static str {
+    pub fn source_words(self) -> String {
         match self {
-            Self::Default => "default",
-            Self::User => "from your tui.toml",
-            Self::Workspace => "from this workspace (/compact prepare)",
-            Self::CommandLine => "from the command line (applies until the daemon restarts)",
-            Self::Project => "from the project's .rkat/tui.toml",
+            Self::Default => "the default".to_string(),
+            level => format!("from {}", level.name()),
+        }
+    }
+
+    /// The file of the level, in words (`this workspace's tui.toml`).
+    #[must_use]
+    pub fn file_words(self) -> &'static str {
+        match self {
+            Self::Default => "no file",
+            Self::User => "your tui.toml",
+            Self::Workspace => "this workspace's tui.toml",
+            Self::CommandLine => "the command line",
+            Self::Project => "the project's .rkat/tui.toml",
         }
     }
 
@@ -214,8 +224,10 @@ pub enum Fallback {
     Bool(bool),
     /// This number.
     Int(u64),
-    /// This word or text (a [`Kind::Threshold`]'s `"70%"`).
+    /// This word or text.
     Text(&'static str),
+    /// This threshold (a [`Kind::Threshold`]'s).
+    Threshold(PrepareAt),
 }
 
 impl Fallback {
@@ -227,6 +239,7 @@ impl Fallback {
             Self::Bool(value) => Some(Value::Boolean(value)),
             Self::Int(value) => Some(Value::Integer(i64::try_from(value).unwrap_or(i64::MAX))),
             Self::Text(text) => Some(Value::String(text.to_string())),
+            Self::Threshold(at) => Some(threshold_value(at)),
         }
     }
 
@@ -300,8 +313,43 @@ pub struct Setting {
     pub command: Option<&'static str>,
     /// An older spelling it also reads (the same file's own key wins).
     pub alias: Option<Alias>,
-    /// Store the value in force (`None`: unset) in the typed view.
-    pub store: fn(&mut Layered, &Resolved),
+    /// What the daemon does when its value in force changes.
+    pub hook: Hook,
+}
+
+/// What the daemon does when a setting's value in force changes while it
+/// runs (`/set`, a shorthand, a file change); `daemon::local`'s
+/// `apply_setting` matches it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hook {
+    /// Nothing: the setting is read where it applies (at the next start,
+    /// or the next conversation).
+    None,
+    /// The permission mode switches.
+    Mode,
+    /// The classifier reviews with the model from then on.
+    ClassifierModel,
+    /// The gate takes the new `trust_project_builds`.
+    TrustBuilds,
+    /// The prepare instruction and its threshold are taken again.
+    Prepare,
+    /// Every client follows a `[ui]` setting.
+    Ui,
+}
+
+/// Every scalar setting in force over `layers` as one table, each value at
+/// its dotted key (a default included; an unset setting without one
+/// absent): what the typed view deserializes from
+/// ([`super::load_layered_with`]).
+#[must_use]
+pub fn merged(layers: &Layers) -> Table {
+    let mut table = Table::new();
+    for setting in SETTINGS {
+        if let Some(value) = setting.resolve(layers).value {
+            put(&mut table, setting.key, Some(value));
+        }
+    }
+    table
 }
 
 /// A setting's value in force and where it comes from.
@@ -624,39 +672,6 @@ fn threshold_value(at: PrepareAt) -> Value {
     }
 }
 
-/// `value` read as `T` (a choice's enum, a threshold).
-fn typed<T: serde::de::DeserializeOwned>(value: &Value) -> Option<T> {
-    value.clone().try_into().ok()
-}
-
-fn as_bool(resolved: &Resolved) -> Option<bool> {
-    resolved.value.as_ref().and_then(Value::as_bool)
-}
-
-fn as_u64(resolved: &Resolved) -> Option<u64> {
-    resolved
-        .value
-        .as_ref()
-        .and_then(Value::as_integer)
-        .and_then(|n| u64::try_from(n).ok())
-}
-
-fn as_u8(resolved: &Resolved) -> Option<u8> {
-    as_u64(resolved).and_then(|n| u8::try_from(n).ok())
-}
-
-fn as_string(resolved: &Resolved) -> Option<String> {
-    resolved
-        .value
-        .as_ref()
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-fn as_typed<T: serde::de::DeserializeOwned>(resolved: &Resolved) -> Option<T> {
-    resolved.value.as_ref().and_then(typed)
-}
-
 /// `auto.enabled`'s value as a mode.
 fn enabled_as_mode(value: &Value) -> Option<Value> {
     value
@@ -664,104 +679,36 @@ fn enabled_as_mode(value: &Value) -> Option<Value> {
         .map(|on| Value::String(if on { "auto" } else { "default" }.to_string()))
 }
 
-fn store_mode(layered: &mut Layered, resolved: &Resolved) {
-    if let Some(mode) = as_typed(resolved) {
-        layered.mode = mode;
-    }
-}
-
-fn store_classifier_model(layered: &mut Layered, resolved: &Resolved) {
-    layered.settings.classifier_model = as_string(resolved);
-}
-
-fn store_trust(layered: &mut Layered, resolved: &Resolved) {
-    layered.settings.trust_project_builds = as_bool(resolved).unwrap_or(false);
-    layered.settings.trust_project_builds_given = resolved.value.is_some();
-}
-
-fn store_classifier_tools(layered: &mut Layered, resolved: &Resolved) {
-    layered.settings.classifier_tools = as_bool(resolved).unwrap_or(true);
-}
-
-fn store_classifier_probe(layered: &mut Layered, resolved: &Resolved) {
-    layered.settings.classifier_probe = as_bool(resolved).unwrap_or(true);
-}
-
-fn store_compact(layered: &mut Layered, resolved: &Resolved) {
-    if let Some(mode) = as_typed(resolved) {
-        layered.settings.compact = mode;
-    }
-}
-
-fn store_warn_percent(layered: &mut Layered, resolved: &Resolved) {
-    layered.settings.compact_warn_percent = as_u8(resolved).unwrap_or(DEFAULT_WARN_PERCENT);
-}
-
-fn store_auto_percent(layered: &mut Layered, resolved: &Resolved) {
-    layered.settings.compact_auto_percent = as_u8(resolved).unwrap_or(DEFAULT_AUTO_PERCENT);
-}
-
-fn store_prepare(layered: &mut Layered, resolved: &Resolved) {
-    let settings = &mut layered.settings;
-    settings.compact_prepare = as_string(resolved);
-    settings.compact_prepare_source = resolved.source;
-}
-
-fn store_prepare_at(layered: &mut Layered, resolved: &Resolved) {
-    let settings = &mut layered.settings;
-    settings.compact_prepare_at = as_typed(resolved).unwrap_or(super::settings::DEFAULT_PREPARE_AT);
-    settings.compact_prepare_at_source = resolved.source;
-}
-
-fn store_helper_depth(layered: &mut Layered, resolved: &Resolved) {
-    layered.helpers.max_depth = as_u8(resolved).unwrap_or(super::DEFAULT_HELPER_MAX_DEPTH);
-}
-
-fn store_user_timeout(layered: &mut Layered, resolved: &Resolved) {
-    layered.shell.user_timeout_secs = as_u64(resolved)
-        .unwrap_or(crate::user_shell::DEFAULT_USER_TIMEOUT_SECS)
-        .max(1);
-}
-
-fn store_search_budget(layered: &mut Layered, resolved: &Resolved) {
-    let secs = as_u64(resolved)
-        .unwrap_or(crate::tools::DEFAULT_SEARCH_BUDGET_SECS)
-        .max(1);
-    layered.search.budget = std::time::Duration::from_secs(secs);
-}
-
-fn store_search_entries(layered: &mut Layered, resolved: &Resolved) {
-    layered.search.max_entries = as_u64(resolved)
-        .unwrap_or(crate::tools::DEFAULT_SEARCH_MAX_ENTRIES)
-        .max(1);
-}
-
-fn store_ui_helpers(layered: &mut Layered, resolved: &Resolved) {
-    layered.ui.helpers = as_typed(resolved).unwrap_or_default();
-}
-
-fn store_ui_bell(layered: &mut Layered, resolved: &Resolved) {
-    layered.ui.bell = as_bool(resolved).unwrap_or(true);
-}
-
-fn store_ui_checklist(layered: &mut Layered, resolved: &Resolved) {
-    layered.ui.checklist = as_typed(resolved).unwrap_or_default();
-}
-
-fn store_pricing_fetch(layered: &mut Layered, resolved: &Resolved) {
-    layered.pricing_fetch = as_bool(resolved).unwrap_or(true);
-}
-
-fn store_principal(layered: &mut Layered, resolved: &Resolved) {
-    layered.daemon_principal = as_string(resolved);
-}
-
 const MODES: &[&str] = &["default", "accept-edits", "plan", "auto"];
 const COMPACT_MODES: &[&str] = &["native", "warn", "auto"];
 /// The most characters `/set` takes for an instruction or a name.
 const TEXT_MAX: usize = 2_000;
 
-const PREPARE: Setting = Setting {
+/// The permission mode at start (`rkat/set_mode` writes it).
+pub const MODE: Setting = Setting {
+    key: "auto.mode",
+    kind: Kind::Choice(MODES),
+    default: Fallback::Text("auto"),
+    project: ProjectRule::OnlyManual,
+    applies: Applies::Live,
+    about: "The permission mode at start (`enabled = false` is the older `mode = \"default\"`).",
+    flags: &[Flag {
+        flag: "--no-auto",
+        key: "auto.enabled",
+        value: FlagValue::Fixed("false"),
+        given: |args| args.no_auto.then(String::new),
+    }],
+    command: Some("`/mode`, Shift+Tab"),
+    alias: Some(Alias {
+        key: "auto.enabled",
+        map: enabled_as_mode,
+    }),
+    hook: Hook::Mode,
+};
+
+/// The instruction the agents are asked to prepare with
+/// ([`super::settings::PrepareSetting`] reads it).
+pub const PREPARE: Setting = Setting {
     key: "auto.compact_prepare",
     kind: Kind::Text { max: TEXT_MAX },
     default: Fallback::Unset("none"),
@@ -771,45 +718,28 @@ const PREPARE: Setting = Setting {
     flags: &[],
     command: Some("`/compact prepare <text>|off|default`"),
     alias: None,
-    store: store_prepare,
+    hook: Hook::Prepare,
 };
 
-const PREPARE_AT: Setting = Setting {
+/// Where the agents are asked to prepare
+/// ([`super::settings::PrepareSetting`] reads it).
+pub const PREPARE_AT: Setting = Setting {
     key: "auto.compact_prepare_at",
     kind: Kind::Threshold,
-    default: Fallback::Text("70%"),
+    default: Fallback::Threshold(DEFAULT_PREPARE_AT),
     project: ProjectRule::Takes,
     applies: Applies::Live,
     about: "Where the agents are asked to prepare: tokens, or a share of the window.",
     flags: &[],
     command: Some("`/compact prepare at <threshold>|default`"),
     alias: None,
-    store: store_prepare_at,
+    hook: Hook::Prepare,
 };
 
 /// Every scalar setting, in the order the manual and `/settings` list
 /// them.
 pub static SETTINGS: &[Setting] = &[
-    Setting {
-        key: "auto.mode",
-        kind: Kind::Choice(MODES),
-        default: Fallback::Text("auto"),
-        project: ProjectRule::OnlyManual,
-        applies: Applies::Live,
-        about: "The permission mode at start (`enabled = false` is the older `mode = \"default\"`).",
-        flags: &[Flag {
-            flag: "--no-auto",
-            key: "auto.enabled",
-            value: FlagValue::Fixed("false"),
-            given: |args| args.no_auto.then(String::new),
-        }],
-        command: Some("`/mode`, Shift+Tab"),
-        alias: Some(Alias {
-            key: "auto.enabled",
-            map: enabled_as_mode,
-        }),
-        store: store_mode,
-    },
+    MODE,
     Setting {
         key: "auto.classifier_model",
         kind: Kind::Model,
@@ -825,7 +755,7 @@ pub static SETTINGS: &[Setting] = &[
         }],
         command: Some("`/auto model`"),
         alias: None,
-        store: store_classifier_model,
+        hook: Hook::ClassifierModel,
     },
     Setting {
         key: "auto.trust_project_builds",
@@ -852,7 +782,7 @@ pub static SETTINGS: &[Setting] = &[
         ],
         command: None,
         alias: None,
-        store: store_trust,
+        hook: Hook::TrustBuilds,
     },
     Setting {
         key: "auto.classifier_tools",
@@ -864,7 +794,7 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[],
         command: None,
         alias: None,
-        store: store_classifier_tools,
+        hook: Hook::None,
     },
     Setting {
         key: "auto.classifier_probe",
@@ -876,7 +806,7 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[],
         command: None,
         alias: None,
-        store: store_classifier_probe,
+        hook: Hook::None,
     },
     Setting {
         key: "auto.compact",
@@ -901,7 +831,7 @@ pub static SETTINGS: &[Setting] = &[
         ],
         command: None,
         alias: None,
-        store: store_compact,
+        hook: Hook::None,
     },
     Setting {
         key: "auto.compact_warn_percent",
@@ -917,7 +847,7 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[],
         command: None,
         alias: None,
-        store: store_warn_percent,
+        hook: Hook::None,
     },
     Setting {
         key: "auto.compact_auto_percent",
@@ -933,7 +863,7 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[],
         command: None,
         alias: None,
-        store: store_auto_percent,
+        hook: Hook::None,
     },
     PREPARE,
     PREPARE_AT,
@@ -951,7 +881,7 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[],
         command: None,
         alias: None,
-        store: store_helper_depth,
+        hook: Hook::None,
     },
     Setting {
         key: "shell.user_timeout_secs",
@@ -967,7 +897,7 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[],
         command: None,
         alias: None,
-        store: store_user_timeout,
+        hook: Hook::None,
     },
     Setting {
         key: "search.budget_secs",
@@ -983,7 +913,7 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[],
         command: None,
         alias: None,
-        store: store_search_budget,
+        hook: Hook::None,
     },
     Setting {
         key: "search.max_entries",
@@ -999,7 +929,7 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[],
         command: None,
         alias: None,
-        store: store_search_entries,
+        hook: Hook::None,
     },
     Setting {
         key: "ui.helpers",
@@ -1011,7 +941,7 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[],
         command: None,
         alias: None,
-        store: store_ui_helpers,
+        hook: Hook::Ui,
     },
     Setting {
         key: "ui.bell",
@@ -1023,7 +953,7 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[],
         command: None,
         alias: None,
-        store: store_ui_bell,
+        hook: Hook::Ui,
     },
     Setting {
         key: "ui.checklist",
@@ -1035,7 +965,7 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[],
         command: Some("Ctrl+T"),
         alias: None,
-        store: store_ui_checklist,
+        hook: Hook::Ui,
     },
     Setting {
         key: "pricing.fetch",
@@ -1052,7 +982,7 @@ pub static SETTINGS: &[Setting] = &[
         }],
         command: None,
         alias: None,
-        store: store_pricing_fetch,
+        hook: Hook::None,
     },
     Setting {
         key: "daemon.principal",
@@ -1064,7 +994,7 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[],
         command: None,
         alias: None,
-        store: store_principal,
+        hook: Hook::None,
     },
 ];
 

@@ -187,7 +187,7 @@ async fn the_schedule_picker_pauses_resumes_and_deletes_a_schedule() {
         row.keys
             .iter()
             .find(|key| key.code == code)
-            .map(|key| key.act.clone().unwrap())
+            .map(|key| key.act().cloned().unwrap())
             .unwrap()
     };
     let refreshed = |m: &Msg| matches!(m, Msg::ShowPicker { refresh: true, .. });

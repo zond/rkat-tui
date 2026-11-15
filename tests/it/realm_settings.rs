@@ -173,7 +173,7 @@ async fn survives(way: Stop) {
     let status = status["text"].as_str().unwrap();
     assert!(
         status.starts_with(&format!(
-            "compact prepare: \"{INSTRUCTION}\", from this workspace (/compact prepare); asked at 65% of the window"
+            "compact prepare: \"{INSTRUCTION}\", from this workspace; asked at 65% of the window"
         )) && status.contains(": armed"),
         "{status}"
     );
@@ -195,7 +195,7 @@ async fn survives(way: Stop) {
     let status = status["text"].as_str().unwrap();
     assert!(
         status.starts_with(&format!(
-            "compact prepare: \"{INSTRUCTION}\", from this workspace (/compact prepare); asked at 65% of the window"
+            "compact prepare: \"{INSTRUCTION}\", from this workspace; asked at 65% of the window"
         )) && status.contains(": armed"),
         "{way:?}: {status}"
     );

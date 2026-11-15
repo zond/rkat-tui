@@ -20,6 +20,14 @@ impl EndpointRef {
             model: model.into(),
         }
     }
+
+    /// `endpoint:model` as a reference, split at the first `:` (`None`:
+    /// there is none). Whether the endpoint exists is the caller's to ask.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        let (endpoint, model) = text.split_once(':')?;
+        Some(Self::new(endpoint, model))
+    }
 }
 
 impl fmt::Display for EndpointRef {

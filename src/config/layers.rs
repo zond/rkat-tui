@@ -6,6 +6,7 @@ use crate::approval::mode::PermissionMode;
 use crate::approval::rules::{Rule, RuleKind, RuleOrigin, RuleSet, RulesError};
 use crate::bootstrap::confinement::ConfinementSection;
 use crate::thinking::ThinkingSetting;
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -269,10 +270,7 @@ pub fn load_layered_with(
     project_rkat_dir: &Path,
     cli: Option<&RulesFile>,
 ) -> Result<Layered, RulesError> {
-    let mut layered = Layered {
-        pricing_fetch: true,
-        ..Layered::default()
-    };
+    let mut layered = Layered::default();
     if let Some(global) = global_rules_file {
         let file = RulesFile::load(global)?;
         layered.layers.user = file.table();
@@ -289,9 +287,45 @@ pub fn load_layered_with(
     let project = RulesFile::load(&project_path)?;
     layered.layers.project = project.table();
     layered.apply_project_layer(project, project_path)?;
-    layered.resolve_settings();
+    layered.resolve_settings()?;
     layered.clamp_compaction();
     Ok(layered)
+}
+
+/// Every scalar setting in force, typed: [`super::registry::merged`] read
+/// as the views the code uses. The merged table holds every default, so
+/// no field here or in the views has a serde default of its own.
+#[derive(Deserialize)]
+struct Scalars {
+    auto: AutoScalars,
+    helpers: HelperSettings,
+    shell: ShellSettings,
+    search: SearchScalars,
+    ui: UiSettings,
+    pricing: PricingScalars,
+    #[serde(default)]
+    daemon: DaemonSection,
+}
+
+/// `[auto]`'s scalars: the mode beside the auto settings.
+#[derive(Deserialize)]
+struct AutoScalars {
+    mode: PermissionMode,
+    #[serde(flatten)]
+    settings: AutoSettings,
+}
+
+/// `[search]`'s scalars, as the file holds them.
+#[derive(Deserialize)]
+struct SearchScalars {
+    budget_secs: u64,
+    max_entries: u64,
+}
+
+/// `[pricing]`'s scalar.
+#[derive(Deserialize)]
+struct PricingScalars {
+    fetch: bool,
 }
 
 impl Layered {
@@ -441,11 +475,39 @@ impl Layered {
     /// the mode it cannot pick, `trust_project_builds`, `classifier_tools`
     /// and `pricing.fetch` it may only turn off, the limits it may only
     /// lower, the classifier model and `[daemon]` it may not set).
-    fn resolve_settings(&mut self) {
-        for setting in super::registry::SETTINGS {
-            let resolved = setting.resolve(&self.layers);
-            (setting.store)(self, &resolved);
-        }
+    ///
+    /// # Errors
+    ///
+    /// [`RulesError::Scalars`] when a value in force does not read as its
+    /// type (each layer was read as its type already, so this is a bug).
+    fn resolve_settings(&mut self) -> Result<(), RulesError> {
+        let Scalars {
+            auto,
+            helpers,
+            shell,
+            search,
+            ui,
+            pricing,
+            daemon,
+        } = super::registry::merged(&self.layers)
+            .try_into()
+            .map_err(RulesError::Scalars)?;
+        let allow = std::mem::take(&mut self.settings.allow);
+        self.settings = AutoSettings {
+            allow,
+            ..auto.settings
+        };
+        self.mode = auto.mode;
+        self.helpers = helpers;
+        self.shell = shell;
+        self.search = crate::tools::SearchLimits {
+            budget: std::time::Duration::from_secs(search.budget_secs),
+            max_entries: search.max_entries,
+        };
+        self.ui = ui;
+        self.pricing_fetch = pricing.fetch;
+        self.daemon_principal = daemon.principal;
+        Ok(())
     }
 
     /// Take a user layer's `[auto] allow` statements: each checked, none

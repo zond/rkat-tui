@@ -23,17 +23,29 @@ pub(super) enum Deferred {
 }
 
 impl App {
+    /// Whether the agent's side is busy, which a held command waits out:
+    /// a turn runs, a compaction is asked for (`/compact now`, unanswered)
+    /// or its run goes ([`Msg::CompactionRun`](super::Msg::CompactionRun)),
+    /// or a `!` command runs. A prompt asks less: it starts a turn while a
+    /// compaction is only asked for (the runner admits it after the request;
+    /// effects are served in order), and a `!` command does not wait for a
+    /// compaction ([`Self::turn_or_shell`]).
+    pub(super) fn agent_busy(&self) -> bool {
+        self.running || self.compacting || self.compaction_run || self.shell_busy()
+    }
+
+    /// Whether a turn or a `!` command runs: what a `!` command, and a
+    /// message that cannot be steered into the turn, waits for.
+    pub(super) fn turn_or_shell(&self) -> bool {
+        self.running || self.shell_busy()
+    }
+
     /// Whether a command that needs the agent idle waits now instead of
-    /// running: a turn runs, a compaction or a `!` command is under way,
-    /// or another command waits already (they keep their order). Never
-    /// while a held command itself runs.
+    /// running: the agent is busy ([`Self::agent_busy`]), or another
+    /// command waits already (they keep their order). Never while a held
+    /// command itself runs.
     pub(super) fn defers(&self) -> bool {
-        !self.draining
-            && (self.running
-                || self.compacting
-                || self.compaction_run
-                || self.shell_busy()
-                || self.has_held_command())
+        !self.draining && (self.agent_busy() || self.has_held_command())
     }
 
     /// Whether a command waits for the turn's end.
@@ -63,9 +75,13 @@ impl App {
     /// shows as when typed); messages up to the next command go as one
     /// turn, and what follows them waits for that turn's end, as does
     /// everything after a command that starts a turn (`/init`).
+    ///
+    /// It waits out what [`Self::defers`] held them for
+    /// ([`Self::agent_busy`]); each path that ends one of those calls it
+    /// again (a turn's end, a `!` command's, a compaction's answer or run).
     pub(super) fn run_held(&mut self, now: Instant, fx: &mut Vec<Effect>) {
         loop {
-            if self.running || self.shell_busy() || self.compaction_run {
+            if self.agent_busy() {
                 return;
             }
             let mut held: Vec<(PendingId, PendingState)> = self

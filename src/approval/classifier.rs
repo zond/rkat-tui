@@ -18,7 +18,7 @@
 use super::ApprovalEvent;
 use super::prompts::{
     Evidence, Stage1, Stage2Mode, TOOL_BUDGET_EXHAUSTED, UNTRUSTED_TOOL_RESULT_PREFIX,
-    parse_stage1, render_stage1_with, render_stage2_final, render_stage2_with, stage2_or_block,
+    parse_stage1, render_stage1, render_stage2, render_stage2_final, stage2_or_block,
 };
 use super::transcript::ApprovalTranscript;
 use crate::tools::{READ_FILE, ReadOnlyProjectTools};
@@ -656,7 +656,6 @@ pub struct LlmClassifier {
     stage2_max_tokens: u32,
     project_tools: Option<Arc<ReadOnlyProjectTools>>,
     usage: Option<mpsc::UnboundedSender<ApprovalEvent>>,
-    policy: super::prompts::Policy,
 }
 
 impl fmt::Debug for LlmClassifier {
@@ -687,16 +686,7 @@ impl LlmClassifier {
             stage2_max_tokens: DEFAULT_STAGE2_MAX_TOKENS,
             project_tools: None,
             usage: None,
-            policy: super::prompts::Policy::Current,
         }
-    }
-
-    /// Judge under `policy` (the corpus's before run uses 0.0.4's text).
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_policy(mut self, policy: super::prompts::Policy) -> Self {
-        self.policy = policy;
-        self
     }
 
     /// Override the time budget of both stages.
@@ -886,7 +876,7 @@ impl LlmClassifier {
 
     /// Tool-less stage 2 (no project tools, or the endpoint rejected them).
     async fn stage2_plain(&self, input: &ClassifierInput<'_>) -> Result<String, ClassifierError> {
-        let (system, user) = render_stage2_with(input, Stage2Mode::NoTools, self.policy);
+        let (system, user) = render_stage2(input, Stage2Mode::NoTools);
         self.call_text(
             input.session_id,
             self.request(system, user, self.stage2_max_tokens),
@@ -900,7 +890,7 @@ impl LlmClassifier {
         input: &ClassifierInput<'_>,
         tools: &ReadOnlyProjectTools,
     ) -> Result<(String, ToolStats), LoopError> {
-        let (system, user) = render_stage2_with(input, Stage2Mode::WithTools, self.policy);
+        let (system, user) = render_stage2(input, Stage2Mode::WithTools);
         let mut request = self.request(system.clone(), user.clone(), self.stage2_max_tokens);
         request.tools = tools.tools().iter().cloned().collect::<Vec<Arc<ToolDef>>>();
         let mut stats = ToolStats::default();
@@ -1214,7 +1204,7 @@ impl ActionClassifier for LlmClassifier {
         &self,
         input: ClassifierInput<'_>,
     ) -> Result<ClassifierVerdict, ClassifierError> {
-        let (system, user) = render_stage1_with(&input, self.policy);
+        let (system, user) = render_stage1(&input);
         let request = self.request(system, user, self.stage1_max_tokens);
         let answer = self.complete_stage1(input.session_id, request).await?;
         let stage1 = parse_stage1(answer.trim());

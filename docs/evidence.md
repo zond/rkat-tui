@@ -8939,8 +8939,9 @@ denied, sealed or asked there, and the cases labelled deterministic (the
 scratch directory, the project, a git hook) come out as labelled.
 `live_corpus` (ignored) sends the rest through the real `LlmClassifier`
 (stage 2 without its file tools, the default token limits) and prints
-the table; `Policy::Legacy004` keeps 0.0.4's policy text for the before
-run (no worktree needed).
+the table; the before run judged with 0.0.4's policy text, kept as a
+test-only `Policy::Legacy004` for that run and deleted afterwards
+(review 6, A9).
 
 Runs on the owner's Anthropic key, model `claude-haiku-5-5` (accepted by
 the API), 2026-11-14:
@@ -9681,3 +9682,42 @@ first's `/set --user` applied in the second and told to its client, a
 user file reported once with the last good values kept, and the second's
 own write followed by no notice past the quiet time.
 
+
+## Senior review 6, bundle 1: one statement per setting, one mode switch (2026-11-15)
+
+- The registry resolves every scalar setting into one merged table
+  (`config::registry::merged`, defaults included), and the typed views
+  (`AutoSettings`, `HelperSettings`, `ShellSettings`, `UiSettings`, the
+  search limits, the mode, `pricing.fetch`, `daemon.principal`)
+  deserialize from it (`config::layers` `Scalars`). The 19 `store_*`
+  functions and their `unwrap_or` defaults are gone; a default is stated
+  in the table (`Fallback`, `DEFAULT_PREPARE_AT` as
+  `Fallback::Threshold`). The typed views keep their own `Default`
+  impls for the tests and the layering's start; a test pins them to the
+  registry's (`config::registry::tests::the_typed_defaults_are_the_registry_s`).
+  `trust_project_builds` is an `Option<bool>` (unset: trusted while
+  contained) instead of a bool and a "given" flag; the prepare setting is
+  read only through `PrepareSetting::of(layers)`.
+- What a change does is the setting's `Hook`, matched exhaustively in
+  `daemon::local::settings` (`apply_setting`, `precheck`): a renamed key
+  can no longer silently stop applying.
+- The mode has one switch (`Local::switch_mode`): `rkat/set_mode` writes
+  `[auto] mode` and switches whatever the write did (a failed write or a
+  higher layer that wins at the next start is its warning);
+  `rkat/set_setting` of `auto.mode` switches through the hook. The
+  ordering guard counts every call that may switch the mode by one test
+  (`may_switch_mode`), where it is routed and where it ends, so a prompt
+  right after `/set auto.mode plan` waits for the note too
+  (`approvals::a_prompt_after_a_mode_set_as_a_setting_waits_for_its_note`).
+- The settings watcher watches a missing directory's nearest existing
+  ancestor and arms itself deeper as directories appear
+  (`daemon::settings_watch::tests::a_file_whose_directory_appears_later_is_followed`);
+  the quiet time is capped at 2 s (`the_wait_for_quiet_is_capped`).
+- `run_held` waits out the same busy states `defers` holds for
+  (`App::agent_busy`), closing a window where a turn that started during an
+  unanswered `/compact now` ran the held commands at its end
+  (`ui::tests::turns::a_held_command_waits_for_an_unanswered_compact_request`).
+- The transcript's tool lines read the file tools' answers through the
+  words the tools export (`crate::tools::answers`), pinned by
+  `file_tools::each_tool_s_real_answer_renders_its_line`; the engine's
+  shell status line stays a documented literal.

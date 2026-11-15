@@ -42,6 +42,16 @@ pub use scan::SearchLimits;
 #[cfg(any(test, feature = "test-support"))]
 pub use scan::WalkProbe;
 pub(crate) use scan::run_cancellable;
+/// The words the file tools' answers start their parts with, which the
+/// transcript's tool lines read their numbers from
+/// (`crate::ui::transcript::tool_line`).
+pub(crate) mod answers {
+    pub(crate) use super::glob::{NO_FILES, RESULTS_TRUNCATED};
+    pub(crate) use super::grep::NO_MATCHES;
+    pub(crate) use super::read::{EMPTY_FILE, FILE_TRUNCATED, SHOWING_LINES};
+    pub(crate) use super::scan::{NOTE, PARTIAL, STOPPED_BEFORE};
+    pub(crate) use super::write::CREATED;
+}
 pub use scan::{DEFAULT_SEARCH_BUDGET_SECS, DEFAULT_SEARCH_MAX_ENTRIES};
 #[cfg(any(test, feature = "test-support"))]
 pub use skill::MAX_SKILL_BYTES;

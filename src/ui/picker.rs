@@ -93,15 +93,6 @@ pub enum PickAct {
     RemoveStatement(u64),
     /// Approve blocked call `id` for the scope, then the list again.
     Approve(u64, GrantScope),
-    /// Open the one-line field to allow blocked call `id`'s kind of
-    /// action, filled with `proposed` (its `EFFECT:` sentence, or empty);
-    /// the field's Enter is [`Self::AllowEffect`].
-    EditEffect {
-        /// The blocked call.
-        id: u64,
-        /// The sentence the field starts with.
-        proposed: String,
-    },
     /// Allow the kind of action `text` describes, as blocked call `id`'s
     /// approval, for the scope, then the list again.
     AllowEffect {
@@ -114,19 +105,8 @@ pub enum PickAct {
     },
     /// `/mode <mode>` (`/auto resume` for a paused auto mode).
     SetMode(PermissionMode),
-    /// Open the one-line field to edit setting `key` at the user's level
-    /// (`user`) or the workspace's, filled with `current`; the field's
-    /// Enter is [`Self::SetSetting`].
-    EditSetting {
-        /// The setting's key.
-        key: String,
-        /// The user's own `tui.toml`.
-        user: bool,
-        /// The value the field starts with.
-        current: String,
-    },
     /// `/set <key> <value>` (`None`: `/unset <key>`), `--user` with
-    /// `user`, then the list again.
+    /// `user`, then the list again with the picker's `filter`.
     SetSetting {
         /// The setting's key.
         key: String,
@@ -134,6 +114,9 @@ pub enum PickAct {
         value: Option<String>,
         /// The user's own `tui.toml`.
         user: bool,
+        /// The filter the picker was opened with (the list comes again
+        /// with it, so the highlight stays on the setting changed).
+        filter: Option<String>,
     },
     /// `/memory [workspace | user | system]`.
     OpenMemory(MemoryTarget),
@@ -191,10 +174,21 @@ impl PickAct {
 pub struct PickKey {
     /// The key.
     pub code: KeyCode,
-    /// Its act, or why it does nothing on this row.
-    pub act: Result<PickAct, String>,
-    /// The question `y` answers before the act runs.
-    pub confirm: Option<String>,
+    /// What it does.
+    pub does: Does,
+}
+
+/// What a row's key does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Does {
+    /// This act, at once.
+    Act(PickAct),
+    /// This question first; `y` then does the act.
+    Ask(PickAct, String),
+    /// Opens this one-line field under the rows.
+    Open(Field),
+    /// Nothing, for this reason.
+    Refused(String),
 }
 
 impl PickKey {
@@ -203,8 +197,7 @@ impl PickKey {
     pub fn now(code: KeyCode, act: PickAct) -> Self {
         Self {
             code,
-            act: Ok(act),
-            confirm: None,
+            does: Does::Act(act),
         }
     }
 
@@ -213,8 +206,16 @@ impl PickKey {
     pub fn confirmed(code: KeyCode, act: PickAct, question: impl Into<String>) -> Self {
         Self {
             code,
-            act: Ok(act),
-            confirm: Some(question.into()),
+            does: Does::Ask(act, question.into()),
+        }
+    }
+
+    /// `code` opens `field`.
+    #[must_use]
+    pub fn field(code: KeyCode, field: Field) -> Self {
+        Self {
+            code,
+            does: Does::Open(field),
         }
     }
 
@@ -223,8 +224,124 @@ impl PickKey {
     pub fn refused(code: KeyCode, why: impl Into<String>) -> Self {
         Self {
             code,
-            act: Err(why.into()),
-            confirm: None,
+            does: Does::Refused(why.into()),
+        }
+    }
+
+    /// The act it does or asks for, if it does one.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn act(&self) -> Option<&PickAct> {
+        match &self.does {
+            Does::Act(act) | Does::Ask(act, _) => Some(act),
+            Does::Open(_) | Does::Refused(_) => None,
+        }
+    }
+}
+
+/// A one-line field under a picker's rows: Enter acts with its text
+/// ([`FieldFor::done`]), Tab switches where it applies, Backspace deletes
+/// the last character, Esc closes it. It has no cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Field {
+    /// What it is for.
+    pub what: FieldFor,
+    /// The text as typed so far.
+    pub text: String,
+}
+
+/// What a [`Field`] is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldFor {
+    /// Setting `key`'s value at the user's level (`user`) or the
+    /// workspace's; Enter is [`PickAct::SetSetting`].
+    Setting {
+        /// The setting's key.
+        key: String,
+        /// The user's own `tui.toml`.
+        user: bool,
+        /// The filter the picker was opened with.
+        filter: Option<String>,
+    },
+    /// The kind of action blocked call `id` is to be allowed for, for
+    /// `scope`; Enter is [`PickAct::AllowEffect`].
+    Effect {
+        /// The blocked call.
+        id: u64,
+        /// This session or always.
+        scope: GrantScope,
+    },
+}
+
+impl FieldFor {
+    /// The most characters the field takes.
+    fn max(&self) -> usize {
+        match self {
+            Self::Setting { .. } => SETTING_CHARS,
+            Self::Effect { .. } => crate::approval::statements::MAX_STATEMENT_CHARS,
+        }
+    }
+
+    /// Tab: the other level, or the next scope.
+    fn toggle(&mut self) {
+        match self {
+            Self::Setting { user, .. } => *user = !*user,
+            Self::Effect { scope, .. } => {
+                *scope = match scope {
+                    GrantScope::Session => GrantScope::Always,
+                    GrantScope::Always => GrantScope::AlwaysUser,
+                    _ => GrantScope::Session,
+                };
+            }
+        }
+    }
+
+    /// Enter: the act with `text` (trimmed).
+    fn done(&self, text: &str) -> PickAct {
+        let text = text.trim().to_string();
+        match self {
+            Self::Setting { key, user, filter } => PickAct::SetSetting {
+                key: key.clone(),
+                value: Some(text),
+                user: *user,
+                filter: filter.clone(),
+            },
+            Self::Effect { id, scope } => PickAct::AllowEffect {
+                id: *id,
+                scope: *scope,
+                text,
+            },
+        }
+    }
+
+    /// The line over the field: what Enter does there, what Tab switches
+    /// to.
+    fn heading(&self) -> String {
+        match self {
+            Self::Setting { key, user, .. } => {
+                let (now, other) = if *user {
+                    ("your tui.toml (every workspace)", "this workspace")
+                } else {
+                    ("this workspace's tui.toml", "your tui.toml")
+                };
+                format!("{key} in {now} (Enter writes it · Tab: {other} · Esc cancels):")
+            }
+            Self::Effect { scope, .. } => {
+                let (now, other) = match scope {
+                    GrantScope::Always => (
+                        "always for this workspace (the realm's tui.toml)",
+                        "always in every workspace",
+                    ),
+                    GrantScope::AlwaysUser => (
+                        "always in every workspace (your tui.toml)",
+                        "for this session",
+                    ),
+                    _ => ("for this session", "always for this workspace"),
+                };
+                format!(
+                    "allow this kind of action {now}, judged by the classifier (edit it; Enter allows · Tab: {other} · Esc cancels):"
+                )
+            }
         }
     }
 }
@@ -281,28 +398,8 @@ pub enum PickerLine {
     Refused(String),
     /// What the last act did ("approved once: …", "retired main-ab12").
     Done(String),
-    /// A one-line field: setting `key`'s value at the user's level
-    /// (`user`) or the workspace's (Enter writes it, Tab switches the
-    /// level, Esc keeps things).
-    EditSetting {
-        /// The setting's key.
-        key: String,
-        /// The user's own `tui.toml`.
-        user: bool,
-        /// The value as typed so far.
-        text: String,
-    },
-    /// A one-line field: the kind of action blocked call `id` is to be
-    /// allowed for (Enter allows it for `scope`, Tab switches the scope,
-    /// Esc keeps things).
-    Edit {
-        /// The blocked call.
-        id: u64,
-        /// This session or always.
-        scope: GrantScope,
-        /// The statement as typed so far.
-        text: String,
-    },
+    /// A one-line field ([`Field`]).
+    Field(Field),
 }
 
 /// A picker over rows ([`PickerKind`] says whose).
@@ -404,19 +501,10 @@ impl ListPicker {
         if (held && !moves) || has_ctrl_or_alt(key) {
             return ModalKey::Stay;
         }
-        if let Some(PickerLine::EditSetting {
-            key: setting,
-            user,
-            text,
-        }) = &mut self.line
-        {
+        if let Some(PickerLine::Field(field)) = &mut self.line {
             return match key.code {
                 KeyCode::Enter => {
-                    let act = PickAct::SetSetting {
-                        key: setting.clone(),
-                        value: Some(text.trim().to_string()),
-                        user: *user,
-                    };
+                    let act = field.what.done(&field.text);
                     self.line = None;
                     ModalKey::Choose(act)
                 }
@@ -425,55 +513,16 @@ impl ListPicker {
                     ModalKey::Stay
                 }
                 KeyCode::Tab | KeyCode::BackTab => {
-                    *user = !*user;
+                    field.what.toggle();
                     ModalKey::Stay
                 }
                 KeyCode::Backspace => {
-                    text.pop();
+                    field.text.pop();
                     ModalKey::Stay
                 }
                 KeyCode::Char(c) => {
                     let mut buf = [0; 4];
-                    push_line_text(text, c.encode_utf8(&mut buf), SETTING_CHARS);
-                    ModalKey::Stay
-                }
-                _ => ModalKey::Stay,
-            };
-        }
-        if let Some(PickerLine::Edit { id, scope, text }) = &mut self.line {
-            return match key.code {
-                KeyCode::Enter => {
-                    let act = PickAct::AllowEffect {
-                        id: *id,
-                        scope: *scope,
-                        text: text.trim().to_string(),
-                    };
-                    self.line = None;
-                    ModalKey::Choose(act)
-                }
-                KeyCode::Esc => {
-                    self.line = None;
-                    ModalKey::Stay
-                }
-                KeyCode::Tab | KeyCode::BackTab => {
-                    *scope = match scope {
-                        GrantScope::Session => GrantScope::Always,
-                        GrantScope::Always => GrantScope::AlwaysUser,
-                        _ => GrantScope::Session,
-                    };
-                    ModalKey::Stay
-                }
-                KeyCode::Backspace => {
-                    text.pop();
-                    ModalKey::Stay
-                }
-                KeyCode::Char(c) => {
-                    let mut buf = [0; 4];
-                    push_line_text(
-                        text,
-                        c.encode_utf8(&mut buf),
-                        crate::approval::statements::MAX_STATEMENT_CHARS,
-                    );
+                    push_line_text(&mut field.text, c.encode_utf8(&mut buf), field.what.max());
                     ModalKey::Stay
                 }
                 _ => ModalKey::Stay,
@@ -485,44 +534,21 @@ impl ListPicker {
             KeyCode::Up | KeyCode::Char('k') => self.cursor.up(),
             KeyCode::Down | KeyCode::Char('j') => self.cursor.down(self.rows.len()),
             KeyCode::Esc | KeyCode::Char('q') => return ModalKey::Close,
-            code => match self.selected().and_then(|row| row.key(code)).cloned() {
-                Some(PickKey {
-                    act: Ok(PickAct::EditEffect { id, proposed }),
-                    ..
-                }) => {
-                    self.line = Some(PickerLine::Edit {
-                        id,
-                        scope: GrantScope::Session,
-                        text: proposed,
-                    });
-                }
-                Some(PickKey {
-                    act: Ok(PickAct::EditSetting { key, user, current }),
-                    ..
-                }) => {
-                    self.line = Some(PickerLine::EditSetting {
-                        key,
-                        user,
-                        text: current,
-                    });
-                }
-                Some(PickKey {
-                    act: Ok(act),
-                    confirm: None,
-                    ..
-                }) => return ModalKey::Choose(act),
-                Some(PickKey {
-                    act: Ok(act),
-                    confirm: Some(question),
-                    ..
-                }) => {
+            code => match self
+                .selected()
+                .and_then(|row| row.key(code))
+                .map(|key| key.does.clone())
+            {
+                Some(Does::Act(act)) => return ModalKey::Choose(act),
+                Some(Does::Ask(act, question)) => {
                     self.line = Some(PickerLine::Confirm {
                         question,
                         act,
                         nudged: false,
                     });
                 }
-                Some(PickKey { act: Err(why), .. }) => self.line = Some(PickerLine::Refused(why)),
+                Some(Does::Open(field)) => self.line = Some(PickerLine::Field(field)),
+                Some(Does::Refused(why)) => self.line = Some(PickerLine::Refused(why)),
                 None => {}
             },
         }
@@ -532,25 +558,14 @@ impl ListPicker {
     /// Whether a one-line field is open (a paste goes into it).
     #[must_use]
     pub fn editing(&self) -> bool {
-        matches!(
-            self.line,
-            Some(PickerLine::Edit { .. } | PickerLine::EditSetting { .. })
-        )
+        matches!(self.line, Some(PickerLine::Field(_)))
     }
 
     /// Type (or paste) `text` into the open one-line field, on one line,
     /// without control characters; nothing while none is open.
     pub fn type_text(&mut self, text: &str) {
-        match &mut self.line {
-            Some(PickerLine::Edit { text: field, .. }) => push_line_text(
-                field,
-                text,
-                crate::approval::statements::MAX_STATEMENT_CHARS,
-            ),
-            Some(PickerLine::EditSetting { text: field, .. }) => {
-                push_line_text(field, text, SETTING_CHARS);
-            }
-            _ => {}
+        if let Some(PickerLine::Field(field)) = &mut self.line {
+            push_line_text(&mut field.text, text, field.what.max());
         }
     }
 
@@ -610,50 +625,14 @@ pub(super) fn list_picker_lines(
                 .into_iter()
                 .map(|line| Line::styled(line, Style::default().fg(Color::Green))),
         ),
-        Some(PickerLine::EditSetting { key, user, text }) => {
-            let (now, other) = if *user {
-                ("your tui.toml (every workspace)", "this workspace")
-            } else {
-                ("this workspace's tui.toml", "your tui.toml")
-            };
+        Some(PickerLine::Field(field)) => {
             tail.extend(
-                wrap_text(
-                    &format!("{key} in {now} (Enter writes it · Tab: {other} · Esc cancels):"),
-                    width,
-                )
-                .into_iter()
-                .map(|line| Line::styled(line, warn)),
-            );
-            tail.extend(
-                wrap_text(&format!("> {text}▏"), width)
+                wrap_text(&field.what.heading(), width)
                     .into_iter()
-                    .map(Line::from),
-            );
-        }
-        Some(PickerLine::Edit { scope, text, .. }) => {
-            let (now, other) = match scope {
-                GrantScope::Always => (
-                    "always for this workspace (the realm's tui.toml)",
-                    "always in every workspace",
-                ),
-                GrantScope::AlwaysUser => (
-                    "always in every workspace (your tui.toml)",
-                    "for this session",
-                ),
-                _ => ("for this session", "always for this workspace"),
-            };
-            tail.extend(
-                wrap_text(
-                    &format!(
-                        "allow this kind of action {now}, judged by the classifier (edit it; Enter allows · Tab: {other} · Esc cancels):"
-                    ),
-                    width,
-                )
-                .into_iter()
-                .map(|line| Line::styled(line, warn)),
+                    .map(|line| Line::styled(line, warn)),
             );
             tail.extend(
-                wrap_text(&format!("> {text}▏"), width)
+                wrap_text(&format!("> {}▏", field.text), width)
                     .into_iter()
                     .map(Line::from),
             );
@@ -962,13 +941,19 @@ impl App {
             PickAct::AllowEffect { id, scope, text } => {
                 fx.push(Effect::PickedApproval(id, scope, Some(text)));
             }
-            // The picker opens its field itself; never chosen.
-            PickAct::EditEffect { .. } => {}
             PickAct::SetMode(mode) => fx.push(Effect::SetMode(mode)),
-            // The picker opens its field itself; never chosen.
-            PickAct::EditSetting { .. } => {}
-            PickAct::SetSetting { key, value, user } => {
-                fx.push(Effect::PickedSetting { key, value, user });
+            PickAct::SetSetting {
+                key,
+                value,
+                user,
+                filter,
+            } => {
+                fx.push(Effect::PickedSetting {
+                    key,
+                    value,
+                    user,
+                    filter,
+                });
             }
             PickAct::OpenMemory(target) => fx.push(Effect::OpenMemory(target)),
             PickAct::Wire { workspace, agent } => fx.push(Effect::WireTo { workspace, agent }),

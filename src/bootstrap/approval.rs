@@ -262,9 +262,8 @@ async fn make_classifier(
     };
     // `endpoint:model` on one of the process's endpoints; else a model of
     // the start-up endpoint.
-    let on_endpoint = named
-        .split_once(':')
-        .and_then(|(name, model)| Some((source.endpoints.get(name)?.clone(), model.to_string())));
+    let on_endpoint = crate::endpoints::EndpointRef::parse(&named)
+        .and_then(|named| Some((source.endpoints.get(&named.endpoint)?.clone(), named.model)));
     let (identity, provider, model) = match &on_endpoint {
         Some((endpoint, model)) => (
             endpoint_identity(endpoint, model),

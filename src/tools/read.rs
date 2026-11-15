@@ -87,17 +87,25 @@ pub(crate) fn run(shared: &Shared, call: CallMeta, args: ReadFileArgs) -> ToolOu
     if read.truncated {
         let _ = writeln!(
             out,
-            "… [file truncated: only the first {} MiB of {display} were read]",
+            "{FILE_TRUNCATED}: only the first {} MiB of {display} were read]",
             MAX_FILE_READ_BYTES / (1024 * 1024)
         );
     }
     Ok(out)
 }
 
+/// The whole answer for an empty file.
+pub(crate) const EMPTY_FILE: &str = "(empty file)";
+/// The note that the lines shown are not all of them: `… [showing lines
+/// A-B of T; use offset=N to continue]`.
+pub(crate) const SHOWING_LINES: &str = "… [showing lines ";
+/// The note that only the start of a large file was read.
+pub(crate) const FILE_TRUNCATED: &str = "… [file truncated";
+
 /// Render `text` as numbered lines starting at 1-based `offset`.
 fn render(text: &str, offset: usize, limit: usize) -> String {
     if text.is_empty() {
-        return "(empty file)".to_string();
+        return EMPTY_FILE.to_string();
     }
     let total = text.lines().count();
     if offset > total {
@@ -116,7 +124,7 @@ fn render(text: &str, offset: usize, limit: usize) -> String {
     if last < total {
         let _ = writeln!(
             out,
-            "… [showing lines {offset}-{last} of {total}; use offset={} to continue]",
+            "{SHOWING_LINES}{offset}-{last} of {total}; use offset={} to continue]",
             last + 1
         );
     }

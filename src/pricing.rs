@@ -402,9 +402,9 @@ impl PriceTable {
     #[must_use]
     pub fn lookup(&self, model: &str) -> Option<(ModelPrice, PriceSource)> {
         self.lookup_id(model).or_else(|| {
-            let (endpoint, served) = model.split_once(':')?;
-            crate::endpoints::is_valid_endpoint_name(endpoint)
-                .then(|| self.lookup_id(served))
+            let named = crate::endpoints::EndpointRef::parse(model)?;
+            crate::endpoints::is_valid_endpoint_name(&named.endpoint)
+                .then(|| self.lookup_id(&named.model))
                 .flatten()
         })
     }

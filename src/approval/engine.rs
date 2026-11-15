@@ -59,7 +59,9 @@ use super::classifier::{
 use super::corpus;
 use super::counters::{AutoMode, DenialCounters, PauseCause};
 use super::escalation::{EscalationBroker, EscalationPrompt, HumanDecision, RecordedPrompt};
-use super::grants::{BlockedCall, GrantRow, GrantScope, GrantTarget, MAX_RECENT_BLOCKS};
+use super::grants::{
+    BlockedCall, GrantOrigin, GrantRow, GrantScope, GrantTarget, MAX_RECENT_BLOCKS,
+};
 use super::mode::PermissionMode;
 use super::policy::{
     Action, ActionKind, Decider, PolicyContext, Tier, TierDecision, classify_tier_with,
@@ -86,7 +88,10 @@ const ARGS_PREVIEW_BYTES: usize = 2048;
 const BUILD_FILE_BYTES: usize = 4 * 1024;
 /// Commands whose execution is defined by project files.
 const BUILD_RUNNERS: &[&str] = &["cargo", "make", "npm", "pnpm", "yarn", "npx"];
-/// Project files that decide what a Rust build executes.
+/// Project files that decide what a Rust build executes, besides the
+/// manifests ([`super::classifier::MANIFEST_FILES`]). With the manifests
+/// they are the build-defining files ([`is_build_defining`]): a change to
+/// one makes the next build reviewed even where builds are trusted.
 const CARGO_BUILD_FILES: &[&str] = &[
     "build.rs",
     ".cargo/config.toml",
@@ -234,7 +239,7 @@ struct SessionState {
     statements: Vec<(u64, String)>,
     /// The digest of the project's build-defining files when the session
     /// was first seen, or when a reviewed build last ran: a trusted build
-    /// is trusted only while they are unchanged ([`BUILD_DEFINING_FILES`]).
+    /// is trusted only while they are unchanged ([`is_build_defining`]).
     build_digest: Option<[u8; 32]>,
     /// The session's file tools wrote a build-defining file or a
     /// dependency manifest since then.
@@ -244,29 +249,14 @@ struct SessionState {
     build_change_noticed: bool,
 }
 
-/// The project files whose change makes the next build reviewed even where
-/// builds are trusted: what decides what a build runs, and the manifest.
-const BUILD_DEFINING_FILES: &[&str] = &[
-    "build.rs",
-    ".cargo/config.toml",
-    ".cargo/config",
-    "rust-toolchain.toml",
-    "rust-toolchain",
-    "Cargo.toml",
-    "Cargo.lock",
-];
-
 /// Whether `subject` (a display path) is a build-defining file anywhere in
-/// the project: a `build.rs`, anything under `.cargo/`, a toolchain file,
-/// a Cargo manifest or lockfile.
+/// the project: a dependency manifest or lockfile
+/// ([`super::classifier::is_manifest`]) or one of [`CARGO_BUILD_FILES`].
 fn is_build_defining(subject: &str) -> bool {
-    let name = subject.rsplit('/').next().unwrap_or(subject);
-    name == "build.rs"
-        || name.starts_with("rust-toolchain")
-        || name == "Cargo.toml"
-        || name == "Cargo.lock"
-        || subject.starts_with(".cargo/")
-        || subject.contains("/.cargo/")
+    super::classifier::is_manifest(subject)
+        || CARGO_BUILD_FILES
+            .iter()
+            .any(|file| subject == *file || subject.ends_with(&format!("/{file}")))
 }
 
 /// What an approval or a grant tells the user (`notice`) and the agent
@@ -1211,9 +1201,7 @@ impl ApprovalEngine {
     /// (`/set`, a file): `None` is unset (trusted while a sandbox contains
     /// the shell).
     pub fn set_trust_project_builds(&self, trust: Option<bool>) {
-        let mut settings = self.settings.write();
-        settings.trust_project_builds = trust.unwrap_or(false);
-        settings.trust_project_builds_given = trust.is_some();
+        self.settings.write().trust_project_builds = trust;
     }
 
     fn emit(&self, event: ApprovalEvent) {
@@ -1356,7 +1344,7 @@ impl ApprovalEngine {
             {
                 state.facts.manifests_changed.push(subject.clone());
             }
-            if is_build_defining(subject) || super::classifier::is_manifest(subject) {
+            if is_build_defining(subject) {
                 state.build_files_written = true;
             }
         }
@@ -1623,7 +1611,7 @@ impl ApprovalEngine {
             .map(|path| GrantRow {
                 id: 0,
                 target: dir(path),
-                origin: "default".into(),
+                origin: GrantOrigin::Default,
                 removable: false,
             })
             .collect();
@@ -1632,9 +1620,9 @@ impl ApprovalEngine {
                 id: 0,
                 target: dir(path),
                 origin: if granted.from_flag.contains(path) {
-                    "flag".into()
+                    GrantOrigin::Flag
                 } else {
-                    "config".into()
+                    GrantOrigin::Config
                 },
                 removable: false,
             });
@@ -1643,7 +1631,7 @@ impl ApprovalEngine {
             rows.push(GrantRow {
                 id: *id,
                 target: dir(path),
-                origin: "always".into(),
+                origin: GrantOrigin::Always,
                 removable: false,
             });
         }
@@ -1654,7 +1642,7 @@ impl ApprovalEngine {
                 rows.push(GrantRow {
                     id,
                     target,
-                    origin: "session".into(),
+                    origin: GrantOrigin::Session,
                     removable: true,
                 });
             }
@@ -1921,14 +1909,13 @@ impl ApprovalEngine {
         })
     }
 
-    /// SHA-256 over the project's [`BUILD_DEFINING_FILES`] as they are now
-    /// (a missing file counts as missing).
+    /// SHA-256 over the project root's build-defining files
+    /// ([`CARGO_BUILD_FILES`] and the manifests) as they are now (a
+    /// missing file counts as missing).
     fn build_files_digest(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        let manifests = super::classifier::MANIFEST_FILES
-            .iter()
-            .filter(|file| !BUILD_DEFINING_FILES.contains(file));
-        for file in BUILD_DEFINING_FILES.iter().chain(manifests) {
+        let manifests = super::classifier::MANIFEST_FILES.iter();
+        for file in CARGO_BUILD_FILES.iter().chain(manifests) {
             hash_str(file, &mut hasher);
             match std::fs::read(self.root.as_path().join(file)) {
                 Ok(bytes) => {
@@ -1982,14 +1969,11 @@ impl ApprovalEngine {
     /// ([`Self::build_asks`]).
     fn builds_trusted(&self, session_id: &SessionId, facts: &Facts<'_>) -> bool {
         let contained = self.environment.containment.contains();
-        let trusted = {
-            let settings = self.settings.read();
-            if settings.trust_project_builds_given {
-                settings.trust_project_builds
-            } else {
-                contained
-            }
-        };
+        let trusted = self
+            .settings
+            .read()
+            .trust_project_builds
+            .unwrap_or(contained);
         let ActionKind::Shell { command, .. } = &facts.action.kind else {
             return trusted;
         };
@@ -3240,6 +3224,33 @@ mod tests {
     use meerkat_core::ToolSourceKind;
     use serde_json::json;
     use std::sync::atomic::AtomicUsize;
+
+    /// A build-defining file is one of the Cargo build files or a manifest
+    /// of any ecosystem, at any depth; a neighbour of one is not.
+    #[test]
+    fn build_defining_files_are_the_cargo_files_and_every_manifest() {
+        for yes in [
+            "build.rs",
+            "crates/x/build.rs",
+            ".cargo/config.toml",
+            "sub/.cargo/config",
+            "rust-toolchain.toml",
+            "Cargo.lock",
+            "web/package.json",
+            "go.mod",
+            "requirements-dev.txt",
+        ] {
+            assert!(is_build_defining(yes), "{yes}");
+        }
+        for no in [
+            "src/build.rs.orig",
+            "notbuild.rs",
+            "src/main.rs",
+            "README.md",
+        ] {
+            assert!(!is_build_defining(no), "{no}");
+        }
+    }
 
     /// Replays verdicts and counts calls.
     struct Scripted {
@@ -4822,8 +4833,7 @@ mod tests {
         let off = contained(
             Containment::Sandbox { network: true },
             AutoSettings {
-                trust_project_builds: false,
-                trust_project_builds_given: true,
+                trust_project_builds: Some(false),
                 ..AutoSettings::default()
             },
         );
@@ -5611,7 +5621,7 @@ mod tests {
                 .is_allowed()
         );
         let rows = rig.engine.grant_rows(Some(&rig.session));
-        let origins: Vec<&str> = rows.iter().map(|r| r.origin.as_str()).collect();
+        let origins: Vec<&str> = rows.iter().map(|r| r.origin.word()).collect();
         assert_eq!(origins, ["always", "session", "session"]);
         let session_dir = rows.iter().find(|r| r.removable).unwrap().id;
         rig.engine.remove_grant(&rig.session, session_dir).unwrap();

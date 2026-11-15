@@ -359,10 +359,13 @@ impl Client {
         self.harness.effects.send(effect).unwrap();
     }
 
-    /// Wait for a message matching `pred` (seen before or arriving).
-    pub async fn saw(&mut self, pred: impl Fn(&Msg) -> bool) {
-        if !self.seen.iter().any(&pred) {
-            self.wait_for(pred).await;
+    /// Wait for a message matching `pred` (seen before or arriving): the
+    /// wait for one of several messages whose order is not fixed (a call's
+    /// answer and the daemon's push it caused). The first such message.
+    pub async fn saw(&mut self, pred: impl Fn(&Msg) -> bool) -> Msg {
+        match self.seen.iter().find(|msg| pred(msg)) {
+            Some(msg) => msg.clone(),
+            None => self.wait_for(pred).await,
         }
     }
 

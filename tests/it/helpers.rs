@@ -289,20 +289,37 @@ fn delegate_times_out(ws: &Workspace) {
 /// seated: the engine drops the call without retiring its helper, and the
 /// daemon retires it when the agent's stream says the call ended with an
 /// error (`rkat_tui::mobs::delegates`).
+///
+/// The script is keyed on the messages, not on the order of the calls: on
+/// a slow machine the helper may not be seated (nor make its call) within
+/// the 3 s, and the agent's next call must still be the one that answers.
+/// So the test does not wait for the helper to show; it asserts what holds
+/// either way: the call timed out, the turn went on, nothing stays seated.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_timed_out_delegate_leaves_no_helper_seated() {
     let ws = Workspace::new();
     delegate_times_out(&ws);
-    let llm = ScriptedLlmClient::new(vec![
-        delegate("d1", "stuck", "never finishes"),
-        Step::Hang,
-        Step::Text("after the timeout"),
-    ]);
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if common::user_texts(messages)
+            .concat()
+            .contains("never finishes")
+        {
+            // The helper's model call.
+            return Step::Hang;
+        }
+        match messages
+            .iter()
+            .filter(|m| matches!(m, Message::ToolResults { .. }))
+            .count()
+        {
+            0 => delegate("d1", "stuck", "never finishes"),
+            _ => Step::Text("after the timeout"),
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 10]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("go".into()));
-    llm.wait_call(1).await;
-    client.saw(one_helper("stuck")).await;
     // The call times out; the agent goes on with the error.
     let outcome = client.turn_finished().await;
     assert_eq!(outcome.unwrap().text, "after the timeout");

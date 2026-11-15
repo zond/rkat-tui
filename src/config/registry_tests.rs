@@ -1,7 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::*;
-use crate::config::{RULES_FILE_NAME, RulesFile, load_layered_with};
+use crate::config::settings::PrepareSetting;
+use crate::config::{
+    AutoSettings, HelperSettings, Layered, RULES_FILE_NAME, RulesFile, ShellSettings, UiSettings,
+    load_layered_with,
+};
 use std::path::Path;
 
 /// Two distinct values a layer may hold for `setting` (neither needs the
@@ -59,16 +63,22 @@ fn typed_value(key: &str, layered: &Layered) -> Option<Value> {
     match key {
         "auto.mode" => to(ser(Value::try_from(layered.mode).unwrap())),
         "auto.classifier_model" => settings.classifier_model.clone().map(Value::String),
-        "auto.trust_project_builds" => settings
-            .trust_project_builds_given
-            .then_some(Value::Boolean(settings.trust_project_builds)),
+        "auto.trust_project_builds" => settings.trust_project_builds.map(Value::Boolean),
         "auto.classifier_tools" => to(Value::Boolean(settings.classifier_tools)),
         "auto.classifier_probe" => to(Value::Boolean(settings.classifier_probe)),
         "auto.compact" => to(Value::try_from(settings.compact).unwrap()),
         "auto.compact_warn_percent" => int(u64::from(settings.compact_warn_percent)),
         "auto.compact_auto_percent" => int(u64::from(settings.compact_auto_percent)),
-        "auto.compact_prepare" => settings.compact_prepare.clone().map(Value::String),
-        "auto.compact_prepare_at" => to(threshold_value(settings.compact_prepare_at)),
+        // The instruction's typed view trims and reads an empty one as
+        // off; the samples are trimmed.
+        "auto.compact_prepare" => {
+            let instruction = PrepareSetting::of(&layered.layers).instruction;
+            (instruction.source != Level::Default)
+                .then(|| Value::String(instruction.value.unwrap_or_default()))
+        }
+        "auto.compact_prepare_at" => to(threshold_value(
+            PrepareSetting::of(&layered.layers).at.value,
+        )),
         "helpers.max_depth" => int(u64::from(layered.helpers.max_depth)),
         "shell.user_timeout_secs" => int(layered.shell.user_timeout_secs),
         "search.budget_secs" => int(layered.search.budget.as_secs()),
@@ -189,12 +199,13 @@ fn every_setting_layers_as_it_always_did() {
             let resolved = setting.resolve(&tables);
             assert_eq!(resolved.value, want, "resolve: {what}");
             assert_eq!(resolved.source, source, "resolve's source: {what}");
+            let prepare = PrepareSetting::of(&layered.layers);
             match setting.key {
                 "auto.compact_prepare" => {
-                    assert_eq!(layered.settings.compact_prepare_source, source, "{what}");
+                    assert_eq!(prepare.instruction.source, source, "{what}");
                 }
                 "auto.compact_prepare_at" => {
-                    assert_eq!(layered.settings.compact_prepare_at_source, source, "{what}");
+                    assert_eq!(prepare.at.source, source, "{what}");
                 }
                 _ => {}
             }
@@ -210,6 +221,26 @@ fn every_setting_layers_as_it_always_did() {
         }
     }
     assert_eq!(checked, SETTINGS.len() * 81);
+}
+
+/// The typed views' own `Default`s (what tests and the layering start
+/// from) are the registry's defaults, which the layering deserializes.
+#[test]
+fn the_typed_defaults_are_the_registry_s() {
+    let tmp = tempfile::tempdir().unwrap();
+    let layered =
+        load_layered_with(&tmp.path().join("r"), None, &tmp.path().join("p"), None).unwrap();
+    assert_eq!(layered.settings, AutoSettings::default());
+    assert_eq!(
+        layered.mode,
+        crate::approval::mode::PermissionMode::default()
+    );
+    assert_eq!(layered.helpers, HelperSettings::default());
+    assert_eq!(layered.shell, ShellSettings::default());
+    assert_eq!(layered.search, crate::tools::SearchLimits::default());
+    assert_eq!(layered.ui, UiSettings::default());
+    assert!(layered.pricing_fetch);
+    assert_eq!(layered.daemon_principal, None);
 }
 
 /// The mode's older spelling: `enabled` in a user layer is the mode, and a

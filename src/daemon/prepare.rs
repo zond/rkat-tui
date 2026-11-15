@@ -35,8 +35,9 @@ use meerkat_mob_mcp::MobMcpState;
 use parking_lot::{Mutex, RwLock};
 
 use super::MOB_ID;
+use crate::config::registry::Level;
 use crate::config::settings::{
-    CompactionPolicy, FALLBACK_PREPARE_WINDOW, PrepareAt, PrepareSetting, PrepareSource, Sourced,
+    CompactionPolicy, FALLBACK_PREPARE_WINDOW, PrepareAt, PrepareSetting, Sourced,
 };
 use crate::text::tokens as fmt_ctx_tokens;
 
@@ -463,22 +464,22 @@ impl Prepare {
         beneath: &Sourced<Option<String>>,
     ) -> String {
         match (&instruction.value, instruction.source) {
-            (Some(text), source) => format!("\"{text}\", {}", source.describe()),
-            (None, PrepareSource::Default) => "none".to_string(),
-            (None, PrepareSource::Workspace) => match &beneath.value {
+            (Some(text), source) => format!("\"{text}\", {}", source.source_words()),
+            (None, Level::Default) => "none".to_string(),
+            (None, Level::Workspace) => match &beneath.value {
                 Some(_) => format!(
                     "off for this workspace ({} has one: /compact prepare default uses it)",
                     beneath.source.name()
                 ),
                 None => "off for this workspace".to_string(),
             },
-            (None, source) => format!("off, {}", source.describe()),
+            (None, source) => format!("off, {}", source.source_words()),
         }
     }
 
     /// The threshold in force in words, with where it comes from.
     fn threshold_words(&self, at: &Sourced<PrepareAt>) -> String {
-        format!("{}, {}", self.describe(at.value), at.source.describe())
+        format!("{}, {}", self.describe(at.value), at.source.source_words())
     }
 
     /// `at` in words: `65% of the window (about 650k tokens for <model>)`
@@ -518,12 +519,12 @@ impl Prepare {
         let asked = self.threshold_words(&live.at);
         let Some(instruction) = live.instruction.value.clone() else {
             let what = match live.instruction.source {
-                PrepareSource::Default => "none ([auto] compact_prepare, or /compact prepare <text>, sets an instruction the agent gets first)".to_string(),
+                Level::Default => "none ([auto] compact_prepare, or /compact prepare <text>, sets an instruction the agent gets first)".to_string(),
                 _ => Self::instruction_words(&live.instruction, beneath),
             };
             return format!("compact prepare: {what}; its threshold is {asked}; {backstop}");
         };
-        let source = live.instruction.source.describe();
+        let source = live.instruction.source.source_words();
         let trigger = agent
             .and_then(|agent| self.agents.lock().get(agent).cloned())
             .unwrap_or_default();
@@ -570,8 +571,8 @@ mod tests {
     fn prepare(at: PrepareAt, mode: CompactMode) -> Prepare {
         Prepare::new(
             PrepareSetting {
-                instruction: Sourced::new(Some("update PLAN.md".into()), PrepareSource::User),
-                at: Sourced::new(at, PrepareSource::User),
+                instruction: Sourced::new(Some("update PLAN.md".into()), Level::User),
+                at: Sourced::new(at, Level::User),
             },
             &CompactionPolicy {
                 mode,
@@ -616,10 +617,10 @@ mod tests {
             Crossing::Steer { .. }
         ));
         assert!(
-            p.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
+            p.status(Some("main-a"), &Sourced::new(None, Level::Default))
                 .contains("compaction requested of the agent at 330k tokens; it prepares when it reaches a stopping point"),
             "{}",
-            p.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
+            p.status(Some("main-a"), &Sourced::new(None, Level::Default))
         );
     }
 
@@ -652,12 +653,12 @@ mod tests {
         let q = prepare(PrepareAt::Tokens(300_000), CompactMode::Native);
         q.reading("main-a", 310_000, true);
         assert!(
-            q.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
+            q.status(Some("main-a"), &Sourced::new(None, Level::Default))
                 .contains("compaction requested of the agent")
         );
         assert_eq!(q.ready("main-a"), Ready::Request);
         assert!(
-            !q.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
+            !q.status(Some("main-a"), &Sourced::new(None, Level::Default))
                 .contains("compaction requested of the agent")
         );
         assert_eq!(q.reading("main-a", 600_000, true), Crossing::Nothing);
@@ -666,7 +667,7 @@ mod tests {
         r.reading("main-a", 310_000, true);
         r.compaction_started("main-a");
         assert!(
-            !r.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
+            !r.status(Some("main-a"), &Sourced::new(None, Level::Default))
                 .contains("compaction requested of the agent")
         );
         // Warn mode: at the threshold plus 10% of the window; a held
@@ -689,7 +690,7 @@ mod tests {
         let p = prepare(PrepareAt::Percent(30), CompactMode::Native);
         assert_eq!(p.reading("main-a", 310_000, false), Crossing::Nothing);
         assert!(
-            p.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
+            p.status(Some("main-a"), &Sourced::new(None, Level::Default))
                 .contains("next turn")
         );
         let (text, tokens, reminder) = p.run_started("main-a").unwrap();
@@ -697,7 +698,7 @@ mod tests {
         assert!(!reminder);
         assert!(text.contains("update PLAN.md"));
         assert!(
-            p.status(Some("main-a"), &Sourced::new(None, PrepareSource::Default))
+            p.status(Some("main-a"), &Sourced::new(None, Level::Default))
                 .contains("compaction requested of the agent at 310k")
         );
         assert_eq!(p.run_started("main-a"), None);
@@ -716,7 +717,7 @@ mod tests {
         assert_eq!(p.ready("main-a"), Ready::Request);
         // No instruction at all: the agent may still ask.
         let none = Prepare::new(
-            PrepareSetting::default(),
+            PrepareSetting::of(&crate::config::registry::Layers::default()),
             &CompactionPolicy::default(),
             (Some(1_000_000), "big-model"),
             true,
@@ -724,7 +725,7 @@ mod tests {
         none.reading("main-a", 500_000, true);
         assert_eq!(none.ready("main-a"), Ready::Request);
         assert!(
-            none.status(None, &Sourced::new(None, PrepareSource::Default))
+            none.status(None, &Sourced::new(None, Level::Default))
                 .starts_with("compact prepare: none")
         );
     }
@@ -756,10 +757,10 @@ mod tests {
             p.reading("main-a", 310_000, true),
             Crossing::Steer { .. }
         ));
-        let user = Sourced::new(Some("update PLAN.md".to_string()), PrepareSource::User);
+        let user = Sourced::new(Some("update PLAN.md".to_string()), Level::User);
         let warning = p.apply(
             user.clone(),
-            Sourced::new(PrepareAt::Percent(65), PrepareSource::Workspace),
+            Sourced::new(PrepareAt::Percent(65), Level::Workspace),
         );
         assert_eq!(warning, None);
         assert_eq!(p.threshold(), Some(650_000));
@@ -769,16 +770,13 @@ mod tests {
             p.reading("main-a", 660_000, true),
             Crossing::Steer { .. }
         ));
-        let none = Sourced::new(None, PrepareSource::Default);
+        let none = Sourced::new(None, Level::Default);
         let status = p.status(Some("main-a"), &none);
         assert!(
-            status.starts_with("compact prepare: \"update PLAN.md\", from your tui.toml; asked at 65% of the window (about 650k tokens for big-model), from this workspace (/compact prepare): compaction requested of the agent at 660k tokens"),
+            status.starts_with("compact prepare: \"update PLAN.md\", from your tui.toml; asked at 65% of the window (about 650k tokens for big-model), from this workspace: compaction requested of the agent at 660k tokens"),
             "{status}"
         );
-        let warning = p.apply(
-            user,
-            Sourced::new(PrepareAt::Percent(85), PrepareSource::Workspace),
-        );
+        let warning = p.apply(user, Sourced::new(PrepareAt::Percent(85), Level::Workspace));
         let late = prepare(PrepareAt::Percent(85), CompactMode::Native);
         assert_eq!(warning, late.startup_notice());
         assert!(warning.unwrap().contains("would never run first"));
@@ -790,12 +788,12 @@ mod tests {
     fn off_for_the_workspace_names_what_is_beneath() {
         let p = prepare(PrepareAt::Tokens(300_000), CompactMode::Native);
         p.apply(
-            Sourced::new(None, PrepareSource::Workspace),
-            Sourced::new(PrepareAt::Tokens(300_000), PrepareSource::Workspace),
+            Sourced::new(None, Level::Workspace),
+            Sourced::new(PrepareAt::Tokens(300_000), Level::Workspace),
         );
         assert_eq!(p.threshold(), None);
         assert_eq!(p.reading("main-a", 900_000, true), Crossing::Nothing);
-        let user = Sourced::new(Some("update PLAN.md".to_string()), PrepareSource::User);
+        let user = Sourced::new(Some("update PLAN.md".to_string()), Level::User);
         assert!(
             p.status(None, &user).starts_with(
                 "compact prepare: off for this workspace (your tui.toml has one: /compact prepare default uses it); its threshold is 300k tokens"
@@ -803,7 +801,7 @@ mod tests {
             "{}",
             p.status(None, &user)
         );
-        let none = Sourced::new(None, PrepareSource::Default);
+        let none = Sourced::new(None, Level::Default);
         assert!(
             p.status(None, &none)
                 .starts_with("compact prepare: off for this workspace; its threshold"),

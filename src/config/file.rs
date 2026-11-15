@@ -1,10 +1,7 @@
 //! The `tui.toml` schema: [`RulesFile`] and its sections, and the settings
 //! they layer into (see [`super::layers`]).
 
-use super::settings::{
-    ChecklistView, CompactMode, CompactionPolicy, DEFAULT_PREPARE_AT, HelperView, PrepareAt,
-    PrepareSetting, PrepareSource, Sourced, prepare_instruction,
-};
+use super::settings::{ChecklistView, CompactMode, CompactionPolicy, HelperView, PrepareAt};
 use crate::approval::mode::PermissionMode;
 use crate::approval::rules::{Rule, RuleKind, RuleOrigin, RulesError};
 use crate::bootstrap::confinement::ConfinementSection;
@@ -18,14 +15,18 @@ use std::path::Path;
 /// File name of every `tui.toml` layer.
 pub const RULES_FILE_NAME: &str = "tui.toml";
 
-/// Auto-mode settings after layering.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Auto-mode settings after layering: deserialized from the settings in
+/// force ([`super::registry::merged`], which holds every default), so no
+/// field has a default of its own there.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct AutoSettings {
     /// Classifier model override.
     pub classifier_model: Option<String>,
-    /// Whether `cargo build|test|nextest|check|clippy` are Tier 1. Off by
-    /// default: builds execute project code (`build.rs`, tests, proc macros).
-    pub trust_project_builds: bool,
+    /// Whether `cargo build|test|nextest|check|clippy` are Tier 1 (`None`:
+    /// unset, they are while a sandbox contains the shell:
+    /// `crate::approval::ApprovalEngine`). Builds execute project code
+    /// (`build.rs`, tests, proc macros).
+    pub trust_project_builds: Option<bool>,
     /// What to do when the context fills up: warn (default) or run
     /// `/compact` automatically.
     pub compact: CompactMode,
@@ -39,10 +40,6 @@ pub struct AutoSettings {
     /// bounded). On by default; off makes stage 2 decide from the attached
     /// context only, so file contents never reach the classifier.
     pub classifier_tools: bool,
-    /// Whether a layer or the command line set `trust_project_builds`
-    /// (unset, the project's builds are trusted when a sandbox contains the
-    /// shell: `crate::approval::ApprovalEngine`).
-    pub trust_project_builds_given: bool,
     /// Whether the daemon checks the classifier model at start with two
     /// fixed cases (`[auto] classifier_probe`, on by default).
     pub classifier_probe: bool,
@@ -50,17 +47,9 @@ pub struct AutoSettings {
     /// user-level file and the command line (`config`) and the realm's
     /// (`always`, what `/approve` writes), each checked
     /// ([`crate::approval::statements::normalize`]); never a project
-    /// file's.
+    /// file's. A section, not a scalar setting: the layering adds them.
+    #[serde(skip)]
     pub allow: Vec<(crate::approval::statements::StatementOrigin, String)>,
-    /// What the agent is asked to do before an automatic compaction
-    /// (`None`: nothing; an empty text is none).
-    pub compact_prepare: Option<String>,
-    /// Where it is asked ([`DEFAULT_PREPARE_AT`] unless a layer says).
-    pub compact_prepare_at: PrepareAt,
-    /// Which layer [`Self::compact_prepare`] comes from.
-    pub compact_prepare_source: PrepareSource,
-    /// Which layer [`Self::compact_prepare_at`] comes from.
-    pub compact_prepare_at_source: PrepareSource,
 }
 
 impl Default for AutoSettings {
@@ -68,18 +57,13 @@ impl Default for AutoSettings {
         let compaction = CompactionPolicy::default();
         Self {
             classifier_model: None,
-            trust_project_builds: false,
+            trust_project_builds: None,
             compact: compaction.mode,
             compact_warn_percent: compaction.warn_percent,
             compact_auto_percent: compaction.auto_percent,
             classifier_tools: true,
-            trust_project_builds_given: false,
             classifier_probe: true,
             allow: Vec::new(),
-            compact_prepare: None,
-            compact_prepare_at: DEFAULT_PREPARE_AT,
-            compact_prepare_source: PrepareSource::Default,
-            compact_prepare_at_source: PrepareSource::Default,
         }
     }
 }
@@ -96,19 +80,6 @@ impl AutoSettings {
         }
         .normalized()
         .0
-    }
-
-    /// The prepare instruction, its threshold and where they came from,
-    /// as the daemon starts with them.
-    #[must_use]
-    pub fn prepare_setting(&self) -> PrepareSetting {
-        PrepareSetting {
-            instruction: Sourced::new(
-                prepare_instruction(self.compact_prepare.as_deref()),
-                self.compact_prepare_source,
-            ),
-            at: Sourced::new(self.compact_prepare_at, self.compact_prepare_at_source),
-        }
     }
 }
 
@@ -149,11 +120,14 @@ pub struct AutoSection {
     /// file's are ignored with a notice).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
-    /// See [`AutoSettings::compact_prepare`] (`/compact prepare` writes the
+    /// What the agents are asked to do before an automatic compaction
+    /// (an empty text is none; see
+    /// [`PrepareSetting`](super::settings::PrepareSetting); `/compact prepare` writes the
     /// realm's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_prepare: Option<String>,
-    /// See [`AutoSettings::compact_prepare_at`]: tokens (`300000`) or a
+    /// Where they are asked
+    /// ([`PrepareSetting`](super::settings::PrepareSetting)): tokens (`300000`) or a
     /// share of the window (`"70%"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_prepare_at: Option<PrepareAt>,
@@ -162,8 +136,8 @@ pub struct AutoSection {
 /// How deep helpers may nest when none of the layers says.
 pub const DEFAULT_HELPER_MAX_DEPTH: u8 = 1;
 
-/// Helper settings after layering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Helper settings after layering (deserialized as [`AutoSettings`] is).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct HelperSettings {
     /// How many levels of helpers a session may have: at 1 (the default)
     /// the session may spawn helpers and its helpers may not; at 2 those
@@ -216,8 +190,9 @@ pub struct SearchSection {
     pub max_entries: Option<u64>,
 }
 
-/// `!` shell-mode settings after layering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `!` shell-mode settings after layering (deserialized as
+/// [`AutoSettings`] is).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct ShellSettings {
     /// How long a command the user runs with `!` may take before it is
     /// killed, in seconds (at least 1).
@@ -248,8 +223,8 @@ pub struct UiSection {
     pub checklist: Option<ChecklistView>,
 }
 
-/// `[ui]` settings after layering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `[ui]` settings after layering (deserialized as [`AutoSettings`] is).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct UiSettings {
     /// How helper (sub-agent) headers start: one folded line (default) or
     /// showing the helper's work.

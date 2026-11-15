@@ -509,7 +509,7 @@ pub async fn assemble(
         Arc::new(project_inputs.clone()),
     );
     let compaction = layered.settings.compaction_policy(None);
-    let compact_prepare = layered.settings.prepare_setting();
+    let compact_prepare = crate::config::settings::PrepareSetting::of(&layered.layers);
     let layers = layered.layers.clone();
     approval_notices.extend(endpoint_notices.iter().map(ToString::to_string));
     approval_notices.extend(thinking_notices);

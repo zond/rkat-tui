@@ -609,10 +609,12 @@ mod tests {
         );
         assert_eq!(picker.rows[0].note.as_deref(), Some("/w/api"));
         assert!(matches!(
-            &picker.rows[0].keys[0].act,
-            Ok(crate::ui::PickAct::Wire { agent, .. }) if agent == "main-aaaa"
+            picker.rows[0].keys[0].act(),
+            Some(crate::ui::PickAct::Wire { agent, .. }) if agent == "main-aaaa"
         ));
-        assert!(matches!(&picker.rows[1].keys[0].act, Err(why) if why.contains("already")));
+        assert!(
+            matches!(&picker.rows[1].keys[0].does, crate::ui::Does::Refused(why) if why.contains("already"))
+        );
         assert!(
             wire_picker(&[], &[])
                 .empty
@@ -631,7 +633,10 @@ mod tests {
             picker.rows[0].text,
             "web/main-cccc  its daemon is not running"
         );
-        assert!(picker.rows[0].keys[0].confirm.is_some());
+        assert!(matches!(
+            picker.rows[0].keys[0].does,
+            crate::ui::Does::Ask(..)
+        ));
         assert_eq!(resolve_wire("web", &wired).unwrap().agent, "main-cccc");
         assert!(resolve_wire("web", &[]).is_err());
         // The other daemon runs, but the agent retired there: stale.

@@ -8,6 +8,8 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
+use super::registry::{Layers, Level, PREPARE, PREPARE_AT, Resolved};
+
 /// Default `compact_warn_percent`.
 pub const DEFAULT_WARN_PERCENT: u8 = 75;
 
@@ -278,23 +280,30 @@ impl<'de> Deserialize<'de> for PrepareAt {
     }
 }
 
-/// Which `tui.toml` layer the prepare instruction or its threshold in
-/// force comes from (`/compact prepare` and `/compact status` say it).
-pub type PrepareSource = super::registry::Level;
-
-/// A setting's value and the layer it comes from.
+/// A setting's value, typed, and the layer it comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sourced<T> {
     /// The value.
     pub value: T,
     /// Where it comes from.
-    pub source: PrepareSource,
+    pub source: Level,
 }
 
 impl<T> Sourced<T> {
     /// `value` from `source`.
-    pub fn new(value: T, source: PrepareSource) -> Self {
+    pub fn new(value: T, source: Level) -> Self {
         Self { value, source }
+    }
+}
+
+impl Sourced<Option<String>> {
+    /// The prepare instruction `resolved` holds ([`prepare_instruction`]).
+    #[must_use]
+    pub fn instruction(resolved: &Resolved) -> Self {
+        Self::new(
+            prepare_instruction(resolved.value.as_ref().and_then(toml::Value::as_str)),
+            resolved.source,
+        )
     }
 }
 
@@ -303,50 +312,26 @@ impl<T> Sourced<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrepareSetting {
     /// The instruction in force (`None` from a layer: off there; from
-    /// [`PrepareSource::Default`]: none is set).
+    /// [`Level::Default`]: none is set).
     pub instruction: Sourced<Option<String>>,
     /// Its threshold in force.
     pub at: Sourced<PrepareAt>,
 }
 
-impl Default for PrepareSetting {
-    fn default() -> Self {
-        Self {
-            instruction: Sourced::new(None, PrepareSource::Default),
-            at: Sourced::new(DEFAULT_PREPARE_AT, PrepareSource::Default),
-        }
-    }
-}
-
 impl PrepareSetting {
     /// The instruction and its threshold the layers `layers` give.
     #[must_use]
-    pub fn of(layers: &super::registry::Layers) -> Self {
-        use super::registry::Setting;
-        let read = |key| Setting::find(key).map(|setting| setting.resolve(layers));
-        let instruction = read("auto.compact_prepare");
-        let at = read("auto.compact_prepare_at");
+    pub fn of(layers: &Layers) -> Self {
+        let at = PREPARE_AT.resolve(layers);
         Self {
-            instruction: instruction.map_or_else(
-                || Sourced::new(None, PrepareSource::Default),
-                |resolved| {
-                    Sourced::new(
-                        prepare_instruction(resolved.value.as_ref().and_then(toml::Value::as_str)),
-                        resolved.source,
-                    )
-                },
-            ),
-            at: at.map_or_else(
-                || Sourced::new(DEFAULT_PREPARE_AT, PrepareSource::Default),
-                |resolved| {
-                    Sourced::new(
-                        resolved
-                            .value
-                            .and_then(|value| value.try_into().ok())
-                            .unwrap_or(DEFAULT_PREPARE_AT),
-                        resolved.source,
-                    )
-                },
+            instruction: Sourced::instruction(&PREPARE.resolve(layers)),
+            // The threshold has a default and every layer's value was read
+            // as one: the fallback is never taken.
+            at: Sourced::new(
+                at.value
+                    .and_then(|value| value.try_into().ok())
+                    .unwrap_or(DEFAULT_PREPARE_AT),
+                at.source,
             ),
         }
     }

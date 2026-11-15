@@ -381,11 +381,7 @@ impl Written {
 
     /// The level written, in words, with its file.
     fn file_words(&self) -> String {
-        let whose = match self.level {
-            Level::User => "your tui.toml",
-            _ => "this workspace's tui.toml",
-        };
-        format!("{whose} ({})", self.path.display())
+        format!("{} ({})", self.level.file_words(), self.path.display())
     }
 
     /// What was written where, what is in force and from where, when it
@@ -400,10 +396,7 @@ impl Written {
         parts.push(format!(
             "in force: {} ({})",
             in_force_words(self.setting, &self.after),
-            match self.after.source {
-                Level::Default => "the default".to_string(),
-                source => format!("from {}", source.name()),
-            }
+            self.after.source.source_words()
         ));
         parts.push(
             match (self.changed(), self.setting.applies) {

@@ -273,6 +273,9 @@ impl Search<'_> {
 
 /// The answer: the files' lines up to the output's limits, and what was
 /// left out.
+/// What the answer of a grep that matched nothing starts with.
+pub(crate) const NO_MATCHES: &str = "No matches for";
+
 fn render(found: Searched, line_limit: usize, pattern: &str) -> String {
     let Searched {
         files,
@@ -293,7 +296,7 @@ fn render(found: Searched, line_limit: usize, pattern: &str) -> String {
     if files.is_empty() {
         super::scan::write_none(
             &mut text,
-            &format!("No matches for `{pattern}`"),
+            &format!("{NO_MATCHES} `{pattern}`"),
             "in the files examined",
             "matches",
             partial.is_some(),

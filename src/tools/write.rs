@@ -26,6 +26,9 @@ pub(crate) fn definition() -> ToolDef {
     )
 }
 
+/// What a new file's answer starts with: `created <path> (N lines)`.
+pub(crate) const CREATED: &str = "created ";
+
 pub(crate) fn run(shared: &Shared, call: CallMeta, args: WriteFileArgs) -> ToolOutcome {
     let resolved = shared.resolve(WRITE_FILE, &args.path)?;
     let existing = shared.check_writable(call.session.as_ref(), &args.path, &resolved)?;
@@ -35,7 +38,7 @@ pub(crate) fn run(shared: &Shared, call: CallMeta, args: WriteFileArgs) -> ToolO
     let diff = shared.commit_write(call, &resolved, &old, &args.content)?;
     let lines = args.content.lines().count();
     Ok(if created {
-        format!("created {display} ({lines} lines)")
+        format!("{CREATED}{display} ({lines} lines)")
     } else {
         format!("updated {display} {}", diff.stats())
     })

@@ -12,7 +12,9 @@
 //!   the daemon for the session and its helpers, applied live;
 //! - **always** ([`GrantScope::Always`]): the same grant written through
 //!   the realm's trusted writer, so it holds for every session and after a
-//!   restart.
+//!   restart;
+//! - **always, in every workspace** ([`GrantScope::AlwaysUser`]): the same
+//!   written to the user's own `tui.toml` instead.
 //!
 //! The grant ([`GrantTarget`]) is a directory when a path outside the
 //! allowed scope is why the call was blocked (a file tool's own target, or
@@ -149,11 +151,40 @@ pub struct GrantRow {
     pub id: u64,
     /// What it allows.
     pub target: GrantTarget,
-    /// Where it comes from: `default`, `flag`, `config`, `session` or
-    /// `always`.
-    pub origin: String,
+    /// Where it comes from.
+    pub origin: GrantOrigin,
     /// Whether `/permissions` can remove it (a session grant).
     pub removable: bool,
+}
+
+/// Where a grant in force comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantOrigin {
+    /// The sandbox grants it by default.
+    Default,
+    /// The daemon's command line.
+    Flag,
+    /// A `tui.toml` file (`[confinement] extra_write`).
+    Config,
+    /// Granted "always" while this daemon runs (written to a `tui.toml`).
+    Always,
+    /// Granted for the session.
+    Session,
+}
+
+impl GrantOrigin {
+    /// How `/permissions` names it.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Flag => "flag",
+            Self::Config => "config",
+            Self::Always => "always",
+            Self::Session => "session",
+        }
+    }
 }
 
 /// Why no directory grant fits a path.

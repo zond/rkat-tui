@@ -955,6 +955,7 @@ pub(super) fn rule_picker(
     grants: &[crate::approval::grants::GrantRow],
     statements: &[crate::approval::statements::StatementRow],
 ) -> crate::ui::ListPicker {
+    use crate::approval::grants::GrantOrigin;
     use crate::approval::rules::RuleOrigin;
     use crate::approval::statements::StatementOrigin;
     use crate::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
@@ -970,15 +971,18 @@ pub(super) fn rule_picker(
         } else {
             PickKey::refused(
                 KeyCode::Char('d'),
-                match grant.origin.as_str() {
-                    "default" => "the sandbox grants it by default".to_string(),
-                    "flag" => "it comes from the daemon's command line".to_string(),
-                    "always" => "it is in the realm's tui.toml ([confinement] extra_write): edit that file to drop it".to_string(),
-                    _ => "it is in a tui.toml ([confinement]): edit that file to drop it".to_string(),
+                match grant.origin {
+                    GrantOrigin::Default => "the sandbox grants it by default",
+                    GrantOrigin::Flag => "it comes from the daemon's command line",
+                    GrantOrigin::Always => "it is in the realm's tui.toml ([confinement] extra_write): edit that file to drop it",
+                    GrantOrigin::Config | GrantOrigin::Session => "it is in a tui.toml ([confinement]): edit that file to drop it",
                 },
             )
         };
-        PickRow::new(format!("grant {what} · {}", grant.origin), vec![key])
+        PickRow::new(
+            format!("grant {what} · {}", grant.origin.word()),
+            vec![key],
+        )
     });
     let statement_rows = statements.iter().map(|statement| {
         let key = match statement.origin {
@@ -1101,7 +1105,7 @@ pub(super) fn settings_picker(
     filter: Option<&str>,
 ) -> crate::ui::ListPicker {
     use crate::config::registry::Level;
-    use crate::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
+    use crate::ui::{Field, FieldFor, ListPicker, PickAct, PickKey, PickRow, PickerKind};
     use ratatui::crossterm::event::KeyCode;
     let wanted = |key: &str| filter.is_none_or(|filter| key.contains(filter));
     let held = |row: &protocol::SettingRow, level: Level| {
@@ -1146,6 +1150,7 @@ pub(super) fn settings_picker(
                         key: row.key.clone(),
                         value: None,
                         user: level == Level::User,
+                        filter: filter.map(str::to_string),
                     },
                     format!(
                         "Remove {} from {}? The next layer's value applies.",
@@ -1167,12 +1172,15 @@ pub(super) fn settings_picker(
                 ),
             };
             let edit = |code, user: bool| {
-                PickKey::now(
+                PickKey::field(
                     code,
-                    PickAct::EditSetting {
-                        key: row.key.clone(),
-                        user,
-                        current: held(row, if user { Level::User } else { Level::Workspace })
+                    Field {
+                        what: FieldFor::Setting {
+                            key: row.key.clone(),
+                            user,
+                            filter: filter.map(str::to_string),
+                        },
+                        text: held(row, if user { Level::User } else { Level::Workspace })
                             .unwrap_or_default(),
                     },
                 )
@@ -1283,11 +1291,14 @@ pub(super) fn approve_picker(
                 .as_ref()
                 .map_or_else(String::new, |rule| format!(" [{rule}]"));
             let ago = crate::text::span(now.saturating_sub(call.at), 1);
-            keys.push(PickKey::now(
+            keys.push(PickKey::field(
                 KeyCode::Char('e'),
-                PickAct::EditEffect {
-                    id: call.id,
-                    proposed: call.effect.clone().unwrap_or_default(),
+                crate::ui::Field {
+                    what: crate::ui::FieldFor::Effect {
+                        id: call.id,
+                        scope: crate::approval::grants::GrantScope::Session,
+                    },
+                    text: call.effect.clone().unwrap_or_default(),
                 },
             ));
             let grant = call.grant.as_ref().map_or_else(String::new, |grant| {

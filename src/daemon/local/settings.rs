@@ -2,9 +2,10 @@
 //! setting takes in the daemon, and each setting's hook.
 
 use super::*;
-use crate::config::registry::{Level, Setting};
+use crate::config::registry::{Hook, Level, Setting};
 use crate::daemon::protocol::{SetSettingParams, SettingNote, SettingOutcome, SettingsList};
 use crate::daemon::settings::Written;
+use crate::endpoints::EndpointRef;
 
 impl Local {
     /// `rkat/settings`: every setting as `/settings` lists it.
@@ -56,34 +57,8 @@ impl Local {
         }
     }
 
-    /// Record `value` as `key`'s value at `level` without applying it (the
-    /// caller applied it live already: a mode switch, Ctrl+T). What went
-    /// wrong, if anything, with what the higher layers say.
-    pub(super) async fn record_setting(
-        &self,
-        key: &'static str,
-        value: toml::Value,
-        level: Level,
-    ) -> Option<String> {
-        let setting = Setting::find(key)?;
-        let settings = Arc::clone(&self.core.settings);
-        let written =
-            tokio::task::spawn_blocking(move || settings.write_value(setting, Some(value), level))
-                .await
-                .map_err(|err| err.to_string())
-                .and_then(|written| written);
-        match written {
-            Ok(written) => {
-                self.audit_setting(&written);
-                // A higher layer wins at the next start: say so.
-                (written.after.source > written.level).then(|| written.confirmation())
-            }
-            Err(why) => Some(format!("it applies to this run but was not saved: {why}")),
-        }
-    }
-
     /// The audit line of a written change.
-    fn audit_setting(&self, written: &Written) {
+    pub(super) fn audit_setting(&self, written: &Written) {
         let value = written
             .value
             .as_ref()
@@ -104,22 +79,29 @@ impl Local {
     /// What must hold before a change is written: a classifier model names
     /// an endpoint this daemon has.
     fn precheck(&self, key: &str, value: Option<&str>) -> Result<(), String> {
-        if key.trim() != "auto.classifier_model" {
+        let Some(setting) = Setting::find(key.trim()) else {
             return Ok(());
+        };
+        match setting.hook {
+            Hook::ClassifierModel => {}
+            Hook::None | Hook::Mode | Hook::TrustBuilds | Hook::Prepare | Hook::Ui => {
+                return Ok(());
+            }
         }
         let Some(value) = value.map(str::trim) else {
             return Ok(());
         };
-        let (endpoint, model) = value.split_once(':').ok_or_else(|| {
+        let key = setting.key;
+        let EndpointRef { endpoint, model } = EndpointRef::parse(value).ok_or_else(|| {
             format!(
-                "auto.classifier_model takes endpoint:model (this daemon has {}); /auto model picks one",
+                "{key} takes endpoint:model (this daemon has {}); /auto model picks one",
                 self.parts.endpoints.names().join(", ")
             )
         })?;
         if model.trim().is_empty() {
-            return Err("auto.classifier_model needs a model after the endpoint".to_string());
+            return Err(format!("{key} needs a model after the endpoint"));
         }
-        if self.parts.endpoints.get(endpoint).is_none() {
+        if self.parts.endpoints.get(&endpoint).is_none() {
             return Err(format!(
                 "the classifier model was not changed: this daemon has no endpoint `{endpoint}` (it has {}); define it under [endpoints.{endpoint}] in your own tui.toml and restart the daemon, or pick a model of one it has",
                 self.parts.endpoints.names().join(", ")
@@ -141,8 +123,8 @@ impl Local {
     ) -> (Vec<String>, Option<String>) {
         let value = after.value.clone();
         let changed = before.value != after.value;
-        match setting.key {
-            "auto.mode" if changed => {
+        match setting.hook {
+            Hook::Mode if changed => {
                 let mode = value
                     .and_then(|value| value.try_into::<PermissionMode>().ok())
                     .unwrap_or_default();
@@ -152,11 +134,11 @@ impl Local {
                     (!warnings.is_empty()).then(|| warnings.join("\n")),
                 )
             }
-            "auto.classifier_model" if changed => {
+            Hook::ClassifierModel if changed => {
                 let reference = value.as_ref().and_then(toml::Value::as_str).unwrap_or("");
-                match reference.split_once(':') {
-                    Some((endpoint, model)) => {
-                        let outcome = self.switch_classifier_model(endpoint, model).await;
+                match EndpointRef::parse(reference) {
+                    Some(EndpointRef { endpoint, model }) => {
+                        let outcome = self.switch_classifier_model(&endpoint, &model).await;
                         if outcome.ok {
                             (vec![outcome.text], None)
                         } else {
@@ -172,13 +154,14 @@ impl Local {
                     ),
                 }
             }
-            "auto.trust_project_builds" if changed => {
+            Hook::TrustBuilds if changed => {
                 self.core
                     .engine
                     .set_trust_project_builds(value.as_ref().and_then(toml::Value::as_bool));
                 (Vec::new(), None)
             }
-            "auto.compact_prepare" | "auto.compact_prepare_at" => {
+            // The source matters too: `/compact status` names it.
+            Hook::Prepare => {
                 let setting =
                     crate::config::settings::PrepareSetting::of(&self.core.settings.layers());
                 let at = self.core.prepare.describe(setting.at.value);
@@ -189,7 +172,7 @@ impl Local {
                 let warning = self.core.prepare.apply(setting.instruction, setting.at);
                 (vec![line], warning)
             }
-            "ui.helpers" | "ui.bell" | "ui.checklist" if changed && push => {
+            Hook::Ui if changed && push => {
                 self.core.decisions.broadcast(
                     protocol::SETTING,
                     &SettingNote {
@@ -201,7 +184,9 @@ impl Local {
                 );
                 (Vec::new(), None)
             }
-            _ => (Vec::new(), None),
+            Hook::None | Hook::Mode | Hook::ClassifierModel | Hook::TrustBuilds | Hook::Ui => {
+                (Vec::new(), None)
+            }
         }
     }
 
@@ -219,11 +204,7 @@ impl Local {
         let Ok(synced) = tokio::task::spawn_blocking(move || settings.sync(level)).await else {
             return;
         };
-        let file = match level {
-            Level::User => "your tui.toml",
-            Level::Workspace => "this workspace's tui.toml",
-            _ => "the project's .rkat/tui.toml",
-        };
+        let file = level.file_words();
         let path = self
             .core
             .settings
@@ -261,10 +242,7 @@ impl Local {
                             "; it applies at the next start".to_string()
                         }
                     };
-                    let source = match change.after.source {
-                        Level::Default => "the default".to_string(),
-                        source => format!("from {}", source.name()),
-                    };
+                    let source = change.after.source.source_words();
                     let mut notice = format!(
                         "{} is now {} ({source}; {file} changed){when}",
                         change.setting.key,

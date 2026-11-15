@@ -247,7 +247,7 @@ impl<'a> Scan<'a> {
             .map(|(dir, count)| format!("{}/ ({count})", display(&self.root.join(dir))))
             .collect();
         let mut note = format!(
-            "[partial: the search stopped after {secs:.1} s and {examined} entries examined, \
+            "{PARTIAL} after {secs:.1} s and {examined} entries examined, \
              because {reason}; there may be more matches in what it did not reach."
         );
         if !busiest.is_empty() {
@@ -262,6 +262,14 @@ impl<'a> Scan<'a> {
     }
 }
 
+/// What a search's note that it stopped early starts with.
+pub(crate) const PARTIAL: &str = "[partial: the search stopped";
+/// What a search that found nothing and stopped early says after `none`.
+pub(crate) const STOPPED_BEFORE: &str = "The search stopped before";
+/// What a note after a search's or a read's answer lines starts with
+/// (`… [results truncated: …]`).
+pub(crate) const NOTE: &str = "… [";
+
 /// The line a search that found nothing answers with: `none` (what was
 /// not found), and when it stopped early that this is no evidence of
 /// absence: `none` `among`, and that `what` may exist beyond it.
@@ -269,7 +277,7 @@ pub(crate) fn write_none(out: &mut String, none: &str, among: &str, what: &str, 
     if stopped {
         let _ = writeln!(
             out,
-            "{none} {among}. The search stopped before it was done, so {what} may exist \
+            "{none} {among}. {STOPPED_BEFORE} it was done, so {what} may exist \
              beyond what it examined."
         );
     } else {

@@ -848,6 +848,37 @@ fn warn_mode_warns_once_on_crossing_then_every_turn_at_auto() {
     assert!(!app.compacting);
 }
 
+/// A command held while a `/compact now` request is out waits for its
+/// answer even when a turn started meanwhile ends first: [`App::run_held`]
+/// waits out what [`App::defers`] held it for. Before, the turn's end ran
+/// it with the request still unanswered.
+#[test]
+fn a_held_command_waits_for_an_unanswered_compact_request() {
+    let mut app = App::new(StatusInfo::default());
+    app.status.context_used = Some(40_000);
+    assert_eq!(submit(&mut app, "/compact now"), vec![Effect::CompactNow]);
+    assert_eq!(
+        submit(&mut app, "one"),
+        vec![Effect::StartTurn("one".into())]
+    );
+    assert!(submit(&mut app, "/clear").is_empty());
+    let held = |app: &App| {
+        app.transcript.blocks().iter().any(|b| {
+            matches!(
+                b,
+                Block::Queued {
+                    label: QueuedLabel::Command,
+                    ..
+                }
+            )
+        })
+    };
+    app.update(finished(Ok(summary())));
+    assert!(held(&app), "the request is not answered yet");
+    app.update(Msg::CompactRequested(Ok(())));
+    assert!(!held(&app), "the answer lets it run");
+}
+
 #[test]
 fn prompts_during_the_request_are_queued_inputs_not_held_text() {
     let mut app = App::new(StatusInfo::default());

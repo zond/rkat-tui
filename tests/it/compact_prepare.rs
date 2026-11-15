@@ -360,7 +360,7 @@ async fn the_workspace_sets_off_and_defaults_over_the_users_file_live() {
         )),
         "{start}"
     );
-    assert!(start.contains("), default: armed"), "{start}");
+    assert!(start.contains("), the default: armed"), "{start}");
     // The threshold, live: the next reading over it asks the agent.
     let answer = set(&rig, "auto.compact_prepare_at", Some("50000")).await;
     let realm_toml_shown = realm_toml.display().to_string();
@@ -401,7 +401,7 @@ async fn the_workspace_sets_off_and_defaults_over_the_users_file_live() {
     let off = status(&rig).await;
     assert!(
         off.starts_with(
-            "compact prepare: off for this workspace (your tui.toml has one: /compact prepare default uses it); its threshold is 50k tokens, from this workspace (/compact prepare)"
+            "compact prepare: off for this workspace (your tui.toml has one: /compact prepare default uses it); its threshold is 50k tokens, from this workspace"
         ),
         "{off}"
     );

@@ -1877,7 +1877,7 @@ what the agents are now asked and where ("the agents are asked at 65% of
 the window (about 650k tokens for <model>) to: "update PLAN.md""); `/compact
 status` names where each value in force comes from: from this
 workspace, from your tui.toml, from the command line, from the project's
-.rkat/tui.toml, or default. Off says what `default` would bring back
+.rkat/tui.toml, or the default. Off says what `default` would bring back
 ("off for this workspace (your tui.toml has one: /compact prepare
 default uses it)"). A threshold at or above the automatic compaction's
 is applied with the start-up notice's warning. A value from the command

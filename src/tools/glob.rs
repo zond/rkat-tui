@@ -253,6 +253,12 @@ fn search(
     (hits, total, partial)
 }
 
+/// What the answer of a glob that matched nothing starts with.
+pub(crate) const NO_FILES: &str = "No files matched";
+/// The note that not every match is listed: `… [results truncated:
+/// showing N of T matches; …]`.
+pub(crate) const RESULTS_TRUNCATED: &str = "… [results truncated: showing ";
+
 /// The answer: the hits, newest first, and what was left out.
 fn render(
     shared: &Shared,
@@ -265,7 +271,7 @@ fn render(
     if hits.is_empty() {
         super::scan::write_none(
             &mut out,
-            &format!("No files matched `{pattern}`"),
+            &format!("{NO_FILES} `{pattern}`"),
             "among the entries examined",
             "matching files",
             partial.is_some(),
@@ -277,7 +283,7 @@ fn render(
     if total > MAX_RESULTS {
         let _ = writeln!(
             out,
-            "… [results truncated: showing {MAX_RESULTS} of {total} matches; use a narrower pattern or path]"
+            "{RESULTS_TRUNCATED}{MAX_RESULTS} of {total} matches; use a narrower pattern or path]"
         );
     }
     if let Some(note) = partial {

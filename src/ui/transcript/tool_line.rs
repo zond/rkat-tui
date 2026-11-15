@@ -12,6 +12,7 @@
 //! the engine's shell status line, a structured result): a number that is
 //! not there is left out, never guessed.
 
+use crate::tools::answers;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -506,7 +507,7 @@ fn shell_head(args: &Value) -> Head {
 /// its diff's.
 fn write_outcome(result: &str) -> Outcome {
     let first = result.lines().next().unwrap_or_default();
-    if !first.starts_with("created ") {
+    if !first.starts_with(answers::CREATED) {
         return Outcome::default();
     }
     let lines = first
@@ -523,7 +524,7 @@ fn write_outcome(result: &str) -> Outcome {
 /// `N lines` from the start, else `lines A–B`, `(truncated)` when the file
 /// was cut.
 fn read_outcome(result: &str) -> Outcome {
-    if result.starts_with("(empty file)") {
+    if result.starts_with(answers::EMPTY_FILE) {
         return Outcome::said("empty");
     }
     let numbers: Vec<usize> = result
@@ -534,13 +535,13 @@ fn read_outcome(result: &str) -> Outcome {
     let (Some(first), Some(last)) = (numbers.first(), numbers.last()) else {
         return Outcome::default();
     };
-    let more = result.contains("\n… [showing lines ");
+    let more = result.contains(answers::SHOWING_LINES);
     let mut text = if *first == 1 && !more {
         crate::text::count(numbers.len(), "line")
     } else {
         format!("lines {first}–{last}")
     };
-    if result.contains("\n… [file truncated") {
+    if result.contains(answers::FILE_TRUNCATED) {
         text.push_str(" (truncated)");
     }
     Outcome::said(text)
@@ -578,13 +579,13 @@ fn shell_outcome(result: &str) -> Outcome {
 fn answer_lines(result: &str) -> impl Iterator<Item = &str> {
     result
         .lines()
-        .take_while(|line| !line.starts_with("… [") && !line.starts_with("[partial:"))
+        .take_while(|line| !line.starts_with(answers::NOTE) && !line.starts_with(answers::PARTIAL))
         .filter(|line| !line.is_empty())
 }
 
 /// Whether a search stopped early (`src/tools/scan.rs` `partial_note`).
 fn stopped(result: &str) -> bool {
-    result.contains("[partial: the search stopped") || result.contains("The search stopped before")
+    result.contains(answers::PARTIAL) || result.contains(answers::STOPPED_BEFORE)
 }
 
 fn with_stop(text: String, result: &str) -> Outcome {
@@ -599,7 +600,7 @@ fn with_stop(text: String, result: &str) -> Outcome {
 /// file counts (`count`), or matching lines (`content`; counted only
 /// without context lines, which look alike).
 fn grep_outcome(args: &Value, result: &str) -> Outcome {
-    if result.starts_with("No matches for") {
+    if result.starts_with(answers::NO_MATCHES) {
         return with_stop("no matches".to_string(), result);
     }
     let lines: Vec<&str> = answer_lines(result).collect();
@@ -651,14 +652,14 @@ fn matches(n: usize) -> String {
 /// `glob`'s answer (`src/tools/glob.rs`): one path a line, and the total
 /// when it was cut (`showing N of T matches`).
 fn glob_outcome(result: &str) -> Outcome {
-    if result.starts_with("No files matched") {
+    if result.starts_with(answers::NO_FILES) {
         return with_stop("no files".to_string(), result);
     }
     let shown = answer_lines(result).count();
     let total = result
         .split("of ")
         .nth(1)
-        .filter(|_| result.contains("[results truncated: showing "))
+        .filter(|_| result.contains(answers::RESULTS_TRUNCATED))
         .and_then(|rest| rest.split_whitespace().next())
         .and_then(|n| n.parse::<usize>().ok())
         .unwrap_or(shown);
