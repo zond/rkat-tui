@@ -191,8 +191,8 @@ pub struct Layered {
     pub rules: RuleSet,
     /// Merged `[auto]` settings.
     pub settings: AutoSettings,
-    /// The permission mode at start (`[auto] mode`; `enabled = false`, or
-    /// `--no-auto`, is [`PermissionMode::Manual`]). The approval engine
+    /// The permission mode at start (`[auto] mode`; `--no-auto` is
+    /// [`PermissionMode::Manual`]). The approval engine
     /// owns the mode from then on.
     pub mode: PermissionMode,
     /// Merged `[endpoints.<name>]` (not yet validated).
@@ -271,18 +271,23 @@ pub fn load_layered_with(
     cli: Option<&RulesFile>,
 ) -> Result<Layered, RulesError> {
     let mut layered = Layered::default();
-    if let Some(global) = global_rules_file {
-        let file = RulesFile::load(global)?;
-        layered.layers.user = file.table();
-        layered.apply_user_layer(RuleOrigin::Global, &file)?;
-    }
+    let global = global_rules_file.map(RulesFile::load).transpose()?;
     let realm = RulesFile::load(&realm_dir.join(RULES_FILE_NAME))?;
+    let mut user_layers: Vec<(RuleOrigin, &RulesFile)> = Vec::new();
+    if let Some(global) = &global {
+        layered.layers.user = global.table();
+        user_layers.push((RuleOrigin::Global, global));
+    }
     layered.layers.workspace = realm.table();
-    layered.apply_user_layer(RuleOrigin::Realm, &realm)?;
+    user_layers.push((RuleOrigin::Realm, &realm));
     if let Some(cli) = cli {
         layered.layers.cli = cli.table();
-        layered.apply_user_layer(RuleOrigin::Cli, cli)?;
+        user_layers.push((RuleOrigin::Cli, cli));
     }
+    for (origin, file) in &user_layers {
+        layered.apply_user_layer(*origin, file);
+    }
+    layered.take_lasting(super::lasting::Lasting::of(&user_layers))?;
     let project_path = project_rkat_dir.join(RULES_FILE_NAME);
     let project = RulesFile::load(&project_path)?;
     layered.layers.project = project.table();
@@ -329,15 +334,39 @@ struct PricingScalars {
 }
 
 impl Layered {
-    /// Apply one of the user's own layers (global, realm, command line),
-    /// over the ones before it.
-    fn apply_user_layer(&mut self, origin: RuleOrigin, file: &RulesFile) -> Result<(), RulesError> {
-        for rule in file.rules(origin)? {
+    /// Take the lasting permissions of the user's own layers
+    /// ([`super::lasting::Lasting`]): their rules, statements and
+    /// directories. A rule that does not parse refuses the start; a
+    /// statement not taken is a notice.
+    ///
+    /// # Errors
+    ///
+    /// The first rule's [`RulesError`].
+    fn take_lasting(&mut self, lasting: super::lasting::Lasting) -> Result<(), RulesError> {
+        use super::lasting::Skipped;
+        for skipped in lasting.skipped {
+            match skipped {
+                Skipped::Rule { error, .. } => return Err(error),
+                Skipped::Statement { text, refusal, .. } => {
+                    self.notices.push(Notice::StatementIgnored {
+                        text,
+                        reason: refusal.to_string(),
+                    });
+                }
+            }
+        }
+        for rule in lasting.rules {
             self.rules.push(rule);
         }
-        if let Some(section) = &file.confinement {
-            self.confinement.extend_from(section);
-        }
+        self.settings.allow = lasting.statements;
+        self.confinement = lasting.confinement;
+        Ok(())
+    }
+
+    /// Apply one of the user's own layers (global, realm, command line)
+    /// over the ones before it: its prices, thinking and endpoints (its
+    /// permissions are [`Self::take_lasting`]'s).
+    fn apply_user_layer(&mut self, origin: RuleOrigin, file: &RulesFile) {
         for (model, section) in &file.pricing {
             self.pricing
                 .entry(model.clone())
@@ -360,15 +389,6 @@ impl Layered {
                     origin,
                 });
         }
-        if let Some(auto) = &file.auto {
-            let origin = if origin == RuleOrigin::Realm {
-                crate::approval::statements::StatementOrigin::Always
-            } else {
-                crate::approval::statements::StatementOrigin::Config
-            };
-            self.add_statements(origin, &auto.allow);
-        }
-        Ok(())
     }
 
     /// Apply the project file (`.rkat/tui.toml`, which a cloned repository
@@ -508,41 +528,6 @@ impl Layered {
         self.pricing_fetch = pricing.fetch;
         self.daemon_principal = daemon.principal;
         Ok(())
-    }
-
-    /// Take a user layer's `[auto] allow` statements: each checked, none
-    /// twice, at most [`crate::approval::statements::MAX_STATEMENTS`]; the
-    /// rest with a notice.
-    fn add_statements(
-        &mut self,
-        origin: crate::approval::statements::StatementOrigin,
-        statements: &[String],
-    ) {
-        use crate::approval::statements::{MAX_STATEMENTS, StatementRefusal, normalize};
-        for raw in statements {
-            let taken = normalize(raw).and_then(|text| {
-                if self
-                    .settings
-                    .allow
-                    .iter()
-                    .any(|(_, known)| known.eq_ignore_ascii_case(&text))
-                {
-                    Err(StatementRefusal::Duplicate)
-                } else if self.settings.allow.len() >= MAX_STATEMENTS {
-                    Err(StatementRefusal::TooMany)
-                } else {
-                    Ok(text)
-                }
-            });
-            match taken {
-                Ok(text) => self.settings.allow.push((origin, text)),
-                Err(StatementRefusal::Duplicate) => {}
-                Err(why) => self.notices.push(Notice::StatementIgnored {
-                    text: raw.chars().take(80).collect(),
-                    reason: why.to_string(),
-                }),
-            }
-        }
     }
 
     /// Bring the compaction percentages into range, with a notice when

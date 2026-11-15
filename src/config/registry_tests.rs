@@ -120,18 +120,15 @@ fn oracle(
             project.as_integer().unwrap() <= value.as_ref().unwrap().as_integer().unwrap()
         }
         ProjectRule::OnlyFalse => *project == Value::Boolean(false),
-        // The project's sample is its `enabled`, as the manual mode.
+        // Of a project's mode only `"default"` is read, as the manual mode.
         ProjectRule::OnlyManual => {
             cli.is_none()
-                && *project == Value::Boolean(false)
+                && project.as_str() == Some("default")
                 && value.as_ref().and_then(Value::as_str) == Some("auto")
         }
     };
     if takes {
-        value = Some(match setting.project {
-            ProjectRule::OnlyManual => Value::String("default".to_string()),
-            _ => project.clone(),
-        });
+        value = Some(project.clone());
         source = Level::Project;
     }
     (value, source)
@@ -158,7 +155,10 @@ fn every_setting_layers_as_it_always_did() {
     for setting in SETTINGS {
         let samples = samples(setting);
         let choices: Vec<Option<&Value>> = vec![None, Some(&samples[0]), Some(&samples[1])];
-        let project_samples = [Value::Boolean(false), Value::Boolean(true)];
+        let project_samples = [
+            Value::String("default".into()),
+            Value::String("plan".into()),
+        ];
         let project_choices: Vec<Option<&Value>> = if setting.project == ProjectRule::OnlyManual {
             vec![None, Some(&project_samples[0]), Some(&project_samples[1])]
         } else {
@@ -172,15 +172,11 @@ fn every_setting_layers_as_it_always_did() {
                 choices[pick(2)],
                 project_choices[pick(3)],
             ];
-            let project_key = match setting.project {
-                ProjectRule::OnlyManual => "auto.enabled",
-                _ => setting.key,
-            };
             let tables = Layers {
                 user: table_with(setting.key, layers[0]),
                 workspace: table_with(setting.key, layers[1]),
                 cli: table_with(setting.key, layers[2]),
-                project: table_with(project_key, layers[3]),
+                project: table_with(setting.key, layers[3]),
             };
             write(&home, &tables.user);
             write(&realm, &tables.workspace);
@@ -243,39 +239,30 @@ fn the_typed_defaults_are_the_registry_s() {
     assert_eq!(layered.daemon_principal, None);
 }
 
-/// The mode's older spelling: `enabled` in a user layer is the mode, and a
-/// `mode` beside it in the same file wins.
+/// `auto.enabled`, the mode's spelling before 0.0.7, is gone: a file that
+/// still has it in any layer is a load error naming it (ignoring
+/// `enabled = false` would start in auto mode).
 #[test]
-fn the_mode_reads_its_older_spelling() {
-    let setting = Setting::find("auto.mode").unwrap();
-    let layers = |text: &str| Layers {
-        workspace: text.parse().unwrap(),
-        ..Layers::default()
-    };
-    let mode = |text: &str| setting.resolve(&layers(text)).value.unwrap();
-    assert_eq!(mode("[auto]\nenabled = false\n").as_str(), Some("default"));
-    assert_eq!(mode("[auto]\nenabled = true\n").as_str(), Some("auto"));
-    assert_eq!(
-        mode("[auto]\nenabled = false\nmode = \"plan\"\n").as_str(),
-        Some("plan")
-    );
+fn a_file_with_auto_enabled_does_not_load() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (realm, project) = (tmp.path().join("r"), tmp.path().join("p"));
+    for (dir, other) in [(&realm, &project), (&project, &realm)] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::create_dir_all(other).unwrap();
+        std::fs::write(dir.join(RULES_FILE_NAME), "[auto]\nenabled = false\n").unwrap();
+        let _ = std::fs::remove_file(other.join(RULES_FILE_NAME));
+        let err = load_layered_with(&realm, None, &project, None).unwrap_err();
+        assert!(err.to_string().contains("unknown field `enabled`"), "{err}");
+    }
 }
 
 #[test]
-fn keys_are_unique_and_every_flag_writes_a_key_the_setting_reads() {
+fn keys_are_unique_and_every_default_is_a_value_the_setting_takes() {
     let mut keys: Vec<&str> = SETTINGS.iter().map(|setting| setting.key).collect();
     keys.sort_unstable();
     keys.dedup();
     assert_eq!(keys.len(), SETTINGS.len());
     for setting in SETTINGS {
-        for flag in setting.flags {
-            assert!(
-                flag.key == setting.key || setting.alias.is_some_and(|alias| alias.key == flag.key),
-                "{} writes {}",
-                flag.flag,
-                flag.key
-            );
-        }
         // The default is a value the setting takes.
         if let Some(value) = setting.default.value() {
             setting.check(&value).unwrap();

@@ -195,9 +195,12 @@ impl Local {
     /// each setting whose value in force moved runs its hook, is audited
     /// and told to every client ("auto.compact_prepare_at is now 65% (your
     /// tui.toml changed)", with the value for a `[ui]` setting to follow);
-    /// a changed section is named once (it applies at the next start); a
-    /// file that does not read is reported once and its last good values
-    /// stay.
+    /// the user's or the workspace's permission sections are held again
+    /// ([`Self::hold_permissions`], also when the file holds what the
+    /// daemon does: the engine follows the file); another changed section,
+    /// and any section of the project's file, is named once (it applies at
+    /// the next start); a file that does not read is reported once and its
+    /// last good values stay.
     pub async fn sync_settings(&self, level: Level) {
         use crate::daemon::settings::Synced;
         let settings = Arc::clone(&self.core.settings);
@@ -212,7 +215,14 @@ impl Local {
             .map(|path| path.display().to_string())
             .unwrap_or_default();
         match synced {
-            Synced::Same | Synced::StillUnreadable => {}
+            Synced::StillUnreadable => {}
+            // The file holds what the daemon holds; the engine may not
+            // (a grant the engine wrote itself, followed so closely by a
+            // hand edit undoing it that one read saw both): it follows.
+            Synced::Same if level != Level::Project => {
+                self.hold_permissions(&format!("{file} changed"));
+            }
+            Synced::Same => {}
             Synced::Unreadable(why) => {
                 self.audit(crate::daemon::audit::Line::event(
                     "settings_unreadable",
@@ -225,7 +235,11 @@ impl Local {
                     ),
                 );
             }
-            Synced::Changed { changes, sections } => {
+            Synced::Changed {
+                changes,
+                permissions,
+                later,
+            } => {
                 for change in changes {
                     let words = |resolved: &crate::config::registry::Resolved| {
                         crate::daemon::settings::in_force_words(change.setting, resolved)
@@ -278,16 +292,72 @@ impl Local {
                         self.tell_every_client(true, warning);
                     }
                 }
-                if sections {
+                if permissions {
+                    self.hold_permissions(&format!("{file} changed"));
+                }
+                if later {
                     self.tell_every_client(
                         false,
-                        format!(
-                            "the rules, statements, grants, endpoints, prices or thinking of {file} changed: they apply at the next start"
-                        ),
+                        if level == Level::Project {
+                            format!(
+                                "the rules, statements, grants, endpoints, prices or thinking of {file} changed: they apply at the next start"
+                            )
+                        } else {
+                            format!(
+                                "the endpoints, prices or thinking of {file} changed: they apply at the next start"
+                            )
+                        },
                     );
                 }
             }
         }
+    }
+
+    /// Hold the lasting permissions the settings files give now (as held:
+    /// [`crate::daemon::settings::Settings::lasting`]), the engine's
+    /// replaced from them
+    /// ([`crate::approval::ApprovalEngine::replace_lasting`]); `why` is the
+    /// cause in words ("your tui.toml changed"). What changed is told to
+    /// every client once, with counts, and each item audited; nothing is
+    /// told when nothing changed (a command's own write, which the engine
+    /// holds already).
+    pub(crate) fn hold_permissions(&self, why: &str) {
+        if !self.core.settings.has_files() {
+            // No files: what the commands did lives in the engine only.
+            return;
+        }
+        let lasting = self.core.settings.lasting();
+        let change = self.core.engine.replace_lasting(&lasting, why);
+        if change.is_empty() {
+            return;
+        }
+        let mut text = format!("{why}: {}; in force now", change.counts());
+        if change.dirs_added.iter().any(|dir| dir.write) {
+            text.push_str(&format!(" ({})", crate::approval::ALWAYS_DIR_LIMIT));
+        }
+        for skipped in &change.skipped {
+            self.audit(crate::daemon::audit::Line::event(
+                "permission_skipped",
+                format!("{skipped} ({why})"),
+            ));
+        }
+        if !change.skipped.is_empty() {
+            text.push_str("; skipped: ");
+            text.push_str(&change.skipped.join("; "));
+        }
+        self.tell_every_client(!change.skipped.is_empty(), text);
+    }
+
+    /// After a rule, grant or statement command: hold both files'
+    /// sections as written ([`crate::daemon::settings::Settings::adopt_sections`],
+    /// blocking file I/O), then the permissions they give, as a file
+    /// change would ([`Self::hold_permissions`]: the engine holds what the
+    /// command did already, so only a change someone else made meanwhile
+    /// is told).
+    pub(crate) fn after_permission_command(&self) {
+        self.core.settings.adopt_sections(Level::User);
+        self.core.settings.adopt_sections(Level::Workspace);
+        self.hold_permissions("the settings files changed");
     }
 
     /// A notice every attached client shows (one per live agent: each

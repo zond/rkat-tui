@@ -629,10 +629,13 @@ the plan"), `2. Keep planning` (Esc) and `3. Proceed in manual mode`.
 
 The mode is saved as `[auto] mode` in the realm's `tui.toml` (the file
 `/permissions add` writes), so the next start, a resumed session included,
-comes back in it. `--no-auto` (`auto.enabled = false`) starts in manual
+comes back in it. `--no-auto` (`auto.mode = "default"`) starts in manual
 mode for one run, and `--set auto.mode=plan` in any mode. A project
-`tui.toml` cannot choose a mode; its `enabled = false` only moves auto mode
-to manual.
+`tui.toml` cannot choose a mode; its `mode = "default"` only moves auto
+mode to manual (any other value there is not read). `[auto] enabled`,
+the spelling before 0.0.7, is gone: a file that still has it does not
+read ("unknown field `enabled`"); write `mode = "default"` (manual) or
+`mode = "auto"` instead.
 
 **What runs as the host and when it is trusted.** The gate and the sandbox
 cover the agent's tool calls. Local MCP stdio servers and command hooks are
@@ -1324,9 +1327,27 @@ edit, another workspace's daemon writing your file) it reads it again
 after a moment's quiet, and each setting whose value in force moved is
 applied as a `/set` would apply it and told to every attached client
 once: "auto.compact_prepare_at is now 65% (from your tui.toml; your
-tui.toml changed)", with when it applies when that is not at once. A
-change of the rules, statements, grants, endpoints, prices or thinking
-in a file is named once and applies at the next start. A file that does
+tui.toml changed)", with when it applies when that is not at once.
+
+A change of the rules, the `[auto] allow` statements or the
+`[confinement]` directories in your own `tui.toml` or the workspace's
+applies at once too, exactly as a command's would: the daemon computes
+what the files give as it does at start and holds that, and every
+client is told once what changed ("your tui.toml changed: 1 statement
+added, 1 granted directory removed; in force now"). Each item added or
+removed is in the audit log (`rule_added`, `statement_removed`,
+`grant_added`, …). What a start refuses is skipped and named in that
+notice, the rest applies: a rule that does not parse (the next start
+refuses the file until it is fixed), a broad allow rule, a statement
+the classifier would not take or one past twelve, a directory the
+start's plan would refuse or that reaches your settings. A directory
+newly granted this way reaches the gate and the file tools at once; a
+confined shell's sandbox is planned at the daemon's start, so the shell
+itself can write it from the next start on. Your session grants and
+statements are untouched. The project's `.rkat/tui.toml` is writable by
+the agent's own shell, so a change of its sections (the deny rules it
+may add) applies at the next start only, and so does a change of the
+endpoints, prices or thinking of any file; both are named once. A file that does
 not read is reported once ("… does not read, so its last good settings
 stay in force: …") and its last good values stay until it reads again.
 A project file counts only for what a project may set, as at start. The
@@ -1363,7 +1384,7 @@ repository's reach: it is yours, and a hand edit applies.
 
 ```toml
 [auto]
-enabled = true
+mode = "auto"                            # or "default" (manual), "accept-edits", "plan"
 classifier_model = "anthropic:claude-sonnet-4-6"   # optional ([endpoint:]model; /auto model writes it), per-dialect default otherwise
 trust_project_builds = true              # cargo build/test/check are tier 1
 compact = "native"                       # or "warn" / "auto"; see "Context and compaction"
@@ -1407,7 +1428,7 @@ it may only lower a value, its lowering applies over every layer).
 <!-- settings-table:begin -->
 | Key | Takes | Default | A project file | Takes effect | Flag, command |
 |---|---|---|---|---|---|
-| `auto.mode`: The permission mode at start (`enabled = false` is the older `mode = "default"`). | `default`, `accept-edits`, `plan`, `auto` | auto | may only turn auto mode off (`enabled = false`) | at once | `--no-auto`, `/mode`, Shift+Tab |
+| `auto.mode`: The permission mode at start (`default` is manual: every call that needs review asks you). | `default`, `accept-edits`, `plan`, `auto` | auto | may only turn auto mode off (`mode = "default"`) | at once | `--no-auto`, `/mode`, Shift+Tab |
 | `auto.classifier_model`: The model that reviews the agent's actions in auto mode. | a model, `[endpoint:]model` | the start-up endpoint's per-dialect default | may not set it | at once | `--classifier-model`, `/auto model` |
 | `auto.trust_project_builds`: Whether `cargo build\|test\|nextest\|check\|clippy` are tier 1. | `true` or `false` | unset: trusted while a sandbox contains the shell; uncontained, a build after a dependency change asks | may only set `false` | at once | `--trust-project-builds`, `--no-trust-project-builds` |
 | `auto.classifier_tools`: Whether the classifier's second stage may read project files. | `true` or `false` | true | may only set `false` | at the next start | — |
@@ -1426,12 +1447,12 @@ it may only lower a value, its lowering applies over every layer).
 | `ui.checklist`: Whether the task checklist shows under the input. | `hidden`, `shown` | hidden | may set it (the command line wins) | at once | Ctrl+T |
 | `pricing.fetch`: Whether the community price list is fetched for the cost readout. | `true` or `false` | true | may only set `false` | at the next start | `--no-pricing-fetch` |
 | `daemon.principal`: The person every attached client decides approval requests as. | text (at most 200 characters) | the login name ($USER, else $LOGNAME, else owner) | may not set it | at the next start | — |
-| `[[allow]] / [[deny]]`: Rules: `tool`, then `arg` (a glob) or `literal`. | a section | none | may only add deny rules | — | `--allow` / `--deny <tool>[=<glob>]`; /permissions, /approve |
-| `auto.allow`: Statements: kinds of action you allow, which the classifier reads. | a section | none | may not set it | — | —; /approve, /permissions |
-| `confinement.extra_read / extra_write`: Extra directories for the confined shell. | a section | none | may not set it | — | `--confinement-read` / `--confinement-write <dir>`; /approve |
-| `endpoints.<name>`: `dialect`, `base_url`, `api_key_env`, `priority`, `api_style` (an inline `api_key` is refused). | a section | none | may not set it | — | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]`; — |
-| `pricing."<model id>"`: `input`, `output`, `cached_input`, `cache_write` in USD per million tokens. | a section | none | may not set it | — | `--set 'pricing."<id>".input=15'`; — |
-| `thinking."<endpoint:id or id>"`: Anthropic thinking: `"adaptive"`, `{ enabled = <budget tokens> }` or `"default"`. | a section | none | may not set it | — | `--set 'thinking."proxy:my-alias"=adaptive'`; — |
+| `[[allow]] / [[deny]]`: Rules: `tool`, then `arg` (a glob) or `literal`. | a section | none | may only add deny rules | at once from your own and the workspace's file (a project file's at the next start) | `--allow` / `--deny <tool>[=<glob>]`; /permissions, /approve |
+| `auto.allow`: Statements: kinds of action you allow, which the classifier reads. | a section | none | may not set it | at once | —; /approve, /permissions |
+| `confinement.extra_read / extra_write`: Extra directories for the confined shell, which the approval gate is told too. | a section | none | may not set it | the gate and the file tools at once; a confined shell at the next start | `--confinement-read` / `--confinement-write <dir>`; /approve |
+| `endpoints.<name>`: `dialect`, `base_url`, `api_key_env`, `priority`, `api_style` (an inline `api_key` is refused). | a section | none | may not set it | at the next start | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]`; — |
+| `pricing."<model id>"`: `input`, `output`, `cached_input`, `cache_write` in USD per million tokens. | a section | none | may not set it | at the next start | `--set 'pricing."<id>".input=15'`; — |
+| `thinking."<endpoint:id or id>"`: Anthropic thinking: `"adaptive"`, `{ enabled = <budget tokens> }` or `"default"`. | a section | none | may not set it | at the next start | `--set 'thinking."proxy:my-alias"=adaptive'`; — |
 <!-- settings-table:end -->
 
 Other flags: `--model`/`-m <[endpoint:]id>`, `--endpoint <name>`,

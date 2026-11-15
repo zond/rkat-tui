@@ -137,20 +137,24 @@ fn bad_changes_are_refused_and_nothing_is_written() {
     assert!(bare.write("ui.bell", Some("false"), false).is_err());
 }
 
-/// The mode drops its older spelling from the file it writes.
+/// The mode is written in place, the file's comments kept; a file that
+/// still has `enabled` (the mode's spelling before 0.0.7) is not written.
 #[test]
-fn the_mode_replaces_enabled_in_the_file_it_writes() {
+fn the_mode_is_written_in_place_and_a_file_with_enabled_is_not_written() {
     let tmp = tempfile::tempdir().unwrap();
     let realm = tmp.path().join("realm").join("tui.toml");
     std::fs::create_dir_all(realm.parent().unwrap()).unwrap();
     std::fs::write(&realm, "# mine\n[auto]\nenabled = false\n").unwrap();
-    let settings = settings(
-        tmp.path(),
-        Layers {
-            workspace: "[auto]\nenabled = false\n".parse().unwrap(),
-            ..Layers::default()
-        },
-    );
+    let held: Layers = Layers {
+        workspace: "[auto]\nmode = \"default\"\n".parse().unwrap(),
+        ..Layers::default()
+    };
+    let settings = settings(tmp.path(), held);
+    let refused = settings
+        .write("auto.mode", Some("plan"), false)
+        .unwrap_err();
+    assert!(refused.contains("enabled"), "{refused}");
+    std::fs::write(&realm, "# mine\n[auto]\nmode = \"default\"\n").unwrap();
     assert_eq!(
         settings.resolve(Setting::find("auto.mode").unwrap()).value,
         Some(toml::Value::String("default".into()))
@@ -207,12 +211,17 @@ fn a_changed_file_is_synced_by_content() {
     let settings = settings(tmp.path(), Layers::default());
     let user_file = tmp.path().join("user").join("tui.toml");
     let changed = |synced: Synced| match synced {
-        Synced::Changed { changes, sections } => (
+        Synced::Changed {
+            changes,
+            permissions,
+            later,
+        } => (
             changes
                 .iter()
                 .map(|change| (change.setting.key, change.after.value.as_ref().map(show)))
                 .collect::<Vec<_>>(),
-            sections,
+            permissions,
+            later,
         ),
         other => panic!("not a change: {other:?}"),
     };
@@ -228,13 +237,27 @@ fn a_changed_file_is_synced_by_content() {
     settings.write("auto.compact", Some("warn"), true).unwrap();
     assert_eq!(
         changed(settings.sync(Level::User)),
-        (vec![("helpers.max_depth", Some("3".to_string()))], false)
+        (
+            vec![("helpers.max_depth", Some("3".to_string()))],
+            false,
+            false
+        )
     );
     assert!(matches!(settings.sync(Level::User), Synced::Same));
-    // A rule by hand: a section changed, no setting.
+    // A rule by hand: a permission section changed, no setting; the
+    // lasting permissions have it.
     let text = std::fs::read_to_string(&user_file).unwrap();
     std::fs::write(&user_file, format!("{text}[[deny]]\ntool = \"shell\"\n")).unwrap();
-    assert_eq!(changed(settings.sync(Level::User)), (vec![], true));
+    assert_eq!(changed(settings.sync(Level::User)), (vec![], true, false));
+    assert_eq!(settings.lasting().rules.len(), 1);
+    // A price: a section that applies at the next start.
+    let text = std::fs::read_to_string(&user_file).unwrap();
+    std::fs::write(
+        &user_file,
+        format!("{text}[pricing.\"some-model\"]\ninput = 1.0\n"),
+    )
+    .unwrap();
+    assert_eq!(changed(settings.sync(Level::User)), (vec![], false, true));
     // Broken: reported once, the last good values stay.
     std::fs::write(&user_file, "[ui\nbell = true\n").unwrap();
     assert!(
@@ -248,8 +271,8 @@ fn a_changed_file_is_synced_by_content() {
     assert_eq!(settings.resolve(bell).value, Some(Value::Boolean(false)));
     // Fixed: what it says now, against the last good.
     std::fs::write(&user_file, "[ui]\nbell = true\n").unwrap();
-    let (changes, sections) = changed(settings.sync(Level::User));
-    assert!(sections);
+    let (changes, permissions, later) = changed(settings.sync(Level::User));
+    assert!(permissions && later);
     let keys: Vec<&str> = changes.iter().map(|(key, _)| *key).collect();
     assert_eq!(keys, vec!["auto.compact", "helpers.max_depth", "ui.bell"]);
 }
@@ -272,6 +295,23 @@ fn a_project_file_syncs_only_what_a_project_may_set() {
     };
     let keys: Vec<&str> = changes.iter().map(|change| change.setting.key).collect();
     assert_eq!(keys, vec!["helpers.max_depth"]);
+    // Its rules and statements are taken at start only: never a
+    // permission change, and never among the lasting permissions.
+    std::fs::write(
+        &project,
+        "[auto]\nallow = [\"pushing to main\"]\n[[deny]]\ntool = \"shell\"\n[helpers]\nmax_depth = 0\n",
+    )
+    .unwrap();
+    assert!(matches!(
+        settings.sync(Level::Project),
+        Synced::Changed {
+            permissions: false,
+            later: true,
+            ..
+        }
+    ));
+    let lasting = settings.lasting();
+    assert!(lasting.rules.is_empty() && lasting.statements.is_empty());
     assert_eq!(
         settings
             .resolve(Setting::find("auto.classifier_model").unwrap())

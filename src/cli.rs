@@ -136,7 +136,7 @@ pub struct Args {
     #[arg(long, value_name = "DIR")]
     pub confinement_write: Vec<PathBuf>,
 
-    /// Start in manual mode instead of auto (`[auto] enabled = false`):
+    /// Start in manual mode instead of auto (`[auto] mode = "default"`):
     /// every action the classifier would judge is asked of you instead.
     #[arg(long)]
     pub no_auto: bool,

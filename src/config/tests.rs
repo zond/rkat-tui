@@ -21,7 +21,7 @@ fn rules_file_round_trip() {
             principal: Some("alice".into()),
         }),
         auto: Some(AutoSection {
-            enabled: Some(true),
+            mode: Some(PermissionMode::Auto),
             classifier_model: Some("claude-sonnet-4-6".into()),
             trust_project_builds: Some(false),
             ..AutoSection::default()
@@ -97,10 +97,18 @@ fn rules_file_round_trip() {
     let back: RulesFile = toml::from_str(&text).unwrap();
     assert_eq!(back, file);
     let parsed: RulesFile = toml::from_str(
-        "[auto]\nenabled = true\n\n[[allow]]\ntool = \"shell\"\narg = \"cargo nextest run*\"\n",
+        "[auto]\nmode = \"auto\"\n\n[[allow]]\ntool = \"shell\"\narg = \"cargo nextest run*\"\n",
     )
     .unwrap();
     assert_eq!(parsed.allow.len(), 1);
+    // `enabled`, the mode's spelling before 0.0.7, is gone: a file that
+    // still has it does not read (it is never ignored: ignoring
+    // `enabled = false` would start in auto mode).
+    let gone = toml::from_str::<RulesFile>("[auto]\nenabled = false\n").unwrap_err();
+    assert!(
+        gone.to_string().contains("unknown field `enabled`"),
+        "{gone}"
+    );
     assert!(toml::from_str::<RulesFile>("[[allow]]\ntool=\"x\"\nbogus=1\n").is_err());
     let rules = file.rules(RuleOrigin::Realm).unwrap();
     assert_eq!(
@@ -137,7 +145,7 @@ fn layered_loading() {
     .unwrap();
     std::fs::write(
         project.join(RULES_FILE_NAME),
-        "[auto]\ntrust_project_builds = true\nenabled = false\n[[allow]]\ntool = \"shell\"\n[[deny]]\ntool = \"agent_spawn\"\n",
+        "[auto]\ntrust_project_builds = true\nmode = \"default\"\n[[allow]]\ntool = \"shell\"\n[[deny]]\ntool = \"agent_spawn\"\n",
     )
     .unwrap();
     let (rules, settings, notices) =
@@ -153,7 +161,7 @@ fn layered_loading() {
             .iter()
             .any(|n| matches!(n, Notice::ProjectAllowIgnored { count: 1, .. }))
     );
-    // The project's `enabled = false` turns the classifier off.
+    // The project's `mode = "default"` turns the classifier off.
     let layered =
         load_layered_with(&realm, Some(&home.join(RULES_FILE_NAME)), &project, None).unwrap();
     assert_eq!(layered.mode, PermissionMode::Manual);
@@ -222,7 +230,7 @@ fn a_rule_write_preserves_the_auto_section() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("deep/realm").join(RULES_FILE_NAME);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, "[auto]\nenabled = false\n").unwrap();
+    std::fs::write(&path, "[auto]\nmode = \"default\"\n").unwrap();
     let file = SettingsFile::new(registry::Level::Workspace, path.clone());
     file.add_rule("allow", &allow("shell", Some("make lint")).to_entry())
         .unwrap();
@@ -234,7 +242,7 @@ fn a_rule_write_preserves_the_auto_section() {
     )
     .unwrap();
     let back = RulesFile::load(&path).unwrap();
-    assert_eq!(back.auto.unwrap().enabled, Some(false));
+    assert_eq!(back.auto.unwrap().mode, Some(PermissionMode::Manual));
     assert_eq!(back.allow.len(), 1);
     assert_eq!(back.deny.len(), 1);
     let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
@@ -611,11 +619,7 @@ fn ui_checklist_defaults_to_hidden_layers_and_persists() {
     assert_eq!(layered.ui.checklist, ChecklistView::Hidden);
     let realm_file = realm.join(RULES_FILE_NAME);
     SettingsFile::new(registry::Level::Workspace, realm_file.clone())
-        .set(
-            "ui.checklist",
-            Some(&toml::Value::String("shown".into())),
-            &[],
-        )
+        .set("ui.checklist", Some(&toml::Value::String("shown".into())))
         .unwrap();
     let text = std::fs::read_to_string(&realm_file).unwrap();
     assert!(text.contains("checklist = \"shown\""), "{text}");
@@ -637,7 +641,7 @@ fn ui_checklist_defaults_to_hidden_layers_and_persists() {
 
 /// The realm's `[auto] mode` (what `/mode` records) sets the start
 /// mode; a project cannot pick one, only move auto mode to manual with
-/// `enabled = false`; the command line beats both.
+/// `mode = "default"`; the command line beats both.
 #[test]
 fn the_permission_mode_layers() {
     let tmp = tempfile::tempdir().unwrap();
@@ -656,35 +660,22 @@ fn the_permission_mode_layers() {
         PermissionMode::Plan
     );
     assert_eq!(
-        mode(
-            "[auto]\nenabled = true\nmode = \"accept-edits\"\n",
-            "",
-            None
-        ),
-        PermissionMode::AcceptEdits,
-        "mode wins over enabled"
-    );
-    assert_eq!(
-        mode("[auto]\nenabled = false\n", "", None),
+        mode("[auto]\nmode = \"default\"\n", "", None),
         PermissionMode::Manual
     );
     assert_eq!(
-        mode(
-            "",
-            "[auto]\nmode = \"accept-edits\"\nenabled = true\n",
-            None
-        ),
+        mode("", "[auto]\nmode = \"accept-edits\"\n", None),
         PermissionMode::Auto,
         "a project picks no mode"
     );
     assert_eq!(
-        mode("", "[auto]\nenabled = false\n", None),
+        mode("", "[auto]\nmode = \"default\"\n", None),
         PermissionMode::Manual
     );
     assert_eq!(
         mode(
             "[auto]\nmode = \"plan\"\n",
-            "[auto]\nenabled = false\n",
+            "[auto]\nmode = \"default\"\n",
             None
         ),
         PermissionMode::Plan,
@@ -694,7 +685,7 @@ fn the_permission_mode_layers() {
         mode(
             "[auto]\nmode = \"plan\"\n",
             "",
-            Some("[auto]\nenabled = false\n")
+            Some("[auto]\nmode = \"default\"\n")
         ),
         PermissionMode::Manual,
         "--no-auto beats the realm"
@@ -702,7 +693,7 @@ fn the_permission_mode_layers() {
     assert_eq!(
         mode(
             "",
-            "[auto]\nenabled = false\n",
+            "[auto]\nmode = \"default\"\n",
             Some("[auto]\nmode = \"auto\"\n")
         ),
         PermissionMode::Auto,
@@ -716,14 +707,14 @@ fn cli_layer_beats_realm_but_project_deny_and_lowering_still_apply() {
     let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
     write(
         &realm,
-        "[auto]\nenabled = true\ncompact = \"warn\"\nclassifier_model = \"realm-model\"\n[[allow]]\ntool = \"read_file\"\n",
+        "[auto]\nmode = \"auto\"\ncompact = \"warn\"\nclassifier_model = \"realm-model\"\n[[allow]]\ntool = \"read_file\"\n",
     );
     write(
         &project,
         "[auto]\ncompact = \"warn\"\ncompact_warn_percent = 50\ntrust_project_builds = false\n[[deny]]\ntool = \"shell\"\narg = \"git push*\"\n",
     );
     let overlay = cli(
-        "[auto]\nenabled = false\ncompact = \"auto\"\ntrust_project_builds = true\n[[allow]]\ntool = \"shell\"\narg = \"cargo nextest run*\"\n[[deny]]\ntool = \"shell\"\narg = \"git push*\"\n",
+        "[auto]\nmode = \"default\"\ncompact = \"auto\"\ntrust_project_builds = true\n[[allow]]\ntool = \"shell\"\narg = \"cargo nextest run*\"\n[[deny]]\ntool = \"shell\"\narg = \"git push*\"\n",
     );
     let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
     let s = &layered.settings;
@@ -1009,7 +1000,6 @@ fn allow_statements_come_from_the_user_s_layers_only() {
     file.set(
         "auto.classifier_model",
         Some(&toml::Value::String("claude-haiku-5-5".into())),
-        &[],
     )
     .unwrap();
     file.remove_from_list(
@@ -1064,13 +1054,11 @@ fn the_prepare_setting_knows_its_sources_and_the_lower_layers() {
     file.set(
         "auto.compact_prepare",
         Some(&toml::Value::String(String::new())),
-        &[],
     )
     .unwrap();
     file.set(
         "auto.compact_prepare_at",
         Some(&toml::Value::Integer(50_000)),
-        &[],
     )
     .unwrap();
     let layered = load_layered_with(&realm, Some(&global), &project, None).unwrap();
@@ -1209,14 +1197,13 @@ fn the_prepare_instruction_layers_like_the_compaction_keys() {
     file.set(
         "auto.compact_prepare",
         Some(&toml::Value::String("write NOTES.md".into())),
-        &[],
     )
     .unwrap();
     let written = RulesFile::load(&realm.join(RULES_FILE_NAME)).unwrap();
     let auto = written.auto.unwrap();
     assert_eq!(auto.compact_prepare.as_deref(), Some("write NOTES.md"));
     assert_eq!(auto.compact_prepare_at, Some(PrepareAt::Tokens(300_000)));
-    file.set("auto.compact_prepare", None, &[]).unwrap();
+    file.set("auto.compact_prepare", None).unwrap();
     let written = RulesFile::load(&realm.join(RULES_FILE_NAME)).unwrap();
     assert_eq!(written.auto.unwrap().compact_prepare, None);
 }

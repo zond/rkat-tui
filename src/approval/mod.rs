@@ -72,7 +72,7 @@ use std::fmt;
 pub use admission::ApprovalGate;
 pub use attendance::{AgentPeers, Attendance, PeerKind};
 pub use catalog::ToolOrigins;
-pub use engine::{ApprovalConfig, ApprovalEngine};
+pub use engine::{ALWAYS_DIR_LIMIT, ApprovalConfig, ApprovalEngine};
 pub use transcript::InputKey;
 
 /// Typed code of the tool error a denial returns to the model

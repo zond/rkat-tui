@@ -17,7 +17,8 @@
 //! The files are followed while the daemon runs (`super::settings_watch`):
 //! [`Settings::sync`] reads one again and diffs it against what the daemon
 //! holds, by content: the daemon's own write holds what the file holds
-//! already and finds nothing to do.
+//! already and finds nothing to do. The permission sections the user's
+//! own layers hold are what [`Settings::lasting`] computes, as at start.
 
 use std::path::PathBuf;
 
@@ -26,8 +27,8 @@ use toml::Value;
 
 use super::protocol::{SectionRow, SettingRow, SettingsList};
 use crate::config::registry::{
-    Applies, Layers, Level, ProjectRule, Resolved, SECTIONS, SETTINGS, Setting, put, sections_of,
-    show, with_scalars,
+    Applies, Layers, Level, ProjectRule, Resolved, SECTIONS, SETTINGS, Setting, other_sections_of,
+    permissions_of, put, sections_of, show, with_scalars,
 };
 use crate::config::{RulesFile, SettingsFiles};
 
@@ -51,14 +52,18 @@ pub struct Settings {
 pub enum Synced {
     /// It holds what the daemon holds (its own write, or a touch).
     Same,
-    /// It changed: each setting whose value in force moved, and whether a
-    /// structured section (rules, statements, grants, endpoints, prices,
-    /// thinking) changed.
+    /// It changed: each setting whose value in force moved, and which
+    /// structured sections changed.
     Changed {
         /// The settings in force that moved.
         changes: Vec<Change>,
-        /// A section changed (it applies at the next start).
-        sections: bool,
+        /// The permission sections (rules, statements, named directories)
+        /// of the user's or the workspace's file changed: they apply at
+        /// once ([`Settings::lasting`]).
+        permissions: bool,
+        /// Another section changed (endpoints, prices, thinking; or any
+        /// section of the project's file): it applies at the next start.
+        later: bool,
     },
     /// It does not read, for the first time with this error: its last
     /// good values stay in force.
@@ -121,6 +126,12 @@ impl Settings {
             Level::Project => self.project.clone(),
             Level::Default | Level::CommandLine => None,
         }
+    }
+
+    /// Whether the daemon has the user's and the workspace's files.
+    #[must_use]
+    pub fn has_files(&self) -> bool {
+        self.files.is_some()
     }
 
     /// The files followed while the daemon runs, each with its level.
@@ -186,17 +197,13 @@ impl Settings {
             .as_ref()
             .ok_or_else(|| "this daemon has no tui.toml to write".to_string())?;
         let file = files.of(level);
-        let drop: Vec<&str> = setting.alias.iter().map(|alias| alias.key).collect();
         let _one = self.changing.lock();
         let before = self.resolve(setting);
-        file.set(setting.key, value.as_ref(), &drop)
+        file.set(setting.key, value.as_ref())
             .map_err(|err| format!("{} was not changed: {err}", setting.key))?;
         // Only the key written: a change someone else made to the file
         // meanwhile is the next sync's to find and apply.
         if let Some(table) = self.layers.write().of_mut(level) {
-            for old in &drop {
-                put(table, old, None);
-            }
             put(table, setting.key, value.clone());
         }
         let after = self.resolve(setting);
@@ -256,7 +263,13 @@ impl Settings {
         let Some(held) = layers.of_mut(level) else {
             return Synced::Same;
         };
-        let sections = sections_of(held) != sections_of(&table);
+        let moved = |of: fn(&toml::Table) -> toml::Table| of(held) != of(&table);
+        let (permissions, later) = if level == Level::Project {
+            // A project's sections are taken at start only.
+            (false, moved(sections_of))
+        } else {
+            (moved(permissions_of), moved(other_sections_of))
+        };
         *held = table;
         let changes: Vec<Change> = SETTINGS
             .iter()
@@ -269,11 +282,43 @@ impl Settings {
                 })
             })
             .collect();
-        if changes.is_empty() && !sections {
+        if changes.is_empty() && !permissions && !later {
             Synced::Same
         } else {
-            Synced::Changed { changes, sections }
+            Synced::Changed {
+                changes,
+                permissions,
+                later,
+            }
         }
+    }
+
+    /// The lasting permissions the user's own layers give now (the user's
+    /// file, the workspace's and the command line's, as held): the one
+    /// computation the start made ([`crate::config::lasting::Lasting::of`]).
+    #[must_use]
+    pub fn lasting(&self) -> crate::config::lasting::Lasting {
+        use crate::approval::rules::RuleOrigin;
+        let layers = self.layers.read();
+        let read = |table: &toml::Table| -> RulesFile {
+            // Each table was read as a `RulesFile` and is one.
+            Value::Table(table.clone())
+                .try_into()
+                .unwrap_or_else(|err| {
+                    tracing::warn!(%err, "a settings layer as held does not read");
+                    RulesFile::default()
+                })
+        };
+        let (user, workspace, cli) = (
+            read(&layers.user),
+            read(&layers.workspace),
+            read(&layers.cli),
+        );
+        crate::config::lasting::Lasting::of(&[
+            (RuleOrigin::Global, &user),
+            (RuleOrigin::Realm, &workspace),
+            (RuleOrigin::Cli, &cli),
+        ])
     }
 
     /// Every setting as `/settings` lists it.
@@ -307,6 +352,7 @@ impl Settings {
                 key: section.key.to_string(),
                 about: section.about.to_string(),
                 project: section.project.to_string(),
+                applies: section.applies.to_string(),
                 flags: section.flags.to_string(),
                 commands: section.commands.to_string(),
             })

@@ -298,6 +298,44 @@ impl Statements {
         self.lasting.write().push(row);
     }
 
+    /// Make the lasting statements `computed` (the layered settings', as
+    /// [`crate::config::lasting::Lasting`] gives them): one held already
+    /// (the same text, ignoring case) keeps its number, a new one takes
+    /// one from `next_id`. Returns the texts added and the texts removed.
+    pub(super) fn replace(
+        &self,
+        computed: &[(StatementOrigin, String)],
+        mut next_id: impl FnMut() -> u64,
+    ) -> (Vec<String>, Vec<String>) {
+        let mut lasting = self.lasting.write();
+        let rows: Vec<StatementRow> = computed
+            .iter()
+            .map(|(origin, text)| StatementRow {
+                id: lasting
+                    .iter()
+                    .find(|row| row.text.eq_ignore_ascii_case(text))
+                    .map_or_else(&mut next_id, |row| row.id),
+                text: text.clone(),
+                origin: *origin,
+            })
+            .collect();
+        let held = |rows: &[StatementRow], text: &str| {
+            rows.iter().any(|row| row.text.eq_ignore_ascii_case(text))
+        };
+        let added = rows
+            .iter()
+            .filter(|row| !held(&lasting, &row.text))
+            .map(|row| row.text.clone())
+            .collect();
+        let removed = lasting
+            .iter()
+            .filter(|row| !held(&rows, &row.text))
+            .map(|row| row.text.clone())
+            .collect();
+        *lasting = rows;
+        (added, removed)
+    }
+
     /// Remove `session`'s statement `id`: its text, if it was one.
     pub(super) fn remove_session(&self, session: &SessionId, id: u64) -> Option<String> {
         let mut sessions = self.sessions.lock();
@@ -362,5 +400,42 @@ mod tests {
         assert!(normalize(&"y".repeat(MAX_STATEMENT_CHARS)).is_ok());
         assert_eq!(proposed("anything at all"), None);
         assert!(StatementRefusal::TooMany.to_string().contains("12"));
+    }
+
+    /// Replacing the lasting statements keeps the numbers of those that
+    /// stay and numbers the new ones; a session's are untouched.
+    #[test]
+    fn replacing_the_lasting_statements_keeps_numbers_and_sessions() {
+        let (statements, mut next) = Statements::new(&[
+            (StatementOrigin::Config, "pushing to main".to_string()),
+            (
+                StatementOrigin::Always,
+                "network requests to a.example".to_string(),
+            ),
+        ]);
+        let session = SessionId::new();
+        statements.add_session(&session, 50, "deleting build output".to_string());
+        let (added, removed) = statements.replace(
+            &[
+                (StatementOrigin::Config, "Pushing to main".to_string()),
+                (StatementOrigin::Config, "installing packages".to_string()),
+            ],
+            || {
+                next += 1;
+                next - 1
+            },
+        );
+        assert_eq!(added, vec!["installing packages"]);
+        assert_eq!(removed, vec!["network requests to a.example"]);
+        let rows = statements.rows(Some(&session));
+        let ids: Vec<(u64, &str)> = rows.iter().map(|row| (row.id, row.text.as_str())).collect();
+        assert_eq!(
+            ids,
+            vec![
+                (1, "Pushing to main"),
+                (3, "installing packages"),
+                (50, "deleting build output")
+            ]
+        );
     }
 }

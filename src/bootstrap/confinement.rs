@@ -677,7 +677,10 @@ pub fn plan_grants(
     extra: &ExtraGrants,
 ) -> Result<PlannedGrants, ConfinementError> {
     let (mut write, mut read, mut files) = grants(workspace, host);
-    let accepted = accept_extra(workspace, &write, &read, extra)?;
+    let (accepted, refused) = accept_extra(workspace, &write, &read, extra);
+    if let Some(first) = refused.into_iter().next() {
+        return Err(first);
+    }
     let granted = || accepted.iter().filter(|grant| grant.sandbox);
     let clashes = |dir: &PathBuf| granted().any(|grant| overlaps(dir, &grant.path));
     write.retain(|dir| !clashes(dir));
@@ -720,17 +723,55 @@ struct Accepted {
     sandbox: bool,
 }
 
+/// A directory the user named, accepted as at start ([`named_dirs`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedGrant {
+    /// The canonical directory.
+    pub path: PathBuf,
+    /// Named for writing (else for reading).
+    pub writable: bool,
+    /// Named on the command line (else in a `tui.toml`).
+    pub from_cli: bool,
+}
+
+/// The directories of `extra` the user named, validated as the start's
+/// plan validates them ([`plan_grants`]: the same checks against the
+/// workspace, the sandbox's detected grants `sandbox_write` and
+/// `sandbox_read`, and each other), with each one refused beside them
+/// instead of refusing them all: what a running daemon holds when a
+/// settings file changes.
+#[must_use]
+pub fn named_dirs(
+    workspace: &Path,
+    sandbox_write: &[PathBuf],
+    sandbox_read: &[PathBuf],
+    extra: &ExtraGrants,
+) -> (Vec<NamedGrant>, Vec<ConfinementError>) {
+    let (accepted, refused) = accept_extra(workspace, sandbox_write, sandbox_read, extra);
+    let named = accepted
+        .into_iter()
+        .map(|grant| NamedGrant {
+            path: grant.path,
+            writable: grant.writable,
+            from_cli: grant.from_cli,
+        })
+        .collect();
+    (named, refused)
+}
+
 /// The extra grants of `extra` validated against the workspace, the
-/// detected grants `write` and `read`, and each other.
+/// detected grants `write` and `read`, and each other: the accepted ones,
+/// and why each other one is not (in the order given).
 fn accept_extra(
     workspace: &Path,
     write: &[PathBuf],
     read: &[PathBuf],
     extra: &ExtraGrants,
-) -> Result<Vec<Accepted>, ConfinementError> {
+) -> (Vec<Accepted>, Vec<ConfinementError>) {
     let mut accepted: Vec<Accepted> = Vec::new();
+    let mut refused: Vec<ConfinementError> = Vec::new();
     if extra.is_empty() {
-        return Ok(accepted);
+        return (accepted, refused);
     }
     let workspace_dir = canonical(workspace, true);
     let workspace_grant = workspace_dir
@@ -760,9 +801,16 @@ fn accept_extra(
                 path: given.clone(),
                 problem,
             };
-            let path = validate_extra(given).map_err(refuse)?;
+            let path = match validate_extra(given) {
+                Ok(path) => path,
+                Err(problem) => {
+                    refused.push(refuse(problem));
+                    continue;
+                }
+            };
             if let Some(ws) = workspace_dir.as_ref().filter(|ws| overlaps(&path, ws)) {
-                return Err(refuse(ExtraGrantProblem::OverlapsWorkspace(ws.clone())));
+                refused.push(refuse(ExtraGrantProblem::OverlapsWorkspace(ws.clone())));
+                continue;
             }
             if !from_cli {
                 // The command line wins over the file; a file grant repeating
@@ -776,7 +824,8 @@ fn accept_extra(
                 }
             }
             if let Some(other) = accepted.iter().find(|other| overlaps(&path, &other.path)) {
-                return Err(refuse(ExtraGrantProblem::OverlapsGrant(other.path.clone())));
+                refused.push(refuse(ExtraGrantProblem::OverlapsGrant(other.path.clone())));
+                continue;
             }
             let covered = write
                 .iter()
@@ -786,7 +835,8 @@ fn accept_extra(
             // (`--confinement-write /tmp`): it tells the gate the user named it.
             if !covered && let Some(ws) = workspace_grant.as_ref().filter(|ws| overlaps(&path, ws))
             {
-                return Err(refuse(ExtraGrantProblem::OverlapsWorkspace(ws.clone())));
+                refused.push(refuse(ExtraGrantProblem::OverlapsWorkspace(ws.clone())));
+                continue;
             }
             accepted.push(Accepted {
                 path,
@@ -796,7 +846,7 @@ fn accept_extra(
             });
         }
     }
-    Ok(accepted)
+    (accepted, refused)
 }
 
 /// `given` as a grantable directory: absolute, existing, canonical, a

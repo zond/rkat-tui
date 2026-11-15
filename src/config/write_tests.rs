@@ -19,7 +19,6 @@ fn a_setting_changes_only_its_own_key_and_keeps_comments_and_order() {
         .set(
             "auto.compact_prepare_at",
             Some(&Value::String("65%".into())),
-            &[],
         )
         .unwrap();
     assert_eq!(
@@ -31,9 +30,9 @@ fn a_setting_changes_only_its_own_key_and_keeps_comments_and_order() {
         COMMENTED.replace("\"70%\"", "\"65%\"")
     );
     // A new key lands in its table; a new table at the end.
-    file.set("auto.compact", Some(&Value::String("warn".into())), &[])
+    file.set("auto.compact", Some(&Value::String("warn".into())))
         .unwrap();
-    file.set("helpers.max_depth", Some(&Value::Integer(2)), &[])
+    file.set("helpers.max_depth", Some(&Value::Integer(2)))
         .unwrap();
     let text = std::fs::read_to_string(file.path()).unwrap();
     assert!(text.starts_with("# my settings, kept by hand\n"), "{text}");
@@ -44,8 +43,8 @@ fn a_setting_changes_only_its_own_key_and_keeps_comments_and_order() {
     assert!(text.contains("bell = false # quiet"), "{text}");
     assert!(text.ends_with("[helpers]\nmax_depth = 2\n"), "{text}");
     // Removing a key leaves the rest as it was.
-    file.set("auto.compact", None, &[]).unwrap();
-    file.set("helpers.max_depth", None, &[]).unwrap();
+    file.set("auto.compact", None).unwrap();
+    file.set("helpers.max_depth", None).unwrap();
     let text = std::fs::read_to_string(file.path()).unwrap();
     assert!(
         text.starts_with(&COMMENTED.replace("\"70%\"", "\"65%\"")),
@@ -54,26 +53,27 @@ fn a_setting_changes_only_its_own_key_and_keeps_comments_and_order() {
 }
 
 #[test]
-fn a_missing_file_is_created_and_an_older_spelling_dropped() {
+fn a_missing_file_is_created_and_one_with_auto_enabled_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let file = SettingsFile::new(Level::Workspace, tmp.path().join("realm").join("tui.toml"));
-    file.set("auto.mode", Some(&Value::String("plan".into())), &[])
+    file.set("auto.mode", Some(&Value::String("plan".into())))
         .unwrap();
     assert_eq!(
         std::fs::read_to_string(file.path()).unwrap(),
         "[auto]\nmode = \"plan\"\n"
     );
+    // `enabled` is gone: a file that still has it does not read, and the
+    // writer leaves it as it is (no migration).
     std::fs::write(file.path(), "[auto]\nenabled = false\n").unwrap();
-    file.set(
-        "auto.mode",
-        Some(&Value::String("accept-edits".into())),
-        &["auto.enabled"],
-    )
-    .unwrap();
+    let err = file
+        .set("auto.mode", Some(&Value::String("accept-edits".into())))
+        .unwrap_err();
+    assert!(err.to_string().contains("enabled"), "{err}");
     assert_eq!(
         std::fs::read_to_string(file.path()).unwrap(),
-        "[auto]\nmode = \"accept-edits\"\n"
+        "[auto]\nenabled = false\n"
     );
+    std::fs::write(file.path(), "[auto]\nmode = \"plan\"\n").unwrap();
     // The realm's stays owner-only.
     #[cfg(unix)]
     {
@@ -150,19 +150,19 @@ fn a_change_that_would_not_load_or_a_broken_file_is_refused_and_nothing_written(
     std::fs::write(file.path(), COMMENTED).unwrap();
     // A key the schema does not know.
     let err = file
-        .set("auto.nonsense", Some(&Value::Boolean(true)), &[])
+        .set("auto.nonsense", Some(&Value::Boolean(true)))
         .unwrap_err();
     assert!(matches!(err, WriteError::Invalid { .. }), "{err}");
     // A key under a value.
     std::fs::write(file.path(), "auto = 3\n").unwrap();
     let err = file
-        .set("auto.mode", Some(&Value::String("plan".into())), &[])
+        .set("auto.mode", Some(&Value::String("plan".into())))
         .unwrap_err();
     assert!(matches!(err, WriteError::Shape { .. }), "{err}");
     // A file that does not parse stays as it is.
     std::fs::write(file.path(), "[auto\n").unwrap();
     let err = file
-        .set("ui.bell", Some(&Value::Boolean(true)), &[])
+        .set("ui.bell", Some(&Value::Boolean(true)))
         .unwrap_err();
     assert!(matches!(err, WriteError::Parse { .. }), "{err}");
     assert_eq!(std::fs::read_to_string(file.path()).unwrap(), "[auto\n");
@@ -178,7 +178,7 @@ fn a_symlinked_file_is_refused() {
     std::fs::write(&elsewhere, "").unwrap();
     std::os::unix::fs::symlink(&elsewhere, file.path()).unwrap();
     let err = file
-        .set("ui.bell", Some(&Value::Boolean(false)), &[])
+        .set("ui.bell", Some(&Value::Boolean(false)))
         .unwrap_err();
     assert!(matches!(err, WriteError::Write(_)), "{err}");
     assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "");

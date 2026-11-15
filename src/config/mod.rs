@@ -25,9 +25,13 @@
 //! - [`file`](mod@file): the schema ([`RulesFile`] and its sections, the settings
 //!   after layering);
 //! - [`layers`](mod@layers): [`load_layered_with`] and its [`Notice`]s;
+//! - [`lasting`](mod@lasting): the rules, statements and directories the
+//!   user's own layers give ([`lasting::Lasting`]), at start and on every
+//!   change of their files;
 //! - [`persist`](mod@persist): the realm file's writes.
 
 pub mod file;
+pub mod lasting;
 pub mod layers;
 pub mod persist;
 pub mod registry;

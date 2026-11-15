@@ -63,14 +63,11 @@ impl Local {
         command: crate::approval::desk::RuleCommand,
     ) -> Result<RuleOutcome, Refusal> {
         let engine = Arc::clone(&self.core.engine);
-        let settings = Arc::clone(&self.core.settings);
-        tokio::task::spawn_blocking(move || {
-            let outcome = run_rule_command(&engine, &command);
-            reload_lists(&settings);
-            outcome
-        })
-        .await
-        .map_err(Refusal::internal)
+        let outcome = tokio::task::spawn_blocking(move || run_rule_command(&engine, &command))
+            .await
+            .map_err(Refusal::internal)?;
+        self.after_permission_command();
+        Ok(outcome)
     }
 
     /// `rkat/conversations`: the conversations, the caller's agent's own
@@ -206,14 +203,6 @@ impl Local {
                 .status(self.agent_of(caller).ok().as_deref(), &beneath),
         }
     }
-}
-
-/// Read both settings files again after a rule, grant or statement was
-/// written to one of them (`/settings` shows what the files hold).
-fn reload_lists(settings: &crate::daemon::settings::Settings) {
-    use crate::config::registry::Level;
-    settings.adopt_sections(Level::User);
-    settings.adopt_sections(Level::Workspace);
 }
 
 /// A trust state in words.
@@ -424,7 +413,7 @@ impl Local {
             Some(text) => self.core.engine.approve_effect(&session, id, text, scope),
             None => self.core.engine.approve(&session, id, scope),
         };
-        reload_lists(&self.core.settings);
+        self.after_permission_command();
         Ok(match done {
             Ok(approved) => RuleOutcome {
                 ok: true,
@@ -446,7 +435,7 @@ impl Local {
     ) -> Result<RuleOutcome, Refusal> {
         let session = self.session_of_caller(caller)?;
         let removed = self.core.engine.remove_statement(&session, id);
-        reload_lists(&self.core.settings);
+        self.after_permission_command();
         Ok(match removed {
             Ok(text) => RuleOutcome { ok: true, text },
             Err(text) => RuleOutcome { ok: false, text },

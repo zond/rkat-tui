@@ -103,24 +103,15 @@ impl SettingsFile {
         RulesFile::load(&self.path)
     }
 
-    /// Set the dotted `key` to `value` (`None`: remove it), and remove the
-    /// keys `drop` (an older spelling the value replaces). Returns the file
-    /// as it now reads.
+    /// Set the dotted `key` to `value` (`None`: remove it). Returns the
+    /// file as it now reads.
     ///
     /// # Errors
     ///
     /// [`WriteError`]; nothing is written then.
-    pub fn set(
-        &self,
-        key: &str,
-        value: Option<&toml::Value>,
-        drop: &[&str],
-    ) -> Result<RulesFile, WriteError> {
+    pub fn set(&self, key: &str, value: Option<&toml::Value>) -> Result<RulesFile, WriteError> {
         let path = self.path.clone();
         self.edit(|doc| {
-            for old in drop {
-                remove_key(doc, old);
-            }
             match value {
                 Some(value) => {
                     let (table, last) = table_for(doc, key).ok_or_else(|| WriteError::Shape {

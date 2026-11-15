@@ -120,7 +120,7 @@ pub enum ProjectRule {
     OnlyLower,
     /// It may only set `false`, which applies over every other layer.
     OnlyFalse,
-    /// The permission mode: it may not pick one; its `enabled = false`
+    /// The permission mode: of its value only `"default"` is read, which
     /// turns auto mode into manual unless the command line set the mode.
     OnlyManual,
 }
@@ -134,7 +134,7 @@ impl ProjectRule {
             Self::Never => "may not set it",
             Self::OnlyLower => "may only lower it",
             Self::OnlyFalse => "may only set `false`",
-            Self::OnlyManual => "may only turn auto mode off (`enabled = false`)",
+            Self::OnlyManual => "may only turn auto mode off (`mode = \"default\"`)",
         }
     }
 }
@@ -267,11 +267,7 @@ pub enum FlagValue {
 pub struct Flag {
     /// The flag (`--no-auto`).
     pub flag: &'static str,
-    /// The key it writes in the command-line layer (the setting's own, or
-    /// an older spelling the setting reads, as `--no-auto`'s
-    /// `auto.enabled`).
-    pub key: &'static str,
-    /// What it writes.
+    /// What it writes at its setting's key in the command-line layer.
     pub value: FlagValue,
     /// Whether it was given, with its argument.
     pub given: fn(&Args) -> Option<String>,
@@ -281,15 +277,6 @@ impl fmt::Debug for Setting {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Setting").field("key", &self.key).finish()
     }
-}
-
-/// An older spelling a setting also reads, with how its value maps.
-#[derive(Debug, Clone, Copy)]
-pub struct Alias {
-    /// Its dotted key.
-    pub key: &'static str,
-    /// Its value as the setting's (`None`: not one).
-    pub map: fn(&Value) -> Option<Value>,
 }
 
 /// One scalar setting.
@@ -311,8 +298,6 @@ pub struct Setting {
     /// The friendly command that sets it, when there is one (Markdown:
     /// commands in backticks).
     pub command: Option<&'static str>,
-    /// An older spelling it also reads (the same file's own key wins).
-    pub alias: Option<Alias>,
     /// What the daemon does when its value in force changes.
     pub hook: Hook,
 }
@@ -443,12 +428,10 @@ pub fn put(table: &mut Table, key: &str, value: Option<Value>) {
     }
 }
 
-/// The dotted keys of every scalar setting and the older spellings they
-/// read: what is not a structured section.
+/// The dotted keys of every scalar setting: what is not a structured
+/// section.
 fn scalar_keys() -> impl Iterator<Item = &'static str> {
-    SETTINGS.iter().flat_map(|setting| {
-        std::iter::once(setting.key).chain(setting.alias.map(|alias| alias.key))
-    })
+    SETTINGS.iter().map(|setting| setting.key)
 }
 
 /// `table`'s structured sections (rules, statements, grants, endpoints,
@@ -458,6 +441,35 @@ fn scalar_keys() -> impl Iterator<Item = &'static str> {
 pub fn sections_of(table: &Table) -> Table {
     let mut rest = table.clone();
     for key in scalar_keys() {
+        put(&mut rest, key, None);
+    }
+    prune(&mut rest);
+    rest
+}
+
+/// The dotted keys of the permission sections: the rules, the statements
+/// and the named directories (what a change of the user's or the
+/// workspace's file applies at once).
+pub const PERMISSION_KEYS: &[&str] = &["allow", "deny", "auto.allow", "confinement"];
+
+/// `table`'s permission sections ([`PERMISSION_KEYS`]).
+#[must_use]
+pub fn permissions_of(table: &Table) -> Table {
+    let mut picked = Table::new();
+    for key in PERMISSION_KEYS {
+        if let Some(value) = lookup(table, key) {
+            put(&mut picked, key, Some(value.clone()));
+        }
+    }
+    picked
+}
+
+/// `table`'s structured sections but the permission sections (endpoints,
+/// prices, thinking: what applies at the next start).
+#[must_use]
+pub fn other_sections_of(table: &Table) -> Table {
+    let mut rest = sections_of(table);
+    for key in PERMISSION_KEYS {
         put(&mut rest, key, None);
     }
     prune(&mut rest);
@@ -507,21 +519,19 @@ impl Setting {
     }
 
     /// The value `level`'s table holds, read as the layering reads a file
-    /// (its own key, else its alias; a clamped number brought to its
-    /// least).
+    /// (a clamped number brought to its least; of a project's mode only
+    /// `"default"`).
     #[must_use]
     pub fn at(&self, layers: &Layers, level: Level) -> Option<Value> {
         let table = layers.of(level)?;
-        let value = match lookup(table, self.key) {
-            // The project's mode is never read (only `enabled = false`).
-            Some(_) if self.project == ProjectRule::OnlyManual && level == Level::Project => None,
-            Some(value) => Some(value.clone()),
-            None => None,
-        };
-        let value = value.or_else(|| {
-            let alias = self.alias?;
-            lookup(table, alias.key).and_then(alias.map)
-        })?;
+        let value = lookup(table, self.key)?.clone();
+        if self.project == ProjectRule::OnlyManual
+            && level == Level::Project
+            && value.as_str() != Some("default")
+        {
+            // A project's mode is read only as manual.
+            return None;
+        }
         Some(match (self.kind, value) {
             (
                 Kind::Int {
@@ -672,13 +682,6 @@ fn threshold_value(at: PrepareAt) -> Value {
     }
 }
 
-/// `auto.enabled`'s value as a mode.
-fn enabled_as_mode(value: &Value) -> Option<Value> {
-    value
-        .as_bool()
-        .map(|on| Value::String(if on { "auto" } else { "default" }.to_string()))
-}
-
 const MODES: &[&str] = &["default", "accept-edits", "plan", "auto"];
 const COMPACT_MODES: &[&str] = &["native", "warn", "auto"];
 /// The most characters `/set` takes for an instruction or a name.
@@ -691,18 +694,13 @@ pub const MODE: Setting = Setting {
     default: Fallback::Text("auto"),
     project: ProjectRule::OnlyManual,
     applies: Applies::Live,
-    about: "The permission mode at start (`enabled = false` is the older `mode = \"default\"`).",
+    about: "The permission mode at start (`default` is manual: every call that needs review asks you).",
     flags: &[Flag {
         flag: "--no-auto",
-        key: "auto.enabled",
-        value: FlagValue::Fixed("false"),
+        value: FlagValue::Fixed("\"default\""),
         given: |args| args.no_auto.then(String::new),
     }],
     command: Some("`/mode`, Shift+Tab"),
-    alias: Some(Alias {
-        key: "auto.enabled",
-        map: enabled_as_mode,
-    }),
     hook: Hook::Mode,
 };
 
@@ -717,7 +715,6 @@ pub const PREPARE: Setting = Setting {
     about: "What every agent is asked to do before an automatic compaction (empty: none here).",
     flags: &[],
     command: Some("`/compact prepare <text>|off|default`"),
-    alias: None,
     hook: Hook::Prepare,
 };
 
@@ -732,7 +729,6 @@ pub const PREPARE_AT: Setting = Setting {
     about: "Where the agents are asked to prepare: tokens, or a share of the window.",
     flags: &[],
     command: Some("`/compact prepare at <threshold>|default`"),
-    alias: None,
     hook: Hook::Prepare,
 };
 
@@ -749,12 +745,10 @@ pub static SETTINGS: &[Setting] = &[
         about: "The model that reviews the agent's actions in auto mode.",
         flags: &[Flag {
             flag: "--classifier-model",
-            key: "auto.classifier_model",
             value: FlagValue::Argument,
             given: |args| args.classifier_model.clone(),
         }],
         command: Some("`/auto model`"),
-        alias: None,
         hook: Hook::ClassifierModel,
     },
     Setting {
@@ -769,19 +763,16 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[
             Flag {
                 flag: "--trust-project-builds",
-                key: "auto.trust_project_builds",
                 value: FlagValue::Fixed("true"),
                 given: |args| args.trust_project_builds.then(String::new),
             },
             Flag {
                 flag: "--no-trust-project-builds",
-                key: "auto.trust_project_builds",
                 value: FlagValue::Fixed("false"),
                 given: |args| args.no_trust_project_builds.then(String::new),
             },
         ],
         command: None,
-        alias: None,
         hook: Hook::TrustBuilds,
     },
     Setting {
@@ -793,7 +784,6 @@ pub static SETTINGS: &[Setting] = &[
         about: "Whether the classifier's second stage may read project files.",
         flags: &[],
         command: None,
-        alias: None,
         hook: Hook::None,
     },
     Setting {
@@ -805,7 +795,6 @@ pub static SETTINGS: &[Setting] = &[
         about: "Whether the daemon checks the classifier model at start with two fixed cases.",
         flags: &[],
         command: None,
-        alias: None,
         hook: Hook::None,
     },
     Setting {
@@ -818,19 +807,16 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[
             Flag {
                 flag: "--auto-compact",
-                key: "auto.compact",
                 value: FlagValue::Fixed("\"auto\""),
                 given: |args| args.auto_compact.then(String::new),
             },
             Flag {
                 flag: "--no-auto-compact",
-                key: "auto.compact",
                 value: FlagValue::Fixed("\"warn\""),
                 given: |args| args.no_auto_compact.then(String::new),
             },
         ],
         command: None,
-        alias: None,
         hook: Hook::None,
     },
     Setting {
@@ -846,7 +832,6 @@ pub static SETTINGS: &[Setting] = &[
         about: "Context usage (percent of the window) at which to warn once.",
         flags: &[],
         command: None,
-        alias: None,
         hook: Hook::None,
     },
     Setting {
@@ -862,7 +847,6 @@ pub static SETTINGS: &[Setting] = &[
         about: "Context usage (percent of the window) at which to compact (`compact = \"auto\"`) or warn every turn.",
         flags: &[],
         command: None,
-        alias: None,
         hook: Hook::None,
     },
     PREPARE,
@@ -880,7 +864,6 @@ pub static SETTINGS: &[Setting] = &[
         about: "How many levels of helpers a session may have (0: none).",
         flags: &[],
         command: None,
-        alias: None,
         hook: Hook::None,
     },
     Setting {
@@ -896,7 +879,6 @@ pub static SETTINGS: &[Setting] = &[
         about: "How long a `!` command may run, in seconds.",
         flags: &[],
         command: None,
-        alias: None,
         hook: Hook::None,
     },
     Setting {
@@ -912,7 +894,6 @@ pub static SETTINGS: &[Setting] = &[
         about: "How long one `glob` or `grep` may run before it answers with what it found, in seconds.",
         flags: &[],
         command: None,
-        alias: None,
         hook: Hook::None,
     },
     Setting {
@@ -928,7 +909,6 @@ pub static SETTINGS: &[Setting] = &[
         about: "How many files and directories one `glob` or `grep` may examine.",
         flags: &[],
         command: None,
-        alias: None,
         hook: Hook::None,
     },
     Setting {
@@ -940,7 +920,6 @@ pub static SETTINGS: &[Setting] = &[
         about: "How helper headers start in the transcript.",
         flags: &[],
         command: None,
-        alias: None,
         hook: Hook::Ui,
     },
     Setting {
@@ -952,7 +931,6 @@ pub static SETTINGS: &[Setting] = &[
         about: "Ring the bell when a turn ends or a prompt opens while the terminal is not focused.",
         flags: &[],
         command: None,
-        alias: None,
         hook: Hook::Ui,
     },
     Setting {
@@ -964,7 +942,6 @@ pub static SETTINGS: &[Setting] = &[
         about: "Whether the task checklist shows under the input.",
         flags: &[],
         command: Some("Ctrl+T"),
-        alias: None,
         hook: Hook::Ui,
     },
     Setting {
@@ -976,12 +953,10 @@ pub static SETTINGS: &[Setting] = &[
         about: "Whether the community price list is fetched for the cost readout.",
         flags: &[Flag {
             flag: "--no-pricing-fetch",
-            key: "pricing.fetch",
             value: FlagValue::Fixed("false"),
             given: |args| args.no_pricing_fetch.then(String::new),
         }],
         command: None,
-        alias: None,
         hook: Hook::None,
     },
     Setting {
@@ -993,7 +968,6 @@ pub static SETTINGS: &[Setting] = &[
         about: "The person every attached client decides approval requests as.",
         flags: &[],
         command: None,
-        alias: None,
         hook: Hook::None,
     },
 ];
@@ -1008,11 +982,17 @@ pub struct Section {
     pub about: &'static str,
     /// What a project file may do with it.
     pub project: &'static str,
+    /// When a change of the file takes effect in a running daemon.
+    pub applies: &'static str,
     /// Its flags, when it has some.
     pub flags: &'static str,
     /// The commands that change it.
     pub commands: &'static str,
 }
+
+/// When a change of a permission section applies.
+const PERMISSIONS_APPLY: &str =
+    "at once from your own and the workspace's file (a project file's at the next start)";
 
 /// The structured sections, in the order the manual lists them.
 pub static SECTIONS: &[Section] = &[
@@ -1020,6 +1000,7 @@ pub static SECTIONS: &[Section] = &[
         key: "[[allow]] / [[deny]]",
         about: "Rules: `tool`, then `arg` (a glob) or `literal`.",
         project: "may only add deny rules",
+        applies: PERMISSIONS_APPLY,
         flags: "`--allow` / `--deny <tool>[=<glob>]`",
         commands: "/permissions, /approve",
     },
@@ -1027,13 +1008,15 @@ pub static SECTIONS: &[Section] = &[
         key: "auto.allow",
         about: "Statements: kinds of action you allow, which the classifier reads.",
         project: "may not set it",
+        applies: "at once",
         flags: "—",
         commands: "/approve, /permissions",
     },
     Section {
         key: "confinement.extra_read / extra_write",
-        about: "Extra directories for the confined shell.",
+        about: "Extra directories for the confined shell, which the approval gate is told too.",
         project: "may not set it",
+        applies: "the gate and the file tools at once; a confined shell at the next start",
         flags: "`--confinement-read` / `--confinement-write <dir>`",
         commands: "/approve",
     },
@@ -1041,6 +1024,7 @@ pub static SECTIONS: &[Section] = &[
         key: "endpoints.<name>",
         about: "`dialect`, `base_url`, `api_key_env`, `priority`, `api_style` (an inline `api_key` is refused).",
         project: "may not set it",
+        applies: "at the next start",
         flags: "`--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]`",
         commands: "—",
     },
@@ -1048,6 +1032,7 @@ pub static SECTIONS: &[Section] = &[
         key: "pricing.\"<model id>\"",
         about: "`input`, `output`, `cached_input`, `cache_write` in USD per million tokens.",
         project: "may not set it",
+        applies: "at the next start",
         flags: "`--set 'pricing.\"<id>\".input=15'`",
         commands: "—",
     },
@@ -1055,6 +1040,7 @@ pub static SECTIONS: &[Section] = &[
         key: "thinking.\"<endpoint:id or id>\"",
         about: "Anthropic thinking: `\"adaptive\"`, `{ enabled = <budget tokens> }` or `\"default\"`.",
         project: "may not set it",
+        applies: "at the next start",
         flags: "`--set 'thinking.\"proxy:my-alias\"=adaptive'`",
         commands: "—",
     },
@@ -1098,7 +1084,7 @@ pub fn manual_table() -> String {
                 "a section".to_string(),
                 "none".to_string(),
                 section.project.to_string(),
-                "—".to_string(),
+                section.applies.to_string(),
                 format!("{}; {}", section.flags, section.commands),
             ],
         );

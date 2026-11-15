@@ -164,6 +164,8 @@ pub struct SectionRow {
     pub about: String,
     /// What a project file may do with it.
     pub project: String,
+    /// When a change of the file takes effect.
+    pub applies: String,
     /// Its command-line flags.
     pub flags: String,
     /// The commands that change it.

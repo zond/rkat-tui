@@ -84,7 +84,7 @@ impl ConfigOverlay {
                     FlagValue::Fixed(literal) => parse_value(literal),
                     FlagValue::Argument => Value::String(argument.clone()),
                 };
-                let path: Vec<&str> = flag.key.split('.').collect();
+                let path: Vec<&str> = setting.key.split('.').collect();
                 overlay.add(flag.flag, &argument, nested(&path, value))?;
             }
         }
@@ -359,6 +359,7 @@ fn validate(piece: &Table) -> Result<(), String> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::approval::mode::PermissionMode;
     use crate::ui::compaction::CompactMode;
     use clap::Parser;
 
@@ -393,9 +394,9 @@ mod tests {
             ("a = 1", "b = \"x\"", "a = 1\nb = \"x\""),
             // table merge
             (
-                "[auto]\nenabled = true\ncompact = \"warn\"",
+                "[auto]\nmode = \"plan\"\ncompact = \"warn\"",
                 "[auto]\ncompact = \"auto\"",
-                "[auto]\nenabled = true\ncompact = \"auto\"",
+                "[auto]\nmode = \"plan\"\ncompact = \"auto\"",
             ),
             // array append
             (
@@ -427,7 +428,7 @@ mod tests {
             "--set",
             "auto.compact_warn_percent=60",
             "--set",
-            "auto.enabled=false",
+            "auto.mode=default",
             "--set",
             "auto.classifier_model=claude-haiku-4-5",
             "--set",
@@ -438,7 +439,7 @@ mod tests {
         let auto = f.auto.unwrap();
         assert_eq!(auto.compact, Some(CompactMode::Auto));
         assert_eq!(auto.compact_warn_percent, Some(60));
-        assert_eq!(auto.enabled, Some(false));
+        assert_eq!(auto.mode, Some(PermissionMode::Manual));
         assert_eq!(auto.classifier_model.as_deref(), Some("claude-haiku-4-5"));
         let litellm = &f.endpoints["litellm"];
         assert_eq!(litellm.base_url.as_deref(), Some("http://host:4000"));
@@ -507,15 +508,19 @@ mod tests {
     #[test]
     fn invalid_settings_name_the_argument() {
         let cases: Vec<(&[&str], &str)> = vec![
-            (&["--set", "auto.enabled"], "--set auto.enabled"),
-            (&["--set", "auto..enabled=true"], "invalid key segment"),
+            (&["--set", "auto.mode"], "--set auto.mode"),
+            (&["--set", "auto..mode=auto"], "invalid key segment"),
+            (&["--set", "auto.enabled=false"], "unknown field `enabled`"),
             (&["--set", "auto.nope=1"], "unknown field"),
             (&["--set", "bogus=1"], "unknown field"),
             (
                 &["--set", "auto.compact_warn_percent=300"],
                 "--set auto.compact_warn_percent=300",
             ),
-            (&["--set", "auto.enabled=maybe"], "invalid type"),
+            (
+                &["--set", "auto.classifier_tools=maybe"],
+                "auto.classifier_tools takes `true` or `false`",
+            ),
             // A setting of the table says what it takes.
             (
                 &["--set", "auto.compact_warn_percent=0"],
@@ -603,7 +608,7 @@ mod tests {
         assert_eq!(vllm.api_key_env.as_deref(), Some("VLLM_KEY"));
         assert_eq!(vllm.api_style, Some(ApiStyle::ChatCompletions));
         let auto = f.auto.unwrap();
-        assert_eq!(auto.enabled, Some(false));
+        assert_eq!(auto.mode, Some(PermissionMode::Manual));
         assert_eq!(auto.classifier_model.as_deref(), Some("gpt-5.2"));
         assert_eq!(auto.compact, Some(CompactMode::Auto));
         assert_eq!(auto.trust_project_builds, Some(true));
@@ -622,8 +627,8 @@ mod tests {
 
     #[test]
     fn flags_win_over_set() {
-        let f = file(&["--set", "auto.enabled=true", "--no-auto"]);
-        assert_eq!(f.auto.unwrap().enabled, Some(false));
+        let f = file(&["--set", "auto.mode=auto", "--no-auto"]);
+        assert_eq!(f.auto.unwrap().mode, Some(PermissionMode::Manual));
     }
 
     #[test]

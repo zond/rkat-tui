@@ -249,6 +249,106 @@ pub struct Approved {
     pub note: String,
 }
 
+/// What holding the lasting permissions again changed
+/// ([`ApprovalEngine::replace_lasting`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LastingChange {
+    /// Rules added (as `/permissions` lists them).
+    pub rules_added: Vec<String>,
+    /// Rules removed.
+    pub rules_removed: Vec<String>,
+    /// Statements added.
+    pub statements_added: Vec<String>,
+    /// Statements removed.
+    pub statements_removed: Vec<String>,
+    /// Named directories added.
+    pub dirs_added: Vec<super::grants::NamedDir>,
+    /// Named directories removed.
+    pub dirs_removed: Vec<super::grants::NamedDir>,
+    /// The entries not taken, each with why.
+    pub skipped: Vec<String>,
+}
+
+impl LastingChange {
+    /// Whether nothing was added or removed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rules_added.is_empty()
+            && self.statements_added.is_empty()
+            && self.dirs_added.is_empty()
+            && !self.removed()
+    }
+
+    /// Whether something was removed.
+    #[must_use]
+    pub fn removed(&self) -> bool {
+        !(self.rules_removed.is_empty()
+            && self.statements_removed.is_empty()
+            && self.dirs_removed.is_empty())
+    }
+
+    /// What changed, with counts: "1 statement added, 1 granted directory
+    /// removed" (empty when nothing did).
+    #[must_use]
+    pub fn counts(&self) -> String {
+        let count = |n: usize, one: &str, many: &str, how: &str| {
+            (n > 0).then(|| format!("{n} {} {how}", if n == 1 { one } else { many }))
+        };
+        let dirs = |dirs: &[super::grants::NamedDir], write: bool| {
+            dirs.iter().filter(|dir| dir.write == write).count()
+        };
+        [
+            count(self.rules_added.len(), "rule", "rules", "added"),
+            count(self.rules_removed.len(), "rule", "rules", "removed"),
+            count(
+                self.statements_added.len(),
+                "statement",
+                "statements",
+                "added",
+            ),
+            count(
+                self.statements_removed.len(),
+                "statement",
+                "statements",
+                "removed",
+            ),
+            count(
+                dirs(&self.dirs_added, true),
+                "granted directory",
+                "granted directories",
+                "added",
+            ),
+            count(
+                dirs(&self.dirs_removed, true),
+                "granted directory",
+                "granted directories",
+                "removed",
+            ),
+            count(
+                dirs(&self.dirs_added, false),
+                "readable directory",
+                "readable directories",
+                "added",
+            ),
+            count(
+                dirs(&self.dirs_removed, false),
+                "readable directory",
+                "readable directories",
+                "removed",
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ")
+    }
+}
+
+/// What a directory granted "always" can do at once and what only from
+/// the next start: the confined shell's sandbox is planned when the
+/// daemon starts.
+pub const ALWAYS_DIR_LIMIT: &str = "the sandbox of a confined shell lets it write there from the next daemon start; the file tools and the classifier follow at once";
+
 /// Why rules could not be persisted off the executor.
 #[derive(Debug, thiserror::Error)]
 pub enum PersistError {
@@ -1148,9 +1248,9 @@ impl ApprovalEngine {
         // A grant may change what a cached denial would be; allows stay.
         let lasting = match (scope, &target) {
             (GrantScope::Always | GrantScope::AlwaysUser, GrantTarget::Dir { .. }) => {
-                " (the sandbox of a confined shell lets it write there from the next daemon start; the file tools and the classifier follow at once)"
+                format!(" ({ALWAYS_DIR_LIMIT})")
             }
-            _ => "",
+            _ => String::new(),
         };
         let approved = Approved {
             notice: format!("granted {}: {what}{lasting}", scope.words()),
@@ -1348,6 +1448,135 @@ impl ApprovalEngine {
         }
         self.audit_event("statement_removed", format!("{} {text:?}", origin.word()));
         Ok(format!("no longer allowed: \"{text}\""))
+    }
+
+    /// Hold the lasting permissions `lasting` (what the user's own layers
+    /// give now, [`crate::config::lasting::Lasting::of`], as at start): the
+    /// rules of the user's and the workspace's files, the statements and
+    /// the named directories become theirs. The command line's rules, the
+    /// project's (taken at start) and every session's grants and
+    /// statements stay. An entry is refused as at start (a broad allow
+    /// rule, a directory the start's plan would refuse) and, for a
+    /// directory not held before, as a grant by command is (one that
+    /// reaches the settings files, or [`super::grants::grant_dir_for`]
+    /// refuses); a refused one is skipped and named. Each item added or
+    /// removed is audited with `why` ("your tui.toml changed"); a removal
+    /// drops the cached allows (one may have rested on it).
+    pub fn replace_lasting(
+        &self,
+        lasting: &crate::config::lasting::Lasting,
+        why: &str,
+    ) -> LastingChange {
+        let mut change = LastingChange {
+            skipped: lasting.skipped.iter().map(|s| s.describe()).collect(),
+            ..LastingChange::default()
+        };
+        // Rules: as at start, a broad allow rule is dropped.
+        let rules: Vec<Rule> = lasting
+            .rules
+            .iter()
+            .filter(|rule| {
+                let broad = (rule.kind == RuleKind::Allow)
+                    .then(|| rule.broad_reason())
+                    .flatten();
+                if let Some(reason) = broad {
+                    change
+                        .skipped
+                        .push(format!("the rule allow {} ({reason})", describe_rule(rule)));
+                }
+                broad.is_none()
+            })
+            .cloned()
+            .collect();
+        let (added, removed) = self
+            .rules
+            .write()
+            .replace(&[RuleOrigin::Global, RuleOrigin::Realm], rules);
+        change.rules_added = added.iter().map(super::desk::describe_rule).collect();
+        change.rules_removed = removed.iter().map(super::desk::describe_rule).collect();
+        // Statements.
+        let (added, removed) = self.statements.replace(&lasting.statements, || {
+            self.next_id.fetch_add(1, Ordering::Relaxed)
+        });
+        change.statements_added = added;
+        change.statements_removed = removed;
+        // Directories: checked as the start's plan checks them.
+        let (write, read) = self.grants.flag_dirs();
+        let extra = crate::bootstrap::confinement::ExtraGrants {
+            read,
+            write,
+            file: lasting.confinement.clone(),
+        };
+        let (sandbox_write, sandbox_read) = self.grants.sandbox(self.root.as_path());
+        let (named, refused) = crate::bootstrap::confinement::named_dirs(
+            self.root.as_path(),
+            &sandbox_write,
+            &sandbox_read,
+            &extra,
+        );
+        change
+            .skipped
+            .extend(refused.iter().map(|err| format!("the directory {err}")));
+        let mut dirs = Vec::new();
+        for grant in named {
+            let new = !grant.from_cli && !self.grants.is_named(&grant.path, grant.writable);
+            if new {
+                if let Some(held) = self.settings_dir_in(&grant.path) {
+                    change.skipped.push(format!(
+                        "the directory {}: it reaches {}, which holds your rkat-tui settings",
+                        grant.path.display(),
+                        held.display()
+                    ));
+                    continue;
+                }
+                // An existing directory (the plan's checks): its own grant.
+                if let Err(refusal) =
+                    super::grants::grant_dir_for(&self.root, &grant.path.display().to_string())
+                {
+                    change
+                        .skipped
+                        .push(format!("the directory {}: {refusal}", grant.path.display()));
+                    continue;
+                }
+            }
+            let origin = if grant.from_cli {
+                super::grants::GrantOrigin::Flag
+            } else {
+                super::grants::GrantOrigin::Config
+            };
+            dirs.push((grant.path, grant.writable, origin));
+        }
+        let (added, removed) = self.grants.replace_named(dirs);
+        change.dirs_added = added;
+        change.dirs_removed = removed;
+        for (event, items) in [
+            ("rule_added", &change.rules_added),
+            ("rule_removed", &change.rules_removed),
+            ("statement_added", &change.statements_added),
+            ("statement_removed", &change.statements_removed),
+        ] {
+            for item in items {
+                self.audit_event(event, format!("{item} ({why})"));
+            }
+        }
+        for (event, dirs) in [
+            ("grant_added", &change.dirs_added),
+            ("grant_removed", &change.dirs_removed),
+        ] {
+            for dir in dirs {
+                let access = if dir.write { "writes" } else { "reads" };
+                self.audit_event(
+                    event,
+                    format!("{access} under `{}` ({why})", dir.path.display()),
+                );
+            }
+        }
+        if change.removed() {
+            for state in self.sessions.lock().values_mut() {
+                state.allow_cache.clear();
+            }
+        }
+        change
     }
 
     /// Whether the user approved `facts`' call once for `session_id`; the
@@ -1644,10 +1873,10 @@ impl ApprovalEngine {
     /// write protected for its `content`). A stopped session's call is
     /// denied first; whatever would ask the user goes through
     /// [`Self::put_to_user`] with the attendance as it was before the
-    /// review started. Not uniform with [`Self::ask`]: the Stop is not
-    /// checked again after the review; an escalation checks it once its
-    /// turn comes ([`Self::wait_turn`]), so only a call with no broker to
-    /// ask through misses a Stop given during its review.
+    /// review started. The Stop is checked again once the classifier
+    /// answers: a Stop given during the review denies the call whatever
+    /// the verdict, which is then not applied (an escalation checks it
+    /// once more when its turn comes, [`Self::wait_turn`]).
     async fn review(&self, caller: Caller<'_>, facts: &Facts<'_>, content: bool) -> Evaluated {
         let session_id = caller.session_id;
         if self.stopped(session_id) {
@@ -1693,6 +1922,16 @@ impl ApprovalEngine {
         }
 
         let (result, record) = self.classify(session_id, &facts.action, &payload).await;
+        if self.stopped(session_id) {
+            // A Stop given while the classifier reviewed: the call is
+            // denied whatever the verdict, and the verdict is not applied
+            // (no cached allow, no allow or denial counted for a call that
+            // does not run on its review).
+            return Evaluated {
+                review: Some(record),
+                ..deny3(DenyReason::Stopped).into()
+            };
+        }
         let mut evaluated = if escalating {
             // Paused: the user is asked with the verdict as the hint, and
             // it as the fallback when the pause ends meanwhile.
@@ -2695,7 +2934,6 @@ mod tests {
             .set(
                 "auto.mode",
                 Some(&toml::Value::String(engine.mode().name().to_string())),
-                &["auto.enabled"],
             )
             .unwrap();
     }
@@ -3810,6 +4048,87 @@ mod tests {
         assert!(!task.await.unwrap().is_allowed());
         // A Stop answer stops the session again.
         assert_eq!(decide(&rig, "c3", &push()).await, stopped);
+    }
+
+    /// Answers allow, but only once the test lets it: the test stops the
+    /// session while the classifier is being asked.
+    struct HeldAllow {
+        asked: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ActionClassifier for HeldAllow {
+        async fn classify(
+            &self,
+            _input: ClassifierInput<'_>,
+        ) -> Result<ClassifierVerdict, ClassifierError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.asked.notify_one();
+                self.release.notified().await;
+            }
+            Ok(ClassifierVerdict::allow("fine"))
+        }
+    }
+
+    /// A Stop given while the classifier reviews a call denies it as
+    /// stopped although the classifier then allows it, and the allow is
+    /// not applied: nothing is cached (the same call is reviewed again in
+    /// the next run) and the denial counters are not reset by it. Before,
+    /// the allow ran the call.
+    #[tokio::test]
+    async fn a_stop_during_a_review_denies_the_call_the_classifier_allows() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ProjectRoot::new(dir.path()).unwrap();
+        let classifier = Arc::new(HeldAllow {
+            asked: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            calls: AtomicUsize::new(0),
+        });
+        let (broker, _escalations) = EscalationBroker::new(4);
+        let (tx, _events) = mpsc::unbounded_channel();
+        let engine = ApprovalEngine::new(ApprovalConfig {
+            root: root.clone(),
+            rules: RuleSet::default(),
+            settings: AutoSettings::default(),
+            mode: PermissionMode::Auto,
+            classifier: Arc::clone(&classifier) as Arc<dyn ActionClassifier>,
+            broker: Some(broker),
+            escalation_timeout: DEFAULT_ESCALATION_TIMEOUT,
+            environment: Environment::basic(root.as_path(), root.as_path()),
+            posix_shell: true,
+            events: tx,
+            files: None,
+        });
+        attended(&engine);
+        engine.auto.lock().record_classifier_deny();
+        let session = SessionId::new();
+        engine.run_started(&session, Some(&RunId::new()));
+        let task = {
+            let engine = Arc::clone(&engine);
+            let session = session.clone();
+            tokio::spawn(async move { call_as(&engine, &session, "c1", "shell", &push()).await })
+        };
+        classifier.asked.notified().await;
+        engine.stop(&session);
+        classifier.release.notify_one();
+        assert_eq!(
+            task.await.unwrap(),
+            Verdict::Deny {
+                tier: Tier::Classifier,
+                reason: DenyReason::Stopped
+            }
+        );
+        assert_eq!(engine.auto_state().0.consecutive, 1, "no allow was counted");
+        // The next run reviews the same call again: no allow was cached.
+        engine.run_started(&session, Some(&RunId::new()));
+        assert!(
+            call_as(&engine, &session, "c2", "shell", &push())
+                .await
+                .is_allowed()
+        );
+        assert_eq!(classifier.calls.load(Ordering::SeqCst), 2);
     }
 
     /// A session remembers a bounded number of runs: the oldest is
@@ -5714,7 +6033,7 @@ mod tests {
         let path = dir.path().join("tui.toml");
         std::fs::write(
             &path,
-            "[auto]\nenabled = true\n[[deny]]\ntool = \"shell\"\narg = \"rm *\"\n",
+            "[auto]\nmode = \"auto\"\n[[deny]]\ntool = \"shell\"\narg = \"rm *\"\n",
         )
         .unwrap();
         let root = ProjectRoot::new(dir.path()).unwrap();
@@ -5738,7 +6057,6 @@ mod tests {
         let file = config::RulesFile::load(&path).unwrap();
         let auto = file.auto.unwrap();
         assert_eq!(auto.mode, Some(PermissionMode::Plan));
-        assert_eq!(auto.enabled, None);
         assert_eq!(file.deny.len(), 1, "the rest of the file stays");
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("mode = \"plan\""), "{text}");

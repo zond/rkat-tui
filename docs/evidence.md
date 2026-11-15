@@ -9773,3 +9773,71 @@ names of the accessors that moved.
   is the old one. One write that was under one lock is two now: an allowed
   write of a build-defining file records the session's files, then marks
   the build files written (`Builds::written`), in that order.
+
+## Senior review 6, bundle 3: permissions follow the files (owner decision, 2026-11-15)
+
+R6-A7: the permissions had two homes kept in step by hand, the settings
+files and the engine's copies, and a hand edit of a rule, a statement or
+a granted directory applied only at the next start. Now one computation,
+`config::lasting::Lasting::of` (the rules, the `[auto] allow` statements
+and the `[confinement]` directories of the user's own layers: the user's
+file, the workspace's, the command line's), is what the start takes
+(`load_layered_with`: a rule that does not parse still refuses the start,
+a refused statement is a notice) and what a running daemon takes again
+whenever the user's or the workspace's file changes
+(`Settings::lasting`, then `ApprovalEngine::replace_lasting`). The engine
+replaces its lasting set from it: the user's and the workspace's rules
+(`RuleSet::replace`, ids of the rules that stay kept; the command line's
+and the project's rules stay as held, so a `/permissions rm` of one still
+lasts until the restart), the statements (`Statements::replace`, numbers
+kept), and the named directories (`Grants::replace_named`; checked by the
+start's own `accept_extra`, now `confinement::named_dirs`, against the
+start's detected grants, and a directory not held before also as a grant
+by command is: not reaching the settings files, not refused by
+`grant_dir_for`). A refused entry is skipped and named in the notice and
+audited (`permission_skipped`); the rest applies. Session grants and
+statements are untouched. A command (`/approve`, `/permissions add`, a
+statement's removal) still writes the file and the engine, then holds the
+files' permissions the same way (`Local::after_permission_command`): the
+engine already holds what it did, so nothing is told unless someone else
+changed the file meanwhile. The watcher holds them again on every event
+of the two files, also when the file reads as the daemon holds it (a
+grant the engine wrote itself and a hand edit undoing it can be read in
+one go). The project's `.rkat/tui.toml` is writable by the agent's
+confined shell: its sections are never part of the lasting set, so a
+change of them is named as applying at the next start (unchanged). One
+honest limit is stated in the notice: the confined shell's sandbox is
+planned at start, so a newly granted directory reaches the gate and the
+file tools at once and the shell from the next start (`ALWAYS_DIR_LIMIT`,
+the wording `/approve`'s always grant had). A test setup finding: a
+directory beside a daemon's endpoint file is sealed for that daemon, so
+the second daemon skips it and says so.
+
+Tests: `permission_sync::a_statement_added_by_hand_to_your_file_applies_without_a_restart`,
+`a_directory_grant_removed_by_hand_stops_applying`,
+`a_rule_added_by_hand_to_the_workspace_file_applies`,
+`a_bad_entry_is_skipped_and_named_while_the_good_one_applies`,
+`always_in_every_workspace_in_one_daemon_reaches_the_other` (each fails
+with the hold disabled), `a_section_change_in_the_project_file_changes_nothing_live`
+(the negative case); unit: `config::lasting::tests::*`,
+`approval::rules::tests::replacing_an_origin_s_rules_keeps_the_ids_of_those_that_stay`,
+`approval::statements::tests::replacing_the_lasting_statements_keeps_numbers_and_sessions`,
+`daemon::settings::tests::a_changed_file_is_synced_by_content` and
+`a_project_file_syncs_only_what_a_project_may_set`.
+
+R6-C4 (owner decision: no backwards compatibility yet): `auto.enabled`
+is gone with its machinery (`Alias`, `Setting::alias`, `enabled_as_mode`,
+the writer's `drop` list, `Flag::key`). `[auto]` already denies unknown
+fields, so a file that still says `enabled` does not read, with serde's
+"unknown field `enabled`" (never ignored: ignoring `enabled = false` would
+start in auto mode); a running daemon treats it as any unreadable file.
+`--no-auto` writes `auto.mode = "default"`; a project's `mode = "default"`
+is the only value of its mode that is read. The state fixtures have no
+`[auto] enabled`. Tests: `config::registry::tests::a_file_with_auto_enabled_does_not_load`,
+`config::write::tests::a_missing_file_is_created_and_one_with_auto_enabled_is_refused`.
+
+A Stop given during a review: `review()` checks the Stop again once the
+classifier answers and denies as `Stopped`, leaving the allow cache and
+the denial counters alone (a verdict that is not acted on is not
+counted). Test: `approval::engine::tests::a_stop_during_a_review_denies_the_call_the_classifier_allows`
+(fails without the check).

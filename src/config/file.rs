@@ -87,10 +87,6 @@ impl AutoSettings {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AutoSection {
-    /// `true`: start in auto mode, `false`: in manual mode (the older
-    /// spelling of `mode`; `mode` wins when a file sets both).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
     /// See [`Layered::mode`](super::Layered::mode): `"default"`, `"accept-edits"`, `"plan"` or
     /// `"auto"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

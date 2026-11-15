@@ -6,7 +6,9 @@
 //! short quiet time ([`DEBOUNCE`], at most [`MAX_WAIT`]) and synced
 //! ([`super::local::Local::sync_settings`]): each setting whose value in
 //! force changed runs its hook, the clients get one notice per setting,
-//! and an audit line records it. The daemon's own writes find the file as
+//! and an audit line records it; the rules, statements and named
+//! directories of the user's and the workspace's file are held again as
+//! at start (`Local::hold_permissions`). The daemon's own writes find the file as
 //! it holds it already and change nothing (compared by content, not by
 //! timing); a file that does not parse is reported once and its last good
 //! values stay in force.

@@ -267,37 +267,146 @@ pub fn grant_dir_for(root: &ProjectRoot, raw: &str) -> Result<PathBuf, GrantRefu
 /// belongs to.
 pub type ScratchLookup = Arc<dyn Fn(&SessionId) -> Option<PathBuf> + Send + Sync>;
 
+/// A directory the user named for every session: on the command line, in
+/// a `tui.toml`, or granted "always" while the daemon runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedDir {
+    /// Its number (0: one named before the daemon started).
+    pub id: u64,
+    /// The canonical directory.
+    pub path: PathBuf,
+    /// Named for writing (else for reading).
+    pub write: bool,
+    /// Where it comes from ([`GrantOrigin::Flag`], [`GrantOrigin::Config`]
+    /// or [`GrantOrigin::Always`]).
+    pub origin: GrantOrigin,
+}
+
 /// The directories and rules the user grants, with the confinement plan's
 /// directories they join: the engine's
-/// (`crate::approval::ApprovalEngine::grants`). It owns the "always"
-/// directories of this run and each session's grants; the files that hold
-/// "always" grants for the next start are written by the engine.
+/// (`crate::approval::ApprovalEngine::grants`). It owns the directories
+/// the user named for every session (the command line's, the `tui.toml`
+/// files', and the "always" ones of this run, replaced from the files when
+/// they change) and each session's grants; the files are written by the
+/// engine.
 ///
-/// Locks: `always` and `sessions` are never held together, nor across the
+/// Locks: `named` and `sessions` are never held together, nor across the
 /// scratch lookup (the daemon's callback).
 pub struct Grants {
     /// The confinement plan's directories (the sandbox's defaults and the
-    /// user's named ones).
+    /// user's named ones at start: what a confined shell may use until
+    /// the daemon starts again).
     plan: GrantedDirs,
     /// Each session's scratch directory ([`Self::set_scratch`]); unset:
     /// none has one.
     scratch: OnceLock<ScratchLookup>,
-    /// Directories the user granted "always" while this daemon runs (the
-    /// realm's `tui.toml` holds them for the next start), by id.
-    always: RwLock<Vec<(u64, PathBuf)>>,
+    /// The directories the user named for every session, now.
+    named: RwLock<Vec<NamedDir>>,
     /// The grants the user made for each session and its helpers, by id.
     sessions: Mutex<HashMap<SessionId, Vec<(u64, GrantTarget)>>>,
 }
 
 impl Grants {
-    /// The grants over the confinement plan's directories `plan`.
+    /// The grants over the confinement plan's directories `plan`: its
+    /// named ones are the named directories at start.
     pub(super) fn new(plan: GrantedDirs) -> Self {
+        let named = |paths: &[PathBuf], write: bool| {
+            paths
+                .iter()
+                .map(|path| NamedDir {
+                    id: 0,
+                    path: path.clone(),
+                    write,
+                    origin: if plan.from_flag.contains(path) {
+                        GrantOrigin::Flag
+                    } else {
+                        GrantOrigin::Config
+                    },
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut start = named(&plan.user_write, true);
+        start.extend(named(&plan.user_read, false));
         Self {
             plan,
             scratch: OnceLock::new(),
-            always: RwLock::new(Vec::new()),
+            named: RwLock::new(start),
             sessions: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The sandbox's detected grants as the start's plan has them (the
+    /// writable ones with `workspace`), what the named directories are
+    /// checked against ([`crate::bootstrap::confinement::named_dirs`]).
+    pub(super) fn sandbox(&self, workspace: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        // A detected grant that holds the workspace (the temp directory)
+        // comes first, as in the plan, where it took the workspace's place.
+        let mut write = self.plan.baseline_write.clone();
+        write.push(workspace.to_path_buf());
+        (write, self.plan.baseline_read.clone())
+    }
+
+    /// The directories the command line named, for writing and for
+    /// reading.
+    pub(super) fn flag_dirs(&self) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let named = self.named.read();
+        let of = |write: bool| {
+            named
+                .iter()
+                .filter(|dir| dir.origin == GrantOrigin::Flag && dir.write == write)
+                .map(|dir| dir.path.clone())
+                .collect()
+        };
+        (of(true), of(false))
+    }
+
+    /// Whether `path` is named already, for writing (`write`) or reading.
+    pub(super) fn is_named(&self, path: &Path, write: bool) -> bool {
+        self.named
+            .read()
+            .iter()
+            .any(|dir| dir.path == path && dir.write == write)
+    }
+
+    /// Make the named directories `dirs` (each a path, for writing or not,
+    /// and its origin): one named already keeps its number and origin.
+    /// Returns the directories added and the ones removed.
+    pub(super) fn replace_named(
+        &self,
+        dirs: Vec<(PathBuf, bool, GrantOrigin)>,
+    ) -> (Vec<NamedDir>, Vec<NamedDir>) {
+        let mut named = self.named.write();
+        let next: Vec<NamedDir> = dirs
+            .into_iter()
+            .map(|(path, write, origin)| {
+                named
+                    .iter()
+                    .find(|held| held.path == path && held.write == write)
+                    .cloned()
+                    .unwrap_or(NamedDir {
+                        id: 0,
+                        path,
+                        write,
+                        origin,
+                    })
+            })
+            .collect();
+        let has = |dirs: &[NamedDir], dir: &NamedDir| {
+            dirs.iter()
+                .any(|other| other.path == dir.path && other.write == dir.write)
+        };
+        let added = next
+            .iter()
+            .filter(|dir| !has(&named, dir))
+            .cloned()
+            .collect();
+        let removed = named
+            .iter()
+            .filter(|dir| !has(&next, dir))
+            .cloned()
+            .collect();
+        *named = next;
+        (added, removed)
     }
 
     /// Where each session's private scratch directory is: the gate treats
@@ -331,9 +440,21 @@ impl Grants {
     pub(super) fn dirs_for(&self, session: &SessionId) -> GrantedDirs {
         let mut granted = self.plan.clone();
         granted.scratch = self.scratch(session);
-        granted
-            .user_write
-            .extend(self.always.read().iter().map(|(_, dir)| dir.clone()));
+        {
+            let named = self.named.read();
+            let of = |write: bool| {
+                let mut dirs: Vec<PathBuf> = named
+                    .iter()
+                    .filter(|dir| dir.write == write)
+                    .map(|dir| dir.path.clone())
+                    .collect();
+                dirs.sort();
+                dirs.dedup();
+                dirs
+            };
+            granted.user_write = of(true);
+            granted.user_read = of(false);
+        }
         if let Some(grants) = self.sessions.lock().get(session) {
             for (_, grant) in grants {
                 if let GrantTarget::Dir { path } = grant {
@@ -387,12 +508,10 @@ impl Grants {
     /// Why it cannot be granted always, for the user.
     pub(super) fn always_dir(&self, path: &Path, root: &Path) -> Result<PathBuf, String> {
         let named: Vec<PathBuf> = self
-            .plan
-            .user_write
+            .named
+            .read()
             .iter()
-            .chain(&self.plan.user_read)
-            .cloned()
-            .chain(self.always.read().iter().map(|(_, dir)| dir.clone()))
+            .map(|dir| dir.path.clone())
             .collect();
         crate::bootstrap::confinement::grantable_extra_write(path, root, &named).map_err(
             |problem| {
@@ -404,9 +523,14 @@ impl Grants {
         )
     }
 
-    /// Grant directory `dir` (number `id`) always, for this run.
+    /// Grant directory `dir` (number `id`) always.
     pub(super) fn add_always(&self, id: u64, dir: PathBuf) {
-        self.always.write().push((id, dir));
+        self.named.write().push(NamedDir {
+            id,
+            path: dir,
+            write: true,
+            origin: GrantOrigin::Always,
+        });
     }
 
     /// The grants in force for `session`, as `/permissions` lists them:
@@ -426,23 +550,12 @@ impl Grants {
                 removable: false,
             })
             .collect();
-        for path in &self.plan.user_write {
+        // The ones named for writing (a read grant is no `GrantTarget`).
+        for named in self.named.read().iter().filter(|named| named.write) {
             rows.push(GrantRow {
-                id: 0,
-                target: dir(path),
-                origin: if self.plan.from_flag.contains(path) {
-                    GrantOrigin::Flag
-                } else {
-                    GrantOrigin::Config
-                },
-                removable: false,
-            });
-        }
-        for (id, path) in self.always.read().iter() {
-            rows.push(GrantRow {
-                id: *id,
-                target: dir(path),
-                origin: GrantOrigin::Always,
+                id: named.id,
+                target: dir(&named.path),
+                origin: named.origin,
                 removable: false,
             });
         }

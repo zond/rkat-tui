@@ -1596,6 +1596,7 @@ mod tests {
                 key: "endpoints.<name>".into(),
                 about: "endpoints".into(),
                 project: "may not set it".into(),
+                applies: "at the next start".into(),
                 flags: "--endpoint-def".into(),
                 commands: "—".into(),
             }],

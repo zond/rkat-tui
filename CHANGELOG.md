@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The permission sections of your own `tui.toml` and the workspace's
+  (the `[[allow]]`/`[[deny]]` rules, the `[auto] allow` statements, the
+  `[confinement]` directories) apply at once when the file changes, by
+  hand or through another workspace's daemon, as a command's change
+  does: the daemon computes what the files give as it does at start and
+  holds that. Every client is told once what changed ("your tui.toml
+  changed: 1 statement added, 1 granted directory removed; in force
+  now"), each item is audited, and an entry a start would refuse (a rule
+  that does not parse, a broad allow rule, a statement the classifier
+  would not take, a directory the plan refuses) is skipped and named
+  while the rest applies. A newly granted directory reaches the gate at
+  once and a confined shell from the next start. A change of the
+  project's `.rkat/tui.toml` sections, and of endpoints, prices and
+  thinking anywhere, still applies at the next start.
+- **Breaking for a `tui.toml` with `[auto] enabled`:** the older spelling
+  of the mode is gone. A file that still has it does not read ("unknown
+  field `enabled`"; a running daemon keeps its last good settings); write
+  `mode = "default"` (manual) or `mode = "auto"` instead. A project's
+  `.rkat/tui.toml` turns auto mode off with `mode = "default"`, and
+  `--no-auto` is `auto.mode = "default"` on the command line.
+
+### Fixed
+
+- A Stop given while the classifier reviews a call denies it, whatever
+  the verdict: before, an allow that came after the Stop ran the call.
+
 ## [0.0.6] - 2026-11-15
 
 ### Added

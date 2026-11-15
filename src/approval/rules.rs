@@ -572,6 +572,42 @@ impl RuleSet {
         Some(list.remove(index).1)
     }
 
+    /// Make the rules of `origins` the ones of `rules` that are of
+    /// `origins`: a rule held already keeps its id, one no longer there
+    /// goes, a new one is pushed (as [`Self::push`]: not when a rule of
+    /// another origin is the same). The rules of other origins stay.
+    /// Returns the rules added and the rules removed.
+    pub fn replace(&mut self, origins: &[RuleOrigin], rules: Vec<Rule>) -> (Vec<Rule>, Vec<Rule>) {
+        let same = |a: &Rule, b: &Rule| a.kind == b.kind && a.tool == b.tool && a.arg == b.arg;
+        let rules: Vec<Rule> = rules
+            .into_iter()
+            .filter(|rule| origins.contains(&rule.origin))
+            .collect();
+        let mut removed = Vec::new();
+        for kind in [RuleKind::Allow, RuleKind::Deny] {
+            self.list_mut(kind).retain(|(_, held)| {
+                let stays =
+                    !origins.contains(&held.origin) || rules.iter().any(|rule| same(rule, held));
+                if !stays {
+                    removed.push(held.clone());
+                }
+                stays
+            });
+        }
+        let mut added = Vec::new();
+        for rule in rules {
+            let held = self
+                .list(rule.kind)
+                .iter()
+                .any(|(_, held)| held.tool == rule.tool && held.arg == rule.arg);
+            if !held {
+                self.push(rule.clone());
+                added.push(rule);
+            }
+        }
+        (added, removed)
+    }
+
     /// Drop allow rules too broad for auto mode; returns the dropped rules.
     pub fn sanitize_for_auto(&mut self) -> Vec<Rule> {
         let (keep, dropped): (Vec<(u64, Rule)>, Vec<(u64, Rule)>) = std::mem::take(&mut self.allow)
@@ -764,5 +800,33 @@ mod tests {
                 .broad_reason()
                 .is_some()
         );
+    }
+
+    /// Replacing the rules of some origins keeps the ids of those that
+    /// stay, removes the others and adds the new; other origins' stay.
+    #[test]
+    fn replacing_an_origin_s_rules_keeps_the_ids_of_those_that_stay() {
+        let rule = |tool: &str, origin| Rule::new(RuleKind::Allow, tool, None, origin).unwrap();
+        let mut set = RuleSet::default();
+        let kept = set.push(rule("read_file", RuleOrigin::Realm));
+        set.push(rule("grep", RuleOrigin::Global));
+        let cli = set.push(rule("glob", RuleOrigin::Cli));
+        let (added, removed) = set.replace(
+            &[RuleOrigin::Global, RuleOrigin::Realm],
+            vec![
+                rule("read_file", RuleOrigin::Realm),
+                rule("list_dir", RuleOrigin::Global),
+                rule("glob", RuleOrigin::Global),
+                rule("never", RuleOrigin::Cli),
+            ],
+        );
+        let tools = |rules: &[Rule]| -> Vec<String> {
+            rules.iter().map(|r| r.tool.as_str().to_string()).collect()
+        };
+        assert_eq!(tools(&added), vec!["list_dir"]);
+        assert_eq!(tools(&removed), vec!["grep"]);
+        assert_eq!(set.get(kept).unwrap().tool.as_str(), "read_file");
+        assert_eq!(set.get(cli).unwrap().origin, RuleOrigin::Cli);
+        assert_eq!(set.allow().len(), 3);
     }
 }

@@ -1211,8 +1211,8 @@ pub(super) fn settings_picker(
                     ],
                 )
                 .noted(format!(
-                    "{} (a project file {}; flags: {})",
-                    section.about, section.project, section.flags
+                    "{} (a change applies {}; a project file {}; flags: {})",
+                    section.about, section.applies, section.project, section.flags
                 ))
             }),
     );
