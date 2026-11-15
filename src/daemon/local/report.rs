@@ -219,8 +219,8 @@ impl Local {
 /// written to one of them (`/settings` shows what the files hold).
 fn reload_lists(settings: &crate::daemon::settings::Settings) {
     use crate::config::registry::Level;
-    settings.reload(Level::User);
-    settings.reload(Level::Workspace);
+    settings.adopt_sections(Level::User);
+    settings.adopt_sections(Level::Workspace);
 }
 
 /// A trust state in words.

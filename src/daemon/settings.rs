@@ -13,6 +13,11 @@
 //! `[ui]` settings the clients follow). [`Written::confirmation`] says
 //! what was written where, what is in force and from which layer, when it
 //! takes effect, and which higher layer wins over it.
+//!
+//! The files are followed while the daemon runs (`super::settings_watch`):
+//! [`Settings::sync`] reads one again and diffs it against what the daemon
+//! holds, by content: the daemon's own write holds what the file holds
+//! already and finds nothing to do.
 
 use std::path::PathBuf;
 
@@ -20,20 +25,57 @@ use parking_lot::{Mutex, RwLock};
 use toml::Value;
 
 use super::protocol::{SectionRow, SettingRow, SettingsList};
-use crate::config::SettingsFiles;
 use crate::config::registry::{
-    Applies, Layers, Level, ProjectRule, Resolved, SECTIONS, SETTINGS, Setting, show,
+    Applies, Layers, Level, ProjectRule, Resolved, SECTIONS, SETTINGS, Setting, put, sections_of,
+    show, with_scalars,
 };
+use crate::config::{RulesFile, SettingsFiles};
 
 /// Every layer's values and the files the user's and the workspace's come
 /// from.
 #[derive(Debug)]
 pub struct Settings {
     files: Option<SettingsFiles>,
+    /// The project's `.rkat/tui.toml` (read, never written).
+    project: Option<PathBuf>,
     layers: RwLock<Layers>,
     /// Held across a write and the layers' update, so two changes cannot
     /// update the layers in the other order than they wrote the file.
     changing: Mutex<()>,
+    /// The error each file that does not read was last reported with.
+    unreadable: Mutex<std::collections::HashMap<Level, String>>,
+}
+
+/// What reading a settings file again found.
+#[derive(Debug, Clone)]
+pub enum Synced {
+    /// It holds what the daemon holds (its own write, or a touch).
+    Same,
+    /// It changed: each setting whose value in force moved, and whether a
+    /// structured section (rules, statements, grants, endpoints, prices,
+    /// thinking) changed.
+    Changed {
+        /// The settings in force that moved.
+        changes: Vec<Change>,
+        /// A section changed (it applies at the next start).
+        sections: bool,
+    },
+    /// It does not read, for the first time with this error: its last
+    /// good values stay in force.
+    Unreadable(String),
+    /// It still does not read, as reported.
+    StillUnreadable,
+}
+
+/// One setting whose value in force moved.
+#[derive(Debug, Clone)]
+pub struct Change {
+    /// The setting.
+    pub setting: &'static Setting,
+    /// In force before.
+    pub before: Resolved,
+    /// In force now.
+    pub after: Resolved,
 }
 
 /// One change, written: the setting, the level and file, the value given,
@@ -55,14 +97,39 @@ pub struct Written {
 }
 
 impl Settings {
-    /// The settings over `layers` (as read at start), written to `files`.
+    /// The settings over `layers` (as read at start), written to `files`,
+    /// with the project's file at `project`.
     #[must_use]
-    pub fn new(files: Option<SettingsFiles>, layers: Layers) -> Self {
+    pub fn new(files: Option<SettingsFiles>, layers: Layers, project: Option<PathBuf>) -> Self {
         Self {
             files,
+            project,
             layers: RwLock::new(layers),
             changing: Mutex::new(()),
+            unreadable: Mutex::default(),
         }
+    }
+
+    /// The file of `level` (the user's, the workspace's or the project's).
+    #[must_use]
+    pub fn path_of(&self, level: Level) -> Option<PathBuf> {
+        match level {
+            Level::User | Level::Workspace => self
+                .files
+                .as_ref()
+                .map(|files| files.of(level).path().to_path_buf()),
+            Level::Project => self.project.clone(),
+            Level::Default | Level::CommandLine => None,
+        }
+    }
+
+    /// The files followed while the daemon runs, each with its level.
+    #[must_use]
+    pub fn watched(&self) -> Vec<(Level, PathBuf)> {
+        [Level::User, Level::Workspace, Level::Project]
+            .into_iter()
+            .filter_map(|level| Some((level, self.path_of(level)?)))
+            .collect()
     }
 
     /// `setting`'s value in force now.
@@ -122,11 +189,15 @@ impl Settings {
         let drop: Vec<&str> = setting.alias.iter().map(|alias| alias.key).collect();
         let _one = self.changing.lock();
         let before = self.resolve(setting);
-        let read = file
-            .set(setting.key, value.as_ref(), &drop)
+        file.set(setting.key, value.as_ref(), &drop)
             .map_err(|err| format!("{} was not changed: {err}", setting.key))?;
+        // Only the key written: a change someone else made to the file
+        // meanwhile is the next sync's to find and apply.
         if let Some(table) = self.layers.write().of_mut(level) {
-            *table = read.table();
+            for old in &drop {
+                put(table, old, None);
+            }
+            put(table, setting.key, value.clone());
         }
         let after = self.resolve(setting);
         Ok(Written {
@@ -139,20 +210,69 @@ impl Settings {
         })
     }
 
-    /// Read `level`'s file again (a rule, grant or statement was written
-    /// to it): its table replaces the one held.
-    pub fn reload(&self, level: Level) {
-        let Some(files) = &self.files else {
+    /// A rule, grant or statement was written to `level`'s file: hold its
+    /// sections as the file has them now (its scalar settings stay as
+    /// held: a change of one there is the next sync's).
+    pub fn adopt_sections(&self, level: Level) {
+        let Some(path) = self.path_of(level) else {
             return;
         };
         let _one = self.changing.lock();
-        match files.of(level).read() {
+        match RulesFile::load(&path) {
             Ok(read) => {
                 if let Some(table) = self.layers.write().of_mut(level) {
-                    *table = read.table();
+                    *table = with_scalars(&read.table(), table);
                 }
             }
             Err(err) => tracing::warn!(%err, "a settings file could not be read again"),
+        }
+    }
+
+    /// Read `level`'s file again and hold what it says now: the settings
+    /// whose value in force moved, whether a section changed, or that it
+    /// does not read (reported once per error; the last good values stay).
+    /// Blocking file I/O.
+    pub fn sync(&self, level: Level) -> Synced {
+        let Some(path) = self.path_of(level) else {
+            return Synced::Same;
+        };
+        let _one = self.changing.lock();
+        let read = match RulesFile::load(&path) {
+            Ok(read) => read,
+            Err(err) => {
+                let why = err.to_string();
+                let mut unreadable = self.unreadable.lock();
+                if unreadable.get(&level) == Some(&why) {
+                    return Synced::StillUnreadable;
+                }
+                unreadable.insert(level, why.clone());
+                return Synced::Unreadable(why);
+            }
+        };
+        self.unreadable.lock().remove(&level);
+        let table = read.table();
+        let mut layers = self.layers.write();
+        let before = layers.clone();
+        let Some(held) = layers.of_mut(level) else {
+            return Synced::Same;
+        };
+        let sections = sections_of(held) != sections_of(&table);
+        *held = table;
+        let changes: Vec<Change> = SETTINGS
+            .iter()
+            .filter_map(|setting| {
+                let (before, after) = (setting.resolve(&before), setting.resolve(&layers));
+                (before != after).then_some(Change {
+                    setting,
+                    before,
+                    after,
+                })
+            })
+            .collect();
+        if changes.is_empty() && !sections {
+            Synced::Same
+        } else {
+            Synced::Changed { changes, sections }
         }
     }
 

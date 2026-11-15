@@ -18,6 +18,13 @@
   `/permissions add`; `/approve`'s `A` grants a directory or a rule
   always in every workspace, and its kind-of-effect field's Tab reaches
   "always, in every workspace" (written to your own `tui.toml`).
+- A running daemon follows your `tui.toml`, the workspace's and the
+  project's: a hand edit or another daemon's write applies the settings
+  whose value in force moved and tells every client once per setting
+  ("auto.compact_prepare_at is now 65% (from your tui.toml; your
+  tui.toml changed)"); a changed section is named (it applies at the
+  next start); a file that does not read is reported once and its last
+  good values stay.
 - The mode, the classifier model, `trust_project_builds`, the prepare
   instruction and threshold and the `[ui]` settings apply at once when a
   change moves the value in force; attached clients follow a `[ui]`

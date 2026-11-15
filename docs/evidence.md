@@ -9647,3 +9647,37 @@ the user's file, the picker's rows and edit, the `[ui]` push),
 existing `realm_settings` and `compact_prepare` rig tests moved onto
 `rkat/set_setting`.
 
+## One table of settings, step 3: following the files (2026-11-15)
+
+Each daemon watches the directories of the user's `tui.toml`, the
+realm's and the project's `.rkat/tui.toml` (`daemon::settings_watch`:
+the `notify` crate the agents' file watches use, non-recursive, only
+events naming the file; the realm directory's SQLite traffic is
+filtered there), waits for `DEBOUNCE` (200 ms) of quiet, and syncs each
+level (`Local::sync_settings` over `Settings::sync`). `sync` reads the
+file through `RulesFile::load` (the start's reader), compares it with
+the table the daemon holds and diffs every setting's value in force;
+each moved setting runs the step-2 hook (`apply_setting`, without its
+own push), is pushed as `rkat/setting` with its notice and audited
+(`setting_changed`); a changed section (everything but the scalar
+settings, `registry::sections_of`) is named once; a file that does not
+read is reported once per error (`settings_unreadable`) and the held
+values stay. Own writes are ignored by content: `Settings::write_value`
+puts only its key into the held table (so another writer's change made
+in between is found by the next sync, not absorbed), and the rule,
+grant and statement writes adopt only the file's sections
+(`adopt_sections`, `registry::with_scalars`). A project file resolves by
+its `ProjectRule`s as at start, so it moves only what a project may set.
+
+Tests: `daemon::settings::tests::a_changed_file_is_synced_by_content`
+(own write: nothing; another's between two own writes: found; a
+section: named; broken: once, last good kept; fixed: diffed against the
+last good), `a_project_file_syncs_only_what_a_project_may_set`, and the
+rig's `settings::two_daemons_on_one_users_file_follow_each_others_changes_and_hand_edits`:
+two real daemons on one user file, the first the `rkat-tui-mob` binary as
+its own process (two cannot share a process), the second in the rig; the
+first's `/set --user` applied in the second and told to its client, a
+`[ui]` value followed, a hand edit of the realm file followed, a broken
+user file reported once with the last good values kept, and the second's
+own write followed by no notice past the quiet time.
+

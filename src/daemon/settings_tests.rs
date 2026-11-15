@@ -1,6 +1,7 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::*;
+use toml::Value;
 
 fn settings(dir: &std::path::Path, layers: Layers) -> Settings {
     Settings::new(
@@ -9,6 +10,7 @@ fn settings(dir: &std::path::Path, layers: Layers) -> Settings {
             dir.join("realm").join("tui.toml"),
         )),
         layers,
+        Some(dir.join("project").join(".rkat").join("tui.toml")),
     )
 }
 
@@ -131,7 +133,7 @@ fn bad_changes_are_refused_and_nothing_is_written() {
     assert!(err.contains("section"), "{err}");
     assert!(!tmp.path().join("realm").join("tui.toml").exists());
     // Without files, nothing can be written.
-    let bare = Settings::new(None, Layers::default());
+    let bare = Settings::new(None, Layers::default(), None);
     assert!(bare.write("ui.bell", Some("false"), false).is_err());
 }
 
@@ -192,4 +194,96 @@ fn the_rows_hold_every_setting_and_layer() {
     assert_eq!(model.value, "the start-up endpoint's per-dialect default");
     assert_eq!(model.source, Level::Default);
     assert_eq!(list.user_file, tmp.path().join("user").join("tui.toml"));
+}
+
+/// A file changed on disk is found by content: the daemon's own write
+/// finds nothing to do; another writer's change (made between two of the
+/// daemon's own) is found, not absorbed, with the settings whose value in
+/// force moved; a section's change is named; a file that does not read is
+/// reported once and its last good values stay until it reads again.
+#[test]
+fn a_changed_file_is_synced_by_content() {
+    let tmp = tempfile::tempdir().unwrap();
+    let settings = settings(tmp.path(), Layers::default());
+    let user_file = tmp.path().join("user").join("tui.toml");
+    let changed = |synced: Synced| match synced {
+        Synced::Changed { changes, sections } => (
+            changes
+                .iter()
+                .map(|change| (change.setting.key, change.after.value.as_ref().map(show)))
+                .collect::<Vec<_>>(),
+            sections,
+        ),
+        other => panic!("not a change: {other:?}"),
+    };
+    // Nothing yet, nothing to do.
+    assert!(matches!(settings.sync(Level::User), Synced::Same));
+    // The daemon's own write: the file holds what it holds.
+    settings.write("ui.bell", Some("false"), true).unwrap();
+    assert!(matches!(settings.sync(Level::User), Synced::Same));
+    // Someone else's edit, then the daemon's own write of another key: the
+    // edit is still found.
+    let text = std::fs::read_to_string(&user_file).unwrap();
+    std::fs::write(&user_file, format!("{text}[helpers]\nmax_depth = 3\n")).unwrap();
+    settings.write("auto.compact", Some("warn"), true).unwrap();
+    assert_eq!(
+        changed(settings.sync(Level::User)),
+        (vec![("helpers.max_depth", Some("3".to_string()))], false)
+    );
+    assert!(matches!(settings.sync(Level::User), Synced::Same));
+    // A rule by hand: a section changed, no setting.
+    let text = std::fs::read_to_string(&user_file).unwrap();
+    std::fs::write(&user_file, format!("{text}[[deny]]\ntool = \"shell\"\n")).unwrap();
+    assert_eq!(changed(settings.sync(Level::User)), (vec![], true));
+    // Broken: reported once, the last good values stay.
+    std::fs::write(&user_file, "[ui\nbell = true\n").unwrap();
+    assert!(
+        matches!(settings.sync(Level::User), Synced::Unreadable(why) if why.contains("tui.toml"))
+    );
+    assert!(matches!(
+        settings.sync(Level::User),
+        Synced::StillUnreadable
+    ));
+    let bell = Setting::find("ui.bell").unwrap();
+    assert_eq!(settings.resolve(bell).value, Some(Value::Boolean(false)));
+    // Fixed: what it says now, against the last good.
+    std::fs::write(&user_file, "[ui]\nbell = true\n").unwrap();
+    let (changes, sections) = changed(settings.sync(Level::User));
+    assert!(sections);
+    let keys: Vec<&str> = changes.iter().map(|(key, _)| *key).collect();
+    assert_eq!(keys, vec!["auto.compact", "helpers.max_depth", "ui.bell"]);
+}
+
+/// A project file changes only what a project may set: its classifier
+/// model is never in force, its lower limit is.
+#[test]
+fn a_project_file_syncs_only_what_a_project_may_set() {
+    let tmp = tempfile::tempdir().unwrap();
+    let settings = settings(tmp.path(), Layers::default());
+    let project = tmp.path().join("project").join(".rkat").join("tui.toml");
+    std::fs::create_dir_all(project.parent().unwrap()).unwrap();
+    std::fs::write(
+        &project,
+        "[auto]\nclassifier_model = \"cheap:model\"\ntrust_project_builds = true\n[helpers]\nmax_depth = 0\n",
+    )
+    .unwrap();
+    let Synced::Changed { changes, .. } = settings.sync(Level::Project) else {
+        panic!("not a change")
+    };
+    let keys: Vec<&str> = changes.iter().map(|change| change.setting.key).collect();
+    assert_eq!(keys, vec!["helpers.max_depth"]);
+    assert_eq!(
+        settings
+            .resolve(Setting::find("auto.classifier_model").unwrap())
+            .value,
+        None
+    );
+    assert_eq!(
+        settings
+            .watched()
+            .iter()
+            .map(|(level, _)| *level)
+            .collect::<Vec<_>>(),
+        vec![Level::User, Level::Workspace, Level::Project]
+    );
 }

@@ -291,3 +291,167 @@ async fn always_in_every_workspace_writes_the_users_file_and_settings_dirs_are_n
     assert!(list["user_file"].as_str().unwrap().ends_with("tui.toml"));
     daemon.stop().await;
 }
+
+/// Two daemons on one user's `tui.toml` (two workspaces, one config
+/// directory; the first runs as its own process, the real
+/// `rkat-tui-mob`, since two cannot share one process): a `/set --user`
+/// through the first reaches the second while it runs, applied (its
+/// prepare threshold moves) and told to its client once per setting; a
+/// `[ui]` change reaches the client as a value to follow; a hand edit of
+/// the workspace's file is followed the same way; a file that does not
+/// read is reported once and its last good values stay; the daemon's own
+/// write tells its client nothing beyond its confirmation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_daemons_on_one_users_file_follow_each_others_changes_and_hand_edits() {
+    let first = Workspace::new();
+    let second = Workspace::new();
+    let cfg = first.sibling("shared-cfg");
+    std::fs::create_dir_all(&cfg).unwrap();
+    let user_file = cfg.join("tui.toml");
+    // The process daemon reaches no model: an endpoint it never calls.
+    std::fs::write(
+        &user_file,
+        "[endpoints.fake]\ndialect = \"anthropic\"\nbase_url = \"http://127.0.0.1:9\"\napi_key_env = \"HOME\"\n",
+    )
+    .unwrap();
+    let cfg_arg = cfg.to_str().unwrap().to_string();
+    let args_a = common::args_with(&first.root, &["--config-dir", &cfg_arg]);
+    let file_a = first.sibling("first.endpoint");
+    let argv = rkat_tui::client::launch::with_endpoint_file(
+        &rkat_tui::client::launch::daemon_argv(&args_a, &first.root),
+        &file_a,
+    );
+    let _first_daemon = tokio::process::Command::new(env!("CARGO_BIN_EXE_rkat-tui-mob"))
+        .args(&argv)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    common::until(|| file_a.exists()).await;
+    let mut a = rig::Client::attach_setup(&args_a, None, common::no_lists(), &file_a).await;
+    let llm = ScriptedLlmClient::new(vec![]);
+    let mut b =
+        Attached::start_with(&second.root, &llm, Setup::args(&["--config-dir", &cfg_arg])).await;
+    // The first's change, in the second.
+    a.send(Effect::SetSettings {
+        changes: vec![("auto.compact_prepare_at".into(), Some("65%".into()))],
+        user: true,
+    });
+    a.wait_for(|msg| {
+        matches!(msg, Msg::Notice { text, .. } if text.starts_with("auto.compact_prepare_at = 65%: written to your tui.toml"))
+    })
+    .await;
+    let notice = b
+        .wait_for(|msg| {
+            matches!(msg, Msg::Notice { text, .. } if text.starts_with("auto.compact_prepare_at is now 65%"))
+        })
+        .await;
+    let Msg::Notice { text, .. } = notice else {
+        unreachable!()
+    };
+    assert!(
+        text.starts_with(
+            "auto.compact_prepare_at is now 65% (from your tui.toml; your tui.toml changed); no instruction is in force; the threshold is 65% of the window"
+        ),
+        "{text}"
+    );
+    common::until_async(async || {
+        status(&b.daemon)
+            .await
+            .contains("its threshold is 65% of the window")
+    })
+    .await;
+    // The first's own file kept the endpoint it was started with.
+    assert!(
+        std::fs::read_to_string(&user_file)
+            .unwrap()
+            .starts_with("[endpoints.fake]\n")
+    );
+    // A `[ui]` setting reaches the second's client as a value to follow.
+    a.send(Effect::SetSettings {
+        changes: vec![("ui.checklist".into(), Some("shown".into()))],
+        user: true,
+    });
+    b.wait_for(|msg| {
+        matches!(msg, Msg::Setting { key, value } if key == "ui.checklist" && value.as_deref() == Some("shown"))
+    })
+    .await;
+    // A hand edit of the second's workspace file.
+    let realm_file = rkat_tui::bootstrap::resolve_scope(&common::args_with(
+        &second.root,
+        &["--config-dir", &cfg_arg],
+    ))
+    .unwrap()
+    .realm_root()
+    .join("tui.toml");
+    std::fs::write(
+        &realm_file,
+        "# by hand\n[auto]\ncompact_prepare_at = 50000\n",
+    )
+    .unwrap();
+    b.wait_for(|msg| {
+        matches!(msg, Msg::Notice { text, .. } if text.starts_with("auto.compact_prepare_at is now 50000 (from this workspace; this workspace's tui.toml changed)"))
+    })
+    .await;
+    common::until_async(async || {
+        status(&b.daemon)
+            .await
+            .contains("its threshold is 50k tokens")
+    })
+    .await;
+    // A broken user file: one warning, the last good values stay.
+    let kept = std::fs::read_to_string(&user_file).unwrap();
+    std::fs::write(&user_file, "[auto\n").unwrap();
+    b.wait_for(|msg| {
+        matches!(msg, Msg::Notice { text, .. } if text.starts_with("your tui.toml") && text.contains("does not read, so its last good settings stay in force"))
+    })
+    .await;
+    let list = b
+        .daemon
+        .connect_bound()
+        .await
+        .call("rkat/settings", json!({}))
+        .await
+        .unwrap();
+    let checklist = list["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["key"] == "ui.checklist")
+        .unwrap()
+        .clone();
+    assert_eq!(checklist["value"], "shown", "{checklist}");
+    std::fs::write(
+        &user_file,
+        kept.replace("checklist = \"shown\"", "checklist = \"hidden\""),
+    )
+    .unwrap();
+    b.wait_for(|msg| {
+        matches!(msg, Msg::Notice { text, .. } if text.starts_with("ui.checklist is now hidden (from your tui.toml; your tui.toml changed)"))
+    })
+    .await;
+    // The second's own write: its confirmation, and no notice of its file
+    // changing after the watcher's quiet time.
+    b.send(Effect::SetSettings {
+        changes: vec![("ui.bell".into(), Some("false".into()))],
+        user: false,
+    });
+    b.wait_for(|msg| {
+        matches!(msg, Msg::Notice { text, .. } if text.starts_with("ui.bell = false: written to this workspace's tui.toml"))
+    })
+    .await;
+    tokio::time::sleep(rkat_tui::daemon::settings_watch::DEBOUNCE * 4).await;
+    b.send(Effect::SetSettings {
+        changes: vec![("ui.bell".into(), Some("true".into()))],
+        user: false,
+    });
+    let next = b.wait_for(|msg| matches!(msg, Msg::Notice { .. })).await;
+    assert!(
+        matches!(&next, Msg::Notice { text, .. } if text.starts_with("ui.bell = true: written")),
+        "{next:?}"
+    );
+    a.quit().await;
+    b.quit().await;
+}

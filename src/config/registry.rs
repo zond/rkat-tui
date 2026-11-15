@@ -362,6 +362,85 @@ pub fn lookup<'a>(table: &'a Table, key: &str) -> Option<&'a Value> {
     Some(value)
 }
 
+/// Set the dotted `key` of `table` to `value` (`None`: remove it), the
+/// tables on the way created as needed.
+pub fn put(table: &mut Table, key: &str, value: Option<Value>) {
+    let (parents, last) = match key.rsplit_once('.') {
+        Some((parents, last)) => (Some(parents), last),
+        None => (None, key),
+    };
+    let mut at = table;
+    for part in parents.into_iter().flat_map(|parents| parents.split('.')) {
+        let entry = at
+            .entry(part.to_string())
+            .or_insert_with(|| Value::Table(Table::new()));
+        if !entry.is_table() {
+            if value.is_none() {
+                return;
+            }
+            *entry = Value::Table(Table::new());
+        }
+        let Some(next) = entry.as_table_mut() else {
+            return;
+        };
+        at = next;
+    }
+    match value {
+        Some(value) => {
+            at.insert(last.to_string(), value);
+        }
+        None => {
+            at.remove(last);
+        }
+    }
+}
+
+/// The dotted keys of every scalar setting and the older spellings they
+/// read: what is not a structured section.
+fn scalar_keys() -> impl Iterator<Item = &'static str> {
+    SETTINGS.iter().flat_map(|setting| {
+        std::iter::once(setting.key).chain(setting.alias.map(|alias| alias.key))
+    })
+}
+
+/// `table`'s structured sections (rules, statements, grants, endpoints,
+/// prices, thinking): everything but the scalar settings, empty tables
+/// left out.
+#[must_use]
+pub fn sections_of(table: &Table) -> Table {
+    let mut rest = table.clone();
+    for key in scalar_keys() {
+        put(&mut rest, key, None);
+    }
+    prune(&mut rest);
+    rest
+}
+
+/// `sections` (a file's structured sections) with `scalars`' scalar
+/// settings (as held) in place of the file's.
+#[must_use]
+pub fn with_scalars(sections: &Table, scalars: &Table) -> Table {
+    let mut table = sections_of(sections);
+    for key in scalar_keys() {
+        if let Some(value) = lookup(scalars, key) {
+            put(&mut table, key, Some(value.clone()));
+        }
+    }
+    table
+}
+
+/// Remove the empty tables of `table`, deepest first.
+fn prune(table: &mut Table) {
+    table.retain(|_, value| {
+        if let Value::Table(inner) = value {
+            prune(inner);
+            !inner.is_empty()
+        } else {
+            true
+        }
+    });
+}
+
 /// `value` as the setting files and commands show it (`true`, `65%`,
 /// `auto`, `"update PLAN.md"` for text with spaces).
 #[must_use]

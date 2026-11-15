@@ -1316,9 +1316,23 @@ order of keys and the formatting of the rest of the file stay as they
 were. The result must read as a `tui.toml` before anything is written
 (else nothing is), the file is replaced atomically, a symlinked file is
 refused, and a lock on the file's directory keeps two daemons writing
-your file from losing each other's change. A daemon reads the files at
-its start; one that is running does not notice a hand edit or another
-daemon's change yet.
+your file from losing each other's change.
+
+**Following the files.** A running daemon watches your `tui.toml`, the
+workspace's and the project's `.rkat/tui.toml`. When one changes (a hand
+edit, another workspace's daemon writing your file) it reads it again
+after a moment's quiet, and each setting whose value in force moved is
+applied as a `/set` would apply it and told to every attached client
+once: "auto.compact_prepare_at is now 65% (from your tui.toml; your
+tui.toml changed)", with when it applies when that is not at once. A
+change of the rules, statements, grants, endpoints, prices or thinking
+in a file is named once and applies at the next start. A file that does
+not read is reported once ("… does not read, so its last good settings
+stay in force: …") and its last good values stay until it reads again.
+A project file counts only for what a project may set, as at start. The
+daemon's own writes change nothing more (it compares what the file
+holds, not when it changed). Each followed change is in the audit log
+(`setting_changed`, `settings_unreadable`).
 
 ## Rules
 

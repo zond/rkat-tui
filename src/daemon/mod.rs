@@ -48,6 +48,7 @@ pub mod schedules;
 pub mod schema_compat;
 pub mod serve;
 pub mod settings;
+pub mod settings_watch;
 pub mod tasks;
 pub mod usage;
 pub mod watches;
@@ -546,6 +547,13 @@ impl Daemon {
             settings: Arc::new(settings::Settings::new(
                 composed.files.clone(),
                 std::mem::take(&mut composed.layers),
+                Some(
+                    composed
+                        .scope
+                        .context_root
+                        .join(".rkat")
+                        .join(crate::config::RULES_FILE_NAME),
+                ),
             )),
         });
         let agents = agents::Agents::new(Arc::clone(&core));
@@ -600,8 +608,14 @@ impl Daemon {
                 engine: Arc::clone(&core.engine),
                 compact_threshold: composed.root.compact_threshold,
             },
+            tasks: std::iter::once(watch_task)
+                .chain(settings_watch::spawn(
+                    Arc::downgrade(&local),
+                    core.settings.watched(),
+                ))
+                .chain(composed.tasks)
+                .collect(),
             local,
-            tasks: std::iter::once(watch_task).chain(composed.tasks).collect(),
         })
     }
 

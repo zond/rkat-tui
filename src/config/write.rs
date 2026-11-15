@@ -98,6 +98,7 @@ impl SettingsFile {
     /// # Errors
     ///
     /// [`crate::approval::rules::RulesError`] when it cannot be read or parsed.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn read(&self) -> Result<RulesFile, crate::approval::rules::RulesError> {
         RulesFile::load(&self.path)
     }

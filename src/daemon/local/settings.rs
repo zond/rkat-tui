@@ -40,7 +40,9 @@ impl Local {
         let mut warnings = Vec::new();
         let mut text = written.confirmation();
         if written.changed() || written.before.source != written.after.source {
-            let (lines, warning) = self.apply_setting(&written).await;
+            let (lines, warning) = self
+                .apply_setting(written.setting, &written.before, &written.after, true)
+                .await;
             for line in lines {
                 text.push_str("; ");
                 text.push_str(&line);
@@ -126,12 +128,21 @@ impl Local {
         Ok(())
     }
 
-    /// The hook of `written`'s setting, run when the value in force (or
-    /// its layer) changed: what to add to the confirmation, and a warning.
-    pub(crate) async fn apply_setting(&self, written: &Written) -> (Vec<String>, Option<String>) {
-        let value = written.after.value.clone();
-        match written.setting.key {
-            "auto.mode" if written.changed() => {
+    /// The hook of `setting`, run when its value in force (or its layer)
+    /// moved from `before` to `after`: what to add to the confirmation, and
+    /// a warning. With `push`, a `[ui]` change is pushed for the clients to
+    /// follow (a synced file's change is pushed with its notice instead).
+    pub(crate) async fn apply_setting(
+        &self,
+        setting: &'static Setting,
+        before: &crate::config::registry::Resolved,
+        after: &crate::config::registry::Resolved,
+        push: bool,
+    ) -> (Vec<String>, Option<String>) {
+        let value = after.value.clone();
+        let changed = before.value != after.value;
+        match setting.key {
+            "auto.mode" if changed => {
                 let mode = value
                     .and_then(|value| value.try_into::<PermissionMode>().ok())
                     .unwrap_or_default();
@@ -141,7 +152,7 @@ impl Local {
                     (!warnings.is_empty()).then(|| warnings.join("\n")),
                 )
             }
-            "auto.classifier_model" if written.changed() => {
+            "auto.classifier_model" if changed => {
                 let reference = value.as_ref().and_then(toml::Value::as_str).unwrap_or("");
                 match reference.split_once(':') {
                     Some((endpoint, model)) => {
@@ -161,7 +172,7 @@ impl Local {
                     ),
                 }
             }
-            "auto.trust_project_builds" if written.changed() => {
+            "auto.trust_project_builds" if changed => {
                 self.core
                     .engine
                     .set_trust_project_builds(value.as_ref().and_then(toml::Value::as_bool));
@@ -178,19 +189,141 @@ impl Local {
                 let warning = self.core.prepare.apply(setting.instruction, setting.at);
                 (vec![line], warning)
             }
-            "ui.helpers" | "ui.bell" | "ui.checklist" if written.changed() => {
+            "ui.helpers" | "ui.bell" | "ui.checklist" if changed && push => {
                 self.core.decisions.broadcast(
                     protocol::SETTING,
                     &SettingNote {
-                        key: written.setting.key.to_string(),
+                        key: setting.key.to_string(),
                         value: value.as_ref().map(crate::config::registry::show),
-                        source: written.after.source,
+                        source: after.source,
                         notice: None,
                     },
                 );
                 (Vec::new(), None)
             }
             _ => (Vec::new(), None),
+        }
+    }
+
+    /// A settings file of `level` changed on disk (a hand edit, another
+    /// daemon's write): read it again ([`crate::daemon::settings::Settings::sync`]);
+    /// each setting whose value in force moved runs its hook, is audited
+    /// and told to every client ("auto.compact_prepare_at is now 65% (your
+    /// tui.toml changed)", with the value for a `[ui]` setting to follow);
+    /// a changed section is named once (it applies at the next start); a
+    /// file that does not read is reported once and its last good values
+    /// stay.
+    pub async fn sync_settings(&self, level: Level) {
+        use crate::daemon::settings::Synced;
+        let settings = Arc::clone(&self.core.settings);
+        let Ok(synced) = tokio::task::spawn_blocking(move || settings.sync(level)).await else {
+            return;
+        };
+        let file = match level {
+            Level::User => "your tui.toml",
+            Level::Workspace => "this workspace's tui.toml",
+            _ => "the project's .rkat/tui.toml",
+        };
+        let path = self
+            .core
+            .settings
+            .path_of(level)
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        match synced {
+            Synced::Same | Synced::StillUnreadable => {}
+            Synced::Unreadable(why) => {
+                self.audit(crate::daemon::audit::Line::event(
+                    "settings_unreadable",
+                    format!("{path}: {why}"),
+                ));
+                self.tell_every_client(
+                    true,
+                    format!(
+                        "{file} ({path}) changed but does not read, so its last good settings stay in force: {why}"
+                    ),
+                );
+            }
+            Synced::Changed { changes, sections } => {
+                for change in changes {
+                    let words = |resolved: &crate::config::registry::Resolved| {
+                        crate::daemon::settings::in_force_words(change.setting, resolved)
+                    };
+                    let (lines, warning) = self
+                        .apply_setting(change.setting, &change.before, &change.after, false)
+                        .await;
+                    let when = match change.setting.applies {
+                        crate::config::registry::Applies::Live => String::new(),
+                        crate::config::registry::Applies::NextConversation => {
+                            "; it applies from the next conversation".to_string()
+                        }
+                        crate::config::registry::Applies::NextStart => {
+                            "; it applies at the next start".to_string()
+                        }
+                    };
+                    let source = match change.after.source {
+                        Level::Default => "the default".to_string(),
+                        source => format!("from {}", source.name()),
+                    };
+                    let mut notice = format!(
+                        "{} is now {} ({source}; {file} changed){when}",
+                        change.setting.key,
+                        words(&change.after)
+                    );
+                    for line in lines {
+                        notice.push_str("; ");
+                        notice.push_str(&line);
+                    }
+                    self.audit(crate::daemon::audit::Line::event(
+                        "setting_changed",
+                        format!(
+                            "{}: {} -> {} ({path} changed)",
+                            change.setting.key,
+                            words(&change.before),
+                            words(&change.after)
+                        ),
+                    ));
+                    self.core.decisions.broadcast(
+                        protocol::SETTING,
+                        &SettingNote {
+                            key: change.setting.key.to_string(),
+                            value: change
+                                .after
+                                .value
+                                .as_ref()
+                                .map(crate::config::registry::show),
+                            source: change.after.source,
+                            notice: Some(notice),
+                        },
+                    );
+                    if let Some(warning) = warning {
+                        self.tell_every_client(true, warning);
+                    }
+                }
+                if sections {
+                    self.tell_every_client(
+                        false,
+                        format!(
+                            "the rules, statements, grants, endpoints, prices or thinking of {file} changed: they apply at the next start"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// A notice every attached client shows (one per live agent: each
+    /// client shows its own agent's).
+    fn tell_every_client(&self, warn: bool, text: String) {
+        for agent in self.agents.names() {
+            self.core.decisions.broadcast(
+                protocol::AGENT_NOTICE,
+                &protocol::AgentNotice {
+                    agent,
+                    warn,
+                    text: text.clone(),
+                },
+            );
         }
     }
 }
