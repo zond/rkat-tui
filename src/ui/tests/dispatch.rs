@@ -1123,7 +1123,7 @@ fn a_refused_request_is_reported() {
 
 #[test]
 fn auto_compact_flag_overrides_settings() {
-    let settings = crate::config::AutoSettings::default();
+    let settings = crate::config::Typed::defaults().unwrap().settings;
     let args =
         <crate::cli::Args as clap::Parser>::try_parse_from(["rkat-tui", "--auto-compact"]).unwrap();
     let overlay = crate::overlay::ConfigOverlay::from_args(&args)

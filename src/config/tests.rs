@@ -203,7 +203,7 @@ fn missing_files_give_defaults() {
     let (rules, settings, notices) =
         load_layered(tmp.path(), None, &tmp.path().join("nope")).unwrap();
     assert_eq!(rules, RuleSet::default());
-    assert_eq!(settings, AutoSettings::default());
+    assert_eq!(settings, Typed::defaults().unwrap().settings);
     assert!(notices.is_empty());
 }
 
@@ -258,7 +258,7 @@ fn a_rule_write_preserves_the_auto_section() {
 
 #[test]
 fn compaction_settings_default_layer_and_clamp() {
-    let defaults = AutoSettings::default();
+    let defaults = Typed::defaults().unwrap().settings;
     assert_eq!(defaults.compact, CompactMode::Native);
     assert_eq!(
         (defaults.compact_warn_percent, defaults.compact_auto_percent),
@@ -347,7 +347,10 @@ fn compaction_settings_default_layer_and_clamp() {
 
 #[test]
 fn trust_defaults_off_and_project_can_only_lower_it() {
-    assert_eq!(AutoSettings::default().trust_project_builds, None);
+    assert_eq!(
+        Typed::defaults().unwrap().settings.trust_project_builds,
+        None
+    );
     let tmp = tempfile::tempdir().unwrap();
     let realm = tmp.path().join("realm");
     let project = tmp.path().join("project");
@@ -457,7 +460,7 @@ fn cli(text: &str) -> RulesFile {
 fn classifier_tools_default_on_and_project_can_only_turn_them_off() {
     let tmp = tempfile::tempdir().unwrap();
     let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
-    assert!(AutoSettings::default().classifier_tools);
+    assert!(Typed::defaults().unwrap().settings.classifier_tools);
     // The project may turn the classifier's file reads off, even over
     // the command line...
     write(&realm, "");

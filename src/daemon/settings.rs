@@ -228,10 +228,15 @@ impl Settings {
     /// sections as the file has them now (its scalar settings stay as
     /// held: a change of one there is the next sync's).
     pub fn adopt_sections(&self, level: Level) {
+        let _one = self.changing.lock();
+        self.adopt_held(level);
+    }
+
+    /// [`Self::adopt_sections`], the caller holding `changing`.
+    fn adopt_held(&self, level: Level) {
         let Some(path) = self.path_of(level) else {
             return;
         };
-        let _one = self.changing.lock();
         match RulesFile::load(&path) {
             Ok(read) => {
                 if let Some(table) = self.layers.write().of_mut(level) {
@@ -240,6 +245,23 @@ impl Settings {
             }
             Err(err) => tracing::warn!(%err, "a settings file could not be read again"),
         }
+    }
+
+    /// The files held still: no write, sync or adoption of them until the
+    /// guard drops (the hold of what they give,
+    /// `super::local::Local::hold_permissions`, reads them and changes the
+    /// engine under it, so no change of the engine's and its file's can
+    /// land between the two).
+    pub fn still(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.changing.lock()
+    }
+
+    /// Whether the files are held still now (a write, sync or hold is under
+    /// way): tests make a sync arrive while they are.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn held_still(&self) -> bool {
+        self.changing.is_locked()
     }
 
     /// Read `level`'s file again and hold what it says now: the settings
@@ -390,6 +412,35 @@ impl Settings {
             user_file: path(Level::User),
             workspace_file: path(Level::Workspace),
         }
+    }
+}
+
+/// The approval engine's changes of the files' permission sections go in
+/// under `changing`, as the commands' writes and the syncs do, and end
+/// with both files' sections held as written: a sync after one finds
+/// nothing to do.
+impl crate::approval::engine::PermissionFiles for Settings {
+    fn writing(&self) -> Box<dyn crate::approval::engine::Writing + '_> {
+        Box::new(EngineWriting {
+            settings: self,
+            _one: self.changing.lock(),
+        })
+    }
+}
+
+/// [`Settings`]' guard for one of the engine's changes.
+struct EngineWriting<'a> {
+    settings: &'a Settings,
+    _one: parking_lot::MutexGuard<'a, ()>,
+}
+
+impl crate::approval::engine::Writing for EngineWriting<'_> {}
+
+impl Drop for EngineWriting<'_> {
+    fn drop(&mut self) {
+        // Before the lock goes with the fields.
+        self.settings.adopt_held(Level::User);
+        self.settings.adopt_held(Level::Workspace);
     }
 }
 

@@ -189,7 +189,7 @@ impl fmt::Display for Notice {
 }
 
 /// Everything `tui.toml` configures, after layering.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Layered {
     /// Merged allow/deny rules.
     pub rules: RuleSet,
@@ -274,7 +274,7 @@ pub fn load_layered_with(
     project_rkat_dir: &Path,
     cli: Option<&RulesFile>,
 ) -> Result<Layered, RulesError> {
-    let mut layered = Layered::default();
+    let mut layered = Layered::of_defaults(Typed::defaults()?);
     let global = global_rules_file.map(RulesFile::load).transpose()?;
     let realm = RulesFile::load(&realm_dir.join(RULES_FILE_NAME))?;
     let mut user_layers: Vec<(RuleOrigin, &RulesFile)> = Vec::new();
@@ -308,9 +308,79 @@ pub fn load_layered_with(
     Ok(layered)
 }
 
-/// Every scalar setting in force, typed: [`super::registry::merged`] read
-/// as the views the code uses. The merged table holds every default, so
-/// no field here or in the views has a serde default of its own.
+/// Every scalar setting in force as the typed views the code reads:
+/// [`super::registry::merged`] over the layers, deserialized. The registry
+/// is the only statement of a default; the views have none of their own
+/// (no `Default`), and [`Self::defaults`] is the registry's defaults read
+/// as them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Typed {
+    /// `[auto]`'s settings (its `allow` empty: a section, which the
+    /// layering adds).
+    pub settings: AutoSettings,
+    /// `[auto] mode`.
+    pub mode: PermissionMode,
+    /// `[helpers]`'s scalars.
+    pub helpers: HelperSettings,
+    /// `[shell]`'s.
+    pub shell: ShellSettings,
+    /// `[search]`'s limits.
+    pub search: crate::tools::SearchLimits,
+    /// `[ui]`'s.
+    pub ui: UiSettings,
+    /// `[pricing] fetch`.
+    pub pricing_fetch: bool,
+    /// `[daemon] principal`.
+    pub daemon_principal: Option<String>,
+}
+
+impl Typed {
+    /// The settings in force over `layers`.
+    ///
+    /// # Errors
+    ///
+    /// [`RulesError::Scalars`] when a value in force does not read as its
+    /// type (each layer was read as its type already, and every default
+    /// is one its setting takes, so this is a bug).
+    pub fn of(layers: &super::registry::Layers) -> Result<Self, RulesError> {
+        let Scalars {
+            auto,
+            helpers,
+            shell,
+            search,
+            ui,
+            pricing,
+            daemon,
+        } = super::registry::merged(layers)
+            .try_into()
+            .map_err(RulesError::Scalars)?;
+        Ok(Self {
+            settings: auto.settings,
+            mode: auto.mode,
+            helpers,
+            shell,
+            search: crate::tools::SearchLimits {
+                budget: std::time::Duration::from_secs(search.budget_secs),
+                max_entries: search.max_entries,
+            },
+            ui,
+            pricing_fetch: pricing.fetch,
+            daemon_principal: daemon.principal,
+        })
+    }
+
+    /// The registry's defaults: the settings in force when no layer sets
+    /// any.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::of`]: a bug in the registry's table.
+    pub fn defaults() -> Result<Self, RulesError> {
+        Self::of(&super::registry::Layers::default())
+    }
+}
+
+/// [`Typed`] as the merged table holds it.
 #[derive(Deserialize)]
 struct Scalars {
     auto: AutoScalars,
@@ -345,6 +415,37 @@ struct PricingScalars {
 }
 
 impl Layered {
+    /// No layer yet: the registry's defaults (`typed`), nothing else.
+    fn of_defaults(typed: Typed) -> Self {
+        let Typed {
+            settings,
+            mode,
+            helpers,
+            shell,
+            search,
+            ui,
+            pricing_fetch,
+            daemon_principal,
+        } = typed;
+        Self {
+            rules: RuleSet::default(),
+            settings,
+            mode,
+            endpoints: BTreeMap::new(),
+            pricing: BTreeMap::new(),
+            pricing_fetch,
+            thinking: BTreeMap::new(),
+            confinement: ConfinementSection::default(),
+            helpers,
+            shell,
+            search,
+            ui,
+            daemon_principal,
+            notices: Vec::new(),
+            layers: super::registry::Layers::default(),
+        }
+    }
+
     /// Take the lasting permissions of the user's own layers
     /// ([`super::lasting::Lasting`]): their rules, statements and
     /// directories. A rule that does not parse refuses the start; a
@@ -512,32 +613,25 @@ impl Layered {
     /// [`RulesError::Scalars`] when a value in force does not read as its
     /// type (each layer was read as its type already, so this is a bug).
     fn resolve_settings(&mut self) -> Result<(), RulesError> {
-        let Scalars {
-            auto,
+        let Typed {
+            settings,
+            mode,
             helpers,
             shell,
             search,
             ui,
-            pricing,
-            daemon,
-        } = super::registry::merged(&self.layers)
-            .try_into()
-            .map_err(RulesError::Scalars)?;
+            pricing_fetch,
+            daemon_principal,
+        } = Typed::of(&self.layers)?;
         let allow = std::mem::take(&mut self.settings.allow);
-        self.settings = AutoSettings {
-            allow,
-            ..auto.settings
-        };
-        self.mode = auto.mode;
+        self.settings = AutoSettings { allow, ..settings };
+        self.mode = mode;
         self.helpers = helpers;
         self.shell = shell;
-        self.search = crate::tools::SearchLimits {
-            budget: std::time::Duration::from_secs(search.budget_secs),
-            max_entries: search.max_entries,
-        };
+        self.search = search;
         self.ui = ui;
-        self.pricing_fetch = pricing.fetch;
-        self.daemon_principal = daemon.principal;
+        self.pricing_fetch = pricing_fetch;
+        self.daemon_principal = daemon_principal;
         Ok(())
     }
 

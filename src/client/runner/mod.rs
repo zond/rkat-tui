@@ -2055,7 +2055,7 @@ mod tests {
             user_shell: Arc::new(UserShell::of_user(dir, Duration::from_secs(1))),
             endpoints: EndpointRegistry::from_endpoints(Vec::new()),
             lister: crate::models::live_lister(),
-            ui: crate::config::UiSettings::default(),
+            ui: crate::config::Typed::defaults().unwrap().ui,
             compaction: crate::ui::CompactionPolicy::default(),
             pricing: crate::pricing::PricingSetup::default(),
             reroot: None,

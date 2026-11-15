@@ -409,3 +409,79 @@ async fn always_in_every_workspace_in_one_daemon_reaches_the_other() {
     drop(watching);
     b.stop().await;
 }
+
+/// "Allow and add a rule" on an approval dialog changes the engine and
+/// the workspace's file as one, as the commands do: a sync of that file
+/// that arrives between the two steps (forced here: the engine's test hook
+/// asks for one there) runs after both and finds nothing to do, so no
+/// client is told anything and the rule stays in force. Before, the sync
+/// ran between them, found the rule in the engine and not in the file,
+/// removed it and told every client; the file's next sync added it back
+/// and told them again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn allow_and_add_a_rule_is_one_change_no_sync_splits() {
+    use common::Step;
+    use rkat_tui::approval::mode::PermissionMode;
+    use rkat_tui::config::registry::Level;
+    use rkat_tui::ui::{Effect, EscalationAnswer};
+    use std::sync::Arc;
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "w1",
+            name: "write_file",
+            args: json!({"path": "a.txt", "content": "A"}),
+        },
+        Step::Text("written"),
+    ]);
+    let mut rig = Attached::start_with(&ws.root, &llm, Setup::default()).await;
+    rig.set_mode(PermissionMode::Manual).await;
+    let engine = rig.daemon.engine();
+    let local = rig.daemon.local();
+    let handle = tokio::runtime::Handle::current();
+    // The syncs that had to wait for the change to end.
+    let waiting = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let hook = {
+        let waiting = Arc::clone(&waiting);
+        // Runs on the blocking thread of the engine's write.
+        move || {
+            let local = Arc::clone(&local);
+            let held = local.core().settings.held_still();
+            let sync = async move { local.sync_settings(Level::Workspace).await };
+            if held {
+                waiting.lock().unwrap().push(handle.spawn(sync));
+            } else {
+                handle.block_on(sync);
+            }
+        }
+    };
+    assert!(engine.set_between_steps(Arc::new(hook)));
+    rig.send(Effect::StartTurn("write it".into()));
+    let (_, id) = rig.escalation().await;
+    rig.send(Effect::RespondEscalation(
+        id,
+        EscalationAnswer::AllowAndAddRule,
+    ));
+    assert_eq!(rig.turn_finished().await.unwrap().text, "written");
+    let waited: Vec<_> = std::mem::take(&mut *waiting.lock().unwrap());
+    assert_eq!(waited.len(), 1, "the sync waited for the change");
+    for sync in waited {
+        sync.await.unwrap();
+    }
+    // A later change by hand is told; nothing was told before it.
+    let user_file = common::config_dir_for(&ws.root).join("tui.toml");
+    std::fs::write(&user_file, "[auto]\nallow = [\"reading the docs\"]\n").unwrap();
+    told(&mut rig, "your tui.toml changed:").await;
+    let notices = rig.notices();
+    assert!(!notices.contains("tui.toml changed: 1 rule"), "{notices}");
+    assert!(
+        !notices.contains("this workspace's tui.toml changed"),
+        "{notices}"
+    );
+    let rules = rows(&rig.daemon).await;
+    assert!(
+        format!("{rules:?}").contains("a.txt"),
+        "the rule is in force: {rules:?}"
+    );
+    rig.quit().await;
+}

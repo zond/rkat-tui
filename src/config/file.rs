@@ -17,7 +17,9 @@ pub const RULES_FILE_NAME: &str = "tui.toml";
 
 /// Auto-mode settings after layering: deserialized from the settings in
 /// force ([`super::registry::merged`], which holds every default), so no
-/// field has a default of its own there.
+/// field has a default of its own there, and the struct has no `Default`:
+/// the registry states each default once, and
+/// [`Typed::defaults`](super::Typed::defaults) reads them as the views.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct AutoSettings {
     /// Classifier model override.
@@ -50,22 +52,6 @@ pub struct AutoSettings {
     /// file's. A section, not a scalar setting: the layering adds them.
     #[serde(skip)]
     pub allow: Vec<(crate::approval::statements::StatementOrigin, String)>,
-}
-
-impl Default for AutoSettings {
-    fn default() -> Self {
-        let compaction = CompactionPolicy::default();
-        Self {
-            classifier_model: None,
-            trust_project_builds: None,
-            compact: compaction.mode,
-            compact_warn_percent: compaction.warn_percent,
-            compact_auto_percent: compaction.auto_percent,
-            classifier_tools: true,
-            classifier_probe: true,
-            allow: Vec::new(),
-        }
-    }
 }
 
 impl AutoSettings {
@@ -142,14 +128,6 @@ pub struct HelperSettings {
     pub max_depth: u8,
 }
 
-impl Default for HelperSettings {
-    fn default() -> Self {
-        Self {
-            max_depth: DEFAULT_HELPER_MAX_DEPTH,
-        }
-    }
-}
-
 /// `[helpers]` section of a rules file. Unset fields inherit from lower
 /// layers; the project file may only lower them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,14 +183,6 @@ pub struct ShellSettings {
     pub user_timeout_secs: u64,
 }
 
-impl Default for ShellSettings {
-    fn default() -> Self {
-        Self {
-            user_timeout_secs: crate::user_shell::DEFAULT_USER_TIMEOUT_SECS,
-        }
-    }
-}
-
 /// `[ui]` section of a rules file: how the transcript looks. Unset fields
 /// inherit from lower layers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,16 +211,6 @@ pub struct UiSettings {
     /// Whether the task checklist shows under the input (Ctrl+T toggles
     /// it and records the choice; default hidden).
     pub checklist: ChecklistView,
-}
-
-impl Default for UiSettings {
-    fn default() -> Self {
-        Self {
-            helpers: HelperView::default(),
-            bell: true,
-            checklist: ChecklistView::default(),
-        }
-    }
 }
 
 /// One `[[allow]]` / `[[deny]]` entry.

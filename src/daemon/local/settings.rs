@@ -362,8 +362,15 @@ impl Local {
             // No files: what the commands did lives in the engine only.
             return;
         }
-        let lasting = self.core.settings.lasting();
-        let change = self.core.engine.replace_lasting(&lasting, why);
+        // Under the files' lock: an engine change of a rule, grant or
+        // statement and its file's write cannot land between the read and
+        // the replace (it would be undone here, then redone by the next
+        // sync, each told to every client).
+        let change = {
+            let _still = self.core.settings.still();
+            let lasting = self.core.settings.lasting();
+            self.core.engine.replace_lasting(&lasting, why)
+        };
         if change.is_empty() {
             return;
         }

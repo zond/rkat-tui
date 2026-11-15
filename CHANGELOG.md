@@ -64,6 +64,12 @@
   hard, because the client never learned the resumed run's id. A helper of
   such a run that ends (stopped by you, failed, ...) is now told to the
   agent in that run instead of being held for your next message.
+- "Allow and add a rule" on an approval dialog no longer tells every
+  client that the workspace's `tui.toml` changed and the rule was
+  removed (then added back) when a sync of the file came between the
+  rule's adoption and its write. The engine's change and the file's write
+  now go in as one, for that answer and for the rule, grant and statement
+  commands alike.
 
 ## [0.0.7] - 2026-11-15
 

@@ -10085,3 +10085,47 @@ no stop was sent),
 ending says `was told`; fails without the watcher's change: `told with your
 next message`),
 `a_run_stopped_inside_a_shell_call_resumes_with_its_outcome_uncertain`.
+
+## Senior review 6, the leftovers (2026-11-15)
+
+- Defaults stated once. The typed views (`AutoSettings`,
+  `HelperSettings`, `ShellSettings`, `UiSettings`) lost their own
+  `Default` impls: nothing but the tests and the layering's start used
+  them, and an infallible `Default` read from the registry would have
+  needed a fallback that states the defaults a second time.
+  `config::Typed::of(layers)` is the one reading of `registry::merged` as
+  the views (the layering's `resolve_settings` uses it), and
+  `Typed::defaults()` (it over empty layers, fallible: a bug in the table
+  is `RulesError::Scalars`) is where every load starts
+  (`Layered::of_defaults`) and what tests take. The pin
+  `the_typed_defaults_are_the_registry_s` became
+  `config::registry::tests::the_registry_s_defaults_read_as_the_typed_views`:
+  the guard that the table's defaults read as the views, that a load of
+  no files gives them, and that the two types that keep a `Default` (the
+  permission mode, the search limits built from the constants the table
+  names) agree.
+- The approval engine's permission changes (`add_rule`, `remove_rule`,
+  `approve`, `grant`, `remove_grant`, `allow_statement`,
+  `approve_effect`, `remove_statement`, `settings_dir_in`,
+  `replace_lasting`) moved, unchanged, to `src/approval/engine/permissions.rs`,
+  another `impl ApprovalEngine`; `engine.rs` keeps the decision path and
+  the session state.
+- The "allow and add a rule" window. The escalation's answer pushed the
+  rule into the engine, then wrote the realm's file, and never had the
+  daemon's settings take the file's sections. A sync of the workspace's
+  file in between (it holds the permissions even when the file reads the
+  same, `Local::sync_settings`) computed the lasting permissions without
+  the rule and removed it: forced on the rig, every client was told
+  `this workspace's tui.toml changed: 1 rule removed; in force now`. The
+  commands had the same window, shorter (their `after_permission_command`
+  adopts the sections afterwards). Now the engine's change and the file's
+  write go in as one under the settings' `changing` lock: the daemon
+  installs its `Settings` as the engine's `PermissionFiles`, whose guard
+  holds the lock and, on drop, adopts both files' sections; the rule
+  writes, the "always" grant and statement writes and their removals take
+  it, and `Local::hold_permissions` reads the files and replaces the
+  engine's under the same lock. Test:
+  `permission_sync::allow_and_add_a_rule_is_one_change_no_sync_splits`
+  (the engine's test hook between the push and the write asks for a sync;
+  it waits, finds nothing, and nothing is told; with the guard switched
+  off the sync ran in the window and told the rule's removal).

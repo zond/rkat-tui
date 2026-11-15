@@ -1066,6 +1066,11 @@ fn attach_engine(
             "the approval engine already knows the workspace's agents".to_string(),
         ));
     }
+    if !engine.set_permission_files(Arc::clone(&core.settings) as _) {
+        return Err(DaemonError::Approval(
+            "the approval engine already knows who holds its settings files".to_string(),
+        ));
+    }
     if let Some(log) = &core.audit {
         engine.set_audit(Arc::new(audit::DaemonAudit::new(Arc::clone(log), agents)));
         log.write(&audit::Line::event(

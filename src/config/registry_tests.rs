@@ -2,10 +2,7 @@
 
 use super::*;
 use crate::config::settings::PrepareSetting;
-use crate::config::{
-    AutoSettings, HelperSettings, Layered, RULES_FILE_NAME, RulesFile, ShellSettings, UiSettings,
-    load_layered_with,
-};
+use crate::config::{Layered, RULES_FILE_NAME, RulesFile, load_layered_with};
 use std::path::Path;
 
 /// Two distinct values a layer may hold for `setting` (neither needs the
@@ -242,24 +239,38 @@ fn every_setting_layers_as_it_always_did() {
     assert_eq!(checked, SETTINGS.len() * 81);
 }
 
-/// The typed views' own `Default`s (what tests and the layering start
-/// from) are the registry's defaults, which the layering deserializes.
+/// The registry's defaults read as the typed views (`Typed::defaults`,
+/// which every load starts from; the views have no `Default` of their
+/// own), and they are what the layering gives when no file sets anything.
+/// The two types that keep a `Default` agree with them: the mode (a UI's
+/// before any file is read) and the search limits (built from the
+/// constants the registry's entries name).
 #[test]
-fn the_typed_defaults_are_the_registry_s() {
+fn the_registry_s_defaults_read_as_the_typed_views() {
+    let defaults = crate::config::Typed::defaults().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let layered =
         load_layered_with(&tmp.path().join("r"), None, &tmp.path().join("p"), None).unwrap();
-    assert_eq!(layered.settings, AutoSettings::default());
+    assert_eq!(layered.settings, defaults.settings);
+    assert_eq!(layered.mode, defaults.mode);
+    assert_eq!(layered.helpers, defaults.helpers);
+    assert_eq!(layered.shell, defaults.shell);
+    assert_eq!(layered.search, defaults.search);
+    assert_eq!(layered.ui, defaults.ui);
+    assert_eq!(layered.pricing_fetch, defaults.pricing_fetch);
+    assert_eq!(layered.daemon_principal, defaults.daemon_principal);
     assert_eq!(
-        layered.mode,
+        defaults.mode,
         crate::approval::mode::PermissionMode::default()
     );
-    assert_eq!(layered.helpers, HelperSettings::default());
-    assert_eq!(layered.shell, ShellSettings::default());
-    assert_eq!(layered.search, crate::tools::SearchLimits::default());
-    assert_eq!(layered.ui, UiSettings::default());
-    assert!(layered.pricing_fetch);
-    assert_eq!(layered.daemon_principal, None);
+    assert_eq!(defaults.search, crate::tools::SearchLimits::default());
+    // A few as the registry's table states them.
+    assert!(defaults.ui.bell && defaults.settings.classifier_tools && defaults.pricing_fetch);
+    assert_eq!(
+        defaults.helpers.max_depth,
+        crate::config::DEFAULT_HELPER_MAX_DEPTH
+    );
+    assert_eq!(defaults.daemon_principal, None);
 }
 
 /// `auto.enabled`, the mode's spelling before 0.0.7, is gone: a file that
