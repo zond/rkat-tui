@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-11-15
+
 ### Added
 
 - `helpers.model`: the model a helper runs on when its spawn names none
