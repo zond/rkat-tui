@@ -2259,7 +2259,7 @@ in `src/ui/commands.rs`, pinned to the keymap by a test):
 | Esc Esc (idle, with text) | Clear the input and save it to the prompt history (↑ recalls it) |
 | Up (empty input) | Take queued messages back into the editor |
 | Ctrl-D | On an empty input, quit on a second press within 3 s (see [Sessions](#sessions) and [Detach and reattach](#the-workspace-daemon)); with text, delete forward |
-| Ctrl-O | Show everything in full, or fold it all back: every tool call's arguments, output and diff, every reasoning block, every job outcome, in the transcript and an open helper view; while on, new ones arrive shown (a click toggles one until the next Ctrl-O; scrolled back, the line at the top stays put) |
+| Ctrl-O | Show everything in full, or fold it all back: every tool call's arguments, output and diff, every reasoning block, every job outcome, in the transcript and an open helper view; while on, new ones arrive shown (a click toggles one until the next Ctrl-O). Expanding or folding, by Ctrl-O, a click or `/helpers`, keeps the line at the bottom of the screen where it is: what is above it grows or shrinks upwards, and folding again brings the view back as it was |
 | Ctrl-T | Show or hide the [task checklist](#task-checklist) |
 | Ctrl+Up/Down | Select a helper in the panel under the input (newest first); Enter on an empty input opens its full view: its task and later inputs with who gave them, its work and its answer, under a title with its kind, state and model (Esc returns, asking first whether to stop a running helper; PgUp/PgDn scroll it) |
 | Ctrl-R | Search the prompt history, the workspace's then the global one (Ctrl-R again: older; Enter accepts; Esc cancels) |

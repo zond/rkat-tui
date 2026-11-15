@@ -959,6 +959,17 @@ impl Transcript {
         (index <= self.clean).then(|| self.prefix.get(index).copied())?
     }
 
+    /// The first laid-out line of block `id` and how many lines it takes,
+    /// as of the last [`Self::ensure_layout`] (`None`: not laid out since
+    /// it changed, or not shown: a folded helper's block takes no line).
+    #[must_use]
+    pub fn line_span(&self, id: BlockId) -> Option<(usize, usize)> {
+        let index = self.index_of(id)?;
+        let first = self.start_line(id)?;
+        let len = self.lines_of(index);
+        (len > 0).then_some((first, len))
+    }
+
     /// Whether every foldable block is shown in full ([`Self::toggle_detail`]).
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]

@@ -97,10 +97,8 @@ fn a_click_toggles_one_call_and_ctrl_o_all_of_them() {
     assert!(!tool_collapsed(&app, t1), "and all open again");
 }
 
-/// Scrolled back, Ctrl-O keeps the block at the top of the view at the
-/// top while everything above it opens.
-#[test]
-fn ctrl_o_keeps_the_top_line_in_place() {
+/// Thirty read calls, each with a two-line result.
+fn thirty_reads() -> App {
     let mut app = App::new(StatusInfo::default());
     for i in 0..30 {
         let id = format!("t{i}");
@@ -117,15 +115,101 @@ fn ctrl_o_keeps_the_top_line_in_place() {
         }));
         app.update(agent(test_tool_result(&id, "     1\tx\n     2\ty\n")));
     }
-    let rows = |app: &mut App| screen(app, 12);
-    let _ = rows(&mut app);
+    app
+}
+
+/// The transcript's rows of a 30-row screen (the last three are the
+/// input and the status bar).
+fn transcript_rows(app: &mut App) -> Vec<String> {
+    screen(app, 30)[..27].to_vec()
+}
+
+/// The last tool call's line on screen, as it reads folded.
+fn last_call(rows: &[String]) -> String {
+    rows.iter()
+        .rev()
+        .find(|row| row.contains("read f"))
+        .cloned()
+        .unwrap()
+        .replace('▾', "▸")
+}
+
+/// Ctrl-O keeps the bottom of the screen where it is while everything
+/// above it opens, scrolled back or not: the call at the bottom is still
+/// the last one on screen, the bottom row is the same, and folding it all
+/// back shows the screen as it was.
+#[test]
+fn ctrl_o_keeps_the_bottom_line_in_place() {
+    for scrolled_back in [true, false] {
+        let mut app = thirty_reads();
+        let _ = transcript_rows(&mut app);
+        if scrolled_back {
+            app.update(key(KeyCode::PageUp));
+        }
+        let before = transcript_rows(&mut app);
+        app.update(ctrl('o'));
+        let open = transcript_rows(&mut app);
+        assert_ne!(open, before, "{open:#?}");
+        assert_eq!(last_call(&open), last_call(&before), "{open:#?}");
+        app.update(ctrl('o'));
+        assert_eq!(
+            transcript_rows(&mut app),
+            before,
+            "scrolled back: {scrolled_back}"
+        );
+    }
+}
+
+/// A click that expands a call keeps the bottom line of the screen where
+/// it is (the call opens upwards), and the click that folds it again
+/// brings the screen back exactly.
+#[test]
+fn a_click_keeps_the_bottom_line_and_folding_restores_the_view() {
+    let mut app = thirty_reads();
+    let _ = transcript_rows(&mut app);
     app.update(key(KeyCode::PageUp));
-    let before = rows(&mut app);
-    let top = before[0].clone();
-    assert!(top.contains(".rs"), "{before:#?}");
-    app.update(ctrl('o'));
-    let after = rows(&mut app);
-    assert_eq!(after[0].replace('▾', "▸"), top, "{after:#?}");
+    let before = transcript_rows(&mut app);
+    let at = (18..27).find(|row| before[*row].contains(".rs")).unwrap();
+    let clicked = before[at].clone();
+    click_at(&mut app, u16::try_from(at).unwrap());
+    let open = transcript_rows(&mut app);
+    assert_ne!(open, before, "{open:#?}");
+    assert_eq!(open.last(), before.last(), "{open:#?}");
+    assert_eq!(
+        open[at + 1..],
+        before[at + 1..],
+        "below the call nothing moved"
+    );
+    // The clicked call's line moved up by the lines it opened.
+    let row = open
+        .iter()
+        .position(|row| row.replace('▾', "▸") == clicked)
+        .expect("the clicked call is still on screen");
+    assert!(row < at, "{open:#?}");
+    click_at(&mut app, u16::try_from(row).unwrap());
+    assert_eq!(transcript_rows(&mut app), before);
+}
+
+/// The call on the bottom row itself opens upwards: its last line is at
+/// the bottom, so what it shows is on screen.
+#[test]
+fn the_bottom_call_opens_upwards() {
+    let mut app = thirty_reads();
+    let before = transcript_rows(&mut app);
+    let at = (0..27)
+        .rev()
+        .find(|row| before[*row].contains(".rs"))
+        .unwrap();
+    click_at(&mut app, u16::try_from(at).unwrap());
+    let open = transcript_rows(&mut app);
+    let header = open
+        .iter()
+        .position(|row| row.replace('▾', "▸") == before[at])
+        .expect("its line is on screen");
+    assert!(header < at, "{open:#?}");
+    assert_eq!(open.last(), before.last(), "{open:#?}");
+    click_at(&mut app, u16::try_from(header).unwrap());
+    assert_eq!(transcript_rows(&mut app), before);
 }
 
 #[test]

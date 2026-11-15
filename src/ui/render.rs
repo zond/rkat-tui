@@ -217,11 +217,20 @@ fn draw_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let height = usize::from(area.height);
     app.set_viewport_height(height);
     let total = app.transcript.ensure_layout(area.width);
-    // Ctrl-O changed what is folded: the line that was at the top stays.
-    if let Some((block, offset)) = app.take_detail_anchor()
-        && let Some(first) = app.transcript.start_line(block)
-    {
-        app.scroll.anchor_top(total, height, first + offset);
+    // Something was expanded or folded: the line that was at the bottom
+    // of the screen stays there.
+    if let Some(anchor) = app.take_fold_anchor() {
+        let bottom = app
+            .transcript
+            .line_span(anchor.block)
+            .map(|(first, len)| first + len.saturating_sub(anchor.from_end + 1))
+            .or_else(|| {
+                let (first, len) = app.transcript.line_span(anchor.folded?)?;
+                Some(first + len.saturating_sub(1))
+            });
+        if let Some(bottom) = bottom {
+            app.scroll.anchor_bottom(total, bottom);
+        }
     }
     let start = app.scroll.window(total, height);
     let mut lines = app.transcript.visible_lines(start, height);

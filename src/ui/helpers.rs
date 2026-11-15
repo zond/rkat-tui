@@ -90,17 +90,15 @@ impl App {
         &mut self.scroll
     }
 
-    /// Expand or fold the helper header `id`; expanding stops following new
-    /// output so the header stays where it is.
+    /// Expand or fold the helper header `id`; the line at the bottom of
+    /// the screen stays there ([`Self::keep_bottom`]).
     pub(super) fn toggle_helper(&mut self, id: BlockId) -> bool {
-        match self.transcript.toggle_helper(id) {
-            Some(expanded) => {
-                if expanded {
-                    self.scroll.follow = false;
-                }
-                true
-            }
-            None => false,
+        self.keep_bottom(Some(id));
+        if self.transcript.toggle_helper(id).is_some() {
+            true
+        } else {
+            self.fold_anchor = None;
+            false
         }
     }
 
@@ -134,11 +132,9 @@ impl App {
             self.transcript.push_notice(NoticeLevel::Warn, text);
             return;
         }
+        self.keep_bottom(ids.last().copied());
         for id in ids {
             self.transcript.set_helper_expanded(id, expand);
-        }
-        if expand {
-            self.scroll.follow = false;
         }
     }
 

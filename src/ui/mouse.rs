@@ -261,8 +261,8 @@ impl App {
         self.mouse.press = None;
     }
 
-    /// A left click: expand or collapse the tool block under it. Expanding
-    /// stops following new output so the clicked block stays where it is.
+    /// A left click: expand or collapse the tool block under it; the line
+    /// at the bottom of the screen stays there ([`Self::keep_bottom`]).
     /// Returns whether anything changed.
     pub(super) fn click(&mut self, row: u16) -> bool {
         if self.modal.is_some() {
@@ -274,14 +274,12 @@ impl App {
         if matches!(self.transcript.block(id), Some(Block::Helper(_))) {
             return self.toggle_helper(id);
         }
-        match self.transcript.toggle_tool(id) {
-            Some(collapsed) => {
-                if !collapsed {
-                    self.scroll.follow = false;
-                }
-                true
-            }
-            None => false,
+        self.keep_bottom(Some(id));
+        if self.transcript.toggle_tool(id).is_some() {
+            true
+        } else {
+            self.fold_anchor = None;
+            false
         }
     }
 }

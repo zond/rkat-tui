@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Expanding or folding in the transcript (a click on a tool call or a
+  helper, Ctrl-O, `/helpers expand|fold`) keeps the line at the bottom of
+  the screen where it is: what you opened grows upwards, the view no
+  longer jumps, and folding it again brings back exactly the view you
+  had. Before, a click kept the top line and stopped following new
+  output, and Ctrl-O kept the top line when scrolled back.
+
 ## [0.0.8] - 2026-11-15
 
 ### Added

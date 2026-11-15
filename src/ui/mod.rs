@@ -1206,11 +1206,11 @@ impl ScrollState {
         self.follow = true;
     }
 
-    /// Show laid-out line `top` at the top of a `height`-line window over
-    /// `total` lines (as far as the transcript's ends allow).
-    pub fn anchor_top(&mut self, total: usize, height: usize, top: usize) {
-        let bottom_start = total.saturating_sub(height);
-        self.offset_from_bottom = bottom_start.saturating_sub(top);
+    /// Show laid-out line `bottom` at the bottom of the window over
+    /// `total` lines (as far as the transcript's start allows:
+    /// [`Self::window`] bounds it).
+    pub fn anchor_bottom(&mut self, total: usize, bottom: usize) {
+        self.offset_from_bottom = total.saturating_sub(bottom.saturating_add(1));
         self.last_total = total;
         self.follow = self.offset_from_bottom == 0;
     }
@@ -1235,6 +1235,19 @@ impl ScrollState {
         }
         total.saturating_sub(height) - self.offset_from_bottom
     }
+}
+
+/// The transcript line a fold change keeps at the bottom of the screen
+/// ([`App::keep_bottom`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FoldAnchor {
+    /// The block the bottom line belonged to.
+    pub block: BlockId,
+    /// How many lines of the block came after it.
+    pub from_end: usize,
+    /// The block being folded, whose last line is the bottom when `block`
+    /// is no longer shown.
+    pub folded: Option<BlockId>,
 }
 
 /// The `@` menu's workspace paths.
@@ -1373,10 +1386,10 @@ pub struct App {
     shell: shell::ShellRuns,
     /// The checklist panel ([`checklist::ChecklistPanel`]).
     checklist: checklist::ChecklistPanel,
-    /// The block at the top of the transcript when Ctrl-O changed the
-    /// detail, and the line of it shown there: the next frame keeps it
-    /// there ([`ScrollState::anchor_top`]).
-    detail_anchor: Option<(BlockId, usize)>,
+    /// The line at the bottom of the screen when something was expanded
+    /// or folded ([`Self::keep_bottom`]): the next frame puts it back
+    /// there ([`ScrollState::anchor_bottom`]).
+    fold_anchor: Option<FoldAnchor>,
     dirty: bool,
 }
 
@@ -1434,7 +1447,7 @@ impl App {
             completion: keys::Completion::default(),
             shell: shell::ShellRuns::default(),
             checklist: checklist::ChecklistPanel::default(),
-            detail_anchor: None,
+            fold_anchor: None,
             dirty: true,
         }
     }
@@ -1449,22 +1462,40 @@ impl App {
     }
 
     /// Ctrl-O: every foldable block shown in full, or all folded back
-    /// ([`Transcript::toggle_detail`]). Scrolled back in the transcript,
-    /// the line at the top stays at the top.
+    /// ([`Transcript::toggle_detail`]). The line at the bottom of the
+    /// screen stays there ([`Self::keep_bottom`]).
     pub(super) fn toggle_detail(&mut self, view: Option<BlockId>) {
-        if view.is_none()
-            && !self.scroll.follow
-            && let Some((block, line)) = self.mouse.transcript_rows.first().copied()
-            && let Some(start) = self.transcript.start_line(block)
-        {
-            self.detail_anchor = Some((block, line.saturating_sub(start)));
+        if view.is_none() {
+            self.keep_bottom(None);
         }
         self.transcript.toggle_detail();
     }
 
-    /// The anchor Ctrl-O left for the next frame (taken).
-    pub(crate) fn take_detail_anchor(&mut self) -> Option<(BlockId, usize)> {
-        self.detail_anchor.take()
+    /// Call before anything is expanded or folded in the transcript: the
+    /// line now at the bottom of the screen is at the bottom of the next
+    /// frame too, so what is above it grows or shrinks upwards and folding
+    /// again brings back the view as it was. The line is remembered by its
+    /// distance from the end of its block, so a block at the bottom opens
+    /// upwards too and what it shows is on screen. When the block has
+    /// fewer lines after the change, its first line takes the place; when
+    /// it is no longer shown at all, the last line of `folded` (the block
+    /// being folded) does.
+    pub(super) fn keep_bottom(&mut self, folded: Option<BlockId>) {
+        if let Some((block, line)) = self.mouse.transcript_rows.last().copied()
+            && let Some((start, len)) = self.transcript.line_span(block)
+        {
+            let offset = line.saturating_sub(start);
+            self.fold_anchor = Some(FoldAnchor {
+                block,
+                from_end: len.saturating_sub(offset + 1),
+                folded,
+            });
+        }
+    }
+
+    /// The anchor a fold change left for the next frame (taken).
+    pub(crate) fn take_fold_anchor(&mut self) -> Option<FoldAnchor> {
+        self.fold_anchor.take()
     }
 
     /// Whether to ring the bell when a turn ends or an approval prompt opens
