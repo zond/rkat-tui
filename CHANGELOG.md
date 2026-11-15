@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-11-15
+
 ### Changed
 
 - Expanding or folding in the transcript (a click on a tool call or a
