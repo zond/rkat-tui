@@ -57,6 +57,13 @@
   the endpoint has no alias for is refused naming the models it has and
   how to add one, instead of an engine-internal error. The helper panel
   shows a self-hosted helper's model by its plain name.
+- Esc stops at once a run the daemon resumed after a restart. A run the
+  daemon's stop caught inside a `delegate` call goes on at the next start,
+  its helper doing the task again, and a message typed meanwhile waits for
+  it; Esc used to wait 10 s for the run to end and then cancel the agent
+  hard, because the client never learned the resumed run's id. A helper of
+  such a run that ends (stopped by you, failed, ...) is now told to the
+  agent in that run instead of being held for your next message.
 
 ## [0.0.7] - 2026-11-15
 

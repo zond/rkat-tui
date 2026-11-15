@@ -481,6 +481,15 @@ impl Runner {
                     self.turn.current_run = Some(run.clone());
                 }
             }
+            // A run the engine resumed at a daemon's start, in place of its
+            // `run_started`: the same run goes on under its id, so the
+            // interrupt stops it by that id (a force-cancel waits for its
+            // next boundary, which a resumed `delegate` holds off).
+            AgentEvent::RunResumed { run_id, .. } => {
+                self.turn.saw_run = true;
+                self.turn.open_runs.insert(run_id.clone());
+                self.turn.current_run = Some(run_id.clone());
+            }
             AgentEvent::ToolExecutionCompleted { name, .. }
                 if crate::daemon::tasks::changes_tasks(name) =>
             {
@@ -1052,6 +1061,7 @@ pub(super) fn joins_a_run(event: &AgentEvent) -> bool {
     matches!(
         event,
         AgentEvent::TurnStarted { .. }
+            | AgentEvent::RunResumed { .. }
             | AgentEvent::TextDelta { .. }
             | AgentEvent::TextComplete { .. }
             | AgentEvent::ToolExecutionStarted { .. }

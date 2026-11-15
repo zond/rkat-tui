@@ -9990,12 +9990,12 @@ What rkat-tui does now:
   which runs it again (its model call after the restart shows it): it is
   treated as cut off and its answer comes as a note. One its mob no
   longer seats is told as `ended when the daemon stopped`.
-- Observed, not changed: an agent the daemon's stop caught in the middle
-  of its own `delegate` call lists no implicit-mob member after the
+- Observed, not changed here: an agent the daemon's stop caught in the
+  middle of its own `delegate` call lists no implicit-mob member after the
   restart and reports itself running; a message to it got no model call
-  within 30 s (probe on the rig). It did so with the leftover handling
-  switched off too; whether the build before this change behaves the
-  same was not checked.
+  within 30 s (probe on the rig). Explained and fixed in "A run the
+  engine resumes after a restart" below: the run is really open (the
+  engine resumed it), and Esc did not stop it at once.
 
 Tests (rig): `helpers::an_interrupt_leaves_the_helper_running_and_its_answer_comes_with_the_next_message`
 (the helper's next model call after the confirmed interrupt; it pinned
@@ -10018,3 +10018,70 @@ unit: `mobs::endings::tests::*`, `mobs::delegates::tests::*`,
 the_helper_picker_stops_a_running_helper_after_a_confirmation,
 a_helper_s_line_says_how_it_ended}`,
 `ui::tests::escalations::ctrl_c_on_a_dialog_stops_its_caller_s_dialogs_only`.
+
+## A run the engine resumes after a restart (2026-11-15)
+
+The report: an agent the daemon's stop caught inside its own `delegate`
+call shows as running after the restart, and a message to it gets no model
+call. The probe (rig, scripted LLM; the daemon stopped with the agent's run
+inside `delegate` while the helper's model call hangs; a new daemon on the
+same workspace; a client attaches and types a message):
+
+- At the start `rkat/status` says `running: true` and `mob/member_status`
+  says `run_state: run_open, in_flight_work: 1`. That is true: the engine
+  resumes the run (Meerkat 0.9.14, `AgentEvent::RunResumed`, "in place of
+  `run_started` ... at `tools_pending` the run ... dispatches its tool calls
+  again under their call ids", meerkat-core `event.rs`). The `delegate`
+  call is dispatched again (`tool_execution_started d1` after
+  `run_resumed`), its helper is seated again in `implicit-<session>` (the
+  listing is empty only in the first instants of the start) and does its
+  task from the beginning (a second `HELPER-TASK` model call). A shell call
+  caught the same way is not run again: the resumed run gives it the
+  engine's `outcome_uncertain` result and goes on to its next model call.
+- The client joins the run (a remote turn); a message typed now is a steer,
+  acknowledged and held for the run's next boundary, which the `delegate`
+  holds off until its helper answers. It is not lost: with a helper that
+  answers after the restart the run goes on and the message joins it. With
+  a helper that never answers (the rig's `Step::Hang`, the report's case)
+  the agent waits for it, as it would before a restart; it does not free
+  itself.
+- Esc did not stop that run. The client takes a run's id from its
+  `run_started`; a resumed run publishes none, so the client knew no run,
+  and its interrupt force-cancelled the member (`mob/force_cancel`), which
+  cancels "at its next boundary" (meerkat-mob `runtime/handle.rs`,
+  `force_cancel_member`): the `delegate` holds that off. After the
+  interrupt's 10 s deadline the client's fallback hard-cancelled the member
+  (`mob/hard_cancel_member`), which ended the run; the steer came back to
+  the editor ("it was cancelled").
+- The daemon's watcher did not count the resumed run either: the approval
+  engine's run (the Stop's run), the activity's open runs, and "the agent
+  is not just interrupted any more" (`helpers_run_started`) all wait for a
+  `run_started`. At a start every agent counts as just interrupted, so a
+  helper of the resumed run that ended (stopped by the user, failed) was
+  held for the user's next message instead of steered into the running run.
+
+Whether it predates `01b8e79` and `048cf12`: neither commit touches the
+client's run tracking (`src/client/runner/turn.rs`) or the pin, and nothing
+in rkat-tui ever read `RunResumed` but the transcript's notice (`git log
+-S RunResumed`); the resumed run and its missing run id are older. What
+`01b8e79` changed is a side effect: up to 0.0.7 the daemon cancelled and
+retired the session's helpers on `mob/force_cancel`, which would have made
+the `delegate` return and given the force-cancel its boundary, so Esc there
+probably ended the run quickly. That is inferred from the diff, not run.
+
+The fix, ours on both sides: the client takes a `run_resumed` as the start
+of the run it names (its id is the turn's current run, and it joins a
+remote turn), so Esc stops it by `mob/stop_member_run` at once, and the
+message typed meanwhile then runs; the daemon's watcher takes it as a run
+start (`daemon::approvals::Watcher::run_started` with no prompt), so the Stop names the
+run, the activity counts it, and a helper's ending is steered into it.
+
+Tests (rig, `tests/it/resumed_runs.rs`):
+`a_run_stopped_inside_a_delegate_resumes_and_esc_stops_it_at_once` (one
+`mob/stop_member_run`, no force or hard cancel, the message typed meanwhile
+and the next one get their model calls; fails without the client's change:
+no stop was sent),
+`stopping_the_helper_of_a_resumed_run_tells_the_agent_in_that_run` (the
+ending says `was told`; fails without the watcher's change: `told with your
+next message`),
+`a_run_stopped_inside_a_shell_call_resumes_with_its_outcome_uncertain`.

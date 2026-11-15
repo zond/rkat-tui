@@ -760,6 +760,16 @@ impl Watcher {
                     agents.prepare_compaction(&self.name, text, tokens, reminder);
                 }
             }
+            // A run the engine resumed at this daemon's start (it was open
+            // when the last one stopped), in place of its `run_started`: an
+            // open run of the agent like any other, so the agent is busy,
+            // an interrupt's Stop names it and its end is its run's end.
+            AgentEvent::RunResumed {
+                session_id, run_id, ..
+            } => {
+                following.run = Some(run_id.clone());
+                self.run_started(session_id, Some(run_id), None).await;
+            }
             AgentEvent::ToolCallRequested {
                 name: tool, args, ..
             } => {

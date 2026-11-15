@@ -52,6 +52,7 @@ mod realm_settings;
 mod realm_trust;
 mod rehome;
 mod render;
+mod resumed_runs;
 mod schedules;
 mod semantic_recall;
 mod settings;
