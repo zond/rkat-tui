@@ -1829,10 +1829,11 @@ When the context of a workspace agent's conversation reaches
 `compact_prepare_at` (tokens, or a share of the start-up model's window;
 of 200k when the window is unknown), the daemon asks the agent, steered
 into its run, and leaves it to pick the moment: "Your context is at 300k
-of 1M tokens. Find a good stopping point soon: finish the step you are
-in, do not start a large new piece of work. Then: <your instruction>.
-Then call `compact_ready`, which compacts the context; you continue after
-it." The transcript says "context at 300k: asked the agent to prepare for
+of 1M tokens and needs compacting soon. At the next good point in your
+work (finish the step you are in; do not start a large new piece of work
+first): <your instruction>. Then call `compact_ready`, which compacts the
+context. After it, carry on with the task as if nothing had happened: do
+not stop, sum up or wait for the user." The transcript says "context at 300k: asked the agent to prepare for
 compaction", and from then until `compact_ready` or the automatic
 compaction `/compact status` says "compaction requested of the agent at
 300k tokens; it prepares when it reaches a stopping point". If the model
@@ -1841,8 +1842,11 @@ it is asked at the start of its next turn. When the agent calls
 `compact_ready` (its one signal: there is no separate "starting" call)
 the daemon requests the compaction (as `/compact` does) and the tool
 answers "compaction requested: it happens before your next step; details
-from before stay searchable with memory_search"; the usual compaction
-notices follow. The agent may call `compact_ready` on its own too: it
+from before stay searchable with memory_search. Carry on with your task
+now; do not end your turn to report the compaction"; the usual compaction
+notices follow. The agent is meant to go on working as if nothing had
+happened: the request, the tool's answer and a system note after the
+compaction all say so, so your instruction need not. The agent may call `compact_ready` on its own too: it
 compacts unless the context is below 20% of the window (then nothing is
 compacted and it is told why).
 

@@ -17,7 +17,7 @@ use crate::rig;
 use common::{Recorded, ScriptedLlmClient, Step, Workspace, within};
 use meerkat_core::AgentEvent;
 use rig::{Attached, Setup};
-use rkat_tui::daemon::prepare::{MEMORY_NOTE, READY_SUFFIX, REQUESTED};
+use rkat_tui::daemon::prepare::{CONTINUE_NOTE, MEMORY_NOTE, READY_SUFFIX, REQUESTED};
 use rkat_tui::ui::{Effect, Msg};
 use serde_json::json;
 use std::sync::Arc;
@@ -191,6 +191,12 @@ async fn a_crossing_steers_the_instruction_and_compact_ready_compacts() {
     again.turn_finished().await.unwrap();
     assert!(
         format!("{:?}", llm.recorded()[0].messages).contains(MEMORY_NOTE),
+        "{:?}",
+        llm.recorded()[0].messages
+    );
+    // It asked for that compaction itself: the note says to carry on.
+    assert!(
+        format!("{:?}", llm.recorded()[0].messages).contains(CONTINUE_NOTE),
         "{:?}",
         llm.recorded()[0].messages
     );

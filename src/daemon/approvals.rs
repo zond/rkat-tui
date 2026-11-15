@@ -864,8 +864,9 @@ impl Watcher {
 
     /// A compaction of `session` completed with `tokens` left: when it is
     /// the agent's current conversation, the smart compaction is armed
-    /// again below its threshold, and the agent is told (semantic memory
-    /// on) that what was discarded is searchable.
+    /// again below its threshold, and the agent is told to carry on (a
+    /// compaction its own `compact_ready` asked for) and, with semantic
+    /// memory on, that what was discarded is searchable.
     fn compacted(&self, session: &SessionId, tokens: u64) {
         if self.watched.current.current(&self.name).as_ref() != Some(session) {
             return;
@@ -874,11 +875,11 @@ impl Watcher {
             return;
         };
         let prepare = &agents.core().prepare;
-        prepare.compacted(&self.name, tokens);
-        if prepare.memory() {
+        if let Some(note) = prepare.compacted(&self.name, tokens) {
             tokio::spawn(super::agents::note_compacted(
                 Arc::clone(&self.watched.state),
                 self.name.clone(),
+                note,
             ));
         }
     }

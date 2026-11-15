@@ -157,15 +157,15 @@ pub(super) async fn note_agent(state: Arc<MobMcpState>, agent: String, text: Str
     }
 }
 
-/// Tell `agent` its context was just compacted and where what was
-/// discarded is ([`crate::daemon::prepare::MEMORY_NOTE`]); a failure is
-/// logged.
-pub(crate) async fn note_compacted(state: Arc<MobMcpState>, agent: String) {
+/// Tell `agent` its context was just compacted: `note` is what
+/// [`crate::daemon::prepare::Prepare::compacted`] gave (carry on, and
+/// where what was discarded is); a failure is logged.
+pub(crate) async fn note_compacted(state: Arc<MobMcpState>, agent: String, note: String) {
     if let Err(err) = append_note(
         &state,
         &agent,
         crate::daemon::local::SYSTEM_CONTEXT_SOURCE,
-        crate::daemon::prepare::MEMORY_NOTE.to_string(),
+        note,
     )
     .await
     {

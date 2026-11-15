@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- After a smart auto-compaction the agent goes on with its task instead
+  of ending its turn: the prepare request, `compact_ready`'s answer and a
+  note after the compaction now each tell it to carry on without
+  stopping to report.
+
 ## [0.0.6] - 2026-11-15
 
 ### Added
