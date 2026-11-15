@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- `helpers.model`: the model a helper runs on when its spawn names none
+  (default: the owner's, as before), through the owner's endpoint like a
+  model the agent names itself. `helpers.allow_models` or
+  `helpers.deny_models` (at most one of the two) limit the models helpers
+  may run on, as exact names or prefixes ending in `*`; a spawn on another
+  model is refused with which models the agent may name. Yours only (your
+  own or the workspace's `tui.toml`, `/set`, `--set`; never a project
+  file); a change applies to the next helper at once, and the agents are
+  told which model helpers get and which are permitted when one is set.
+
+### Fixed
+
+- A helper of an agent on a self-hosted endpoint whose model an inline
+  profile names (`delegate`'s `tooling`) runs on the endpoint's alias of
+  it; before, the engine took the plain name for its public provider and
+  refused the spawn against the endpoint's binding. A helper on a model
+  the endpoint has no alias for is refused naming the models it has and
+  how to add one, instead of an engine-internal error. The helper panel
+  shows a self-hosted helper's model by its plain name.
+
 ## [0.0.7] - 2026-11-15
 
 ### Fixed

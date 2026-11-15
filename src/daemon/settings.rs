@@ -199,6 +199,13 @@ impl Settings {
         let file = files.of(level);
         let _one = self.changing.lock();
         let before = self.resolve(setting);
+        let mut candidate = self.layers();
+        if let Some(table) = candidate.of_mut(level) {
+            put(table, setting.key, value.clone());
+        }
+        if let Err(err) = crate::config::helper_models::HelperModels::of(&candidate) {
+            return Err(format!("{} was not changed: {err}", setting.key));
+        }
         file.set(setting.key, value.as_ref())
             .map_err(|err| format!("{} was not changed: {err}", setting.key))?;
         // Only the key written: a change someone else made to the file
@@ -256,11 +263,11 @@ impl Settings {
                 return Synced::Unreadable(why);
             }
         };
-        self.unreadable.lock().remove(&level);
         let table = read.table();
         let mut layers = self.layers.write();
         let before = layers.clone();
-        let Some(held) = layers.of_mut(level) else {
+        let mut after = before.clone();
+        let Some(held) = after.of_mut(level) else {
             return Synced::Same;
         };
         let moved = |of: fn(&toml::Table) -> toml::Table| of(held) != of(&table);
@@ -271,6 +278,20 @@ impl Settings {
             (moved(permissions_of), moved(other_sections_of))
         };
         *held = table;
+        // Settings that only make sense together (the helper model lists)
+        // are checked over every layer: a file that breaks them is not
+        // applied, as one that does not read.
+        if let Err(err) = crate::config::helper_models::HelperModels::of(&after) {
+            let why = err.to_string();
+            let mut unreadable = self.unreadable.lock();
+            if unreadable.get(&level) == Some(&why) {
+                return Synced::StillUnreadable;
+            }
+            unreadable.insert(level, why.clone());
+            return Synced::Unreadable(why);
+        }
+        self.unreadable.lock().remove(&level);
+        *layers = after;
         let changes: Vec<Change> = SETTINGS
             .iter()
             .filter_map(|setting| {

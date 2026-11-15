@@ -84,7 +84,12 @@ impl Local {
         };
         match setting.hook {
             Hook::ClassifierModel => {}
-            Hook::None | Hook::Mode | Hook::TrustBuilds | Hook::Prepare | Hook::Ui => {
+            Hook::None
+            | Hook::Mode
+            | Hook::TrustBuilds
+            | Hook::Prepare
+            | Hook::Ui
+            | Hook::HelperModels => {
                 return Ok(());
             }
         }
@@ -184,10 +189,41 @@ impl Local {
                 );
                 (Vec::new(), None)
             }
+            Hook::HelperModels => self.apply_helper_models().await,
             Hook::None | Hook::Mode | Hook::ClassifierModel | Hook::TrustBuilds | Hook::Ui => {
                 (Vec::new(), None)
             }
         }
+    }
+
+    /// `helpers.model`, `allow_models` or `deny_models` moved: the helpers
+    /// spawned from now on take the settings in force, and every live
+    /// agent is told once (a file change that moves two of them tells it
+    /// once: the second finds nothing new). The confirmation's line, and
+    /// a warning when `helpers.model` is one the rule refuses.
+    async fn apply_helper_models(&self) -> (Vec<String>, Option<String>) {
+        use crate::config::helper_models::HelperModels;
+        let now = match HelperModels::of(&self.core.settings.layers()) {
+            Ok(now) => now,
+            // A write or a sync that would break them is refused before.
+            Err(err) => return (Vec::new(), Some(err.to_string())),
+        };
+        if *self.core.helper_models.read() == now {
+            return (Vec::new(), None);
+        }
+        *self.core.helper_models.write() = now.clone();
+        let told = now.instruction().unwrap_or_else(|| {
+            "Helper models (the user's settings): none are set now; a helper that names no model runs on your own model, and any model your endpoint serves is permitted.".to_string()
+        });
+        self.agents
+            .note_everyone(&format!(
+                "{told} (This replaces what you were told before.)"
+            ))
+            .await;
+        (
+            vec!["the helpers spawned from now on take it, and the agents were told".to_string()],
+            now.default_conflict(),
+        )
     }
 
     /// A settings file of `level` changed on disk (a hand edit, another

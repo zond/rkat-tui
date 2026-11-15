@@ -9841,3 +9841,59 @@ classifier answers and denies as `Stopped`, leaving the allow cache and
 the denial counters alone (a verdict that is not acted on is not
 counted). Test: `approval::engine::tests::a_stop_during_a_review_denies_the_call_the_classifier_allows`
 (fails without the check).
+
+## Helper models: `helpers.model`, `allow_models`, `deny_models` (2026-11-15)
+
+Owner's decision: a default model for helpers and an allow or deny list of
+the models they may run on, applied at spawn in the customizer
+(`src/mobs/customizer.rs` `choose_model`; the rule in
+`src/config/helper_models.rs`).
+
+Design: the two lists are list-valued scalar settings (`Kind::Patterns`),
+not a structured section. One registry entry each gives the layering, the
+project rule (`Never`), `/settings`, `/set` and `/unset`, `--set`, the
+live sync and its one notice for free; a section would have needed its own
+reader, writer, `/settings` row and sync path. The one rule that spans
+settings (at most one list across the layers in force) is
+`HelperModels::of(&Layers)`: at load a `RulesError` (the start is refused),
+in `Settings::sync` the file is not applied (reported as an unreadable one,
+the last good layers stay), and `Settings::write_value` refuses the `/set`.
+A pattern matches the plain model name (an `endpoint:` prefix of the
+owner's endpoint removed); patterns are not endpoint-qualified, since a
+helper's endpoint is always its owner's.
+
+Probe (0.9.14): the engine seats a `delegate` helper as a `Consumer` spawn
+of the profile `delegate` in `implicit-<session id>`, not as
+`SpawnSource::HelperSpawn`; the customizer recognises it by mob and
+profile. A `mob_spawn_member` member of a profile of its mob's definition
+reaches the customizer with no override and no profile: its model is not
+visible there, so with a list in force such a spawn is refused, saying to
+name the model in the spawn's `tooling`.
+
+Bug from real use (same bundle): an owner on a self-hosted endpoint whose
+`delegate` named its model through an inline profile. `qualify_model`
+turned only `model_override` into the alias; the inline profile
+(`decode_public_profile` in meerkat-mob-mcp keeps the caller's `provider`
+and `self_hosted_server_id`, and never an auth binding) kept the plain
+catalog name, so the engine resolved it to the public provider while the
+binding was the self-hosted endpoint's, and refused the build. Every model
+but the owner's own now goes through one step: the override and the
+profile's model become the alias, and the profile's provider and server
+become the self-hosted ones. A self-hosted model needs its alias in the
+realm document before a build (the engine: `Build error: Config error:
+self-hosted model 'litellm:unlisted-model' is not registered in config`);
+the customizer is synchronous, so it cannot register one as `/model`'s
+`ensure_alias` does, and it reads the document's
+`[self_hosted.models]` to refuse such a spawn naming the endpoint's models
+and the way to add one.
+
+Tests: `helper_models::*` (rig: the default, an allow and a deny list, an
+unnamed spawn on a refused owner model, a live `/set`, nothing said when
+nothing is set), `litellm::a_helper_naming_its_model_in_an_inline_profile_runs_on_the_alias`,
+`litellm::a_helper_on_a_model_the_endpoint_does_not_list_is_refused_with_its_models`
+(all fail without the change); unit: `config::helper_models::tests::*`,
+`mobs::customizer::tests::a_helper_s_model_is_named_then_the_default_then_the_owner_s`,
+`an_inline_profile_s_model_is_qualified_on_a_self_hosted_endpoint`,
+`an_unregistered_self_hosted_model_is_refused_with_the_registered_ones`,
+`an_endpoint_prefix_is_the_owner_s_or_refused`,
+`daemon::settings::tests::both_helper_model_lists_are_refused_on_a_write_and_a_sync`.

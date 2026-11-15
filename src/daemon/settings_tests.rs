@@ -327,3 +327,59 @@ fn a_project_file_syncs_only_what_a_project_may_set() {
         vec![Level::User, Level::Workspace, Level::Project]
     );
 }
+
+/// The helper model lists: `/set` of one while the other is in force is
+/// refused naming both, and a hand edit that sets both (here across the
+/// user's and the workspace's files) is not applied: reported once, the
+/// last good state stays, and removing one applies again.
+#[test]
+fn both_helper_model_lists_are_refused_on_a_write_and_a_sync() {
+    let tmp = tempfile::tempdir().unwrap();
+    let settings = settings(tmp.path(), Layers::default());
+    settings
+        .write("helpers.allow_models", Some("claude-haiku-*"), true)
+        .unwrap();
+    let refused = settings
+        .write("helpers.deny_models", Some("gpt-*"), false)
+        .unwrap_err();
+    assert!(
+        refused.starts_with("helpers.deny_models was not changed")
+            && refused.contains("helpers.allow_models (set in your tui.toml)")
+            && refused.contains("helpers.deny_models (set in this workspace's tui.toml)"),
+        "{refused}"
+    );
+    let realm_file = tmp.path().join("realm").join("tui.toml");
+    assert!(!realm_file.exists(), "nothing was written");
+    // A hand edit of the workspace's file sets the other list.
+    std::fs::create_dir_all(realm_file.parent().unwrap()).unwrap();
+    std::fs::write(&realm_file, "[helpers]\ndeny_models = [\"gpt-*\"]\n").unwrap();
+    let Synced::Unreadable(why) = settings.sync(Level::Workspace) else {
+        panic!("applied");
+    };
+    assert!(
+        why.contains("helpers.allow_models") && why.contains("helpers.deny_models"),
+        "{why}"
+    );
+    assert!(matches!(
+        settings.sync(Level::Workspace),
+        Synced::StillUnreadable
+    ));
+    let deny = Setting::find("helpers.deny_models").unwrap();
+    assert_eq!(settings.resolve(deny).value, None, "the last good state");
+    // A bad pattern in a file does not read either, naming the entry.
+    std::fs::write(
+        &realm_file,
+        "[helpers]\nmodel = \"x\"\nallow_models = [\"a*b\"]\n",
+    )
+    .unwrap();
+    let Synced::Unreadable(why) = settings.sync(Level::Workspace) else {
+        panic!("applied");
+    };
+    assert!(why.contains("`a*b`"), "{why}");
+    // The workspace's allow list replaces the user's: one list, applied.
+    std::fs::write(&realm_file, "[helpers]\nallow_models = [\"gpt-5.5\"]\n").unwrap();
+    assert!(matches!(
+        settings.sync(Level::Workspace),
+        Synced::Changed { .. }
+    ));
+}

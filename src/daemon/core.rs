@@ -52,6 +52,9 @@ pub struct Core {
     pub audit: Option<Arc<AuditLog>>,
     /// The agents' smart compaction (`[auto] compact_prepare`).
     pub prepare: Arc<super::prepare::Prepare>,
+    /// `helpers.model`, `allow_models` and `deny_models` in force: the
+    /// spawn customizer reads them, the settings hook replaces them.
+    pub helper_models: crate::config::helper_models::SharedHelperModels,
     /// Every `tui.toml` layer's values now and the one path a change of a
     /// setting takes.
     pub settings: Arc<super::settings::Settings>,

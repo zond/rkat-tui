@@ -156,6 +156,12 @@ pub struct HelperCustomizer {
     /// The configured endpoints (a helper on another model than its
     /// owner's is routed through the owner's, see [`helper_binding`]).
     endpoints: Vec<crate::endpoints::Endpoint>,
+    /// `helpers.model`, `allow_models` and `deny_models` as in force now
+    /// (the daemon's settings hook replaces them).
+    models: crate::config::helper_models::SharedHelperModels,
+    /// The realm's config document, which holds the self-hosted aliases a
+    /// helper's model needs (`None`: not checked).
+    realm_config: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for HelperCustomizer {
@@ -188,7 +194,26 @@ impl HelperCustomizer {
             application_tool_policy: None,
             gated_fork_off: false,
             endpoints: Vec::new(),
+            models: crate::config::helper_models::SharedHelperModels::default(),
+            realm_config: None,
         }
+    }
+
+    /// Refuse a helper on a self-hosted model whose alias the realm's
+    /// config document at `path` does not hold, naming the ones it does
+    /// ([`unregistered`]).
+    #[must_use]
+    pub fn with_realm_config(mut self, path: std::path::PathBuf) -> Self {
+        self.realm_config = Some(path);
+        self
+    }
+
+    /// Choose and check helpers' models with `models` (shared: a change
+    /// of the settings applies to the helpers spawned from then on).
+    #[must_use]
+    pub fn with_models(mut self, models: crate::config::helper_models::SharedHelperModels) -> Self {
+        self.models = models;
+        self
     }
 
     /// The configured endpoints, which name the owner's endpoint and the
@@ -283,8 +308,8 @@ fn shape_root(
 }
 
 /// The model `spec` asks for, when it names one (an explicit override or an
-/// inline profile); otherwise the member runs on its mob's profile, which
-/// for a `delegate` helper is its delegator's model.
+/// inline or realm profile); otherwise the member runs on its mob's
+/// profile, which for a `delegate` helper is its delegator's model.
 fn requested_model(spec: &SpawnMemberSpec) -> Option<String> {
     spec.model_override.clone().or_else(|| {
         spec.override_profile
@@ -372,19 +397,7 @@ fn helper_binding(
     let Some(wanted) = WireDialect::of_catalog_model(model) else {
         return Ok(owner.auth_binding.clone());
     };
-    let own = endpoints
-        .iter()
-        .find(|endpoint| endpoint.binding() == owner.auth_binding && !endpoint.is_builtin())
-        .or_else(|| {
-            // A built-in endpoint (no binding): the one of the owner's
-            // model's dialect.
-            owner.auth_binding.is_none().then(|| {
-                endpoints.iter().find(|endpoint| {
-                    endpoint.is_builtin()
-                        && Some(endpoint.dialect) == WireDialect::of_catalog_model(&owner.model)
-                })
-            })?
-        });
+    let own = own_endpoint(owner, endpoints);
     let own_dialect = own
         .map(|endpoint| endpoint.dialect)
         .or_else(|| WireDialect::of_catalog_model(&owner.model));
@@ -413,26 +426,223 @@ fn helper_binding(
     ))
 }
 
-/// A helper of an owner on a self-hosted endpoint runs on that endpoint: a
-/// model it asks for by its plain name becomes the endpoint's alias of it
-/// (`<endpoint>:<model>`), the engine id the endpoint's facts are
-/// registered under.
-fn qualify_model(
+/// The endpoint `owner` runs through: the configured one of its binding,
+/// else (no binding) the built-in one of its model's dialect.
+fn own_endpoint<'a>(
+    owner: &Owner,
+    endpoints: &'a [crate::endpoints::Endpoint],
+) -> Option<&'a crate::endpoints::Endpoint> {
+    use crate::endpoints::WireDialect;
+    endpoints
+        .iter()
+        .find(|endpoint| endpoint.binding() == owner.auth_binding && !endpoint.is_builtin())
+        .or_else(|| {
+            owner.auth_binding.is_none().then(|| {
+                endpoints.iter().find(|endpoint| {
+                    endpoint.is_builtin()
+                        && Some(endpoint.dialect) == WireDialect::of_catalog_model(&owner.model)
+                })
+            })?
+        })
+}
+
+/// How a fresh helper came to be asked for, which decides where its model
+/// comes from when the spawn names none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asked {
+    /// A `delegate` helper: its mob's profile is its owner's, so
+    /// `helpers.model` applies.
+    Delegate,
+    /// A `spawn_member` member: a member naming no model runs on its mob
+    /// definition's profile, which this customizer does not see.
+    Member,
+    /// A `fork_off` child: it continues its source's conversation on its
+    /// source's model.
+    Fork,
+}
+
+/// The profile the engine seats a `delegate` helper with, in its owner's
+/// implicit mob (`implicit-<session id>`), whose model is the owner's.
+const DELEGATE_PROFILE: &str = "delegate";
+
+impl Asked {
+    /// How the spawn `ctx` describes was asked for (`None`: a rebuild or
+    /// a respawn, which keeps the model its spawn chose). The engine seats
+    /// a `delegate` helper as a `Consumer` spawn of the `delegate` profile
+    /// in an implicit mob (probed on 0.9.14).
+    fn of(ctx: &SpawnCustomizationContext) -> Option<Self> {
+        match ctx.spawn_source {
+            SpawnSource::Fork => Some(Self::Fork),
+            SpawnSource::Resume
+            | SpawnSource::PersistedForkResume
+            | SpawnSource::Respawn
+            | SpawnSource::IdentityReconcile
+            | SpawnSource::AttachedForkedParticipant
+            | SpawnSource::PolicySpawn => None,
+            _ if ctx.mob_id.as_str().starts_with("implicit-")
+                && ctx.requested_profile.as_str() == DELEGATE_PROFILE =>
+            {
+                Some(Self::Delegate)
+            }
+            _ => Some(Self::Member),
+        }
+    }
+}
+
+/// A fresh helper's model, chosen and checked: the model its spawn names
+/// (an override, an inline or realm profile), else `helpers.model` (a
+/// `delegate` helper), else its owner's. The model, as its plain name
+/// (an `endpoint:` prefix of the owner's endpoint removed), must pass the
+/// user's `helpers.allow_models` / `deny_models`. Every model but the
+/// owner's own goes through one qualification: on a self-hosted endpoint
+/// the engine runs the endpoint's alias `<endpoint>:<model>` with the
+/// self-hosted provider and server, also when an inline profile names it
+/// (whose own provider would otherwise send the engine to the model's
+/// public provider). The engine id it runs on (`None`: its mob profile
+/// decides, which the tag cannot know).
+///
+/// # Errors
+///
+/// The refusal, in words for the agent.
+fn choose_model(
     owner: &Owner,
     spec: &mut SpawnMemberSpec,
     endpoints: &[crate::endpoints::Endpoint],
-) {
-    let Some(endpoint) = endpoints
-        .iter()
-        .find(|e| e.is_self_hosted() && e.binding() == owner.auth_binding)
-    else {
-        return;
+    models: &crate::config::helper_models::HelperModels,
+    asked: Asked,
+    profile: &str,
+) -> Result<Option<String>, String> {
+    use crate::config::helper_models::{ModelRule, ModelSource};
+    let own = own_endpoint(owner, endpoints);
+    let (raw, source) = match requested_model(spec) {
+        Some(model) => (model, ModelSource::Named),
+        None => match (asked, &models.default) {
+            (Asked::Delegate, Some(default)) => (default.clone(), ModelSource::Default),
+            (Asked::Member, _) => {
+                if models.rule == ModelRule::Any {
+                    return Ok(None);
+                }
+                let label = spec.identity.to_string();
+                return Err(format!(
+                    "`{label}` would run on the model its mob's profile `{profile}` defines, which cannot be checked against the user's {}: name the model in this spawn's `tooling` (`{{\"mode\": \"profile\", \"source\": {{\"type\": \"inline\", \"model\": \"<model>\", \"tools\": {{…}}}}}}`), one the rule permits",
+                    models.rule.describe()
+                ));
+            }
+            _ => (owner.model.clone(), ModelSource::Owner),
+        },
     };
-    if let Some(model) = &spec.model_override
-        && !model.starts_with(&format!("{}:", endpoint.name))
-    {
-        spec.model_override = Some(endpoint.engine_model(model));
+    let plain = plain_model(&raw, own, endpoints, source)?;
+    if let Some(refused) = models.refusal(&plain, source) {
+        return Err(refused);
     }
+    if source == ModelSource::Owner {
+        // Its mob profile runs the owner's model already.
+        return Ok(Some(owner.model.clone()));
+    }
+    let self_hosted = own.filter(|endpoint| endpoint.is_self_hosted());
+    let engine =
+        self_hosted.map_or_else(|| plain.clone(), |endpoint| endpoint.engine_model(&plain));
+    spec.model_override = Some(engine.clone());
+    if let Some(profile) = spec.override_profile.as_mut() {
+        profile.model.clone_from(&engine);
+        if let Some(endpoint) = self_hosted {
+            profile.provider = Some(meerkat_core::Provider::SelfHosted);
+            profile.self_hosted_server_id = endpoint.self_hosted_server();
+        }
+    }
+    Ok(Some(engine))
+}
+
+/// The models the self-hosted `endpoint` has an alias for in the realm
+/// config document at `config` (`None`: it does not read, and the engine
+/// is left to judge). A self-hosted model runs only with its alias
+/// registered, which the start-up does for every model the endpoint lists
+/// and `/model` for the one it switches to; the build of a helper on any
+/// other is refused by the engine as `self-hosted model … is not
+/// registered in config`.
+fn registered_models(
+    config: &std::path::Path,
+    endpoint: &crate::endpoints::Endpoint,
+) -> Option<Vec<String>> {
+    let text = match std::fs::read_to_string(config) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return None,
+    };
+    let table: toml::Table = text.parse().ok()?;
+    let prefix = format!("{}:", endpoint.name);
+    let mut models: Vec<String> = table
+        .get("self_hosted")
+        .and_then(|value| value.get("models"))
+        .and_then(toml::Value::as_table)
+        .map(|models| {
+            models
+                .keys()
+                .filter_map(|alias| alias.strip_prefix(&prefix).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    models.sort();
+    Some(models)
+}
+
+/// A helper on `engine` (a self-hosted alias) of the owner's endpoint
+/// `endpoint`, refused when the alias is not registered, naming the
+/// models that are and what the user can do.
+fn unregistered(
+    config: &std::path::Path,
+    endpoint: &crate::endpoints::Endpoint,
+    engine: &str,
+) -> Option<String> {
+    let models = registered_models(config, endpoint)?;
+    let model = engine.strip_prefix(&format!("{}:", endpoint.name))?;
+    if models.iter().any(|known| known == model) {
+        return None;
+    }
+    Some(format!(
+        "the endpoint `{}` has no model `{model}` registered: it serves helpers only the models it listed when the daemon started or that /model switched to ({}); name one of those, or ask the user to switch to `{model}` once with /model (which registers it) or to restart the daemon once the endpoint lists it",
+        endpoint.name,
+        if models.is_empty() {
+            "none".to_string()
+        } else {
+            models.join(", ")
+        }
+    ))
+}
+
+/// `model` as its plain name: an `endpoint:` prefix naming the owner's
+/// endpoint `own` removed. A prefix naming another configured endpoint is
+/// refused (a helper runs through its owner's endpoint); a `:` after
+/// anything else is part of the model's name.
+///
+/// # Errors
+///
+/// The refusal, in words for the agent.
+fn plain_model(
+    model: &str,
+    own: Option<&crate::endpoints::Endpoint>,
+    endpoints: &[crate::endpoints::Endpoint],
+    source: crate::config::helper_models::ModelSource,
+) -> Result<String, String> {
+    use crate::config::helper_models::{MODEL_KEY, ModelSource};
+    let Some((prefix, rest)) = model.split_once(':') else {
+        return Ok(model.to_string());
+    };
+    if own.is_some_and(|endpoint| endpoint.name == prefix) {
+        return Ok(rest.to_string());
+    }
+    if !endpoints.iter().any(|endpoint| endpoint.name == prefix) {
+        return Ok(model.to_string());
+    }
+    let own = own.map_or_else(|| "unknown".to_string(), |e| format!("`{}`", e.name));
+    Err(match source {
+        ModelSource::Default => format!(
+            "{MODEL_KEY} = {model} names the endpoint `{prefix}`, but a helper runs through its owner's endpoint ({own}); the call must name a model that endpoint serves (and the user's {MODEL_KEY} should name one)"
+        ),
+        ModelSource::Named | ModelSource::Owner => format!(
+            "`{model}` names the endpoint `{prefix}`, but a helper runs through its owner's endpoint ({own}); name a model that endpoint serves, without an endpoint, or switch your own model (/model) first"
+        ),
+    })
 }
 
 /// Apply the owner's gate, tools, instructions and the shell's environment
@@ -610,10 +820,32 @@ impl HelperCustomizer {
         spec: &mut SpawnMemberSpec,
         session: Option<&SessionId>,
         fresh: bool,
+        asked: Option<(Asked, &str)>,
     ) -> Result<(), MobError> {
         let label = spec.identity.to_string();
-        qualify_model(owner, spec, &self.endpoints);
-        let model = requested_model(spec).unwrap_or_else(|| owner.model.clone());
+        // A rebuilt or respawned member keeps the model its spawn chose
+        // (the engine gives its spec the persisted override or profile
+        // back).
+        let chosen = match asked.filter(|_| fresh) {
+            Some((asked, profile)) => {
+                let models = self.models.read().clone();
+                let chosen = choose_model(owner, spec, &self.endpoints, &models, asked, profile)
+                    .map_err(refuse)?;
+                if let (Some(engine), Some(config), Some(endpoint)) = (
+                    chosen.as_deref().filter(|engine| *engine != owner.model),
+                    &self.realm_config,
+                    own_endpoint(owner, &self.endpoints).filter(|e| e.is_self_hosted()),
+                ) && let Some(refused) = unregistered(config, endpoint, engine)
+                {
+                    return Err(refuse(refused));
+                }
+                chosen
+            }
+            None => None,
+        };
+        let model = chosen
+            .or_else(|| requested_model(spec))
+            .unwrap_or_else(|| owner.model.clone());
         let mut path = owner.path.clone();
         path.push(label.clone());
         let tag = HelperTag {
@@ -648,7 +880,15 @@ impl HelperCustomizer {
             give_scratch(spec, &dir, true);
         }
         deny_tools(spec, depth.nesting_denied(), self.gated_fork_off);
-        if depth != Depth::MayNest {
+        if depth == Depth::MayNest {
+            // A helper that may start helpers is told their models (its
+            // instructions are given again on every build).
+            if let Some(line) = self.models.read().instruction() {
+                spec.additional_instructions
+                    .get_or_insert_with(Vec::new)
+                    .push(line);
+            }
+        } else {
             drop_mob_tools(spec);
         }
         self.bind_policy(spec);
@@ -734,7 +974,8 @@ impl SpawnMemberCustomizer for HelperCustomizer {
         if fresh {
             spec.auto_wire_parent = true;
         }
-        self.admit(key, &owner, spec, None, fresh)
+        let asked = Asked::of(ctx).map(|asked| (asked, ctx.requested_profile.as_str()));
+        self.admit(key, &owner, spec, None, fresh, asked)
     }
 
     fn customize_resume(
@@ -785,7 +1026,7 @@ impl SpawnMemberCustomizer for HelperCustomizer {
             return Ok(());
         }
         let owner = self.persisted_owner(&key)?;
-        self.admit(key, &owner, spec, Some(&durable.session_id), false)
+        self.admit(key, &owner, spec, Some(&durable.session_id), false, None)
     }
 }
 
@@ -793,6 +1034,7 @@ impl SpawnMemberCustomizer for HelperCustomizer {
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::config::helper_models::{HelperModels, ModelPattern, ModelRule};
 
     /// The scratch line names the directory and says that the engine's
     /// `blob_save_file` and `view_image` refuse it (their own check keeps
@@ -917,13 +1159,17 @@ mod tests {
             model: "litellm:gpt-5.5".into(),
             auth_binding: proxy.binding(),
         };
+        let none = HelperModels::default();
+        let choose = |owner: &Owner, spec: &mut SpawnMemberSpec| {
+            choose_model(owner, spec, &endpoints, &none, Asked::Delegate, "delegate")
+        };
         for (asked, runs) in [
             ("claude-opus-4-6", "litellm:claude-opus-4-6"),
             ("litellm:house", "litellm:house"),
         ] {
             let mut spec = SpawnMemberSpec::new("delegate", "worker");
             spec.model_override = Some(asked.to_string());
-            qualify_model(&owner, &mut spec, &endpoints);
+            assert_eq!(choose(&owner, &mut spec).unwrap().as_deref(), Some(runs));
             assert_eq!(spec.model_override.as_deref(), Some(runs));
             assert_eq!(
                 helper_binding(&owner, runs, &endpoints),
@@ -932,16 +1178,252 @@ mod tests {
             );
         }
         let mut inherited = SpawnMemberSpec::new("delegate", "worker");
-        qualify_model(&owner, &mut inherited, &endpoints);
-        assert_eq!(inherited.model_override, None);
+        assert_eq!(
+            choose(&owner, &mut inherited).unwrap().as_deref(),
+            Some("litellm:gpt-5.5")
+        );
+        assert_eq!(inherited.model_override, None, "its mob profile's model");
         let elsewhere = Owner {
             auth_binding: None,
+            model: "gpt-5.4".into(),
             ..owner
         };
         let mut spec = SpawnMemberSpec::new("delegate", "worker");
         spec.model_override = Some("gpt-5.5".to_string());
-        qualify_model(&elsewhere, &mut spec, &endpoints);
+        choose(&elsewhere, &mut spec).unwrap();
         assert_eq!(spec.model_override.as_deref(), Some("gpt-5.5"));
+    }
+
+    /// The bug from real use: a helper of an owner on a self-hosted
+    /// endpoint that names its model through an inline profile (not an
+    /// override) runs on the endpoint's alias with the self-hosted
+    /// provider and server; before, the profile kept the plain catalog
+    /// name, the engine resolved it to the model's public provider, and
+    /// the build was refused against the self-hosted binding.
+    #[test]
+    fn an_inline_profile_s_model_is_qualified_on_a_self_hosted_endpoint() {
+        use crate::endpoints::{Endpoint, SecretString, WireDialect};
+        let proxy = Endpoint::configured(
+            "litellm",
+            WireDialect::OpenAi,
+            Some("http://localhost:4000".to_string()),
+            SecretString::new("k"),
+            "KEY",
+            0,
+            crate::endpoints::ApiStyle::default(),
+        );
+        let endpoints = vec![proxy.clone()];
+        let owner = Owner {
+            session: SessionId::new(),
+            path: Vec::new(),
+            model: "litellm:local-coder".into(),
+            auth_binding: proxy.binding(),
+        };
+        let mut spec = SpawnMemberSpec::new("delegate", "worker");
+        let profile: meerkat_mob::Profile =
+            serde_json::from_value(serde_json::json!({"model": "gpt-5.5", "provider": "openai"}))
+                .unwrap();
+        assert_eq!(profile.provider, Some(meerkat_core::Provider::OpenAI));
+        spec.override_profile = Some(profile);
+        let chosen = choose_model(
+            &owner,
+            &mut spec,
+            &endpoints,
+            &HelperModels::default(),
+            Asked::Delegate,
+            "delegate",
+        )
+        .unwrap();
+        assert_eq!(chosen.as_deref(), Some("litellm:gpt-5.5"));
+        let profile = spec.override_profile.as_ref().unwrap();
+        assert_eq!(profile.model, "litellm:gpt-5.5");
+        assert_eq!(profile.provider, Some(meerkat_core::Provider::SelfHosted));
+        assert_eq!(profile.self_hosted_server_id.as_deref(), Some("litellm"));
+        assert_eq!(spec.model_override.as_deref(), Some("litellm:gpt-5.5"));
+        // The rule reads the plain name.
+        let models = HelperModels {
+            default: None,
+            rule: ModelRule::Deny(vec![ModelPattern::parse("gpt-*").unwrap()]),
+        };
+        let mut again = SpawnMemberSpec::new("delegate", "worker");
+        again.model_override = Some("litellm:gpt-5.5".into());
+        let refused = choose_model(
+            &owner,
+            &mut again,
+            &endpoints,
+            &models,
+            Asked::Delegate,
+            "delegate",
+        )
+        .unwrap_err();
+        assert!(refused.contains("`gpt-5.5` is not permitted"), "{refused}");
+    }
+
+    /// The model a fresh helper gets: the one its spawn names, else
+    /// `helpers.model` (a `delegate` helper only), else its owner's; and
+    /// the model that results must pass the user's rule, with a refusal
+    /// for each case that says what to do.
+    #[test]
+    fn a_helper_s_model_is_named_then_the_default_then_the_owner_s() {
+        let owner = Owner {
+            session: SessionId::new(),
+            path: Vec::new(),
+            model: "claude-opus-4-8".into(),
+            auth_binding: None,
+        };
+        let haiku = |models: &HelperModels, named: Option<&str>, asked: Asked| {
+            let mut spec = SpawnMemberSpec::new("worker", "w1");
+            spec.model_override = named.map(str::to_string);
+            choose_model(&owner, &mut spec, &[], models, asked, "worker")
+                .map(|model| (model, spec.model_override))
+        };
+        let allow = |list: &[&str]| {
+            ModelRule::Allow(
+                list.iter()
+                    .map(|p| ModelPattern::parse(p).unwrap())
+                    .collect(),
+            )
+        };
+        let default = HelperModels {
+            default: Some("claude-haiku-4-5".into()),
+            rule: ModelRule::Any,
+        };
+        // Named wins over the default.
+        assert_eq!(
+            haiku(&default, Some("claude-sonnet-4-6"), Asked::Delegate).unwrap(),
+            (
+                Some("claude-sonnet-4-6".into()),
+                Some("claude-sonnet-4-6".into())
+            )
+        );
+        // The default, for a `delegate` helper.
+        assert_eq!(
+            haiku(&default, None, Asked::Delegate).unwrap(),
+            (
+                Some("claude-haiku-4-5".into()),
+                Some("claude-haiku-4-5".into())
+            )
+        );
+        // A fork keeps its source's model.
+        assert_eq!(
+            haiku(&default, None, Asked::Fork).unwrap(),
+            (Some("claude-opus-4-8".into()), None)
+        );
+        // Nothing set: the owner's, untouched.
+        assert_eq!(
+            haiku(&HelperModels::default(), None, Asked::Delegate).unwrap(),
+            (Some("claude-opus-4-8".into()), None)
+        );
+        // A member of a mob definition's profile: unknown, and with a rule
+        // in force refused with how to name it.
+        assert_eq!(
+            haiku(&HelperModels::default(), None, Asked::Member).unwrap(),
+            (None, None)
+        );
+        let haiku_only = HelperModels {
+            default: None,
+            rule: allow(&["claude-haiku-*"]),
+        };
+        let member = haiku(&haiku_only, None, Asked::Member).unwrap_err();
+        assert!(
+            member.contains("`w1` would run on the model its mob's profile `worker` defines")
+                && member.contains("\"type\": \"inline\""),
+            "{member}"
+        );
+        // Named outside an allow list.
+        let named = haiku(&haiku_only, Some("claude-sonnet-4-6"), Asked::Delegate).unwrap_err();
+        assert!(
+            named.contains("`claude-sonnet-4-6` is not permitted")
+                && named.ends_with("name one of: claude-haiku-*"),
+            "{named}"
+        );
+        // The owner's model outside it, nothing named.
+        let own = haiku(&haiku_only, None, Asked::Delegate).unwrap_err();
+        assert!(
+            own.contains("your own model `claude-opus-4-8`")
+                && own.contains("the call must name a permitted model"),
+            "{own}"
+        );
+        // A default the rule refuses.
+        let bad_default = HelperModels {
+            default: Some("claude-sonnet-4-6".into()),
+            rule: allow(&["claude-haiku-*"]),
+        };
+        let refused = haiku(&bad_default, None, Asked::Delegate).unwrap_err();
+        assert!(
+            refused.contains("the default helper model `claude-sonnet-4-6` (helpers.model)"),
+            "{refused}"
+        );
+        // A named model inside the list passes, the default does not matter.
+        assert!(haiku(&bad_default, Some("claude-haiku-4-5"), Asked::Delegate).is_ok());
+    }
+
+    /// A self-hosted helper model needs its alias in the realm document;
+    /// one without is refused naming the endpoint's registered models.
+    #[test]
+    fn an_unregistered_self_hosted_model_is_refused_with_the_registered_ones() {
+        use crate::endpoints::{Endpoint, SecretString, WireDialect};
+        let proxy = Endpoint::configured(
+            "litellm",
+            WireDialect::OpenAi,
+            Some("http://localhost:4000".to_string()),
+            SecretString::new("k"),
+            "KEY",
+            0,
+            crate::endpoints::ApiStyle::default(),
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "[self_hosted.models.\"litellm:local-coder\"]\nremote_model = \"local-coder\"\n[self_hosted.models.\"other:x\"]\nremote_model = \"x\"\n",
+        )
+        .unwrap();
+        assert_eq!(unregistered(&config, &proxy, "litellm:local-coder"), None);
+        let refused = unregistered(&config, &proxy, "litellm:unlisted").unwrap();
+        assert!(
+            refused.contains("has no model `unlisted` registered")
+                && refused.contains("(local-coder)")
+                && refused.contains("/model"),
+            "{refused}"
+        );
+        // A document that does not read leaves it to the engine.
+        std::fs::write(&config, "not toml [").unwrap();
+        assert_eq!(unregistered(&config, &proxy, "litellm:unlisted"), None);
+    }
+
+    /// An `endpoint:` prefix of the owner's endpoint is dropped (the
+    /// rule and the engine read the plain name); one naming another
+    /// configured endpoint is refused, since a helper runs through its
+    /// owner's; any other `:` is part of the name.
+    #[test]
+    fn an_endpoint_prefix_is_the_owner_s_or_refused() {
+        use crate::config::helper_models::ModelSource;
+        use crate::endpoints::{Endpoint, SecretString, WireDialect};
+        let anthropic = Endpoint::builtin(WireDialect::Anthropic, None, SecretString::new("k"));
+        let openai = Endpoint::builtin(WireDialect::OpenAi, None, SecretString::new("k"));
+        let endpoints = vec![anthropic, openai];
+        let own = Some(&endpoints[0]);
+        let name = &endpoints[0].name;
+        assert_eq!(
+            plain_model(
+                &format!("{name}:claude-haiku-4-5"),
+                own,
+                &endpoints,
+                ModelSource::Named
+            ),
+            Ok("claude-haiku-4-5".to_string())
+        );
+        assert_eq!(
+            plain_model("llama3:8b", own, &endpoints, ModelSource::Named),
+            Ok("llama3:8b".to_string())
+        );
+        let refused =
+            plain_model("openai:gpt-5.5", own, &endpoints, ModelSource::Default).unwrap_err();
+        assert!(
+            refused.contains("helpers.model = openai:gpt-5.5 names the endpoint `openai`"),
+            "{refused}"
+        );
     }
 
     fn denies_fork_off(names: &meerkat_core::ToolNameSet) -> bool {

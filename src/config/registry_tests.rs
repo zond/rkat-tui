@@ -22,6 +22,11 @@ fn samples(setting: &Setting) -> [Value; 2] {
         "auto.compact_prepare" => [text("update PLAN.md"), text("")],
         "auto.compact_prepare_at" => [int(60_000), text("65%")],
         "helpers.max_depth" => [int(2), int(0)],
+        "helpers.model" => [text("claude-haiku-5-5"), text("proxy:gpt-5.5")],
+        "helpers.allow_models" | "helpers.deny_models" => [
+            Value::Array(vec![text("claude-haiku-*")]),
+            Value::Array(vec![text("gpt-5.5"), text("claude-*")]),
+        ],
         "shell.user_timeout_secs" => [int(30), int(300)],
         "search.budget_secs" => [int(5), int(20)],
         "search.max_entries" => [int(1_000), int(900_000)],
@@ -80,6 +85,24 @@ fn typed_value(key: &str, layered: &Layered) -> Option<Value> {
             PrepareSetting::of(&layered.layers).at.value,
         )),
         "helpers.max_depth" => int(u64::from(layered.helpers.max_depth)),
+        "helpers.model" | "helpers.allow_models" | "helpers.deny_models" => {
+            use crate::config::helper_models::{HelperModels, ModelRule};
+            let models = HelperModels::of(&layered.layers).unwrap();
+            let list = |patterns: &[crate::config::helper_models::ModelPattern]| {
+                Some(Value::Array(
+                    patterns
+                        .iter()
+                        .map(|p| Value::String(p.as_str().to_string()))
+                        .collect(),
+                ))
+            };
+            match (key, &models.rule) {
+                ("helpers.model", _) => models.default.map(Value::String),
+                ("helpers.allow_models", ModelRule::Allow(patterns))
+                | ("helpers.deny_models", ModelRule::Deny(patterns)) => list(patterns),
+                _ => None,
+            }
+        }
         "shell.user_timeout_secs" => int(layered.shell.user_timeout_secs),
         "search.budget_secs" => int(layered.search.budget.as_secs()),
         "search.max_entries" => int(layered.search.max_entries),
@@ -277,6 +300,25 @@ fn keys_are_unique_and_every_default_is_a_value_the_setting_takes() {
 fn values_are_parsed_checked_and_refused_with_what_the_key_takes() {
     let find = |key| Setting::find(key).unwrap();
     assert_eq!(find("ui.bell").parse("off"), Ok(Value::Boolean(false)));
+    // A pattern list: names separated by commas, or a TOML list; a bad
+    // entry is named.
+    let list = Value::Array(vec![
+        Value::String("claude-haiku-*".into()),
+        Value::String("gpt-5.5".into()),
+    ]);
+    assert_eq!(
+        find("helpers.allow_models").parse("claude-haiku-*, gpt-5.5"),
+        Ok(list.clone())
+    );
+    assert_eq!(
+        find("helpers.deny_models").parse(r#"["claude-haiku-*", "gpt-5.5"]"#),
+        Ok(list)
+    );
+    let refused = find("helpers.allow_models").parse("a*b").unwrap_err();
+    assert!(
+        refused.starts_with("helpers.allow_models") && refused.contains("`a*b`"),
+        "{refused}"
+    );
     assert_eq!(
         find("auto.compact_prepare_at").parse("65%"),
         Ok(Value::String("65%".into()))

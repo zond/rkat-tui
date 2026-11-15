@@ -62,6 +62,10 @@ pub enum RulesError {
     /// as their types.
     #[error("the settings in force do not read: {0}")]
     Scalars(#[source] toml::de::Error),
+    /// The helper model settings in force do not make a rule (both lists
+    /// set).
+    #[error(transparent)]
+    HelperModels(#[from] crate::config::helper_models::HelperModelsError),
     /// Serializing a rules file failed.
     #[error("failed to serialize rules: {0}")]
     Serialize(#[from] toml::ser::Error),

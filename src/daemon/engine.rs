@@ -122,6 +122,9 @@ pub struct Composed {
     pub prepare: Arc<super::prepare::Prepare>,
     /// Every `tui.toml` layer's raw table as read at start.
     pub layers: crate::config::registry::Layers,
+    /// `helpers.model`, `allow_models` and `deny_models` in force (the
+    /// customizer reads them per spawn).
+    pub helper_models: crate::config::helper_models::SharedHelperModels,
 }
 
 /// How the daemon composes its approval side (tests vary it).
@@ -234,6 +237,11 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     };
     let (principal, decision_service) = consent(&runtime, daemon_principal.as_deref())?;
     let helper_endpoints = endpoints.as_slice().to_vec();
+    // The layers were checked at load: both lists in force refused it.
+    let helper_models: crate::config::helper_models::SharedHelperModels =
+        Arc::new(parking_lot::RwLock::new(
+            crate::config::helper_models::HelperModels::of(&layers).unwrap_or_default(),
+        ));
     let daemon_endpoints = endpoints.clone();
     let host = Arc::new(AgentHost {
         scope: scope.clone(),
@@ -248,6 +256,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         instructions,
         search_limits,
         prepare: Arc::clone(&prepare),
+        helper_models: Arc::clone(&helper_models),
     });
     let root_plan = RootPlan {
         model: choice.engine_model.clone(),
@@ -291,6 +300,8 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     )
     .with_root(root)
     .with_endpoints(helper_endpoints)
+    .with_models(Arc::clone(&helper_models))
+    .with_realm_config(realm_config.path().to_path_buf())
     .with_gated_fork_off();
     // The members' tool policy from the engine's deny rules (tests may
     // leave it out).
@@ -416,6 +427,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         helper_max_depth,
         prepare,
         layers,
+        helper_models,
     })
 }
 
@@ -732,6 +744,8 @@ struct AgentHost {
     search_limits: crate::tools::SearchLimits,
     /// Where the agents' `compact_ready` goes.
     prepare: Arc<super::prepare::Prepare>,
+    /// What the agents are told of their helpers' models.
+    helper_models: crate::config::helper_models::SharedHelperModels,
 }
 
 impl crate::mobs::customizer::RootHost for AgentHost {
@@ -783,6 +797,9 @@ impl crate::mobs::customizer::RootHost for AgentHost {
             crate::bootstrap::persona::agents_persona(identity.as_str()),
             super::deferral::PERSONA.to_string(),
         ];
+        // Only when one of the three is set: no bytes otherwise. A change
+        // later reaches a live agent as a note.
+        sections.extend(self.helper_models.read().instruction());
         sections.extend(self.instructions.render());
         sections.extend(prompt_index(self.notes.user(), self.notes.workspace()));
         sections

@@ -1222,6 +1222,57 @@ levels: a helper at the limit gets no `delegate`, `mob_create`,
 `mob_spawn_member` or `council` tool (left out of its tool list and denied
 by its tool access policy), and a deeper spawn is refused.
 
+**Helper models.** A helper's model is, in this order: the model its spawn
+names (a `delegate` or `mob_spawn_member` call's inline or realm profile
+under `tooling`), else `helpers.model` (for a `delegate` helper), else its
+owner's model. A `fork_off` child keeps its source's model. Whatever the
+source, the model runs through the owner's endpoint as above: on a
+self-hosted endpoint as its alias `<endpoint>:<model>`, also when an inline
+profile names it, and only a model the endpoint listed at start or that
+`/model` switched to has one (a helper on another is refused, naming the
+models it has; `/model` to the new one registers it). `helpers.model` takes
+what `/model` takes: a model the owner's endpoint serves, or
+`<endpoint>:<model>` naming that endpoint (a helper on another endpoint is
+refused, and so is a `helpers.model` naming one).
+
+`helpers.allow_models` or `helpers.deny_models` (at most one of the two,
+over your own and the workspace's file and the command line) limits the
+models helpers may run on. Each is a list of patterns: an exact model name
+or a prefix ending in one `*` (`"claude-haiku-*"`); a `*` anywhere else, an
+empty entry, whitespace, an empty list or `*` alone is refused naming the
+entry. A pattern matches the model's plain name, the name the endpoint
+serves it under, without an `endpoint:` prefix (a helper's endpoint is its
+owner's, so a pattern does not name one). The model a spawn ends up with,
+named or by default, must pass: otherwise the spawn is refused and the
+agent's tool result says which model was refused, the list in force, and
+what to do (`name one of: …`, `name a model other than …`, or, when the
+spawn named none, that the call must name a permitted model). A
+`mob_spawn_member` member of a profile of its mob's own definition (made
+with `mob_create`) names its model in that definition, which the daemon
+does not see: while a list is in force such a spawn is refused, saying to
+name the model in the spawn's `tooling` profile. A `helpers.model` the list
+refuses is reported when the settings load or change, naming both
+settings, and the helpers that would use it are refused.
+
+```toml
+[helpers]
+model = "claude-haiku-4-5"
+allow_models = ["claude-haiku-*", "claude-sonnet-4-6"]
+```
+
+The three are yours: `/set` and `/unset` (a list as `a, b*` or a TOML
+list), `--set 'helpers.allow_models=["claude-haiku-*"]'` or a hand edit of
+your own or the workspace's `tui.toml`; a project's `.rkat/tui.toml` may
+not set them. A change applies at once to the helpers spawned from then
+on, with one notice to the clients; a hand edit that sets both lists is not
+applied (the clients are told, and the last good settings stay), and both
+at start refuse the start as any bad `tui.toml` does. When one of the three
+is set, an agent's instructions (and those of a helper that may start
+helpers) say in one line which model helpers get by default and which are
+permitted, and every live agent is told of a change; when none is set they
+say nothing. The classifier's model (`auto.classifier_model`) is separate
+and unaffected.
+
 The agent forks itself with the engine's `fork_off`: the child starts
 from the conversation so far, works on the task it is given, runs behind
 the same gate as every helper and shows as one (see [The workspace daemon](#the-workspace-daemon)).
@@ -1439,6 +1490,9 @@ it may only lower a value, its lowering applies over every layer).
 | `auto.compact_prepare`: What every agent is asked to do before an automatic compaction (empty: none here). | text (at most 2000 characters) | none | may set it (the command line wins) | at once | `/compact prepare <text>\|off\|default` |
 | `auto.compact_prepare_at`: Where the agents are asked to prepare: tokens, or a share of the window. | tokens (`300000`, `300k`, `1.2m`) or a share of the window (`"65%"`) | 70% | may set it (the command line wins) | at once | `/compact prepare at <threshold>\|default` |
 | `helpers.max_depth`: How many levels of helpers a session may have (0: none). | a whole number from 0 to 255 | 1 | may only lower it | at the next start | — |
+| `helpers.model`: The model a helper runs on when its spawn names none (through its owner's endpoint). | a model, `[endpoint:]model` | the owner's model | may not set it | at once | — |
+| `helpers.allow_models`: The only models helpers may run on (not with `deny_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: any model | may not set it | at once | — |
+| `helpers.deny_models`: Models helpers may not run on (not with `allow_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: none | may not set it | at once | — |
 | `shell.user_timeout_secs`: How long a `!` command may run, in seconds. | a whole number from 1 | 120 | may only lower it | at the next start | — |
 | `search.budget_secs`: How long one `glob` or `grep` may run before it answers with what it found, in seconds. | a whole number from 1 | 10 | may only lower it | at the next start | — |
 | `search.max_entries`: How many files and directories one `glob` or `grep` may examine. | a whole number from 1 | 500000 | may only lower it | at the next start | — |

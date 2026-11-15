@@ -158,6 +158,16 @@ pub struct HelpersSection {
     /// See [`HelperSettings::max_depth`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<u8>,
+    /// The model a helper runs on when its spawn names none
+    /// ([`super::helper_models`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The only models helpers may run on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_models: Option<Vec<super::helper_models::ModelPattern>>,
+    /// Models helpers may not run on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny_models: Option<Vec<super::helper_models::ModelPattern>>,
 }
 
 /// `[shell]` section of a rules file: `!` shell mode. Unset fields inherit

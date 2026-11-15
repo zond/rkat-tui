@@ -79,7 +79,10 @@ fn rules_file_round_trip() {
             extra_read: vec![PathBuf::from("/data")],
             extra_write: vec![PathBuf::from("/scratch")],
         }),
-        helpers: Some(HelpersSection { max_depth: Some(2) }),
+        helpers: Some(HelpersSection {
+            max_depth: Some(2),
+            ..HelpersSection::default()
+        }),
         shell: Some(ShellSection {
             user_timeout_secs: Some(300),
         }),

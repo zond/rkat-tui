@@ -544,6 +544,7 @@ impl Daemon {
             conversations,
             audit,
             prepare: Arc::clone(&composed.prepare),
+            helper_models: Arc::clone(&composed.helper_models),
             settings: Arc::new(settings::Settings::new(
                 composed.files.clone(),
                 std::mem::take(&mut composed.layers),

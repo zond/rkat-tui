@@ -191,6 +191,8 @@ pub enum Kind {
     },
     /// A model reference, `[endpoint:]model`.
     Model,
+    /// A list of model patterns ([`super::helper_models::ModelPattern`]).
+    Patterns,
 }
 
 impl Kind {
@@ -211,6 +213,9 @@ impl Kind {
             }
             Self::Text { max } => format!("text (at most {max} characters)"),
             Self::Model => "a model, `[endpoint:]model`".to_string(),
+            Self::Patterns => {
+                "a list of model names, each exact or a prefix ending in one `*` (`[\"claude-haiku-*\"]`; `/set` also takes `a, b*`)".to_string()
+            }
         }
     }
 }
@@ -320,6 +325,10 @@ pub enum Hook {
     Prepare,
     /// Every client follows a `[ui]` setting.
     Ui,
+    /// The helpers spawned from then on take the models of
+    /// `helpers.model`, `allow_models` and `deny_models`; the agents are
+    /// told.
+    HelperModels,
 }
 
 /// Every scalar setting in force over `layers` as one table, each value at
@@ -632,6 +641,9 @@ impl Setting {
             {
                 Ok(value.clone())
             }
+            (Kind::Patterns, value) => {
+                super::helper_models::check_patterns(self.key, value).map(|_| value.clone())
+            }
             _ => Err(bad()),
         }
     }
@@ -661,6 +673,7 @@ impl Setting {
             }
             Kind::Text { .. } => Value::String(unquote(text).to_string()),
             Kind::Choice(_) | Kind::Model => Value::String(unquote(text).to_string()),
+            Kind::Patterns => super::helper_models::list_value(text),
         };
         self.check(&value)
     }
@@ -865,6 +878,39 @@ pub static SETTINGS: &[Setting] = &[
         flags: &[],
         command: None,
         hook: Hook::None,
+    },
+    Setting {
+        key: super::helper_models::MODEL_KEY,
+        kind: Kind::Model,
+        default: Fallback::Unset("the owner's model"),
+        project: ProjectRule::Never,
+        applies: Applies::Live,
+        about: "The model a helper runs on when its spawn names none (through its owner's endpoint).",
+        flags: &[],
+        command: None,
+        hook: Hook::HelperModels,
+    },
+    Setting {
+        key: super::helper_models::ALLOW_KEY,
+        kind: Kind::Patterns,
+        default: Fallback::Unset("unset: any model"),
+        project: ProjectRule::Never,
+        applies: Applies::Live,
+        about: "The only models helpers may run on (not with `deny_models`).",
+        flags: &[],
+        command: None,
+        hook: Hook::HelperModels,
+    },
+    Setting {
+        key: super::helper_models::DENY_KEY,
+        kind: Kind::Patterns,
+        default: Fallback::Unset("unset: none"),
+        project: ProjectRule::Never,
+        applies: Applies::Live,
+        about: "Models helpers may not run on (not with `allow_models`).",
+        flags: &[],
+        command: None,
+        hook: Hook::HelperModels,
     },
     Setting {
         key: "shell.user_timeout_secs",

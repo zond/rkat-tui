@@ -31,6 +31,7 @@
 //! - [`persist`](mod@persist): the realm file's writes.
 
 pub mod file;
+pub mod helper_models;
 pub mod lasting;
 pub mod layers;
 pub mod persist;

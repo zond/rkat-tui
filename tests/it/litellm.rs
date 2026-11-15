@@ -409,6 +409,91 @@ async fn a_helper_inherits_the_alias_through_the_owner_s_endpoint() {
     rig.quit().await;
 }
 
+/// The bug from real use: a helper of an agent on a self-hosted endpoint
+/// that names its model through an inline profile (not an override) runs
+/// on the endpoint's alias of it. Before the fix the profile kept the
+/// plain catalog name, the engine took it for the model's public provider,
+/// and the build was refused against the self-hosted binding
+/// (`LlmIdentityUnresolvable … expected provider …`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_helper_naming_its_model_in_an_inline_profile_runs_on_the_alias() {
+    let fake = FakeEndpoint::start(
+        models(),
+        vec![
+            Reply::Tool {
+                name: "delegate",
+                args: json!({
+                    "member_id": "scout",
+                    "task": "say hi",
+                    "result_label": "result",
+                    "max_text_bytes": 4000,
+                    "tooling": {"mode": "profile", "source": {"type": "inline", "model": CLAUDE, "tools": {"builtins": true, "comms": true}}},
+                }),
+            },
+            Reply::Text("hi from the helper"),
+            Reply::Text("done"),
+        ],
+    )
+    .await;
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(Vec::new());
+    let mut rig = Attached::start_with(&ws.root, &llm, setup(&fake, LOCAL, &[])).await;
+    rig.send(Effect::StartTurn("delegate".into()));
+    let outcome = rig.turn_finished().await;
+    assert_eq!(outcome.unwrap().text, "done");
+    let models: Vec<String> = fake
+        .turns()
+        .iter()
+        .map(|t| t.body["model"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(models, [LOCAL, CLAUDE, LOCAL], "{:#?}", fake.turns());
+    let delegate = fake.turns()[2].body.to_string();
+    assert!(delegate.contains("hi from the helper"), "{delegate}");
+    rig.quit().await;
+}
+
+/// A helper on a model the self-hosted endpoint was not started with (it
+/// does not list it, so it has no alias): the spawn is refused with what
+/// the agent can do, naming the models the endpoint has, not only an
+/// engine-internal error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_helper_on_a_model_the_endpoint_does_not_list_is_refused_with_its_models() {
+    let fake = FakeEndpoint::start(
+        models(),
+        vec![
+            Reply::Tool {
+                name: "delegate",
+                args: json!({
+                    "member_id": "scout",
+                    "task": "say hi",
+                    "result_label": "result",
+                    "max_text_bytes": 4000,
+                    "tooling": {"mode": "profile", "source": {"type": "inline", "model": "unlisted-model", "tools": {"builtins": true, "comms": true}}},
+                }),
+            },
+            Reply::Text("done"),
+        ],
+    )
+    .await;
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(Vec::new());
+    let mut rig = Attached::start_with(&ws.root, &llm, setup(&fake, LOCAL, &[])).await;
+    rig.send(Effect::StartTurn("delegate".into()));
+    let outcome = rig.turn_finished().await;
+    assert_eq!(outcome.unwrap().text, "done");
+    let turns = fake.turns();
+    assert_eq!(turns.len(), 2, "no helper call: {turns:#?}");
+    let result = turns[1].body.to_string();
+    assert!(
+        result.contains("unlisted-model")
+            && result.contains(CLAUDE)
+            && result.contains(LOCAL)
+            && result.contains("/model"),
+        "{result}"
+    );
+    rig.quit().await;
+}
+
 /// What one streamed model call of `client` yields: the text, the
 /// reasoning, the tool calls (name, arguments).
 async fn stream_once(

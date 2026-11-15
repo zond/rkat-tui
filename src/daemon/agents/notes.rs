@@ -261,6 +261,17 @@ impl Agents {
         });
     }
 
+    /// Tell every live agent `text` (a live change of a setting its
+    /// instructions state, such as its helpers' models).
+    pub(crate) async fn note_everyone(&self, text: &str) {
+        let notes = self
+            .names()
+            .into_iter()
+            .map(|name| (name, text.to_string()))
+            .collect();
+        self.send_notes(notes).await;
+    }
+
     /// Tell every other live agent that `name` left.
     pub(super) async fn note_others(&self, name: &str, left: &Leave) {
         let notes = self

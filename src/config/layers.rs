@@ -112,6 +112,9 @@ pub enum Notice {
         /// The `(warn, auto)` percentages in effect.
         applied: (u8, u8),
     },
+    /// `helpers.model` names a model `helpers.allow_models` or
+    /// `deny_models` refuses (the text names both settings).
+    HelperModelRefused(String),
 }
 
 impl fmt::Display for Notice {
@@ -180,6 +183,7 @@ impl fmt::Display for Notice {
                 f,
                 "[auto] compact_warn_percent = {warn}, compact_auto_percent = {auto} are out of range (1..=100, auto ≥ warn); using {applied_warn} and {applied_auto}"
             ),
+            Self::HelperModelRefused(text) => f.write_str(text),
         }
     }
 }
@@ -294,6 +298,13 @@ pub fn load_layered_with(
     layered.apply_project_layer(project, project_path)?;
     layered.resolve_settings()?;
     layered.clamp_compaction();
+    // Both helper model lists in force refuse the start, as a bad file
+    // does; a default the rule refuses is a notice.
+    let helper_models = super::helper_models::HelperModels::of(&layered.layers)
+        .map_err(RulesError::HelperModels)?;
+    if let Some(conflict) = helper_models.default_conflict() {
+        layered.notices.push(Notice::HelperModelRefused(conflict));
+    }
     Ok(layered)
 }
 

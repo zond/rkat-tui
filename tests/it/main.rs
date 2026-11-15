@@ -34,6 +34,7 @@ mod deferral;
 mod drift_pins;
 mod e2e_classifier;
 mod file_tools;
+mod helper_models;
 mod helpers;
 mod hook_source_trust;
 mod instructions;

@@ -594,9 +594,12 @@ impl Runner {
                     };
                     let reports = self.reporter();
                     tokio::spawn(async move {
-                        if let Ok((model, _)) =
+                        if let Ok((model, provider)) =
                             bounded(CALL_TIMEOUT, remote::identity(&connection, &session)).await
                         {
+                            // The name the user knows: a self-hosted
+                            // endpoint's alias without its endpoint.
+                            let (model, _) = crate::endpoints::from_engine(&model, &provider);
                             reports.send(Report::HelperModel { helper, model });
                         }
                     });
