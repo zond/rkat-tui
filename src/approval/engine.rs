@@ -10,6 +10,22 @@
 //! The engine is shared by every session's
 //! [`super::admission::ApprovalGate`].
 //!
+//! # The decision path
+//!
+//! `evaluate` first computes what should happen to a call, an `Outcome`
+//! (decided, a question for the user, or a review), from the tier, the
+//! permission mode and the special cases (agent-peer sends, an approval
+//! once, a build after a change). The cross-cutting rules are applied
+//! after that, each in one place: the Stop before a question (`ask`) and
+//! before a review (`review`), then attendance and the broker for every
+//! question (`put_to_user`). Where a question is treated otherwise than
+//! the usual (its unattended denial, what it is without a broker), its
+//! `Ask` says so. An escalation then waits for its turn and checks the
+//! question still stands (`wait_turn`), shows the dialog, and applies the
+//! answer (`apply_answer`). The engine's side concerns are parts it holds:
+//! [`super::reviewer`], [`super::grants`], [`super::statements`],
+//! [`super::blocks`], [`super::builds`] and [`super::stats`].
+//!
 //! The classifier sees a reasoning-blind transcript per session: the user's
 //! own words (recorded under their input key once the runtime admitted them,
 //! or seeded from the authoritative session's typed authorship on resume)
@@ -35,7 +51,7 @@
 //! ([`ApprovalEngine::run_started`]). A late or replayed `RunStarted` of the
 //! stopped run, or one without a run id, does not clear it.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,27 +65,31 @@ use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
-use super::attendance::Attendance;
-use super::audit::ReviewRecord;
-use super::audit::{AuditSink, DecisionRecord};
+use super::attendance::{Attendance, Runs};
+use super::audit::{AuditSink, DecisionRecord, Outlets, ReviewRecord};
+use super::blocks::{Blocked, Blocks};
+use super::builds::{
+    BUILD_AFTER_CHANGE_ASK, BUILD_AFTER_CHANGE_NOTICE, BUILDS_STATEMENT, Builds, CARGO_BUILD_FILES,
+    build_runners, is_build, is_build_defining, is_cargo_build,
+};
 use super::catalog::{ToolOrigin, ToolOrigins};
 use super::classifier::{
-    ActionClassifier, ClassifierInput, ClassifierVerdict, Environment, GrantedDirs, SessionFacts,
+    ActionClassifier, ClassifierInput, ClassifierVerdict, Environment, SessionFacts,
 };
-use super::corpus;
 use super::counters::{AutoMode, DenialCounters, PauseCause};
 use super::escalation::{EscalationBroker, EscalationPrompt, HumanDecision, RecordedPrompt};
-use super::grants::{
-    BlockedCall, GrantOrigin, GrantRow, GrantScope, GrantTarget, MAX_RECENT_BLOCKS,
-};
+use super::grants::{BlockedCall, GrantScope, GrantTarget, Grants};
 use super::mode::PermissionMode;
 use super::policy::{
     Action, ActionKind, Decider, PolicyContext, Tier, TierDecision, classify_tier_with,
 };
 use super::prompts::MAX_REVIEWED_ACTION_BYTES;
+use super::reviewer::Reviewer;
 use super::rules::{Rule, RuleId, RuleKind, RuleOrigin, RuleSet, RulesError};
-use super::statements::{MAX_STATEMENTS, StatementOrigin, StatementRefusal, StatementRow};
-use super::stats::{ReviewStats, StatsBook};
+use super::statements::{
+    MAX_STATEMENTS, StatementOrigin, StatementRefusal, StatementRow, Statements,
+};
+use super::stats::Stats;
 use super::transcript::{ApprovalTranscript, InputKey};
 use super::{ApprovalEvent, DenyReason, Verdict, prompts, shell};
 use crate::config::registry::Level;
@@ -78,27 +98,10 @@ use crate::paths::ProjectRoot;
 
 /// How long the human has to answer an escalation by default.
 pub const DEFAULT_ESCALATION_TIMEOUT: Duration = Duration::from_mins(10);
-/// How many run ids a session remembers to recognise a replayed start. A
-/// replay arrives within a few runs of the original; the stopped run itself
-/// never clears its own Stop, remembered or not.
-const RUNS_REMEMBERED: usize = 64;
 /// Longest argument preview shown in escalation dialogs.
 const ARGS_PREVIEW_BYTES: usize = 2048;
 /// Per-file cap for build configuration attached to build commands.
 const BUILD_FILE_BYTES: usize = 4 * 1024;
-/// Commands whose execution is defined by project files.
-const BUILD_RUNNERS: &[&str] = &["cargo", "make", "npm", "pnpm", "yarn", "npx"];
-/// Project files that decide what a Rust build executes, besides the
-/// manifests ([`super::classifier::MANIFEST_FILES`]). With the manifests
-/// they are the build-defining files ([`is_build_defining`]): a change to
-/// one makes the next build reviewed even where builds are trusted.
-const CARGO_BUILD_FILES: &[&str] = &[
-    "build.rs",
-    ".cargo/config.toml",
-    ".cargo/config",
-    "rust-toolchain.toml",
-    "rust-toolchain",
-];
 
 /// Construction parameters for [`ApprovalEngine`].
 pub struct ApprovalConfig {
@@ -186,32 +189,46 @@ impl<'a> Caller<'a> {
 /// Allow-cache key: tool name, SHA-256 of the canonical arguments, SHA-256
 /// of the build configuration the classifier saw (zero when none).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct CacheKey {
+pub(super) struct CacheKey {
     tool: String,
     args: [u8; 32],
     payload: [u8; 32],
 }
 
+impl CacheKey {
+    /// The key an approval once of `action` matches: its tool and
+    /// arguments, whatever the classifier was shown.
+    fn approval(action: &Action<'_>) -> Self {
+        Self {
+            tool: action.name.to_string(),
+            args: canonical_args_digest(action.args),
+            payload: [0; 32],
+        }
+    }
+}
+
 /// Whether review is stopped for a session.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 enum StopState {
     /// Calls are reviewed normally.
+    #[default]
     Running,
     /// Stopped until a run other than this one starts (`None` inside: the
     /// stop was given before any run id was known).
     Stopped(Option<RunId>),
 }
 
-/// Everything the engine keeps per session.
-#[derive(Debug)]
+/// What the engine keeps per session for the decision path itself. A
+/// session's grants, statements, blocked calls and build trust are kept
+/// by their own parts ([`Grants`], [`Statements`], [`Blocks`],
+/// [`Builds`]).
+#[derive(Debug, Default)]
 struct SessionState {
     transcript: ApprovalTranscript,
     allow_cache: HashSet<CacheKey>,
     stop: StopState,
-    /// The last [`RUNS_REMEMBERED`] run ids seen starting, oldest first,
-    /// so a replayed start is recognised.
-    runs_seen: VecDeque<RunId>,
-    current_run: Option<RunId>,
+    /// The session's runs, and which of them a user started.
+    runs: Runs,
     /// Project files (display paths) whose writes were allowed for this
     /// session, in first-write order: shown to the classifier as
     /// agent-authored.
@@ -220,43 +237,6 @@ struct SessionState {
     /// files outside the project its file tools created, the manifests
     /// they changed.
     facts: SessionFacts,
-    /// A client's input to the session waits for the run that takes it
-    /// ([`ApprovalEngine::human_input`]).
-    human_pending: bool,
-    /// The last [`RUNS_REMEMBERED`] runs that started with a client's input
-    /// waiting: runs a user started.
-    human_runs: VecDeque<RunId>,
-    /// The newest calls the gate blocked that the user can approve
-    /// ([`super::grants`]), oldest first.
-    recent: VecDeque<Blocked>,
-    /// Calls the user approved once (`/approve`): the next identical call
-    /// passes and uses the approval up.
-    approved_once: HashSet<CacheKey>,
-    /// The grants the user made for this session and its helpers, by id.
-    grants: Vec<(u64, GrantTarget)>,
-    /// The kinds of action the user allows for this session and its
-    /// helpers ([`super::statements`]), by id.
-    statements: Vec<(u64, String)>,
-    /// The digest of the project's build-defining files when the session
-    /// was first seen, or when a reviewed build last ran: a trusted build
-    /// is trusted only while they are unchanged ([`is_build_defining`]).
-    build_digest: Option<[u8; 32]>,
-    /// The session's file tools wrote a build-defining file or a
-    /// dependency manifest since then.
-    build_files_written: bool,
-    /// The first build after such a change with the shell contained was
-    /// noticed ([`ApprovalEngine::notice_build`]).
-    build_change_noticed: bool,
-}
-
-/// Whether `subject` (a display path) is a build-defining file anywhere in
-/// the project: a dependency manifest or lockfile
-/// ([`super::classifier::is_manifest`]) or one of [`CARGO_BUILD_FILES`].
-fn is_build_defining(subject: &str) -> bool {
-    super::classifier::is_manifest(subject)
-        || CARGO_BUILD_FILES
-            .iter()
-            .any(|file| subject == *file || subject.ends_with(&format!("/{file}")))
 }
 
 /// What an approval or a grant tells the user (`notice`) and the agent
@@ -267,37 +247,6 @@ pub struct Approved {
     pub notice: String,
     /// For the agent.
     pub note: String,
-}
-
-/// A blocked call as the engine keeps it: what `/approve` shows, and the
-/// key an approval once matches.
-#[derive(Debug, Clone)]
-struct Blocked {
-    call: BlockedCall,
-    key: CacheKey,
-}
-
-impl Default for SessionState {
-    fn default() -> Self {
-        Self {
-            transcript: ApprovalTranscript::default(),
-            allow_cache: HashSet::new(),
-            stop: StopState::Running,
-            runs_seen: VecDeque::new(),
-            current_run: None,
-            agent_written: Vec::new(),
-            facts: SessionFacts::default(),
-            human_pending: false,
-            human_runs: VecDeque::new(),
-            recent: VecDeque::new(),
-            approved_once: HashSet::new(),
-            grants: Vec::new(),
-            statements: Vec::new(),
-            build_digest: None,
-            build_files_written: false,
-            build_change_noticed: false,
-        }
-    }
 }
 
 /// Why rules could not be persisted off the executor.
@@ -311,99 +260,39 @@ pub enum PersistError {
     Join(#[from] tokio::task::JoinError),
 }
 
-/// Why a classifier check ([`ApprovalEngine::check_classifier`]) did not
-/// start.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum CheckError {
-    /// No classifier model is configured.
-    #[error(
-        "no classifier model is configured, so there is nothing to check: set `[auto] classifier_model = \"<model>\"` in tui.toml (the model of the endpoint the agent uses), then restart the daemon"
-    )]
-    NotConfigured,
-    /// Another check runs.
-    #[error("a classifier check is already running; wait for its result")]
-    Busy,
-}
-
-/// A running check: when it ends, or is dropped unfinished (its client
-/// left), the engine may start another, the clients hear it ended, and a
-/// dropped one leaves its audit line.
-struct CheckRun<'a> {
-    engine: &'a ApprovalEngine,
-    model: String,
-    done: std::sync::atomic::AtomicUsize,
-    total: usize,
-    finished: std::sync::atomic::AtomicBool,
-}
-
-impl Drop for CheckRun<'_> {
-    fn drop(&mut self) {
-        let done = self.done.load(Ordering::Relaxed);
-        if !self.finished.load(Ordering::Relaxed)
-            && let Some(audit) = self.engine.audit.get()
-        {
-            audit.event(
-                "classifier_check",
-                format!(
-                    "{}: cancelled after {done} of {} cases (its client left)",
-                    self.model, self.total
-                ),
-            );
-        }
-        self.engine.emit(ApprovalEvent::CheckProgress {
-            done,
-            total: self.total,
-            running: false,
-        });
-        self.engine.check_running.store(false, Ordering::SeqCst);
-    }
-}
-
-/// What [`ClassifierBuilder`] builds: the reviews' classifier and the
-/// checks' (the same model and policy, stage 2 without its tools).
-pub struct BuiltClassifier {
-    /// The reviews'.
-    pub review: Arc<dyn ActionClassifier>,
-    /// The checks'.
-    pub check: Arc<dyn ActionClassifier>,
-}
-
-/// Builds the classifier for a model of an endpoint (`/auto model`), or
-/// says why it cannot.
-pub type ClassifierBuilder = Arc<
-    dyn Fn(
-            crate::endpoints::Endpoint,
-            String,
-        ) -> futures::future::BoxFuture<'static, Result<BuiltClassifier, String>>
-        + Send
-        + Sync,
->;
-
 /// A callback run when a session's per-session state is forgotten.
 pub type ForgetHook = Arc<dyn Fn(&SessionId) + Send + Sync>;
 
-/// Where a session's private scratch directory is, if it has one
-/// ([`super::scratch`]): the daemon answers from the agent the session
-/// belongs to.
-pub type ScratchLookup = Arc<dyn Fn(&SessionId) -> Option<PathBuf> + Send + Sync>;
-
 /// The approval engine, shared behind an [`Arc`] by every session's gate.
+///
+/// It holds the decision path's own state (the rules, the mode and its
+/// denial counters, each session's transcript, allow cache, Stop and
+/// runs) and the parts the path consults, each owning its data and locks:
+/// the classifier slot ([`Self::reviewer`]), the grants
+/// ([`Self::grants`]), the statements ([`Self::statements`]), the
+/// recently blocked calls ([`Self::blocks`]), build trust and the review
+/// numbers ([`Self::stats`]).
+///
+/// Locks: the engine's own (`rules`, `sessions`, `auto`, `answerers`,
+/// `forget_hooks`) and each part's are taken one at a time, never across
+/// an await and never while calling into a part. An escalation holds its
+/// session's
+/// serial lock (an async one, [`EscalationBroker::serial`]) across all of
+/// them.
 pub struct ApprovalEngine {
     root: ProjectRoot,
     rules: Arc<RwLock<RuleSet>>,
-    settings: RwLock<AutoSettings>,
     sessions: Mutex<HashMap<SessionId, SessionState>>,
     auto: Mutex<AutoMode>,
-    /// The classifier the reviews use now; `/auto model` replaces it
-    /// ([`Self::switch_classifier`]): a review that started finishes on
-    /// the one it took.
-    classifier: RwLock<Arc<dyn ActionClassifier>>,
     broker: Option<EscalationBroker>,
     escalation_timeout: Duration,
     next_escalation: AtomicU64,
+    /// What the classifier is told of the host (its `granted` is
+    /// [`Grants`]', filled per review).
     environment: Environment,
     posix_shell: bool,
-    events: mpsc::UnboundedSender<ApprovalEvent>,
+    /// The clients' events and the audit sink.
+    outlets: Outlets,
     files: Option<config::SettingsFiles>,
     origins: OnceLock<Arc<dyn ToolOrigins>>,
     /// Who is with each agent ([`super::attendance`]); unset: nobody is
@@ -411,71 +300,67 @@ pub struct ApprovalEngine {
     attendance: OnceLock<Arc<dyn Attendance>>,
     /// The workspace's agents as peers (a message to one is tier 1).
     agent_peers: OnceLock<Arc<dyn super::attendance::AgentPeers>>,
-    /// Where decisions and changes of authority are recorded
-    /// ([`super::audit`]); unset: nowhere.
-    audit: OnceLock<Arc<dyn AuditSink>>,
     /// Who answered each escalation, by its id, as the desk was told
     /// ([`ApprovalEngine::answered_by`]), until the escalation reads it.
     answerers: Mutex<HashMap<u64, String>>,
     /// Called by [`Self::forget_session`] (helper hosts prune their state).
     forget_hooks: RwLock<Vec<ForgetHook>>,
-    /// Each session's scratch directory ([`Self::set_scratch`]); unset:
-    /// none has one.
-    scratch: OnceLock<ScratchLookup>,
-    /// The numbers of blocked calls and grants.
+    /// The numbers of blocked calls, grants and statements.
     next_id: AtomicU64,
-    /// Directories the user granted "always" while this daemon runs (the
-    /// realm's `tui.toml` holds them for the next start), by id.
-    always_dirs: RwLock<Vec<(u64, PathBuf)>>,
-    /// The statements in force for every session: the user's own
-    /// `tui.toml` files' (`config`, `always` for the realm's) and the ones
-    /// added "always" while the daemon runs.
-    lasting_statements: RwLock<Vec<StatementRow>>,
-    /// The classifier's model, and whether the start-up check should run
-    /// against it ([`Self::set_classifier_model`]).
-    classifier_model: RwLock<Option<(String, bool)>>,
-    /// What the start-up check found wrong, for the clients that attach
-    /// later ([`Self::probe_notice`]).
-    probe_notice: Mutex<Option<String>>,
-    /// The classifier the checks send their cases to: the review's, with
-    /// stage 2's file-reading tools off ([`Self::set_check_classifier`]);
-    /// unset, the review's own.
-    check_classifier: RwLock<Option<Arc<dyn ActionClassifier>>>,
-    /// Builds the classifier for another model (`/auto model`); unset, the
-    /// model cannot be changed live ([`Self::set_classifier_builder`]).
-    classifier_builder: OnceLock<ClassifierBuilder>,
-    /// A classifier check runs ([`Self::check_classifier`]).
-    check_running: std::sync::atomic::AtomicBool,
-    /// The review numbers (`/auto stats`), since the daemon started and
-    /// per session.
-    stats: Mutex<StatsBook>,
+    reviewer: Reviewer,
+    grants: Grants,
+    statements: Statements,
+    blocks: Blocks,
+    builds: Builds,
+    stats: Stats,
 }
 
 impl fmt::Debug for ApprovalEngine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ApprovalEngine")
             .field("root", &self.root)
-            .field("settings", &*self.settings.read())
+            .field("trust_project_builds", &self.builds.trust())
             .field("auto", &*self.auto.lock())
             .finish_non_exhaustive()
     }
 }
 
-/// Decision-time facts about one call, computed once.
+/// Decision-time facts about one call, computed once: the call's input.
+/// What evaluating it finds is returned ([`Evaluated`]).
 struct Facts<'a> {
     action: Action<'a>,
     subjects: Vec<String>,
-    /// The allow rule that made the call Tier 1, once the tier is known.
-    allow_rule: Mutex<Option<RuleId>>,
+}
+
+/// What evaluating a call found: the verdict, and what the audit line and
+/// the `/approve` list need besides.
+#[derive(Debug)]
+struct Evaluated {
+    verdict: Verdict,
+    /// The allow rule that made the call Tier 1, if one did.
+    allow_rule: Option<RuleId>,
     /// Who answered the call's escalation, when the desk said.
-    answerer: Mutex<Option<String>>,
+    answerer: Option<String>,
     /// The path outside the allowed scope the classifier named as why it
     /// blocked, if it did.
-    blocked_path: Mutex<Option<String>>,
+    blocked_path: Option<String>,
     /// The kind of effect the classifier objected to, if it named one.
-    blocked_effect: Mutex<Option<String>>,
+    blocked_effect: Option<String>,
     /// The classifier's review of the call, when one ran (the audit line).
-    review: Mutex<Option<ReviewRecord>>,
+    review: Option<ReviewRecord>,
+}
+
+impl From<Verdict> for Evaluated {
+    fn from(verdict: Verdict) -> Self {
+        Self {
+            verdict,
+            allow_rule: None,
+            answerer: None,
+            blocked_path: None,
+            blocked_effect: None,
+            review: None,
+        }
+    }
 }
 
 impl ApprovalEngine {
@@ -491,7 +376,7 @@ impl ApprovalEngine {
             classifier,
             broker,
             escalation_timeout,
-            environment,
+            mut environment,
             posix_shell,
             events,
             files,
@@ -501,324 +386,78 @@ impl ApprovalEngine {
             let _ = events.send(ApprovalEvent::RulesDropped(dropped));
         }
         let auto = AutoMode::new(mode);
-        let lasting: Vec<StatementRow> = settings
-            .allow
-            .iter()
-            .zip(1u64..)
-            .map(|((origin, text), id)| StatementRow {
-                id,
-                text: text.clone(),
-                origin: *origin,
-            })
-            .collect();
-        let first_id = u64::try_from(lasting.len()).unwrap_or(0) + 1;
+        let (statements, first_id) = Statements::new(&settings.allow);
+        let outlets = Outlets::new(events);
+        let builds = Builds::new(
+            root.clone(),
+            environment.containment.contains(),
+            settings.trust_project_builds,
+        );
+        // The plan's directories are the grants' from now on.
+        let grants = Grants::new(std::mem::take(&mut environment.granted));
         Arc::new(Self {
             root,
             rules: Arc::new(RwLock::new(rules)),
-            settings: RwLock::new(settings),
             sessions: Mutex::new(HashMap::new()),
             auto: Mutex::new(auto),
-            classifier: RwLock::new(classifier),
             broker,
             escalation_timeout,
             next_escalation: AtomicU64::new(1),
             environment,
             posix_shell,
-            events,
+            reviewer: Reviewer::new(classifier, outlets.clone()),
+            outlets,
             files,
             origins: OnceLock::new(),
             attendance: OnceLock::new(),
             agent_peers: OnceLock::new(),
-            audit: OnceLock::new(),
             answerers: Mutex::new(HashMap::new()),
             forget_hooks: RwLock::new(Vec::new()),
-            scratch: OnceLock::new(),
             next_id: AtomicU64::new(first_id),
-            always_dirs: RwLock::new(Vec::new()),
-            lasting_statements: RwLock::new(lasting),
-            classifier_model: RwLock::new(None),
-            probe_notice: Mutex::new(None),
-            check_classifier: RwLock::new(None),
-            classifier_builder: OnceLock::new(),
-            check_running: std::sync::atomic::AtomicBool::new(false),
-            stats: Mutex::new(StatsBook::default()),
+            grants,
+            statements,
+            blocks: Blocks::default(),
+            builds,
+            stats: Stats::default(),
         })
     }
 
-    /// The checks ([`Self::check_classifier`], [`Self::probe_classifier`])
-    /// send their cases to `classifier`: the review's own model, endpoint
-    /// and policy, with stage 2's file-reading tools off. Set once.
-    pub fn set_check_classifier(&self, classifier: Arc<dyn ActionClassifier>) {
-        *self.check_classifier.write() = Some(classifier);
-    }
-
-    /// The classifier the checks use.
-    fn checker(&self) -> Arc<dyn ActionClassifier> {
-        self.check_classifier
-            .read()
-            .clone()
-            .unwrap_or_else(|| Arc::clone(&*self.classifier.read()))
-    }
-
-    /// How `/auto model` builds the classifier for another model: set once
-    /// by the daemon's composition.
-    pub fn set_classifier_builder(&self, builder: ClassifierBuilder) {
-        let _ = self.classifier_builder.set(builder);
-    }
-
-    /// `/auto model`: review with `model` of `endpoint` from now on, live
-    /// (a review that started finishes on the old one), named `label` (the
-    /// `endpoint:model` reference) in `/status`, `/auto stats` and the
-    /// checks; audited (the setting's file is written by the daemon's
-    /// settings path, `crate::daemon::settings`). The caller runs the start-up check against it
-    /// ([`Self::probe_classifier`]). Returns the notice.
-    ///
-    /// # Errors
-    ///
-    /// Why the model was not changed, for the user.
-    pub async fn switch_classifier(
-        &self,
-        endpoint: crate::endpoints::Endpoint,
-        model: String,
-        label: String,
-    ) -> Result<String, String> {
-        let Some(builder) = self.classifier_builder.get() else {
-            return Err("this daemon's classifier is fixed (a test's or an embedder's); the model cannot be changed".into());
-        };
-        let built = builder(endpoint, model).await?;
-        let previous = self.classifier_model();
-        *self.classifier.write() = built.review;
-        *self.check_classifier.write() = Some(built.check);
-        *self.classifier_model.write() = Some((label.clone(), true));
-        *self.probe_notice.lock() = None;
-        self.audit_event(
-            "classifier_model",
-            format!("{} -> {label}", previous.as_deref().unwrap_or("none")),
-        );
-        Ok(format!(
-            "the classifier now reviews with {label}; its start-up check runs now, and /auto check measures it on more cases"
-        ))
-    }
-
-    /// `/auto check`: send `cases` (a [`corpus::select`]ion) through the
-    /// configured classifier as a review shows them ([`corpus::evaluate`]),
-    /// within `bounds`, and answer its model and the report. Each judged
-    /// case is pushed as [`ApprovalEvent::CheckProgress`]; one audit line
-    /// (`classifier_check`) records the totals, or how far a check got
-    /// that was dropped (its client left). Outside every session: no
-    /// counter, pause, statistic, cache or conversation moves.
-    ///
-    /// # Errors
-    ///
-    /// [`CheckError::NotConfigured`] without a classifier model,
-    /// [`CheckError::Busy`] while another check runs.
-    pub async fn check_classifier(
-        &self,
-        cases: &[corpus::Case],
-        bounds: corpus::Bounds,
-    ) -> Result<(String, corpus::Report), CheckError> {
-        let model = self.classifier_model().ok_or(CheckError::NotConfigured)?;
-        if self.check_running.swap(true, Ordering::SeqCst) {
-            return Err(CheckError::Busy);
-        }
-        let run = CheckRun {
-            engine: self,
-            model: model.clone(),
-            done: std::sync::atomic::AtomicUsize::new(0),
-            total: cases.len(),
-            finished: std::sync::atomic::AtomicBool::new(false),
-        };
-        self.emit(ApprovalEvent::CheckProgress {
-            done: 0,
-            total: cases.len(),
-            running: true,
-        });
-        let checker = self.checker();
-        let report = corpus::evaluate(&*checker, cases, bounds, |done, total| {
-            run.done.store(done, Ordering::Relaxed);
-            self.emit(ApprovalEvent::CheckProgress {
-                done,
-                total,
-                running: true,
-            });
-        })
-        .await;
-        run.finished.store(true, Ordering::Relaxed);
-        if let Some(audit) = self.audit.get() {
-            let totals = report.totals();
-            let held = report.held_out();
-            let stopped = match &report.stopped {
-                Some(corpus::Stopped::Failed { case, error }) => {
-                    format!("; stopped at {case}: {error}")
-                }
-                Some(corpus::Stopped::Bound { seconds }) => {
-                    format!("; stopped at its bound of {seconds} s")
-                }
-                None => String::new(),
-            };
-            audit.event(
-                "classifier_check",
-                format!(
-                    "{model}: {} of {} cases; {}; held out: {}; {} tokens in, {} out; {} ms{stopped}",
-                    totals.cases,
-                    report.planned,
-                    totals.describe(),
-                    held.describe(),
-                    report.input_tokens,
-                    report.output_tokens,
-                    report.wall_ms
-                ),
-            );
-        }
-        Ok((model, report))
-    }
-
-    /// The classifier runs on `model`; `probe`: the start-up check should
-    /// run against it. Set once.
-    pub fn set_classifier_model(&self, model: String, probe: bool) {
-        let mut slot = self.classifier_model.write();
-        if slot.is_none() {
-            *slot = Some((model, probe));
-        }
-    }
-
-    /// The classifier's model, when one is configured.
+    /// The classifier slot: its model, the checks, `/auto model`.
     #[must_use]
-    pub fn classifier_model(&self) -> Option<String> {
-        self.classifier_model
-            .read()
-            .as_ref()
-            .map(|(model, _)| model.clone())
+    pub fn reviewer(&self) -> &Reviewer {
+        &self.reviewer
     }
 
-    /// What the start-up check found wrong, if it ran and found anything.
+    /// The directories and rules the user grants.
     #[must_use]
-    pub fn probe_notice(&self) -> Option<String> {
-        self.probe_notice.lock().clone()
+    pub fn grants(&self) -> &Grants {
+        &self.grants
     }
 
-    /// The start-up check (when [`Self::set_classifier_model`] asked for
-    /// it): two corpus cases ([`corpus::PROBE_CASES`]), a routine test run
-    /// that must be allowed and a force push to the default branch that
-    /// must be blocked, judged as `/auto check` judges them
-    /// ([`corpus::evaluate`]) outside any session (no counter, cache or
-    /// audit line moves). A wrong verdict, or a check that cannot
-    /// complete, becomes a notice for the user ([`ApprovalEvent::Notice`],
-    /// and [`Self::probe_notice`] for clients that attach later; `/auto
-    /// check` measures more).
-    pub async fn probe_classifier(&self) {
-        self.probe(false).await;
-    }
-
-    /// The start-up check against the model `/auto model` just chose
-    /// ([`Self::switch_classifier`]): as [`Self::probe_classifier`], and a
-    /// check that passes says so too.
-    pub async fn probe_switched(&self) {
-        self.probe(true).await;
-    }
-
-    async fn probe(&self, announce: bool) {
-        let Some((model, true)) = self.classifier_model.read().clone() else {
-            return;
-        };
-        let selection = corpus::Selection {
-            cases: corpus::PROBE_CASES.map(str::to_string).to_vec(),
-            ..corpus::Selection::default()
-        };
-        let notice = match corpus::select(&selection) {
-            Err(err) => Some(format!(
-                "the start-up check of the classifier model {model} could not run: {err}"
-            )),
-            Ok(cases) => {
-                let checker = self.checker();
-                let report =
-                    corpus::evaluate(&*checker, &cases, corpus::Bounds::default(), |_, _| {}).await;
-                match (&report.stopped, report.wrong().next()) {
-                    (Some(corpus::Stopped::Failed { error, .. }), _) => Some(format!(
-                        "the start-up check of the classifier model {model} could not complete ({error}); reviewed actions may ask you or fail until it answers"
-                    )),
-                    (Some(corpus::Stopped::Bound { .. }), _) => Some(format!(
-                        "the start-up check of the classifier model {model} could not complete in time; reviewed actions may ask you or fail until it answers"
-                    )),
-                    (None, Some(wrong)) if wrong.label == corpus::Label::Allow => Some(format!(
-                        "the classifier model {model} misjudged a routine case (it blocked {}): auto mode may block ordinary work; /auto check measures it on more cases, and `[auto] classifier_model` chooses another",
-                        wrong.action
-                    )),
-                    (None, Some(wrong)) => Some(format!(
-                        "the classifier model {model} misjudged a risky case (it allowed {}): auto mode may let harmful actions run; /auto check measures it on more cases, and `[auto] classifier_model` chooses another",
-                        wrong.action
-                    )),
-                    (None, None) => {
-                        if announce {
-                            self.emit(ApprovalEvent::Notice(format!(
-                                "the classifier model {model} passed the start-up check (a routine test run allowed, a force push to the default branch blocked); /auto check measures it on more cases"
-                            )));
-                        }
-                        None
-                    }
-                }
-            }
-        };
-        if let Some(text) = notice {
-            tracing::warn!(%model, %text, "classifier start-up check");
-            *self.probe_notice.lock() = Some(text.clone());
-            self.emit(ApprovalEvent::Notice(text));
-        }
-    }
-
-    /// Where each session's private scratch directory is: the gate treats
-    /// it as the session's own from now on ([`super::scratch`]). Set once;
-    /// returns `false` when it was set already.
-    pub fn set_scratch(&self, lookup: ScratchLookup) -> bool {
-        self.scratch.set(lookup).is_ok()
-    }
-
-    /// Whether the confinement plan lets the shell write `path` (a default
-    /// or user-named write grant holds it): a scratch directory elsewhere
-    /// would be a `TMPDIR` the confined shell cannot write.
+    /// The kinds of action the user allows.
     #[must_use]
-    pub fn plan_writes(&self, path: &std::path::Path) -> bool {
-        let granted = &self.environment.granted;
-        granted
-            .baseline_write
-            .iter()
-            .chain(&granted.user_write)
-            .any(|dir| path.starts_with(dir))
+    pub fn statements(&self) -> &Statements {
+        &self.statements
     }
 
-    /// The directories outside the project `session_id`'s calls may use:
-    /// the confinement plan's, and the session's scratch directory.
-    fn granted_for(&self, session_id: &SessionId) -> GrantedDirs {
-        let mut granted = self.environment.granted.clone();
-        granted.scratch = self.scratch.get().and_then(|lookup| lookup(session_id));
-        // What the user granted while the daemon runs: "always" for every
-        // session, "for this session" for this one and its helpers.
-        granted
-            .user_write
-            .extend(self.always_dirs.read().iter().map(|(_, dir)| dir.clone()));
-        if let Some(state) = self.sessions.lock().get(session_id) {
-            for (_, grant) in &state.grants {
-                if let GrantTarget::Dir { path } = grant {
-                    granted.user_write.push(path.clone());
-                }
-            }
-        }
-        granted
+    /// The calls the gate recently blocked that the user can approve.
+    #[must_use]
+    pub fn blocks(&self) -> &Blocks {
+        &self.blocks
+    }
+
+    /// The review numbers (`/auto stats`).
+    #[must_use]
+    pub fn stats(&self) -> &Stats {
+        &self.stats
     }
 
     /// The rules for `session_id`'s calls: the layered ones, and the allow
     /// rules the user granted for this session.
     fn rules_for(&self, session_id: &SessionId) -> RuleSet {
         let mut rules = self.rules.read().clone();
-        if let Some(state) = self.sessions.lock().get(session_id) {
-            for (_, grant) in &state.grants {
-                if let GrantTarget::Rule { tool, subject } = grant
-                    && let Ok(rule) =
-                        Rule::literal(RuleKind::Allow, tool, subject, RuleOrigin::Session)
-                {
-                    rules.push(rule);
-                }
-            }
+        for rule in self.grants.session_rules(session_id) {
+            rules.push(rule);
         }
         rules
     }
@@ -827,13 +466,6 @@ impl ApprovalEngine {
     #[must_use]
     pub fn root(&self) -> &ProjectRoot {
         &self.root
-    }
-
-    /// Current settings.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn settings(&self) -> AutoSettings {
-        self.settings.read().clone()
     }
 
     /// Current rules.
@@ -912,7 +544,7 @@ impl ApprovalEngine {
     /// Record every decision and change of authority in `audit` from now
     /// on. Set once; returns `false` when it was set already.
     pub fn set_audit(&self, audit: Arc<dyn AuditSink>) -> bool {
-        self.audit.set(audit).is_ok()
+        self.outlets.set_audit(audit)
     }
 
     /// Escalation `id` was answered by `who` (`human:<connection>`): the
@@ -922,16 +554,14 @@ impl ApprovalEngine {
     }
 
     fn audit_event(&self, event: &str, detail: String) {
-        if let Some(audit) = self.audit.get() {
-            audit.event(event, detail);
-        }
+        self.outlets.audit_event(event, detail);
     }
 
     /// A client sent `session_id` input (a prompt or a steer, on a
     /// connection that proved it holds the daemon's token): the next run of
     /// the session that starts is the user's.
     pub fn human_input(&self, session_id: &SessionId) {
-        self.session(session_id).human_pending = true;
+        self.session(session_id).runs.human_pending = true;
     }
 
     /// Whether a call of `session_id` in `run` (`None`: the session's
@@ -946,17 +576,10 @@ impl ApprovalEngine {
         {
             return true;
         }
-        let sessions = self.sessions.lock();
-        let Some(state) = sessions.get(session_id) else {
-            return false;
-        };
-        match run.or(state.current_run.as_ref()) {
-            Some(run) if state.human_runs.contains(run) => true,
-            // A run the engine saw start without a client's input waiting.
-            Some(run) if state.runs_seen.contains(run) => false,
-            // Its start is not seen yet: the user's when their input waits.
-            _ => state.human_pending,
-        }
+        self.sessions
+            .lock()
+            .get(session_id)
+            .is_some_and(|state| state.runs.users(run))
     }
 
     /// The origin of `name` among `session_id`'s live tools.
@@ -1013,19 +636,8 @@ impl ApprovalEngine {
         let Some(run_id) = run_id else {
             return;
         };
-        if state.runs_seen.contains(run_id) {
+        if !state.runs.started(run_id) {
             return;
-        }
-        if state.runs_seen.len() == RUNS_REMEMBERED {
-            state.runs_seen.pop_front();
-        }
-        state.runs_seen.push_back(run_id.clone());
-        state.current_run = Some(run_id.clone());
-        if std::mem::take(&mut state.human_pending) {
-            if state.human_runs.len() == RUNS_REMEMBERED {
-                state.human_runs.pop_front();
-            }
-            state.human_runs.push_back(run_id.clone());
         }
         let clears = match &state.stop {
             StopState::Running => false,
@@ -1043,7 +655,7 @@ impl ApprovalEngine {
         self.sessions
             .lock()
             .get(session_id)
-            .is_some_and(|state| state.human_runs.contains(run))
+            .is_some_and(|state| state.runs.human.contains(run))
     }
 
     /// The human stopped `session_id`'s current run (an interrupt or a Stop
@@ -1051,7 +663,7 @@ impl ApprovalEngine {
     /// without asking anyone, until a new run starts ([`Self::run_started`]).
     pub fn stop(&self, session_id: &SessionId) {
         let mut state = self.session(session_id);
-        state.stop = StopState::Stopped(state.current_run.clone());
+        state.stop = StopState::Stopped(state.runs.current.clone());
     }
 
     fn stopped(&self, session_id: &SessionId) -> bool {
@@ -1062,11 +674,16 @@ impl ApprovalEngine {
     }
 
     /// Forget a session's per-session state (transcript, allow cache, stop,
-    /// agent-written files) and run every [`ForgetHook`]. Idempotent:
+    /// agent-written files, and the parts' grants, statements, blocked
+    /// calls and build trust) and run every [`ForgetHook`]. Idempotent:
     /// forgetting an unknown or already forgotten session only runs the
     /// hooks, which must be idempotent too.
     pub fn forget_session(&self, session_id: &SessionId) {
         self.sessions.lock().remove(session_id);
+        self.grants.forget(session_id);
+        self.statements.forget(session_id);
+        self.blocks.forget(session_id);
+        self.builds.forget(session_id);
         let hooks = self.forget_hooks.read().clone();
         for hook in hooks {
             hook(session_id);
@@ -1201,11 +818,11 @@ impl ApprovalEngine {
     /// (`/set`, a file): `None` is unset (trusted while a sandbox contains
     /// the shell).
     pub fn set_trust_project_builds(&self, trust: Option<bool>) {
-        self.settings.write().trust_project_builds = trust;
+        self.builds.set_trust(trust);
     }
 
     fn emit(&self, event: ApprovalEvent) {
-        let _ = self.events.send(event);
+        self.outlets.emit(event);
     }
 
     /// Decide one tool call of `session_id`'s own agent.
@@ -1230,20 +847,17 @@ impl ApprovalEngine {
         } = caller;
         let action = Action::parse(call.name, call.args, call.origin);
         let subjects = action.subjects(&self.root);
-        let facts = Facts {
-            action,
-            subjects,
-            allow_rule: Mutex::new(None),
-            answerer: Mutex::new(None),
-            blocked_path: Mutex::new(None),
-            blocked_effect: Mutex::new(None),
-            review: Mutex::new(None),
-        };
-        self.snapshot_build_files(session_id);
-        let verdict = self.evaluate(session_id, agent, run, &facts).await;
-        if let Verdict::Deny { reason, .. } = &verdict {
-            self.remember_block(session_id, agent, &facts, reason);
-        }
+        let facts = Facts { action, subjects };
+        self.builds.snapshot(session_id);
+        let evaluated = self.evaluate(caller, &facts).await;
+        self.remember_block(session_id, agent, &facts, &evaluated);
+        let Evaluated {
+            verdict,
+            allow_rule,
+            answerer,
+            review,
+            ..
+        } = evaluated;
         let (tier, reason) = match &verdict {
             // A classifier allow carries the classifier's stated reason;
             // other allows carry none.
@@ -1266,12 +880,12 @@ impl ApprovalEngine {
             Some(summary),
         );
         tracing::debug!(tool = call.name, %tier, ?summary, "auto-mode decision");
-        if let Some(audit) = self.audit.get() {
+        if let Some(audit) = self.outlets.audit() {
             let current = run.cloned().or_else(|| {
                 self.sessions
                     .lock()
                     .get(session_id)
-                    .and_then(|state| state.current_run.clone())
+                    .and_then(|state| state.runs.current.clone())
             });
             audit.decision(DecisionRecord {
                 session: session_id,
@@ -1281,12 +895,12 @@ impl ApprovalEngine {
                 argument: decisive_argument(&facts),
                 tier,
                 allowed: verdict.is_allowed(),
-                decider: decider_label(&verdict, &facts),
+                decider: decider_label(&verdict, allow_rule, answerer),
                 reason: match &verdict {
                     Verdict::Deny { reason, .. } => Some(reason.to_string()),
                     Verdict::Allow { .. } => None,
                 },
-                review: facts.review.lock().take(),
+                review,
             });
         }
         self.emit(ApprovalEvent::Decision {
@@ -1317,7 +931,7 @@ impl ApprovalEngine {
         };
         // The scratch directory is the session's whole: its files need no
         // list.
-        let scratch = self.scratch.get().and_then(|lookup| lookup(session_id));
+        let scratch = self.grants.scratch(session_id);
         let created: Vec<String> = paths
             .iter()
             .filter_map(|path| self.root.resolve(path).ok())
@@ -1344,27 +958,36 @@ impl ApprovalEngine {
             {
                 state.facts.manifests_changed.push(subject.clone());
             }
-            if is_build_defining(subject) {
-                state.build_files_written = true;
-            }
         }
         for path in created {
             if !state.facts.created_outside.contains(&path) {
                 state.facts.created_outside.push(path);
             }
         }
+        drop(sessions);
+        // After the session's own record, as one lock held both before.
+        if facts
+            .subjects
+            .iter()
+            .any(|subject| is_build_defining(subject))
+        {
+            self.builds.written(session_id);
+        }
     }
 
     /// Keep a denial the user can approve (`/approve`): a classifier block,
     /// a failed review, an unattended call that would have asked. The
-    /// newest [`MAX_RECENT_BLOCKS`] are kept.
+    /// newest [`super::grants::MAX_RECENT_BLOCKS`] are kept.
     fn remember_block(
         &self,
         session_id: &SessionId,
         agent: Option<&str>,
         facts: &Facts<'_>,
-        reason: &DenyReason,
+        evaluated: &Evaluated,
     ) {
+        let Verdict::Deny { reason, .. } = &evaluated.verdict else {
+            return;
+        };
         let rule = match reason {
             DenyReason::Classifier { rule, .. } => rule.clone(),
             DenyReason::ReviewIncomplete(_)
@@ -1372,7 +995,7 @@ impl ApprovalEngine {
             | DenyReason::Unattended => None,
             _ => return,
         };
-        let path = facts.blocked_path.lock().clone().or_else(|| {
+        let path = evaluated.blocked_path.clone().or_else(|| {
             self.outside_target(session_id, facts)
                 .map(|(abs, _)| abs.display().to_string())
         });
@@ -1386,33 +1009,38 @@ impl ApprovalEngine {
             helper: agent.map(str::to_string),
             summary,
             rule,
-            grant: if self.build_asks(session_id, facts, Tier::Classifier) {
-                Some(GrantTarget::Builds)
-            } else {
-                self.grant_for(facts, path.as_deref())
-            },
+            // Whether builds are what it is about is judged again here, at
+            // Tier 3, not taken from the question that was denied (a
+            // dialog offers what its question asked).
+            grant: self.session_grant(
+                facts,
+                self.build_asks(session_id, facts, Tier::Classifier),
+                path.as_deref(),
+            ),
             path,
-            effect: facts.blocked_effect.lock().clone(),
+            effect: evaluated.blocked_effect.clone(),
             reason: reason.to_string(),
             at,
         };
-        let key = CacheKey {
-            tool: facts.action.name.to_string(),
-            args: canonical_args_digest(facts.action.args),
-            payload: [0; 32],
-        };
-        let mut state = self.session(session_id);
-        if state.recent.len() == MAX_RECENT_BLOCKS {
-            state.recent.pop_front();
-        }
-        state.recent.push_back(Blocked { call, key });
+        let key = CacheKey::approval(&facts.action);
+        self.blocks.remember(session_id, Blocked { call, key });
     }
 
-    /// The grant "for this session" or "always" makes for `facts`' call:
-    /// the directory of the path outside the allowed scope that was why
-    /// (`path`, else a file tool's own target), else the literal allow rule
-    /// of its tool and first subject.
-    fn grant_for(&self, facts: &Facts<'_>, path: Option<&str>) -> Option<GrantTarget> {
+    /// The grant "for this session" (or "always") makes for `facts`'
+    /// call: builds after a change when that is what is asked
+    /// (`building`); else the directory of `path`, the path outside the
+    /// allowed scope that was why; else the literal allow rule of its
+    /// tool and first subject. The dialog ([`Self::escalate`]) and the
+    /// `/approve` list ([`Self::remember_block`]) both offer this one.
+    fn session_grant(
+        &self,
+        facts: &Facts<'_>,
+        building: bool,
+        path: Option<&str>,
+    ) -> Option<GrantTarget> {
+        if building {
+            return Some(GrantTarget::Builds);
+        }
         if let Some(dir) = path.and_then(|path| super::grants::grant_dir_for(&self.root, path).ok())
         {
             return Some(GrantTarget::Dir { path: dir });
@@ -1422,17 +1050,6 @@ impl ApprovalEngine {
             tool: facts.action.name.to_string(),
             subject: subject.clone(),
         })
-    }
-
-    /// The calls of `session_id` the gate recently blocked that the user
-    /// can approve, oldest first.
-    #[must_use]
-    pub fn blocked(&self, session_id: &SessionId) -> Vec<BlockedCall> {
-        self.sessions
-            .lock()
-            .get(session_id)
-            .map(|state| state.recent.iter().map(|b| b.call.clone()).collect())
-            .unwrap_or_default()
     }
 
     /// The user approves blocked call `id` of `session_id` for `scope`: once
@@ -1451,29 +1068,13 @@ impl ApprovalEngine {
         id: u64,
         scope: GrantScope,
     ) -> Result<Approved, String> {
-        let blocked = {
-            let mut state = self.session(session_id);
-            let at = state
-                .recent
-                .iter()
-                .position(|blocked| blocked.call.id == id)
-                .ok_or_else(|| format!("no blocked call #{id} (`/approve` lists them)"))?;
-            let blocked = state.recent[at].clone();
-            if scope != GrantScope::Once && blocked.call.grant.is_none() {
-                return Err(format!(
-                    "no grant fits blocked call #{id}; approve it once instead"
-                ));
-            }
-            state.recent.remove(at);
-            blocked
-        };
+        let blocked = self.blocks.take(session_id, id, scope)?;
         self.stats
-            .lock()
             .add(Some(session_id), |stats| stats.approvals += 1);
         let what = format!("`{} {}`", blocked.call.tool, blocked.call.summary);
         let target = match scope {
             GrantScope::Once => {
-                self.session(session_id).approved_once.insert(blocked.key);
+                self.blocks.approve_once(session_id, blocked.key);
                 self.audit_event("approved_once", what.clone());
                 let approved = Approved {
                     notice: format!("approved once: {what} runs when the agent tries it again"),
@@ -1520,35 +1121,17 @@ impl ApprovalEngine {
         match (scope, &target) {
             (GrantScope::Once, _) => return Err("a grant is for this session or always".into()),
             (GrantScope::Session, _) => {
-                self.session(session_id).grants.push((id, target.clone()));
+                self.grants.add_session(session_id, id, target.clone());
             }
             (GrantScope::Always | GrantScope::AlwaysUser, GrantTarget::Dir { path }) => {
-                let granted = &self.environment.granted;
-                let named: Vec<PathBuf> = granted
-                    .user_write
-                    .iter()
-                    .chain(&granted.user_read)
-                    .cloned()
-                    .chain(self.always_dirs.read().iter().map(|(_, dir)| dir.clone()))
-                    .collect();
-                let dir = crate::bootstrap::confinement::grantable_extra_write(
-                    path,
-                    self.root.as_path(),
-                    &named,
-                )
-                .map_err(|problem| {
-                    format!(
-                        "`{}` cannot be granted always ({problem}); grant it for this session instead",
-                        path.display()
-                    )
-                })?;
+                let dir = self.grants.always_dir(path, self.root.as_path())?;
                 if let Some(files) = &self.files {
                     files
                         .of(scope.level())
                         .add_to_list("confinement.extra_write", &dir.display().to_string())
                         .map_err(|err| format!("the grant was not saved: {err}"))?;
                 }
-                self.always_dirs.write().push((id, dir));
+                self.grants.add_always(id, dir);
             }
             (GrantScope::Always | GrantScope::AlwaysUser, GrantTarget::Builds) => {
                 return Err("builds after a dependency change are allowed for a session at a time; allow this kind of effect always with /approve's e instead".into());
@@ -1598,115 +1181,30 @@ impl ApprovalEngine {
             .find(|held| held.starts_with(&dir) || dir.starts_with(held))
     }
 
-    /// The grants in force for `session_id`, as `/permissions` lists them:
-    /// the sandbox's defaults, the user's from the command line and the
-    /// `tui.toml` files, the "always" ones of this run, and the session's.
-    #[must_use]
-    pub fn grant_rows(&self, session_id: Option<&SessionId>) -> Vec<GrantRow> {
-        let granted = &self.environment.granted;
-        let dir = |path: &PathBuf| GrantTarget::Dir { path: path.clone() };
-        let mut rows: Vec<GrantRow> = granted
-            .baseline_write
-            .iter()
-            .map(|path| GrantRow {
-                id: 0,
-                target: dir(path),
-                origin: GrantOrigin::Default,
-                removable: false,
-            })
-            .collect();
-        for path in &granted.user_write {
-            rows.push(GrantRow {
-                id: 0,
-                target: dir(path),
-                origin: if granted.from_flag.contains(path) {
-                    GrantOrigin::Flag
-                } else {
-                    GrantOrigin::Config
-                },
-                removable: false,
-            });
-        }
-        for (id, path) in self.always_dirs.read().iter() {
-            rows.push(GrantRow {
-                id: *id,
-                target: dir(path),
-                origin: GrantOrigin::Always,
-                removable: false,
-            });
-        }
-        if let Some(state) =
-            session_id.and_then(|s| self.sessions.lock().get(s).map(|st| st.grants.clone()))
-        {
-            for (id, target) in state {
-                rows.push(GrantRow {
-                    id,
-                    target,
-                    origin: GrantOrigin::Session,
-                    removable: true,
-                });
-            }
-        }
-        rows
-    }
-
     /// Remove session grant `id` of `session_id`.
     ///
     /// # Errors
     ///
     /// When the session has no such grant.
     pub fn remove_grant(&self, session_id: &SessionId, id: u64) -> Result<String, String> {
-        let mut state = self.session(session_id);
-        let at = state
+        let target = self
             .grants
-            .iter()
-            .position(|(grant, _)| *grant == id)
+            .remove_session(session_id, id)
             .ok_or_else(|| format!("no session grant #{id}"))?;
-        let (_, target) = state.grants.remove(at);
-        drop(state);
         let what = target.describe();
         self.audit_event("grant_removed", format!("for this session {what}"));
         Ok(format!("removed the session grant of {what}"))
     }
 
     /// The statements in force for `session_id`'s calls: the lasting ones,
-    /// then the session's, at most [`MAX_STATEMENTS`].
+    /// then the session's, at most [`MAX_STATEMENTS`]; and the session
+    /// grant of a build after a change, read as what it is.
     fn statements_for(&self, session_id: &SessionId) -> Vec<String> {
-        let mut texts: Vec<String> = self
-            .lasting_statements
-            .read()
-            .iter()
-            .map(|row| row.text.clone())
-            .collect();
-        if let Some(state) = self.sessions.lock().get(session_id) {
-            texts.extend(state.statements.iter().map(|(_, text)| text.clone()));
-        }
-        texts.truncate(MAX_STATEMENTS);
-        // The session grant of a build after a change reads as what it is.
-        if self.builds_granted(session_id) {
+        let mut texts = self.statements.texts_for(session_id);
+        if self.grants.builds_granted(session_id) {
             texts.push(BUILDS_STATEMENT.to_string());
         }
         texts
-    }
-
-    /// The statements in force for `session_id`, as `/permissions` lists
-    /// them: the lasting ones, then the session's.
-    #[must_use]
-    pub fn statement_rows(&self, session_id: Option<&SessionId>) -> Vec<StatementRow> {
-        let mut rows = self.lasting_statements.read().clone();
-        if let Some(state) = session_id.and_then(|s| {
-            self.sessions
-                .lock()
-                .get(s)
-                .map(|state| state.statements.clone())
-        }) {
-            rows.extend(state.into_iter().map(|(id, text)| StatementRow {
-                id,
-                text,
-                origin: StatementOrigin::Session,
-            }));
-        }
-        rows
     }
 
     /// The user allows the kind of action `raw` describes, for `scope`
@@ -1730,7 +1228,7 @@ impl ApprovalEngine {
         if active.iter().any(|known| known.eq_ignore_ascii_case(&text)) {
             return Err(StatementRefusal::Duplicate.to_string());
         }
-        if self.statement_rows(Some(session_id)).len() >= MAX_STATEMENTS {
+        if self.statements.rows(Some(session_id)).len() >= MAX_STATEMENTS {
             return Err(StatementRefusal::TooMany.to_string());
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -1740,7 +1238,7 @@ impl ApprovalEngine {
                     "a kind of action is allowed for this session or always, not once".into(),
                 );
             }
-            GrantScope::Session => self.session(session_id).statements.push((id, text.clone())),
+            GrantScope::Session => self.statements.add_session(session_id, id, text.clone()),
             GrantScope::Always | GrantScope::AlwaysUser => {
                 if let Some(files) = &self.files {
                     files
@@ -1748,7 +1246,7 @@ impl ApprovalEngine {
                         .add_to_list("auto.allow", &text)
                         .map_err(|err| format!("the statement was not saved: {err}"))?;
                 }
-                self.lasting_statements.write().push(StatementRow {
+                self.statements.add_lasting(StatementRow {
                     id,
                     text: text.clone(),
                     origin: if scope == GrantScope::AlwaysUser {
@@ -1792,20 +1290,12 @@ impl ApprovalEngine {
         text: &str,
         scope: GrantScope,
     ) -> Result<Approved, String> {
-        if !self
-            .sessions
-            .lock()
-            .get(session_id)
-            .is_some_and(|state| state.recent.iter().any(|b| b.call.id == id))
-        {
+        if !self.blocks.contains(session_id, id) {
             return Err(format!("no blocked call #{id} (`/approve` lists them)"));
         }
         let approved = self.allow_statement(session_id, text, scope)?;
-        self.session(session_id)
-            .recent
-            .retain(|blocked| blocked.call.id != id);
+        self.blocks.drop_call(session_id, id);
         self.stats
-            .lock()
             .add(Some(session_id), |stats| stats.approvals += 1);
         Ok(approved)
     }
@@ -1820,23 +1310,13 @@ impl ApprovalEngine {
     /// No such statement, one of the user's own files, or the realm file
     /// not written.
     pub fn remove_statement(&self, session_id: &SessionId, id: u64) -> Result<String, String> {
-        let removed = {
-            let mut state = self.session(session_id);
-            state
-                .statements
-                .iter()
-                .position(|(known, _)| *known == id)
-                .map(|at| state.statements.remove(at).1)
-        };
+        let removed = self.statements.remove_session(session_id, id);
         let (text, origin) = if let Some(text) = removed {
             (text, StatementOrigin::Session)
         } else {
             let row = self
-                .lasting_statements
-                .read()
-                .iter()
-                .find(|row| row.id == id)
-                .cloned()
+                .statements
+                .lasting(id)
                 .ok_or_else(|| format!("no statement #{id}"))?;
             if self.files.is_none() && row.origin == StatementOrigin::Config {
                 return Err(format!(
@@ -1860,9 +1340,7 @@ impl ApprovalEngine {
                     ));
                 }
             }
-            self.lasting_statements
-                .write()
-                .retain(|known| known.id != id);
+            self.statements.remove_lasting(id);
             (row.text, row.origin)
         };
         for state in self.sessions.lock().values_mut() {
@@ -1875,15 +1353,8 @@ impl ApprovalEngine {
     /// Whether the user approved `facts`' call once for `session_id`; the
     /// approval is used up.
     fn take_approved(&self, session_id: &SessionId, facts: &Facts<'_>) -> bool {
-        let key = CacheKey {
-            tool: facts.action.name.to_string(),
-            args: canonical_args_digest(facts.action.args),
-            payload: [0; 32],
-        };
-        self.sessions
-            .lock()
-            .get_mut(session_id)
-            .is_some_and(|state| state.approved_once.remove(&key))
+        self.blocks
+            .take_approved(session_id, &CacheKey::approval(&facts.action))
     }
 
     /// What the gate saw `session_id`'s file tools do (tests).
@@ -1909,136 +1380,24 @@ impl ApprovalEngine {
         })
     }
 
-    /// SHA-256 over the project root's build-defining files
-    /// ([`CARGO_BUILD_FILES`] and the manifests) as they are now (a
-    /// missing file counts as missing).
-    fn build_files_digest(&self) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        let manifests = super::classifier::MANIFEST_FILES.iter();
-        for file in CARGO_BUILD_FILES.iter().chain(manifests) {
-            hash_str(file, &mut hasher);
-            match std::fs::read(self.root.as_path().join(file)) {
-                Ok(bytes) => {
-                    hasher.update([1]);
-                    hash_len(bytes.len(), &mut hasher);
-                    hasher.update(&bytes);
-                }
-                Err(_) => hasher.update([0]),
-            }
-        }
-        hasher.finalize().into()
-    }
-
-    /// Take the snapshot of the build-defining files a session's trusted
-    /// builds are checked against, when it has none yet.
-    fn snapshot_build_files(&self, session_id: &SessionId) {
-        if self
-            .sessions
-            .lock()
-            .get(session_id)
-            .is_some_and(|state| state.build_digest.is_some())
-        {
-            return;
-        }
-        let digest = self.build_files_digest();
-        let mut state = self.session(session_id);
-        if state.build_digest.is_none() {
-            state.build_digest = Some(digest);
-        }
-    }
-
-    /// A reviewed build of `session_id` ran: what it was shown is the new
-    /// baseline of its trusted builds.
-    fn rebase_build_files(&self, session_id: &SessionId) {
-        let digest = self.build_files_digest();
-        let mut state = self.session(session_id);
-        state.build_digest = Some(digest);
-        state.build_files_written = false;
-    }
-
-    /// Whether the project's builds are trusted for `session_id`'s calls:
-    /// as the user set `trust_project_builds`, else when something contains
-    /// the shell (rkat-tui's sandbox, or one the user declares); and in
-    /// either case only while no build-defining file changed in the session
-    /// by any route the gate sees (its file tools, or the files' digest).
-    ///
-    /// When something contains the shell a build stays trusted after such
-    /// a change too (the sandbox is the boundary; the owner's decision of
-    /// 2026-11-14): the first one shows a notice ([`Self::notice_build`]).
-    /// Uncontained, a build after a change is put to the user
-    /// ([`Self::build_asks`]).
-    fn builds_trusted(&self, session_id: &SessionId, facts: &Facts<'_>) -> bool {
-        let contained = self.environment.containment.contains();
-        let trusted = self
-            .settings
-            .read()
-            .trust_project_builds
-            .unwrap_or(contained);
-        let ActionKind::Shell { command, .. } = &facts.action.kind else {
-            return trusted;
-        };
-        if !trusted || contained || !build_runners(command).contains(&"cargo") {
-            return trusted;
-        }
-        !self.build_changed(session_id)
-    }
-
-    /// Whether a build-defining file or dependency manifest changed in the
-    /// session since its baseline, by any route the gate sees (its file
-    /// tools, or the files' digest).
-    fn build_changed(&self, session_id: &SessionId) -> bool {
-        let (snapshot, written) = {
-            let sessions = self.sessions.lock();
-            sessions.get(session_id).map_or((None, false), |state| {
-                (state.build_digest, state.build_files_written)
-            })
-        };
-        written || snapshot.is_some_and(|digest| digest != self.build_files_digest())
-    }
-
-    /// Whether `facts`' call runs a build (a build runner anywhere in its
-    /// command).
-    fn is_build(facts: &Facts<'_>) -> bool {
-        matches!(&facts.action.kind, ActionKind::Shell { command, .. } if !build_runners(command).is_empty())
-    }
-
     /// Whether `facts`' call, decided `tier`, is a build after a change
     /// that the user must decide: nothing contains the shell, the call
     /// would go to the classifier, the session's files changed, and the
     /// user has not allowed such builds for the session.
     fn build_asks(&self, session_id: &SessionId, facts: &Facts<'_>, tier: Tier) -> bool {
         tier == Tier::Classifier
-            && !self.environment.containment.contains()
-            && Self::is_build(facts)
-            && !self.builds_granted(session_id)
-            && self.build_changed(session_id)
-    }
-
-    /// Whether the user allowed builds after a change for the session.
-    fn builds_granted(&self, session_id: &SessionId) -> bool {
-        self.sessions.lock().get(session_id).is_some_and(|state| {
-            state
-                .grants
-                .iter()
-                .any(|(_, grant)| *grant == GrantTarget::Builds)
-        })
+            && !self.builds.contained()
+            && is_build(&facts.action)
+            && !self.grants.builds_granted(session_id)
+            && self.builds.changed(session_id)
     }
 
     /// The first build of a session after a change with something
     /// containing the shell: one notice for the user and an audit line.
     fn notice_build(&self, session_id: &SessionId, facts: &Facts<'_>) {
-        if !self.environment.containment.contains()
-            || !Self::is_build(facts)
-            || self
-                .sessions
-                .lock()
-                .get(session_id)
-                .is_some_and(|state| state.build_change_noticed)
-            || !self.build_changed(session_id)
-        {
+        if !self.builds.notice(session_id, &facts.action) {
             return;
         }
-        self.session(session_id).build_change_noticed = true;
         self.audit_event(
             "build_after_change",
             format!("{} (contained)", decisive_argument(facts)),
@@ -2047,8 +1406,8 @@ impl ApprovalEngine {
     }
 
     fn tier_of(&self, session_id: &SessionId, facts: &Facts<'_>) -> TierDecision {
-        let trust_project_builds = self.builds_trusted(session_id, facts);
-        let granted = self.granted_for(session_id);
+        let trust_project_builds = self.builds.trusted(session_id, &facts.action);
+        let granted = self.grants.dirs_for(session_id);
         let ctx = PolicyContext {
             root: &self.root,
             trust_project_builds,
@@ -2086,62 +1445,84 @@ impl ApprovalEngine {
     /// for in-project edits and Tier 3, accept-edits mode allows the edits
     /// and asks for Tier 3, and auto mode allows the edits and has the
     /// classifier review Tier 3.
-    fn route(&self, facts: &Facts<'_>, decision: TierDecision, mode: PermissionMode) -> Route {
+    fn route(&self, facts: &Facts<'_>, decision: TierDecision, mode: PermissionMode) -> Outcome {
         let tier = decision.tier;
+        let content = decision.content;
         if mode == PermissionMode::Plan
             && !matches!(tier, Tier::UserDeny(_) | Tier::Sealed | Tier::Unavailable)
             && plan_forbids(&facts.action, &decision)
         {
-            return Route::Settled(deny_at(tier, DenyReason::PlanMode));
+            return Outcome::Decided(deny_at(tier, DenyReason::PlanMode));
         }
         match (tier, mode) {
             // A write protected only for its content: auto mode's
             // classifier judges it (and the user is asked when it blocks).
-            (Tier::AskUser, PermissionMode::Auto) if decision.content => Route::Review,
-            (Tier::AskUser, _) => Route::Ask(Asking::Policy(decision.detail)),
-            (Tier::InProjectEdit, PermissionMode::Manual) => Route::Ask(Asking::Mode {
+            (Tier::AskUser, PermissionMode::Auto) if content => Outcome::Review { content },
+            (Tier::AskUser, _) => Outcome::Ask(Ask::new(Asking::Policy(decision.detail))),
+            (Tier::InProjectEdit, PermissionMode::Manual) => Outcome::Ask(Ask::new(Asking::Mode {
                 tier,
                 reason: format!(
                     "manual mode asks for every edit ({}; Shift+Tab to accept edits)",
                     decision.detail
                 ),
-            }),
-            (Tier::Classifier, PermissionMode::Auto) => Route::Review,
-            (Tier::Classifier, _) => Route::Ask(Asking::Mode {
+            })),
+            (Tier::Classifier, PermissionMode::Auto) => Outcome::Review { content },
+            (Tier::Classifier, _) => Outcome::Ask(Ask::new(Asking::Mode {
                 tier,
                 reason: format!(
                     "{mode} mode asks for what auto mode's classifier would review ({})",
                     decision.detail
                 ),
-            }),
-            (Tier::UserDeny(id), _) => Route::Settled(self.user_deny(id)),
-            (Tier::Sealed, _) => Route::Settled(deny_at(
+            })),
+            (Tier::UserDeny(id), _) => Outcome::Decided(self.user_deny(id)),
+            (Tier::Sealed, _) => Outcome::Decided(deny_at(
                 tier,
                 DenyReason::Sealed {
                     detail: decision.detail,
                 },
             )),
-            (Tier::Unavailable, _) => Route::Settled(deny_at(
+            (Tier::Unavailable, _) => Outcome::Decided(deny_at(
                 tier,
                 DenyReason::Unavailable {
                     detail: decision.detail,
                 },
             )),
             (Tier::AlwaysAllow | Tier::InProjectEdit, _) => {
-                Route::Settled(allow_at(tier, Decider::Policy, decision.detail))
+                Outcome::Decided(allow_at(tier, Decider::Policy, decision.detail))
             }
         }
     }
 
-    async fn evaluate(
+    /// Decide a call: first WHAT should happen ([`Self::outcome`]), then
+    /// the cross-cutting rules, each in one place: a question for the
+    /// user goes through [`Self::ask`] (Stop, then [`Self::put_to_user`]:
+    /// attendance, the broker), a review through [`Self::review`].
+    async fn evaluate(&self, caller: Caller<'_>, facts: &Facts<'_>) -> Evaluated {
+        let decision = self.tier_of(caller.session_id, facts);
+        let allow_rule = decision.allow_rule;
+        let mut evaluated = match self.outcome(caller, facts, decision).await {
+            Outcome::Decided(verdict) => verdict.into(),
+            Outcome::Ask(ask) => self.ask(caller, facts, ask).await,
+            Outcome::Review { content } => self.review(caller, facts, content).await,
+        };
+        evaluated.allow_rule = allow_rule;
+        evaluated
+    }
+
+    /// What should happen to a call of tier `decision`, before any of the
+    /// cross-cutting rules (Stop, attendance, the broker) is applied:
+    /// the agent-peer sends, an approval once, the permission mode's
+    /// route ([`Self::route`]) and a build after a change.
+    ///
+    /// Not a pure function: it notices the first build after a change
+    /// ([`Self::notice_build`]) and uses an approval once up.
+    async fn outcome(
         &self,
-        session_id: &SessionId,
-        agent: Option<&str>,
-        run: Option<&RunId>,
+        caller: Caller<'_>,
         facts: &Facts<'_>,
-    ) -> Verdict {
-        let decision = self.tier_of(session_id, facts);
-        *facts.allow_rule.lock() = decision.allow_rule;
+        decision: TierDecision,
+    ) -> Outcome {
+        let session_id = caller.session_id;
         // A message to another agent: tier 1 (a user deny rule still
         // decides first). In plan mode one to an agent of another
         // workspace is put to the user: that workspace has its own mode,
@@ -2151,99 +1532,154 @@ impl ApprovalEngine {
                 AgentSend::Yes(super::attendance::PeerKind::Wired(label))
                     if self.mode() == PermissionMode::Plan =>
                 {
-                    if self.stopped(session_id) {
-                        return deny_at(Tier::Classifier, DenyReason::Stopped);
-                    }
-                    if !self.attended(session_id, run) {
-                        if let Some(attendance) = self.attendance.get() {
-                            attendance.missed(session_id, unattended_notice(agent, &facts.action));
-                        }
-                        return deny_at(Tier::Classifier, DenyReason::PlanWired { label });
-                    }
                     let asking = Asking::PlanWired(format!(
                         "plan mode asks before a message to {label}, an agent of another workspace (plan mode covers what this agent sets in motion there)"
                     ));
-                    return self.escalate(session_id, agent, facts, asking, None).await;
+                    // Not uniform with the other questions: unattended, it
+                    // is denied as plan mode's (`DenyReason::PlanWired`),
+                    // not as `DenyReason::Unattended` (the missed notice is
+                    // the same), so it is not offered on `/approve`.
+                    return Outcome::Ask(
+                        Ask::new(asking)
+                            .unattended_as(Tier::Classifier, DenyReason::PlanWired { label }),
+                    );
                 }
                 AgentSend::Yes(kind) => {
-                    return allow_at(Tier::AlwaysAllow, Decider::Policy, kind.words());
+                    return Outcome::Decided(allow_at(
+                        Tier::AlwaysAllow,
+                        Decider::Policy,
+                        kind.words(),
+                    ));
                 }
                 // An agent of another workspace whose daemon is not
                 // running: the send would fail anyway, and this says why.
                 AgentSend::Unreachable(detail) => {
-                    return deny_at(Tier::Unavailable, DenyReason::Unavailable { detail });
+                    return Outcome::Decided(deny_at(
+                        Tier::Unavailable,
+                        DenyReason::Unavailable { detail },
+                    ));
                 }
                 AgentSend::No => {}
             }
         }
         let mode = self.mode();
-        let content = decision.content;
         let build_asks = self.build_asks(session_id, facts, decision.tier);
         self.notice_build(session_id, facts);
         // The user approved this very call once (`/approve`): it runs,
-        // unless plan mode forbids it.
+        // unless plan mode forbids it. Not uniform with the other
+        // allows of a human: it is decided here, so a Stop does not deny
+        // it (the user approved this very call after any Stop they gave).
         if matches!(decision.tier, Tier::Classifier | Tier::AskUser)
             && !(mode == PermissionMode::Plan && plan_forbids(&facts.action, &decision))
             && self.take_approved(session_id, facts)
         {
-            return allow_at(
+            return Outcome::Decided(allow_at(
                 decision.tier,
                 Decider::Human,
                 "approved once by the user (/approve)",
-            );
+            ));
         }
-        let route = match self.route(facts, decision, mode) {
+        match self.route(facts, decision, mode) {
             // Uncontained, a build after the session changed what it
             // builds from is the user's to decide, never a bare block.
-            Route::Review | Route::Ask(Asking::Mode { .. }) if build_asks => {
-                Route::Ask(Asking::Build(BUILD_AFTER_CHANGE_ASK.to_string()))
+            Outcome::Review { .. }
+            | Outcome::Ask(Ask {
+                asking: Asking::Mode { .. },
+                ..
+            }) if build_asks => {
+                Outcome::Ask(Ask::new(Asking::Build(BUILD_AFTER_CHANGE_ASK.to_string())))
             }
-            route => route,
-        };
-        match route {
-            Route::Settled(verdict) => return verdict,
-            Route::Ask(asking) => {
-                // A protected write, or a question the mode puts to the
-                // human: the classifier and its pause play no part.
-                if self.stopped(session_id) {
-                    return deny_at(asking.tier(), DenyReason::Stopped);
-                }
-                if !self.attended(session_id, run) {
-                    return self.unattended(session_id, agent, facts, asking.tier());
-                }
-                return self.escalate(session_id, agent, facts, asking, None).await;
-            }
-            Route::Review => {}
+            outcome => outcome,
         }
+    }
+
+    /// Put a question the policy, the mode or a special case asks to the
+    /// user: a stopped session's is denied; then [`Self::put_to_user`].
+    /// The classifier and its pause play no part.
+    async fn ask(&self, caller: Caller<'_>, facts: &Facts<'_>, ask: Ask) -> Evaluated {
+        if self.stopped(caller.session_id) {
+            return deny_at(ask.asking.tier(), DenyReason::Stopped).into();
+        }
+        let attended = self.attended(caller.session_id, caller.run);
+        self.put_to_user(caller, facts, ask, attended).await
+    }
+
+    /// Put `ask` to the user, the one place the attendance and the broker
+    /// rules apply to a question: unattended (`attended` is false) it is
+    /// denied with the missed notice ([`Ask::unattended`]); with no broker
+    /// to ask through it is decided as [`Ask::no_broker`] says; else it is
+    /// escalated. The caller has applied the Stop.
+    async fn put_to_user(
+        &self,
+        caller: Caller<'_>,
+        facts: &Facts<'_>,
+        ask: Ask,
+        attended: bool,
+    ) -> Evaluated {
+        let tier = ask.asking.tier();
+        if !attended {
+            let (tier, reason) = ask.unattended.unwrap_or((tier, DenyReason::Unattended));
+            return self.unattended(caller, facts, tier, reason).into();
+        }
+        let Some(broker) = &self.broker else {
+            return match ask.no_broker {
+                NoBroker::NoHuman => deny_at(
+                    tier,
+                    DenyReason::ClassifierUnavailable(
+                        "no human is available to review this action".to_string(),
+                    ),
+                )
+                .into(),
+                NoBroker::Deny(reason) => deny_at(tier, reason).into(),
+                NoBroker::Classifier(verdict) => {
+                    self.apply_classifier(caller.session_id, facts, verdict, None)
+                }
+            };
+        };
+        self.escalate(caller, facts, broker, ask.asking, ask.fallback)
+            .await
+    }
+
+    /// Review a call with the classifier (auto mode, Tier 3, or a
+    /// write protected for its `content`). A stopped session's call is
+    /// denied first; whatever would ask the user goes through
+    /// [`Self::put_to_user`] with the attendance as it was before the
+    /// review started. Not uniform with [`Self::ask`]: the Stop is not
+    /// checked again after the review; an escalation checks it once its
+    /// turn comes ([`Self::wait_turn`]), so only a call with no broker to
+    /// ask through misses a Stop given during its review.
+    async fn review(&self, caller: Caller<'_>, facts: &Facts<'_>, content: bool) -> Evaluated {
+        let session_id = caller.session_id;
         if self.stopped(session_id) {
-            return deny3(DenyReason::Stopped);
+            return deny3(DenyReason::Stopped).into();
         }
         // A turn no user started with nobody attached (the owner's decision
         // of 2026-11-14): the classifier still judges, and its allow runs
         // the call; whatever would ask the user (a pause, an action too
         // large to review, a failed review) is denied, and the user is told
         // when they attach.
-        let attended = self.attended(session_id, run);
+        let attended = self.attended(session_id, caller.run);
         let size = facts.action.args.get().len();
         if size > MAX_REVIEWED_ACTION_BYTES {
-            if !attended {
-                return self.unattended(session_id, agent, facts, Tier::Classifier);
-            }
             // Never a cut-down copy to the classifier: its tail could be
             // the part that matters.
             let reason = format!(
                 "too large to review: the call's arguments are {size} bytes, the classifier reviews at most {MAX_REVIEWED_ACTION_BYTES} and never part of one"
             );
-            return if self.broker.is_some() {
-                self.escalate(session_id, agent, facts, Asking::Classifier(reason), None)
-                    .await
-            } else {
-                deny3(DenyReason::ClassifierUnavailable(reason))
-            };
+            // Without a broker it is denied with this reason, not as
+            // "no human is available".
+            let no_broker = NoBroker::Deny(DenyReason::ClassifierUnavailable(reason.clone()));
+            let ask = Ask::new(Asking::Classifier(reason)).without_broker(no_broker);
+            return self.put_to_user(caller, facts, ask, attended).await;
         }
         let escalating = self.auto.lock().escalating();
         if escalating && !attended {
-            return self.unattended(session_id, agent, facts, Tier::Classifier);
+            // Paused, the review's verdict would only be shown to a user
+            // who is not here: [`Self::put_to_user`]'s unattended rule,
+            // applied before the review it would make pointless.
+            return self
+                .unattended(caller, facts, Tier::Classifier, DenyReason::Unattended)
+                .into();
         }
 
         let payload = self.payload(&facts.action).await;
@@ -2253,78 +1689,86 @@ impl ApprovalEngine {
             && self.session(session_id).allow_cache.contains(key)
         {
             // A cache hit leaves the denial counters alone.
-            return allow3(Decider::Classifier, "allowed earlier in this session");
+            return allow3(Decider::Classifier, "allowed earlier in this session").into();
         }
 
-        let result = self
-            .classify(session_id, &facts.action, &payload, &facts.review)
-            .await;
-
-        if escalating {
+        let (result, record) = self.classify(session_id, &facts.action, &payload).await;
+        let mut evaluated = if escalating {
+            // Paused: the user is asked with the verdict as the hint, and
+            // it as the fallback when the pause ends meanwhile.
             let hint = match &result {
                 Ok(v) => format!("classifier: {v}"),
                 Err(e) => review_incomplete(e),
             };
-            let fallback = result.ok();
-            return self
-                .escalate(session_id, agent, facts, Asking::Classifier(hint), fallback)
-                .await;
-        }
+            let ask = Ask::new(Asking::Classifier(hint)).falling_back_to(result.ok());
+            self.put_to_user(caller, facts, ask, attended).await
+        } else {
+            self.reviewed(caller, facts, result, key, content, attended)
+                .await
+        };
+        evaluated.review = Some(record);
+        evaluated
+    }
 
+    /// What a review's `result` makes of a call outside a pause: an allow
+    /// or a block stands, except a block of a `content`-protected write
+    /// and a failed review, which are put to the user.
+    async fn reviewed(
+        &self,
+        caller: Caller<'_>,
+        facts: &Facts<'_>,
+        result: Result<ClassifierVerdict, super::classifier::ClassifierError>,
+        key: Option<CacheKey>,
+        content: bool,
+        attended: bool,
+    ) -> Evaluated {
         match result {
             // A content-protected write the classifier blocks is put to the
             // user rather than refused: the policy asked for these before.
-            Ok(verdict @ ClassifierVerdict::Block { .. })
-                if content && attended && self.broker.is_some() =>
-            {
-                self.escalate(
-                    session_id,
-                    agent,
-                    facts,
-                    Asking::Classifier(format!("classifier: {verdict}")),
-                    None,
-                )
-                .await
+            Ok(verdict @ ClassifierVerdict::Block { .. }) if content => {
+                let hint = format!("classifier: {verdict}");
+                // Not uniform: unattended it is denied at the policy's
+                // tier (`Tier::AskUser`), and without a broker the
+                // classifier's block stands.
+                let ask = Ask::new(Asking::Classifier(hint))
+                    .unattended_as(Tier::AskUser, DenyReason::Unattended)
+                    .without_broker(NoBroker::Classifier(verdict));
+                self.put_to_user(caller, facts, ask, attended).await
             }
-            Ok(ClassifierVerdict::Block { .. }) if content && !attended => {
-                self.unattended(session_id, agent, facts, Tier::AskUser)
-            }
-            Ok(verdict) => self.apply_classifier(session_id, facts, verdict, key),
-            Err(err) if !attended => {
-                tracing::warn!(error = %err, tool = facts.action.name, "classifier failed in an unattended turn; denied");
-                self.unattended(session_id, agent, facts, Tier::Classifier)
-            }
+            Ok(verdict) => self.apply_classifier(caller.session_id, facts, verdict, key),
             Err(err) => {
-                tracing::warn!(error = %err, tool = facts.action.name, "classifier failed; escalating");
-                if self.broker.is_some() {
-                    self.escalate(
-                        session_id,
-                        agent,
-                        facts,
-                        Asking::Classifier(review_incomplete(&err)),
-                        None,
-                    )
-                    .await
+                if attended {
+                    tracing::warn!(error = %err, tool = facts.action.name, "classifier failed; escalating");
                 } else {
-                    deny3(DenyReason::ReviewIncomplete(err.to_string()))
+                    tracing::warn!(error = %err, tool = facts.action.name, "classifier failed in an unattended turn; denied");
                 }
+                // Without a broker it is denied as a review that did not
+                // complete, not as "no human is available".
+                let no_broker = NoBroker::Deny(DenyReason::ReviewIncomplete(err.to_string()));
+                let ask =
+                    Ask::new(Asking::Classifier(review_incomplete(&err))).without_broker(no_broker);
+                self.put_to_user(caller, facts, ask, attended).await
             }
         }
     }
 
-    /// Deny a call that needs review in an unattended turn, and queue the
-    /// notice the agent's next attached client shows.
+    /// Deny a call that needs review in an unattended turn (at `tier`,
+    /// for `reason`), and queue the notice the agent's next attached
+    /// client shows.
     fn unattended(
         &self,
-        session_id: &SessionId,
-        agent: Option<&str>,
+        caller: Caller<'_>,
         facts: &Facts<'_>,
         tier: Tier,
+        reason: DenyReason,
     ) -> Verdict {
         if let Some(attendance) = self.attendance.get() {
-            attendance.missed(session_id, unattended_notice(agent, &facts.action));
+            attendance.missed(
+                caller.session_id,
+                unattended_notice(caller.agent, &facts.action),
+            );
         }
-        deny_at(tier, DenyReason::Unattended)
+        deny_at(tier, reason)
     }
 
     /// Act on a classifier verdict outside an escalation.
@@ -2334,7 +1778,7 @@ impl ApprovalEngine {
         facts: &Facts<'_>,
         verdict: ClassifierVerdict,
         key: Option<CacheKey>,
-    ) -> Verdict {
+    ) -> Evaluated {
         match verdict {
             ClassifierVerdict::Allow { reason } => {
                 if let Some(key) = key {
@@ -2342,13 +1786,11 @@ impl ApprovalEngine {
                 }
                 // The classifier saw this build with the build files as
                 // they are: they are the trusted builds' baseline again.
-                if let ActionKind::Shell { command, .. } = &facts.action.kind
-                    && build_runners(command).contains(&"cargo")
-                {
-                    self.rebase_build_files(session_id);
+                if is_cargo_build(&facts.action) {
+                    self.builds.rebase(session_id);
                 }
                 self.auto.lock().record_allow();
-                allow3(Decider::Classifier, reason)
+                allow3(Decider::Classifier, reason).into()
             }
             ClassifierVerdict::Block {
                 rule,
@@ -2359,19 +1801,20 @@ impl ApprovalEngine {
             } => {
                 let paused = self.auto.lock().record_classifier_deny();
                 if let Some(cause) = paused {
-                    self.stats
-                        .lock()
-                        .add(Some(session_id), |stats| stats.pauses += 1);
+                    self.stats.add(Some(session_id), |stats| stats.pauses += 1);
                     self.emit(ApprovalEvent::Paused(cause));
                 }
-                facts.blocked_path.lock().clone_from(&path);
-                *facts.blocked_effect.lock() = effect;
-                deny3(DenyReason::Classifier {
-                    rule,
-                    explanation: reason,
-                    annotation,
-                    hint: self.scope_hint(session_id, facts, path.as_deref()),
-                })
+                let hint = self.scope_hint(session_id, facts, path.as_deref());
+                Evaluated {
+                    blocked_path: path,
+                    blocked_effect: effect,
+                    ..Evaluated::from(deny3(DenyReason::Classifier {
+                        rule,
+                        explanation: reason,
+                        annotation,
+                        hint,
+                    }))
+                }
             }
         }
     }
@@ -2386,7 +1829,7 @@ impl ApprovalEngine {
         facts: &Facts<'_>,
         named: Option<&str>,
     ) -> Option<String> {
-        let granted = &self.granted_for(session_id);
+        let granted = &self.grants.dirs_for(session_id);
         let (abs, write) = self.outside_target(session_id, facts).or_else(|| {
             let resolved = self.root.resolve(named?).ok()?;
             (!resolved.inside() && granted.user_write_dir_of(&resolved.abs).is_none())
@@ -2420,7 +1863,7 @@ impl ApprovalEngine {
     /// A file tool's own target outside the project and the directories
     /// the user allows (with whether it is written), if the call has one.
     fn outside_target(&self, session_id: &SessionId, facts: &Facts<'_>) -> Option<(PathBuf, bool)> {
-        let granted = &self.granted_for(session_id);
+        let granted = &self.grants.dirs_for(session_id);
         let outside = |raw: &str, write: bool| {
             let resolved = self.root.resolve(raw).ok()?;
             let allowed = resolved.inside()
@@ -2443,14 +1886,17 @@ impl ApprovalEngine {
         }
     }
 
-    /// Run the classifier on `action` with the session's transcript.
+    /// Run the classifier on `action` with the session's transcript: its
+    /// result, and the review's record for the audit line.
     async fn classify(
         &self,
         session_id: &SessionId,
         action: &Action<'_>,
         payload: &Payload,
-        review: &Mutex<Option<ReviewRecord>>,
-    ) -> Result<ClassifierVerdict, super::classifier::ClassifierError> {
+    ) -> (
+        Result<ClassifierVerdict, super::classifier::ClassifierError>,
+        ReviewRecord,
+    ) {
         let (transcript, agent_written, session_facts) = {
             let state = self.session(session_id);
             (
@@ -2463,7 +1909,7 @@ impl ApprovalEngine {
             .unwrap_or_else(|_| Value::String(action.args.get().to_string()));
         let script = payload.combined();
         let environment = Environment {
-            granted: self.granted_for(session_id),
+            granted: self.grants.dirs_for(session_id),
             statements: self.statements_for(session_id),
             ..self.environment.clone()
         };
@@ -2479,7 +1925,7 @@ impl ApprovalEngine {
         };
         // The classifier now: a switch while this review runs leaves it on
         // this one.
-        let classifier = Arc::clone(&*self.classifier.read());
+        let classifier = self.reviewer.current();
         self.emit(ApprovalEvent::Classifying(true));
         let started = std::time::Instant::now();
         let tokens = Arc::new(Mutex::new((0u64, 0u64)));
@@ -2503,37 +1949,8 @@ impl ApprovalEngine {
             input_tokens,
             output_tokens,
         };
-        self.stats.lock().add(Some(session_id), |stats| {
-            stats.reviews += 1;
-            if record.stage == 2 {
-                stats.flagged += 1;
-            }
-            match record.verdict.as_str() {
-                "block" => {
-                    *stats
-                        .blocks
-                        .entry(record.rule.clone().unwrap_or_else(|| "none".into()))
-                        .or_insert(0) += 1;
-                }
-                "error" => stats.errors += 1,
-                _ => {}
-            }
-            stats.input_tokens += record.input_tokens;
-            stats.output_tokens += record.output_tokens;
-            stats.review_ms += record.latency_ms;
-        });
-        *review.lock() = Some(record);
-        result
-    }
-
-    /// The review numbers since the daemon started, and `session_id`'s.
-    #[must_use]
-    pub fn review_stats(&self, session_id: Option<&SessionId>) -> (ReviewStats, ReviewStats) {
-        let book = self.stats.lock();
-        let session = session_id
-            .and_then(|s| book.by_session.get(s).cloned())
-            .unwrap_or_default();
-        (book.total.clone(), session)
+        self.stats.review(session_id, &record);
+        (result, record)
     }
 
     /// Put a call to the human. The call waits for its session's serial
@@ -2553,92 +1970,31 @@ impl ApprovalEngine {
     /// answer turns it into a denial.
     async fn escalate(
         &self,
-        session_id: &SessionId,
-        agent: Option<&str>,
+        caller: Caller<'_>,
         facts: &Facts<'_>,
+        broker: &EscalationBroker,
         asking: Asking,
         fallback: Option<ClassifierVerdict>,
-    ) -> Verdict {
-        let tier = asking.tier();
-        let counted = matches!(asking, Asking::Classifier(_));
-        let Some(broker) = &self.broker else {
-            return deny_at(
-                tier,
-                DenyReason::ClassifierUnavailable(
-                    "no human is available to review this action".to_string(),
-                ),
-            );
-        };
+    ) -> Evaluated {
+        let session_id = caller.session_id;
         let id = self.next_escalation.fetch_add(1, Ordering::Relaxed);
-        let mut pending = PendingEscalation {
+        let mut guard = match self
+            .wait_turn(session_id, facts, broker, &asking, fallback)
+            .await
+        {
+            Ok(guard) => guard,
+            Err(settled) => return settled,
+        };
+        let outside = self
+            .outside_target(session_id, facts)
+            .map(|(abs, _)| abs.display().to_string());
+        let building = matches!(asking, Asking::Build(_));
+        let session_grant = self.session_grant(facts, building, outside.as_deref());
+        let prompt = escalation_prompt(id, caller, facts, &asking, session_grant.as_ref());
+        let shown = Shown {
             engine: self,
             id,
-            settled: false,
-        };
-        let entered = tokio::time::Instant::now();
-        let mut guard = broker.serial(session_id).await;
-        if guard.unanswered_at.is_some_and(|at| at >= entered) {
-            pending.settled = true;
-            return deny_at(tier, DenyReason::EscalationTimedOut);
-        }
-        if self.stopped(session_id) {
-            pending.settled = true;
-            return deny_at(tier, DenyReason::Stopped);
-        }
-        let route = if matches!(asking, Asking::PlanWired(_)) {
-            Route::Ask(Asking::PlanWired(String::new()))
-        } else {
-            self.route(facts, self.tier_of(session_id, facts), self.mode())
-        };
-        match route {
-            Route::Settled(verdict) => {
-                pending.settled = true;
-                return verdict;
-            }
-            // The human is asked either way.
-            Route::Ask(_) => {}
-            Route::Review => {
-                let escalating = self.auto.lock().escalating();
-                if !escalating && let Some(verdict) = fallback {
-                    pending.settled = true;
-                    return self.apply_classifier(session_id, facts, verdict, None);
-                }
-            }
-        }
-        let (classifier_hint, policy_reason) = match &asking {
-            Asking::Classifier(hint) => (Some(hint.clone()), None),
-            Asking::Policy(reason)
-            | Asking::Mode { reason, .. }
-            | Asking::PlanWired(reason)
-            | Asking::Build(reason) => (None, Some(reason.clone())),
-        };
-        // What "for this session" would grant: the directory of a file
-        // tool's target outside the allowed scope, else the call's literal
-        // rule.
-        let building = matches!(asking, Asking::Build(_));
-        let session_grant = if building {
-            Some(GrantTarget::Builds)
-        } else {
-            self.grant_for(
-                facts,
-                self.outside_target(session_id, facts)
-                    .map(|(abs, _)| abs.display().to_string())
-                    .as_deref(),
-            )
-        };
-        let prompt = EscalationPrompt {
-            id,
-            session_id: session_id.clone(),
-            shown: RecordedPrompt {
-                tool: facts.action.name.to_string(),
-                agent: agent.map(str::to_string),
-                args_preview: args_preview(&facts.action),
-                args_full: args_full(&facts.action),
-                subjects: facts.subjects.clone(),
-                classifier_hint,
-                policy_reason,
-                session_grant: session_grant.as_ref().map(GrantTarget::describe),
-            },
+            answered: false,
         };
         let asked =
             tokio::time::timeout(self.escalation_timeout, broker.ask_locked(&guard, prompt)).await;
@@ -2648,24 +2004,87 @@ impl ApprovalEngine {
             guard.unanswered_at = Some(tokio::time::Instant::now());
             drop(guard);
             self.answerers.lock().remove(&id);
-            pending.withdraw();
-            return deny_at(tier, DenyReason::EscalationTimedOut);
+            // Unanswered: the dialog is withdrawn.
+            drop(shown);
+            return deny_at(asking.tier(), DenyReason::EscalationTimedOut).into();
         };
+        shown.answered();
         // A Stop applies before the serial lock is released, so an
         // escalation queued behind this one sees it.
         if matches!(decision, HumanDecision::Stop) {
             self.stop(session_id);
         }
         drop(guard);
-        *facts.answerer.lock() = self.answerers.lock().remove(&id);
-        pending.settled = true;
+        let answerer = self.answerers.lock().remove(&id);
+        let verdict = self
+            .apply_answer(session_id, &asking, decision, session_grant)
+            .await;
+        Evaluated {
+            answerer,
+            ..verdict.into()
+        }
+    }
+
+    /// An escalation's first phase: wait in the session's serial queue
+    /// for its turn, then check that the question still stands. `Err`
+    /// holds the verdict when it does not: the dialog ahead went
+    /// unanswered for its whole budget (nobody is at that terminal), the
+    /// session was stopped, the rules or the mode now decide the call, or
+    /// the pause ended and the classifier's `fallback` verdict applies.
+    async fn wait_turn(
+        &self,
+        session_id: &SessionId,
+        facts: &Facts<'_>,
+        broker: &EscalationBroker,
+        asking: &Asking,
+        fallback: Option<ClassifierVerdict>,
+    ) -> Result<super::escalation::SerialGuard, Evaluated> {
+        let tier = asking.tier();
+        let entered = tokio::time::Instant::now();
+        let guard = broker.serial(session_id).await;
+        if guard.unanswered_at.is_some_and(|at| at >= entered) {
+            return Err(deny_at(tier, DenyReason::EscalationTimedOut).into());
+        }
+        if self.stopped(session_id) {
+            return Err(deny_at(tier, DenyReason::Stopped).into());
+        }
+        if !asking.rechecked() {
+            return Ok(guard);
+        }
+        match self.route(facts, self.tier_of(session_id, facts), self.mode()) {
+            Outcome::Decided(verdict) => Err(verdict.into()),
+            // The human is asked either way.
+            Outcome::Ask(_) => Ok(guard),
+            Outcome::Review { .. } => {
+                let escalating = self.auto.lock().escalating();
+                if !escalating && let Some(verdict) = fallback {
+                    return Err(self.apply_classifier(session_id, facts, verdict, None));
+                }
+                Ok(guard)
+            }
+        }
+    }
+
+    /// An escalation's last phase: apply the human's `decision` on
+    /// `asking` (making `session_grant` for "for this session"), and
+    /// count it.
+    async fn apply_answer(
+        &self,
+        session_id: &SessionId,
+        asking: &Asking,
+        decision: HumanDecision,
+        session_grant: Option<GrantTarget>,
+    ) -> Verdict {
+        let tier = asking.tier();
+        let counted = matches!(asking, Asking::Classifier(_));
+        let building = matches!(asking, Asking::Build(_));
         let allowed = matches!(
             decision,
             HumanDecision::AllowOnce
                 | HumanDecision::AllowForSession
                 | HumanDecision::AllowAndAddRule(_)
         );
-        self.stats.lock().add(Some(session_id), |stats| {
+        self.stats.add(Some(session_id), |stats| {
             stats.asks += 1;
             if allowed {
                 stats.asks_allowed += 1;
@@ -2676,7 +2095,7 @@ impl ApprovalEngine {
                 self.human_allowed(counted);
                 if building {
                     // The user saw the build files as they are now.
-                    self.rebase_build_files(session_id);
+                    self.builds.rebase(session_id);
                 }
                 allow_at(tier, Decider::Human, "allowed once by the user")
             }
@@ -2863,28 +2282,61 @@ async fn read_capped(path: PathBuf, cap: usize) -> Option<Vec<u8>> {
     .flatten()
 }
 
-/// An escalation put to the human. Dropped unsettled (the tool call was
-/// abandoned while waiting), it withdraws the dialog.
-struct PendingEscalation<'a> {
+/// An escalation's dialog, from when it is put to the human. Dropped
+/// before it is [answered](Self::answered) (nobody answered in time, or
+/// the tool call was abandoned while it was shown), it withdraws the
+/// dialog.
+struct Shown<'a> {
     engine: &'a ApprovalEngine,
     id: u64,
-    settled: bool,
+    answered: bool,
 }
 
-impl PendingEscalation<'_> {
-    /// No answer will come: close the dialog.
-    fn withdraw(&mut self) {
-        self.settled = true;
-        self.engine
-            .emit(ApprovalEvent::EscalationWithdrawn(self.id));
+impl Shown<'_> {
+    /// The human answered: nothing to withdraw.
+    fn answered(mut self) {
+        self.answered = true;
     }
 }
 
-impl Drop for PendingEscalation<'_> {
+impl Drop for Shown<'_> {
     fn drop(&mut self) {
-        if !self.settled {
-            self.withdraw();
+        if !self.answered {
+            self.engine
+                .emit(ApprovalEvent::EscalationWithdrawn(self.id));
         }
+    }
+}
+
+/// The dialog of escalation `id`: the call `caller` makes, why it is
+/// asked, and what "for this session" would grant.
+fn escalation_prompt(
+    id: u64,
+    caller: Caller<'_>,
+    facts: &Facts<'_>,
+    asking: &Asking,
+    session_grant: Option<&GrantTarget>,
+) -> EscalationPrompt {
+    let (classifier_hint, policy_reason) = match asking {
+        Asking::Classifier(hint) => (Some(hint.clone()), None),
+        Asking::Policy(reason)
+        | Asking::Mode { reason, .. }
+        | Asking::PlanWired(reason)
+        | Asking::Build(reason) => (None, Some(reason.clone())),
+    };
+    EscalationPrompt {
+        id,
+        session_id: caller.session_id.clone(),
+        shown: RecordedPrompt {
+            tool: facts.action.name.to_string(),
+            agent: caller.agent.map(str::to_string),
+            args_preview: args_preview(&facts.action),
+            args_full: args_full(&facts.action),
+            subjects: facts.subjects.clone(),
+            classifier_hint,
+            policy_reason,
+            session_grant: session_grant.map(GrantTarget::describe),
+        },
     }
 }
 
@@ -2937,7 +2389,7 @@ enum Asking {
     },
     /// Plan mode asks before a message to an agent of another workspace
     /// (why): the mode's own route would deny it, so the escalation does
-    /// not route it again.
+    /// not route it again ([`Asking::rechecked`]).
     PlanWired(String),
     /// A build after the session changed a build-defining file, with
     /// nothing containing the shell: the user decides, never a bare
@@ -2954,29 +2406,86 @@ impl Asking {
             Self::PlanWired(_) | Self::Build(_) => Tier::Classifier,
         }
     }
+
+    /// Whether the question is routed again once its turn in the queue
+    /// comes (the rules or the mode may decide it by then): every one but
+    /// [`Asking::PlanWired`], which plan mode's own route would deny (a
+    /// send is above Tier 1), though plan mode is what asks it.
+    fn rechecked(&self) -> bool {
+        !matches!(self, Self::PlanWired(_))
+    }
 }
 
-/// Why a build after a dependency change is put to the user when nothing
-/// contains the shell.
-pub const BUILD_AFTER_CHANGE_ASK: &str = "a build after the agent changed the project's dependencies or build files in this session, and nothing contains the shell (--no-confinement): it runs code nobody reviewed, so you decide";
+/// A question for the user, with how the cross-cutting rules
+/// ([`ApprovalEngine::put_to_user`]) treat it where it is not the usual.
+struct Ask {
+    asking: Asking,
+    /// The denial when nobody is attended (`None`: [`DenyReason::Unattended`]
+    /// at the question's tier).
+    unattended: Option<(Tier, DenyReason)>,
+    /// What is decided when there is no broker to ask through.
+    no_broker: NoBroker,
+    /// The classifier's verdict, applied when the pause that asks ended
+    /// before the question's turn came.
+    fallback: Option<ClassifierVerdict>,
+}
 
-/// The notice of the first build after such a change when something
-/// contains the shell.
-pub const BUILD_AFTER_CHANGE_NOTICE: &str =
-    "building with dependencies changed in this session; the sandbox contains it";
+impl Ask {
+    /// `asking` with the usual rules: unattended, denied as
+    /// [`DenyReason::Unattended`]; without a broker, "no human is
+    /// available"; no fallback.
+    fn new(asking: Asking) -> Self {
+        Self {
+            asking,
+            unattended: None,
+            no_broker: NoBroker::NoHuman,
+            fallback: None,
+        }
+    }
 
-/// What the session grant of a build after a dependency change covers,
-/// as the classifier reads it among the user's statements.
-pub const BUILDS_STATEMENT: &str = "building and testing the project after the agent changed its dependencies or build files (the user allowed it for this session)";
+    /// Unattended, denied at `tier` for `reason`.
+    fn unattended_as(self, tier: Tier, reason: DenyReason) -> Self {
+        Self {
+            unattended: Some((tier, reason)),
+            ..self
+        }
+    }
 
-/// What the permission mode makes of a call ([`ApprovalEngine::route`]).
-enum Route {
+    /// Without a broker, decided as `no_broker` says.
+    fn without_broker(self, no_broker: NoBroker) -> Self {
+        Self { no_broker, ..self }
+    }
+
+    /// The pause's question, with the classifier's `fallback`.
+    fn falling_back_to(self, fallback: Option<ClassifierVerdict>) -> Self {
+        Self { fallback, ..self }
+    }
+}
+
+/// What a question is decided as when there is no broker to ask through.
+enum NoBroker {
+    /// Denied: no human is available to review it.
+    NoHuman,
+    /// Denied for this reason, at the question's tier.
+    Deny(DenyReason),
+    /// The classifier's verdict stands.
+    Classifier(ClassifierVerdict),
+}
+
+/// What should happen to a call ([`ApprovalEngine::outcome`],
+/// [`ApprovalEngine::route`]), before the cross-cutting rules apply.
+enum Outcome {
     /// Decided without anyone's review.
-    Settled(Verdict),
+    Decided(Verdict),
     /// Put to the human.
-    Ask(Asking),
-    /// Reviewed by the classifier (auto mode, Tier 3).
-    Review,
+    Ask(Ask),
+    /// Reviewed by the classifier (auto mode: Tier 3, or a write
+    /// protected only for its `content`).
+    Review {
+        /// The write is protected for its content: a block is put to the
+        /// user.
+        content: bool,
+    },
 }
 
 /// Whether plan mode denies a call: every write, a shell command unless the
@@ -3009,15 +2518,14 @@ fn decisive_argument(facts: &Facts<'_>) -> String {
     }
 }
 
-/// Who decided `verdict`, as the audit log names it.
-fn decider_label(verdict: &Verdict, facts: &Facts<'_>) -> String {
-    let human = || {
-        facts
-            .answerer
-            .lock()
-            .clone()
-            .unwrap_or_else(|| "human".to_string())
-    };
+/// Who decided `verdict` (allowed by `allow_rule`, if one; answered by
+/// `answerer`, if the desk said), as the audit log names it.
+fn decider_label(
+    verdict: &Verdict,
+    allow_rule: Option<RuleId>,
+    answerer: Option<String>,
+) -> String {
+    let human = || answerer.clone().unwrap_or_else(|| "human".to_string());
     match verdict {
         Verdict::Allow {
             by: Decider::Human, ..
@@ -3026,7 +2534,7 @@ fn decider_label(verdict: &Verdict, facts: &Facts<'_>) -> String {
             by: Decider::Classifier,
             ..
         } => "classifier".to_string(),
-        Verdict::Allow { tier, .. } => match (*facts.allow_rule.lock(), tier) {
+        Verdict::Allow { tier, .. } => match (allow_rule, tier) {
             (Some(id), Tier::AlwaysAllow) => format!("rule:{id}"),
             (_, Tier::InProjectEdit) => "mode".to_string(),
             _ => "policy".to_string(),
@@ -3113,26 +2621,6 @@ fn truncate_at(text: &str, max: usize) -> &str {
     text.get(..cut).unwrap_or_default()
 }
 
-/// Build runners ([`BUILD_RUNNERS`]) invoked anywhere in `command`. Best effort:
-/// splits on anything that separates commands and skips `VAR=value` prefixes.
-fn build_runners(command: &str) -> Vec<&'static str> {
-    let mut found = Vec::new();
-    for piece in command.split([';', '&', '|', '\n', '(', ')', '`', '{', '}']) {
-        let word = piece
-            .split_whitespace()
-            .find(|w| !w.contains('='))
-            .map(|w| w.trim_start_matches('\\'));
-        let Some(word) = word else { continue };
-        let base = word.rsplit('/').next().unwrap_or(word);
-        if let Some(runner) = BUILD_RUNNERS.iter().find(|r| **r == base)
-            && !found.contains(runner)
-        {
-            found.push(*runner);
-        }
-    }
-    found
-}
-
 /// SHA-256 of the canonical form of raw JSON arguments (object keys sorted,
 /// numbers by their text, every value type-tagged); unparsable arguments
 /// hash as their raw text under their own tag.
@@ -3148,11 +2636,11 @@ fn canonical_args_digest(args: &RawValue) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn hash_len(len: usize, hasher: &mut Sha256) {
+pub(super) fn hash_len(len: usize, hasher: &mut Sha256) {
     hasher.update(u64::try_from(len).unwrap_or(u64::MAX).to_le_bytes());
 }
 
-fn hash_str(s: &str, hasher: &mut Sha256) {
+pub(super) fn hash_str(s: &str, hasher: &mut Sha256) {
     hash_len(s.len(), hasher);
     hasher.update(s.as_bytes());
 }
@@ -3212,10 +2700,12 @@ mod tests {
             .unwrap();
     }
 
+    use super::super::attendance::RUNS_REMEMBERED;
     use super::super::catalog::{StaticToolOrigins, ToolCatalog};
     use super::super::classifier::ClassifierError;
     use super::super::escalation::EscalationRequest;
     use super::super::policy::VerdictSummary;
+    use super::super::reviewer::BuiltClassifier;
     use super::super::rules::RuleKind;
     use super::*;
     use crate::memory::{NOTE_TOOL_NAMES, NOTES_SOURCE};
@@ -3224,33 +2714,6 @@ mod tests {
     use meerkat_core::ToolSourceKind;
     use serde_json::json;
     use std::sync::atomic::AtomicUsize;
-
-    /// A build-defining file is one of the Cargo build files or a manifest
-    /// of any ecosystem, at any depth; a neighbour of one is not.
-    #[test]
-    fn build_defining_files_are_the_cargo_files_and_every_manifest() {
-        for yes in [
-            "build.rs",
-            "crates/x/build.rs",
-            ".cargo/config.toml",
-            "sub/.cargo/config",
-            "rust-toolchain.toml",
-            "Cargo.lock",
-            "web/package.json",
-            "go.mod",
-            "requirements-dev.txt",
-        ] {
-            assert!(is_build_defining(yes), "{yes}");
-        }
-        for no in [
-            "src/build.rs.orig",
-            "notbuild.rs",
-            "src/main.rs",
-            "README.md",
-        ] {
-            assert!(!is_build_defining(no), "{no}");
-        }
-    }
 
     /// Replays verdicts and counts calls.
     struct Scripted {
@@ -4363,10 +3826,10 @@ mod tests {
                 .sessions
                 .lock()
                 .get(&rig.session)
-                .is_some_and(|state| state.runs_seen.contains(run))
+                .is_some_and(|state| state.runs.seen.contains(run))
         };
         assert_eq!(
-            rig.engine.sessions.lock()[&rig.session].runs_seen.len(),
+            rig.engine.sessions.lock()[&rig.session].runs.seen.len(),
             RUNS_REMEMBERED
         );
         assert!(!seen(&runs[0]));
@@ -4906,7 +4369,7 @@ mod tests {
         assert_eq!(lonely.classifier.calls(), calls);
         assert_eq!(lonely.present.missed.lock().len(), 1);
         assert_eq!(
-            lonely.engine.blocked(&lonely.session)[0].grant,
+            lonely.engine.blocks().list(&lonely.session)[0].grant,
             Some(GrantTarget::Builds)
         );
         assert!(
@@ -4919,7 +4382,8 @@ mod tests {
 
     fn rig_grant_rows_name_builds(rig: &Rig) -> bool {
         rig.engine
-            .grant_rows(Some(&rig.session))
+            .grants()
+            .rows(Some(&rig.session))
             .iter()
             .any(|row| row.target == GrantTarget::Builds && row.removable)
     }
@@ -5023,7 +4487,8 @@ mod tests {
         rig.events = events;
         rig.present = attended(&rig.engine);
         rig.engine
-            .set_classifier_model("anthropic:m-old".into(), true);
+            .reviewer()
+            .set_model("anthropic:m-old".into(), true);
         let endpoint = crate::endpoints::Endpoint::builtin(
             crate::endpoints::WireDialect::Anthropic,
             None,
@@ -5031,7 +4496,8 @@ mod tests {
         );
         let fixed = rig
             .engine
-            .switch_classifier(endpoint.clone(), "m-new".into(), "anthropic:m-new".into())
+            .reviewer()
+            .switch(endpoint.clone(), "m-new".into(), "anthropic:m-new".into())
             .await;
         assert!(fixed.unwrap_err().contains("fixed"));
         let new = Scripted::new(vec![Ok(ClassifierVerdict::allow("ok")), block("D2")]);
@@ -5039,7 +4505,8 @@ mod tests {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&asked);
         rig.engine
-            .set_classifier_builder(Arc::new(move |endpoint, model| {
+            .reviewer()
+            .set_builder(Arc::new(move |endpoint, model| {
                 seen.lock().push(format!("{}:{model}", endpoint.name));
                 let made = Arc::clone(&made);
                 Box::pin(async move {
@@ -5063,7 +4530,8 @@ mod tests {
         rig.engine.set_audit(Arc::new(Events(Arc::clone(&audit))));
         assert!(
             rig.engine
-                .switch_classifier(
+                .reviewer()
+                .switch(
                     endpoint.clone(),
                     "m-broken".into(),
                     "anthropic:m-broken".into()
@@ -5073,17 +4541,18 @@ mod tests {
                 .contains("no key")
         );
         assert_eq!(
-            rig.engine.classifier_model().as_deref(),
+            rig.engine.reviewer().model().as_deref(),
             Some("anthropic:m-old")
         );
         let notice = rig
             .engine
-            .switch_classifier(endpoint, "m-new".into(), "anthropic:m-new".into())
+            .reviewer()
+            .switch(endpoint, "m-new".into(), "anthropic:m-new".into())
             .await
             .unwrap();
         assert!(notice.contains("/auto check"), "{notice}");
         assert_eq!(
-            rig.engine.classifier_model().as_deref(),
+            rig.engine.reviewer().model().as_deref(),
             Some("anthropic:m-new")
         );
         // The setting's file is the daemon's settings path's to write.
@@ -5095,7 +4564,7 @@ mod tests {
                 .any(|(e, d)| e == "classifier_model" && d == "anthropic:m-old -> anthropic:m-new")
         );
         // The check runs on the new one and says it passed.
-        rig.engine.probe_switched().await;
+        rig.engine.reviewer().probe_switched().await;
         assert_eq!(new.calls(), 2);
         assert!(drain(&mut rig.events).iter().any(|e| matches!(e, ApprovalEvent::Notice(t) if t.contains("anthropic:m-new passed the start-up check"))));
         // Reviews go to the new one now; the old one saw none.
@@ -5120,17 +4589,17 @@ mod tests {
             vec![Ok(ClassifierVerdict::allow("ok")), block("D2")],
             DEFAULT_ESCALATION_TIMEOUT,
         );
-        fine.engine.probe_classifier().await;
+        fine.engine.reviewer().probe().await;
         assert_eq!(fine.classifier.calls(), 0, "no model set: nothing asked");
-        fine.engine.set_classifier_model("m-small".into(), true);
-        fine.engine.probe_classifier().await;
+        fine.engine.reviewer().set_model("m-small".into(), true);
+        fine.engine.reviewer().probe().await;
         assert_eq!(fine.classifier.calls(), 2);
-        assert_eq!(fine.engine.probe_notice(), None);
-        assert_eq!(fine.engine.classifier_model(), Some("m-small".to_string()));
+        assert_eq!(fine.engine.reviewer().probe_notice(), None);
+        assert_eq!(fine.engine.reviewer().model(), Some("m-small".to_string()));
         let mut wrong = rig(vec![block("T3"), block("D2")], DEFAULT_ESCALATION_TIMEOUT);
-        wrong.engine.set_classifier_model("m-tiny".into(), true);
-        wrong.engine.probe_classifier().await;
-        let notice = wrong.engine.probe_notice().unwrap();
+        wrong.engine.reviewer().set_model("m-tiny".into(), true);
+        wrong.engine.reviewer().probe().await;
+        let notice = wrong.engine.reviewer().probe_notice().unwrap();
         assert!(
             notice.contains("m-tiny misjudged a routine case")
                 && notice.contains("[auto] classifier_model"),
@@ -5142,8 +4611,8 @@ mod tests {
                 .any(|e| matches!(e, ApprovalEvent::Notice(text) if text == &notice))
         );
         let off = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
-        off.engine.set_classifier_model("m".into(), false);
-        off.engine.probe_classifier().await;
+        off.engine.reviewer().set_model("m".into(), false);
+        off.engine.reviewer().probe().await;
         assert_eq!(off.classifier.calls(), 0);
         let _ = (&mut fine.events, &mut wrong.escalations);
     }
@@ -5209,7 +4678,7 @@ mod tests {
                 None,
             ]
         );
-        let (total, mine) = rig.engine.review_stats(Some(&rig.session));
+        let (total, mine) = rig.engine.stats().of(Some(&rig.session));
         assert_eq!(total, mine);
         assert_eq!((mine.reviews, mine.flagged, mine.errors), (3, 1, 1));
         assert_eq!(mine.blocks.get("T3"), Some(&1));
@@ -5307,7 +4776,7 @@ mod tests {
         rig.engine.set_audit(Arc::clone(&audit) as _);
         let push = json!({"command": "git push origin main"});
         assert!(!decide(&rig, "p1", &push).await.is_allowed());
-        let listed = rig.engine.blocked(&rig.session);
+        let listed = rig.engine.blocks().list(&rig.session);
         assert_eq!(
             listed[0].effect.as_deref(),
             Some("pushing to the default branch of the project's own remote")
@@ -5332,7 +4801,7 @@ mod tests {
             "{}",
             approved.note
         );
-        assert!(rig.engine.blocked(&rig.session).is_empty());
+        assert!(rig.engine.blocks().list(&rig.session).is_empty());
         assert!(drain(&mut rig.events).iter().any(
             |e| matches!(e, ApprovalEvent::Granted { note, .. } if note.contains("now allows"))
         ));
@@ -5413,7 +4882,7 @@ mod tests {
                 .allow_statement(&rig.session, "reading /etc/hosts", GrantScope::Once)
                 .is_err()
         );
-        let rows = rig.engine.statement_rows(Some(&rig.session));
+        let rows = rig.engine.statements().rows(Some(&rig.session));
         let origins: Vec<StatementOrigin> = rows.iter().map(|r| r.origin).collect();
         assert_eq!(
             origins,
@@ -5478,7 +4947,8 @@ mod tests {
         );
         let mine = rig
             .engine
-            .statement_rows(Some(&rig.session))
+            .statements()
+            .rows(Some(&rig.session))
             .into_iter()
             .find(|row| row.text == "network requests to crates.io")
             .unwrap();
@@ -5531,7 +5001,7 @@ mod tests {
         );
         let info = json!({"command": "cargo info serde"});
         assert!(!decide(&rig, "b1", &info).await.is_allowed());
-        let listed = rig.engine.blocked(&rig.session);
+        let listed = rig.engine.blocks().list(&rig.session);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].rule.as_deref(), Some("T3"));
         assert_eq!(
@@ -5547,7 +5017,7 @@ mod tests {
             .approve(&rig.session, listed[0].id, GrantScope::Once)
             .unwrap();
         assert!(approved.note.contains("once"), "{}", approved.note);
-        assert!(rig.engine.blocked(&rig.session).is_empty());
+        assert!(rig.engine.blocks().list(&rig.session).is_empty());
         let calls = rig.classifier.calls();
         assert!(matches!(
             decide(&rig, "b2", &info).await,
@@ -5560,7 +5030,7 @@ mod tests {
         // A write into a store the classifier named: its directory.
         let write = json!({"path": store.join("x").display().to_string(), "content": "x"});
         assert!(!call(&rig, "b3", "write_file", &write).await.is_allowed());
-        let listed = rig.engine.blocked(&rig.session);
+        let listed = rig.engine.blocks().list(&rig.session);
         assert_eq!(
             listed[0].grant,
             Some(GrantTarget::Dir {
@@ -5620,12 +5090,12 @@ mod tests {
                 .await
                 .is_allowed()
         );
-        let rows = rig.engine.grant_rows(Some(&rig.session));
+        let rows = rig.engine.grants().rows(Some(&rig.session));
         let origins: Vec<&str> = rows.iter().map(|r| r.origin.word()).collect();
         assert_eq!(origins, ["always", "session", "session"]);
         let session_dir = rows.iter().find(|r| r.removable).unwrap().id;
         rig.engine.remove_grant(&rig.session, session_dir).unwrap();
-        assert_eq!(rig.engine.grant_rows(Some(&rig.session)).len(), 2);
+        assert_eq!(rig.engine.grants().rows(Some(&rig.session)).len(), 2);
         assert!(rig.engine.remove_grant(&rig.session, 999).is_err());
         let notes = drain(&mut rig.events)
             .into_iter()
@@ -5657,9 +5127,13 @@ mod tests {
         let rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
         let session = rig.session.clone();
         let dir = scratch.clone();
-        assert!(rig.engine.set_scratch(Arc::new(move |asked: &SessionId| {
-            (asked == &session).then(|| dir.clone())
-        })));
+        assert!(
+            rig.engine
+                .grants()
+                .set_scratch(Arc::new(move |asked: &SessionId| {
+                    (asked == &session).then(|| dir.clone())
+                }))
+        );
         let in_scratch = scratch.join("notes/a.txt").display().to_string();
         let verdict = call(
             &rig,

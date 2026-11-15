@@ -4,9 +4,9 @@
 //! what came out wrong.
 //!
 //! Three users read it: the daemon's `/auto check` (`rkat/classifier_check`,
-//! [`super::ApprovalEngine::check_classifier`]), which measures the user's
+//! [`super::reviewer::Reviewer::check`]), which measures the user's
 //! own classifier model; the daemon's start-up check
-//! ([`super::ApprovalEngine::probe_classifier`], two cases by id,
+//! ([`super::reviewer::Reviewer::probe`], two cases by id,
 //! [`PROBE_CASES`]); and the repository's tests (`tests/it/corpus.rs`: the
 //! deterministic tiers on every case, and the developer's live runner).
 //! All of them judge a case the same way ([`evaluate`]), so the numbers

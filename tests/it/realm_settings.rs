@@ -201,26 +201,27 @@ async fn survives(way: Stop) {
     );
     let engine = daemon.engine();
     assert_eq!(
-        engine.classifier_model().as_deref(),
+        engine.reviewer().model().as_deref(),
         Some(CLASSIFIER),
         "{way:?}"
     );
     assert_eq!(engine.mode(), PermissionMode::AcceptEdits, "{way:?}");
     assert!(
         engine
-            .statement_rows(None)
+            .statements()
+            .rows(None)
             .iter()
             .any(|row| row.text == STATEMENT && row.origin == StatementOrigin::Always),
         "{way:?}: {:?}",
-        engine.statement_rows(None)
+        engine.statements().rows(None)
     );
     assert!(
-        engine.grant_rows(None).iter().any(|row| row.target
+        engine.grants().rows(None).iter().any(|row| row.target
             == GrantTarget::Dir {
                 path: granted.clone()
             }),
         "{way:?}: {:?}",
-        engine.grant_rows(None)
+        engine.grants().rows(None)
     );
     drop(engine);
     // The client reads the checklist view from the same layers.

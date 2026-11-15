@@ -142,7 +142,7 @@ async fn the_totals_of_a_scripted_mix_and_nothing_reaches_a_session() {
         rkat_tui::approval::counters::DenialCounters::default()
     );
     assert!(pause.is_none());
-    assert_eq!(engine.review_stats(None).0.reviews, 0);
+    assert_eq!(engine.stats().of(None).0.reviews, 0);
     let messages = daemon.transcript(&daemon.current_session().await).await;
     assert!(
         !format!("{messages:?}").contains("old-proj"),

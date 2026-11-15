@@ -203,13 +203,13 @@ pub(crate) async fn build(
         files: Some(files.clone()),
     });
     if let Some((model, probe)) = model {
-        engine.set_classifier_model(model, probe);
+        engine.reviewer().set_model(model, probe);
     }
     if let Some(check) = check {
-        engine.set_check_classifier(check);
+        engine.reviewer().set_check_classifier(check);
     }
     if let Some(builder) = builder {
-        engine.set_classifier_builder(builder);
+        engine.reviewer().set_builder(builder);
     }
     Ok(ApprovalParts {
         engine,
@@ -349,7 +349,7 @@ fn classifiers(
     model: String,
     tools_root: Option<ProjectRoot>,
     events: mpsc::UnboundedSender<ApprovalEvent>,
-) -> crate::approval::engine::BuiltClassifier {
+) -> crate::approval::reviewer::BuiltClassifier {
     let check: Arc<dyn ActionClassifier> = Arc::new(LlmClassifier::new(
         Arc::clone(&client),
         provider,
@@ -361,7 +361,7 @@ fn classifiers(
     if let Some(root) = tools_root {
         review = review.with_project_tools(Arc::new(ReadOnlyProjectTools::new(root)));
     }
-    crate::approval::engine::BuiltClassifier {
+    crate::approval::reviewer::BuiltClassifier {
         review: Arc::new(review),
         check,
     }
@@ -375,7 +375,7 @@ fn classifier_builder(
     tools: bool,
     root: ProjectRoot,
     events: mpsc::UnboundedSender<ApprovalEvent>,
-) -> crate::approval::engine::ClassifierBuilder {
+) -> crate::approval::reviewer::ClassifierBuilder {
     let factory = source.factory.clone();
     let config = source.config.clone();
     let llm_override = source.llm_override.clone();

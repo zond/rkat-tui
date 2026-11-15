@@ -368,7 +368,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         let engine = Arc::clone(&engine);
         tokio::spawn(async move {
             let checked =
-                tokio::time::timeout(std::time::Duration::from_mins(2), engine.probe_classifier())
+                tokio::time::timeout(std::time::Duration::from_mins(2), engine.reviewer().probe())
                     .await;
             if checked.is_err() {
                 tracing::warn!("the classifier's start-up check did not finish in 120 s");
@@ -498,11 +498,13 @@ fn helper_registry(
     }));
     // The gate treats each agent's scratch directory as its sessions' own.
     let scratch = Arc::downgrade(&registry);
-    engine.set_scratch(Arc::new(move |session: &meerkat_core::SessionId| {
-        scratch
-            .upgrade()
-            .and_then(|registry| registry.scratch_of_session(session))
-    }));
+    engine
+        .grants()
+        .set_scratch(Arc::new(move |session: &meerkat_core::SessionId| {
+            scratch
+                .upgrade()
+                .and_then(|registry| registry.scratch_of_session(session))
+        }));
     registry
 }
 

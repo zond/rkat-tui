@@ -32,7 +32,9 @@
 //! engine without one counts nobody as attached (fail closed), so only the
 //! user's own runs put questions to the user there.
 
-use meerkat_core::SessionId;
+use std::collections::VecDeque;
+
+use meerkat_core::{RunId, SessionId};
 
 /// Who is with an agent, as the daemon knows it.
 pub trait Attendance: Send + Sync {
@@ -89,5 +91,62 @@ pub trait AgentPeers: Send + Sync {
     /// not running); `None`: it can, or `peer_id` is no such agent.
     async fn unreachable(&self, _session: &SessionId, _peer_id: &str) -> Option<String> {
         None
+    }
+}
+
+/// How many run ids a session remembers to recognise a replayed start. A
+/// replay arrives within a few runs of the original; the stopped run itself
+/// never clears its own Stop, remembered or not.
+pub(super) const RUNS_REMEMBERED: usize = 64;
+
+/// A session's runs as the engine saw them start, and which of them a
+/// user started: the evidence of attendance the engine keeps itself.
+#[derive(Debug, Default)]
+pub(super) struct Runs {
+    /// The last [`RUNS_REMEMBERED`] run ids seen starting, oldest first,
+    /// so a replayed start is recognised.
+    pub(super) seen: VecDeque<RunId>,
+    /// The run that started last.
+    pub(super) current: Option<RunId>,
+    /// A client's input to the session waits for the run that takes it
+    /// (`crate::approval::ApprovalEngine::human_input`).
+    pub(super) human_pending: bool,
+    /// The last [`RUNS_REMEMBERED`] runs that started with a client's input
+    /// waiting: runs a user started.
+    pub(super) human: VecDeque<RunId>,
+}
+
+impl Runs {
+    /// Run `run` started: `false` when its start was seen before (a
+    /// replay). A new run is the current one, and the user's when their
+    /// input waited for it.
+    pub(super) fn started(&mut self, run: &RunId) -> bool {
+        if self.seen.contains(run) {
+            return false;
+        }
+        if self.seen.len() == RUNS_REMEMBERED {
+            self.seen.pop_front();
+        }
+        self.seen.push_back(run.clone());
+        self.current = Some(run.clone());
+        if std::mem::take(&mut self.human_pending) {
+            if self.human.len() == RUNS_REMEMBERED {
+                self.human.pop_front();
+            }
+            self.human.push_back(run.clone());
+        }
+        true
+    }
+
+    /// Whether a call in `run` (`None`: the current run) belongs to a run
+    /// the user started, as far as the runs tell.
+    pub(super) fn users(&self, run: Option<&RunId>) -> bool {
+        match run.or(self.current.as_ref()) {
+            Some(run) if self.human.contains(run) => true,
+            // A run the engine saw start without a client's input waiting.
+            Some(run) if self.seen.contains(run) => false,
+            // Its start is not seen yet: the user's when their input waits.
+            _ => self.human_pending,
+        }
     }
 }

@@ -1,7 +1,7 @@
 //! The classifier check as the client asks for it: `/auto check` in the
 //! TUI ([`crate::client::runner`]) and `rkat-tui --classifier-check` for
 //! scripts ([`run`]), both through the daemon's `rkat/classifier_check`
-//! ([`crate::approval::ApprovalEngine::check_classifier`]), so the model,
+//! ([`crate::approval::reviewer::Reviewer::check`]), so the model,
 //! endpoint, key and dialect are the daemon's own, exactly as its reviews
 //! use them. What is printed is [`crate::approval::corpus::Report::render`]
 //! in both.

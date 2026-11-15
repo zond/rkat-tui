@@ -41,6 +41,8 @@
 pub mod admission;
 pub mod attendance;
 pub mod audit;
+pub mod blocks;
+pub mod builds;
 pub mod catalog;
 pub mod classifier;
 pub mod corpus;
@@ -52,6 +54,7 @@ pub mod grants;
 pub mod mode;
 pub mod policy;
 pub mod prompts;
+pub mod reviewer;
 pub mod rules;
 pub mod scratch;
 pub mod shell;

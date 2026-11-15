@@ -9721,3 +9721,55 @@ own write followed by no notice past the quiet time.
   words the tools export (`crate::tools::answers`), pinned by
   `file_tools::each_tool_s_real_answer_renders_its_line`; the engine's
   shell status line stays a documented literal.
+
+## Senior review 6, bundle 2: the gate's shape (2026-11-15)
+
+No behaviour change; the engine's unit tests and the approval, corpus,
+settings and realm tests of `tests/it/` are the net, unchanged but for the
+names of the accessors that moved.
+
+- `ApprovalEngine::evaluate` first computes what should happen, an
+  `Outcome` (`Decided`, `Ask(Ask)`, `Review { content }`), from the tier,
+  the mode and the special cases (agent-peer sends, an approval once, a
+  build after a change); `route` returns the same type. The cross-cutting
+  rules are then applied each in one place: the Stop in `ask` and at the
+  start of `review`, attendance and the broker for every question in
+  `put_to_user`. The questions that were treated otherwise before stay so,
+  written on their `Ask`: plan mode's question about a wired peer is denied
+  unattended as `DenyReason::PlanWired`, not `Unattended`
+  (`Ask::unattended_as`); a content-protected write the classifier blocks
+  is denied unattended at `Tier::AskUser` and keeps the block without a
+  broker; an action too large to review and a failed review are denied
+  without a broker with their own reasons (`NoBroker`); a paused review
+  with nobody attached is denied before the classifier runs; an approval
+  once is decided before the Stop; and the Stop is not checked again after
+  a review (an escalation checks it in its queue).
+- `Facts` is the call's input only; what evaluation finds (the allow rule,
+  the answerer, the classifier's blocked path and effect, the review
+  record) is returned in `Evaluated`.
+- `escalate` is three phases: `wait_turn` (the session's queue, then
+  whether the question still stands; `Asking::rechecked` says which
+  questions are routed again, in place of a placeholder `PlanWired`), the
+  prompt (`escalation_prompt`), and `apply_answer`. The guard that withdraws
+  a dialog (`Shown`) is made only when the dialog is put, so the early
+  exits need nothing; an escalation abandoned while still queued no longer
+  emits `EscalationWithdrawn` for an id no client was shown (the event is
+  dropped by the daemon's protocol mapping, so nothing outside the engine
+  saw it). What "for this session" grants is one function,
+  `session_grant`, used by the dialog and the `/approve` list.
+- The side concerns are parts the engine holds, each with its data and
+  locks: `reviewer::Reviewer` (the classifier, its model, the checks, the
+  probe, `/auto model`), `grants::Grants` (the plan's directories, the
+  scratch lookup, "always" directories, session grants), `statements::Statements`,
+  `blocks::Blocks` (recent blocks, approvals once), `builds::Builds` (the
+  build files' digest, writes, the notice, `trust_project_builds`) and
+  `stats::Stats`; a session's runs are `attendance::Runs`. Callers outside
+  the gate reach them through `engine.reviewer()`, `grants()`,
+  `statements()`, `blocks()`, `stats()`. The authority changes that touch
+  several parts and the files (`approve`, `grant`, `allow_statement`,
+  `approve_effect`, `remove_statement`, `remove_grant`) stay on the engine.
+- Locks: every part's lock is taken alone and never across an await; the
+  only nesting, the checks' classifier then the review's (`Reviewer::checker`),
+  is the old one. One write that was under one lock is two now: an allowed
+  write of a build-defining file records the session's files, then marks
+  the build files written (`Builds::written`), in that order.

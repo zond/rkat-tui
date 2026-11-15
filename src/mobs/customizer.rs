@@ -701,7 +701,9 @@ impl SpawnMemberCustomizer for HelperCustomizer {
             // directory's name stays the same for it.
             if let Some(dir) = self
                 .registry
-                .scratch_for_agent(key.member.as_str(), |path| self.engine.plan_writes(path))
+                .scratch_for_agent(key.member.as_str(), |path| {
+                    self.engine.grants().plan_writes(path)
+                })
             {
                 give_scratch(spec, &dir, fresh);
             }
@@ -766,7 +768,9 @@ impl SpawnMemberCustomizer for HelperCustomizer {
             );
             if let Some(dir) = self
                 .registry
-                .scratch_for_agent(key.member.as_str(), |path| self.engine.plan_writes(path))
+                .scratch_for_agent(key.member.as_str(), |path| {
+                    self.engine.grants().plan_writes(path)
+                })
             {
                 give_scratch(spec, &dir, false);
             }

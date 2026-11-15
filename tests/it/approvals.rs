@@ -580,7 +580,7 @@ async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
         note.contains(&format!("writes under `{}`", store.display())),
         "{note}"
     );
-    let id = daemon.engine().blocked(&daemon.session)[0].id;
+    let id = daemon.engine().blocks().list(&daemon.session)[0].id;
     client.send(Effect::PickedApproval(id, GrantScope::Session, None));
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("granted for this session")))
@@ -608,7 +608,7 @@ async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
     let system = llm.recorded().last().unwrap().system();
     assert!(system.contains("The user granted writes under"), "{system}");
     // `/permissions` lists it as the session's and removes it.
-    let rows = daemon.engine().grant_rows(Some(&daemon.session));
+    let rows = daemon.engine().grants().rows(Some(&daemon.session));
     let grant = rows
         .iter()
         .find(|row| row.origin == rkat_tui::approval::grants::GrantOrigin::Session)

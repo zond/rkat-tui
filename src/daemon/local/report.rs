@@ -321,7 +321,7 @@ impl Local {
             project_inputs,
             helper_depth,
             watches: agent.map_or_else(Vec::new, |agent| self.core.watches.describe(agent)),
-            classifier_model: self.core.engine.classifier_model(),
+            classifier_model: self.core.engine.reviewer().model(),
         }
     }
 
@@ -348,8 +348,8 @@ impl Local {
     pub(super) fn rule_and_grant_rows(&self, caller: &Caller) -> crate::approval::desk::RuleRows {
         let mut rows = crate::approval::desk::rule_rows(&self.core.engine);
         let session = self.session_of_caller(caller).ok();
-        rows.grants = self.core.engine.grant_rows(session.as_ref());
-        rows.statements = self.core.engine.statement_rows(session.as_ref());
+        rows.grants = self.core.engine.grants().rows(session.as_ref());
+        rows.statements = self.core.engine.statements().rows(session.as_ref());
         rows
     }
 
@@ -357,7 +357,7 @@ impl Local {
     /// start-up check found, once it did.
     pub(super) fn notices(&self) -> Notices {
         let mut notices = self.parts.startup_notices.clone();
-        if let Some(text) = self.core.engine.probe_notice() {
+        if let Some(text) = self.core.engine.reviewer().probe_notice() {
             notices.push(StartupNotice::warn(text));
         }
         Notices { notices }
@@ -367,8 +367,8 @@ impl Local {
     /// for `caller`'s agent's conversation.
     pub(super) fn auto_stats(&self, caller: &Caller) -> RuleOutcome {
         let session = self.session_of_caller(caller).ok();
-        let (total, mine) = self.core.engine.review_stats(session.as_ref());
-        let model = self.core.engine.classifier_model().map_or_else(
+        let (total, mine) = self.core.engine.stats().of(session.as_ref());
+        let model = self.core.engine.reviewer().model().map_or_else(
             || "no classifier model".to_string(),
             |m| format!("classifier {m}"),
         );
@@ -394,7 +394,8 @@ impl Local {
         let (model, report) = self
             .core
             .engine
-            .check_classifier(&cases, crate::approval::corpus::Bounds::default())
+            .reviewer()
+            .check(&cases, crate::approval::corpus::Bounds::default())
             .await
             .map_err(|err| refused(err.to_string()))?;
         Ok(protocol::ClassifierChecked { model, report })
@@ -405,7 +406,7 @@ impl Local {
     pub(super) fn blocked(&self, caller: &Caller) -> Result<protocol::BlockedList, Refusal> {
         let session = self.session_of_caller(caller)?;
         Ok(protocol::BlockedList {
-            calls: self.core.engine.blocked(&session),
+            calls: self.core.engine.blocks().list(&session),
         })
     }
 

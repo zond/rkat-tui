@@ -374,11 +374,11 @@ pub struct RuleRows {
     /// The rules.
     pub rules: Vec<RuleRow>,
     /// The directory and session grants in force for the asking client's
-    /// agent ([`super::ApprovalEngine::grant_rows`]).
+    /// agent ([`super::grants::Grants::rows`]).
     #[serde(default)]
     pub grants: Vec<super::grants::GrantRow>,
     /// The kinds of action the user allows for the asking client's agent
-    /// ([`super::ApprovalEngine::statement_rows`]).
+    /// ([`super::statements::Statements::rows`]).
     #[serde(default)]
     pub statements: Vec<super::statements::StatementRow>,
 }

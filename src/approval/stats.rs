@@ -7,9 +7,13 @@
 //! is overridden as often asks for a statement or a rule, a high flag rate
 //! for a cheaper first stage.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
+use meerkat_core::SessionId;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+
+use super::audit::ReviewRecord;
 
 /// One set of review numbers.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,26 +97,62 @@ impl ReviewStats {
     }
 }
 
-/// The numbers since the daemon started, and per session.
+/// The numbers since the daemon started, and per session: the engine's
+/// (`crate::approval::ApprovalEngine::stats`). Its lock is taken alone.
 #[derive(Debug, Default)]
-pub(crate) struct StatsBook {
-    /// Since the daemon started.
-    pub total: ReviewStats,
-    /// Per session (an agent's, its helpers' calls included).
-    pub by_session: std::collections::HashMap<meerkat_core::SessionId, ReviewStats>,
+pub struct Stats {
+    book: Mutex<Book>,
 }
 
-impl StatsBook {
+#[derive(Debug, Default)]
+struct Book {
+    /// Since the daemon started.
+    total: ReviewStats,
+    /// Per session (an agent's, its helpers' calls included).
+    by_session: HashMap<SessionId, ReviewStats>,
+}
+
+impl Stats {
     /// Apply `change` to the daemon's numbers and to `session`'s.
-    pub fn add(
-        &mut self,
-        session: Option<&meerkat_core::SessionId>,
-        change: impl Fn(&mut ReviewStats),
-    ) {
-        change(&mut self.total);
+    pub(super) fn add(&self, session: Option<&SessionId>, change: impl Fn(&mut ReviewStats)) {
+        let mut book = self.book.lock();
+        change(&mut book.total);
         if let Some(session) = session {
-            change(self.by_session.entry(session.clone()).or_default());
+            change(book.by_session.entry(session.clone()).or_default());
         }
+    }
+
+    /// Count one classifier review of a call of `session`.
+    pub(super) fn review(&self, session: &SessionId, record: &ReviewRecord) {
+        self.add(Some(session), |stats| {
+            stats.reviews += 1;
+            if record.stage == 2 {
+                stats.flagged += 1;
+            }
+            match record.verdict.as_str() {
+                "block" => {
+                    *stats
+                        .blocks
+                        .entry(record.rule.clone().unwrap_or_else(|| "none".into()))
+                        .or_insert(0) += 1;
+                }
+                "error" => stats.errors += 1,
+                _ => {}
+            }
+            stats.input_tokens += record.input_tokens;
+            stats.output_tokens += record.output_tokens;
+            stats.review_ms += record.latency_ms;
+        });
+    }
+
+    /// The numbers since the daemon started, and `session`'s.
+    #[must_use]
+    pub fn of(&self, session: Option<&SessionId>) -> (ReviewStats, ReviewStats) {
+        let book = self.book.lock();
+        let mine = session
+            .and_then(|s| book.by_session.get(s).cloned())
+            .unwrap_or_default();
+        (book.total.clone(), mine)
     }
 }
 

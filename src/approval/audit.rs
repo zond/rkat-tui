@@ -3,8 +3,12 @@
 //! the engine makes itself (mode, rules). The daemon's sink writes them
 //! (`crate::daemon::audit`); without one the engine records nothing.
 
-use meerkat_core::{RunId, SessionId};
+use std::sync::{Arc, OnceLock};
 
+use meerkat_core::{RunId, SessionId};
+use tokio::sync::mpsc;
+
+use super::ApprovalEvent;
 use super::policy::Tier;
 
 /// One decided call.
@@ -50,6 +54,47 @@ pub struct ReviewRecord {
     pub input_tokens: u64,
     /// Its output tokens.
     pub output_tokens: u64,
+}
+
+/// Where the gate and its parts report: the clients' events, and the audit
+/// sink once the daemon set one ([`Outlets::set_audit`]). Cloned into the
+/// parts that report on their own (the classifier slot); a clone reports
+/// to the same places.
+#[derive(Clone)]
+pub(super) struct Outlets {
+    events: mpsc::UnboundedSender<ApprovalEvent>,
+    audit: Arc<OnceLock<Arc<dyn AuditSink>>>,
+}
+
+impl Outlets {
+    pub(super) fn new(events: mpsc::UnboundedSender<ApprovalEvent>) -> Self {
+        Self {
+            events,
+            audit: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// Tell the clients.
+    pub(super) fn emit(&self, event: ApprovalEvent) {
+        let _ = self.events.send(event);
+    }
+
+    /// Record from now on in `audit`. Set once; `false` when it was set.
+    pub(super) fn set_audit(&self, audit: Arc<dyn AuditSink>) -> bool {
+        self.audit.set(audit).is_ok()
+    }
+
+    /// The audit sink, when one is set.
+    pub(super) fn audit(&self) -> Option<&Arc<dyn AuditSink>> {
+        self.audit.get()
+    }
+
+    /// An audit line of a change of authority, when a sink is set.
+    pub(super) fn audit_event(&self, event: &str, detail: String) {
+        if let Some(audit) = self.audit.get() {
+            audit.event(event, detail);
+        }
+    }
 }
 
 /// Where the gate's audit lines go.

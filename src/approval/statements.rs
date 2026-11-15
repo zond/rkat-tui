@@ -23,6 +23,10 @@
 //! characters and refuses an empty statement or one that only says
 //! "anything".
 
+use std::collections::HashMap;
+
+use meerkat_core::SessionId;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
 /// Most statements active for one session (every origin together).
@@ -213,6 +217,109 @@ pub fn normalize(raw: &str) -> Result<String, StatementRefusal> {
 #[must_use]
 pub fn proposed(text: &str) -> Option<String> {
     normalize(text).ok()
+}
+
+/// The statements in force: the engine's
+/// (`crate::approval::ApprovalEngine::statements`). The lasting ones hold
+/// for every session: the user's own `tui.toml` files' (`config`, `always`
+/// for the realm's) and the ones added "always" while the daemon runs;
+/// each session has its own besides. The files are written by the engine.
+///
+/// Locks: `lasting` and `sessions` are never held together.
+#[derive(Debug)]
+pub struct Statements {
+    lasting: RwLock<Vec<StatementRow>>,
+    sessions: Mutex<HashMap<SessionId, Vec<(u64, String)>>>,
+}
+
+impl Statements {
+    /// The lasting statements `allow` (the layered settings'), numbered
+    /// from 1; and the first number they leave free.
+    pub(super) fn new(allow: &[(StatementOrigin, String)]) -> (Self, u64) {
+        let lasting: Vec<StatementRow> = allow
+            .iter()
+            .zip(1u64..)
+            .map(|((origin, text), id)| StatementRow {
+                id,
+                text: text.clone(),
+                origin: *origin,
+            })
+            .collect();
+        let first_free = u64::try_from(lasting.len()).unwrap_or(0) + 1;
+        let statements = Self {
+            lasting: RwLock::new(lasting),
+            sessions: Mutex::new(HashMap::new()),
+        };
+        (statements, first_free)
+    }
+
+    /// The texts in force for `session`'s calls: the lasting ones, then
+    /// the session's, at most [`MAX_STATEMENTS`].
+    pub(super) fn texts_for(&self, session: &SessionId) -> Vec<String> {
+        let mut texts: Vec<String> = self
+            .lasting
+            .read()
+            .iter()
+            .map(|row| row.text.clone())
+            .collect();
+        if let Some(own) = self.sessions.lock().get(session) {
+            texts.extend(own.iter().map(|(_, text)| text.clone()));
+        }
+        texts.truncate(MAX_STATEMENTS);
+        texts
+    }
+
+    /// The statements in force for `session`, as `/permissions` lists
+    /// them: the lasting ones, then the session's.
+    #[must_use]
+    pub fn rows(&self, session: Option<&SessionId>) -> Vec<StatementRow> {
+        let mut rows = self.lasting.read().clone();
+        if let Some(own) = session.and_then(|s| self.sessions.lock().get(s).cloned()) {
+            rows.extend(own.into_iter().map(|(id, text)| StatementRow {
+                id,
+                text,
+                origin: StatementOrigin::Session,
+            }));
+        }
+        rows
+    }
+
+    /// Add `text` (number `id`) for `session` and its helpers.
+    pub(super) fn add_session(&self, session: &SessionId, id: u64, text: String) {
+        self.sessions
+            .lock()
+            .entry(session.clone())
+            .or_default()
+            .push((id, text));
+    }
+
+    /// Add a lasting statement.
+    pub(super) fn add_lasting(&self, row: StatementRow) {
+        self.lasting.write().push(row);
+    }
+
+    /// Remove `session`'s statement `id`: its text, if it was one.
+    pub(super) fn remove_session(&self, session: &SessionId, id: u64) -> Option<String> {
+        let mut sessions = self.sessions.lock();
+        let own = sessions.get_mut(session)?;
+        let at = own.iter().position(|(known, _)| *known == id)?;
+        Some(own.remove(at).1)
+    }
+
+    /// Lasting statement `id`, if there is one.
+    pub(super) fn lasting(&self, id: u64) -> Option<StatementRow> {
+        self.lasting.read().iter().find(|row| row.id == id).cloned()
+    }
+
+    /// Remove lasting statement `id`.
+    pub(super) fn remove_lasting(&self, id: u64) {
+        self.lasting.write().retain(|known| known.id != id);
+    }
+
+    /// Forget `session`'s statements.
+    pub(super) fn forget(&self, session: &SessionId) {
+        self.sessions.lock().remove(session);
+    }
 }
 
 #[cfg(test)]

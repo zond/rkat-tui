@@ -195,7 +195,8 @@ impl Local {
         match self
             .core
             .engine
-            .switch_classifier(target, model.to_string(), label)
+            .reviewer()
+            .switch(target, model.to_string(), label)
             .await
         {
             Ok(text) => {
@@ -203,7 +204,7 @@ impl Local {
                 tokio::spawn(async move {
                     if tokio::time::timeout(
                         std::time::Duration::from_mins(2),
-                        engine.probe_switched(),
+                        engine.reviewer().probe_switched(),
                     )
                     .await
                     .is_err()

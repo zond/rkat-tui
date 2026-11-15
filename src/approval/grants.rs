@@ -29,10 +29,16 @@
 //! confined shell is planned at the daemon's start, so the shell itself can
 //! write an "always" directory only from the next start on.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
+use meerkat_core::SessionId;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
+use super::classifier::GrantedDirs;
+use super::rules::{Rule, RuleKind, RuleOrigin};
 use crate::paths::ProjectRoot;
 
 /// How many blocked calls a session keeps for `/approve`.
@@ -254,6 +260,218 @@ pub fn grant_dir_for(root: &ProjectRoot, raw: &str) -> Result<PathBuf, GrantRefu
         return refuse("rkat-tui's own state");
     }
     Ok(dir)
+}
+
+/// Where a session's private scratch directory is, if it has one
+/// ([`super::scratch`]): the daemon answers from the agent the session
+/// belongs to.
+pub type ScratchLookup = Arc<dyn Fn(&SessionId) -> Option<PathBuf> + Send + Sync>;
+
+/// The directories and rules the user grants, with the confinement plan's
+/// directories they join: the engine's
+/// (`crate::approval::ApprovalEngine::grants`). It owns the "always"
+/// directories of this run and each session's grants; the files that hold
+/// "always" grants for the next start are written by the engine.
+///
+/// Locks: `always` and `sessions` are never held together, nor across the
+/// scratch lookup (the daemon's callback).
+pub struct Grants {
+    /// The confinement plan's directories (the sandbox's defaults and the
+    /// user's named ones).
+    plan: GrantedDirs,
+    /// Each session's scratch directory ([`Self::set_scratch`]); unset:
+    /// none has one.
+    scratch: OnceLock<ScratchLookup>,
+    /// Directories the user granted "always" while this daemon runs (the
+    /// realm's `tui.toml` holds them for the next start), by id.
+    always: RwLock<Vec<(u64, PathBuf)>>,
+    /// The grants the user made for each session and its helpers, by id.
+    sessions: Mutex<HashMap<SessionId, Vec<(u64, GrantTarget)>>>,
+}
+
+impl Grants {
+    /// The grants over the confinement plan's directories `plan`.
+    pub(super) fn new(plan: GrantedDirs) -> Self {
+        Self {
+            plan,
+            scratch: OnceLock::new(),
+            always: RwLock::new(Vec::new()),
+            sessions: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Where each session's private scratch directory is: the gate treats
+    /// it as the session's own from now on ([`super::scratch`]). Set once;
+    /// returns `false` when it was set already.
+    pub fn set_scratch(&self, lookup: ScratchLookup) -> bool {
+        self.scratch.set(lookup).is_ok()
+    }
+
+    /// `session`'s scratch directory, if it has one.
+    pub(super) fn scratch(&self, session: &SessionId) -> Option<PathBuf> {
+        self.scratch.get().and_then(|lookup| lookup(session))
+    }
+
+    /// Whether the confinement plan lets the shell write `path` (a default
+    /// or user-named write grant holds it): a scratch directory elsewhere
+    /// would be a `TMPDIR` the confined shell cannot write.
+    #[must_use]
+    pub fn plan_writes(&self, path: &Path) -> bool {
+        self.plan
+            .baseline_write
+            .iter()
+            .chain(&self.plan.user_write)
+            .any(|dir| path.starts_with(dir))
+    }
+
+    /// The directories outside the project `session`'s calls may use: the
+    /// confinement plan's, the session's scratch directory, and what the
+    /// user granted while the daemon runs ("always" for every session,
+    /// "for this session" for this one and its helpers).
+    pub(super) fn dirs_for(&self, session: &SessionId) -> GrantedDirs {
+        let mut granted = self.plan.clone();
+        granted.scratch = self.scratch(session);
+        granted
+            .user_write
+            .extend(self.always.read().iter().map(|(_, dir)| dir.clone()));
+        if let Some(grants) = self.sessions.lock().get(session) {
+            for (_, grant) in grants {
+                if let GrantTarget::Dir { path } = grant {
+                    granted.user_write.push(path.clone());
+                }
+            }
+        }
+        granted
+    }
+
+    /// The allow rules the user granted for `session`.
+    pub(super) fn session_rules(&self, session: &SessionId) -> Vec<Rule> {
+        let sessions = self.sessions.lock();
+        let Some(grants) = sessions.get(session) else {
+            return Vec::new();
+        };
+        grants
+            .iter()
+            .filter_map(|(_, grant)| match grant {
+                GrantTarget::Rule { tool, subject } => {
+                    Rule::literal(RuleKind::Allow, tool, subject, RuleOrigin::Session).ok()
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether the user allowed builds after a change for `session`.
+    pub(super) fn builds_granted(&self, session: &SessionId) -> bool {
+        self.sessions.lock().get(session).is_some_and(|grants| {
+            grants
+                .iter()
+                .any(|(_, grant)| *grant == GrantTarget::Builds)
+        })
+    }
+
+    /// Grant `target` (number `id`) for `session` and its helpers.
+    pub(super) fn add_session(&self, session: &SessionId, id: u64, target: GrantTarget) {
+        self.sessions
+            .lock()
+            .entry(session.clone())
+            .or_default()
+            .push((id, target));
+    }
+
+    /// The directory an "always" grant of `path` writes for a project at
+    /// `root`, checked against the directories already named.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be granted always, for the user.
+    pub(super) fn always_dir(&self, path: &Path, root: &Path) -> Result<PathBuf, String> {
+        let named: Vec<PathBuf> = self
+            .plan
+            .user_write
+            .iter()
+            .chain(&self.plan.user_read)
+            .cloned()
+            .chain(self.always.read().iter().map(|(_, dir)| dir.clone()))
+            .collect();
+        crate::bootstrap::confinement::grantable_extra_write(path, root, &named).map_err(
+            |problem| {
+                format!(
+                    "`{}` cannot be granted always ({problem}); grant it for this session instead",
+                    path.display()
+                )
+            },
+        )
+    }
+
+    /// Grant directory `dir` (number `id`) always, for this run.
+    pub(super) fn add_always(&self, id: u64, dir: PathBuf) {
+        self.always.write().push((id, dir));
+    }
+
+    /// The grants in force for `session`, as `/permissions` lists them:
+    /// the sandbox's defaults, the user's from the command line and the
+    /// `tui.toml` files, the "always" ones of this run, and the session's.
+    #[must_use]
+    pub fn rows(&self, session: Option<&SessionId>) -> Vec<GrantRow> {
+        let dir = |path: &PathBuf| GrantTarget::Dir { path: path.clone() };
+        let mut rows: Vec<GrantRow> = self
+            .plan
+            .baseline_write
+            .iter()
+            .map(|path| GrantRow {
+                id: 0,
+                target: dir(path),
+                origin: GrantOrigin::Default,
+                removable: false,
+            })
+            .collect();
+        for path in &self.plan.user_write {
+            rows.push(GrantRow {
+                id: 0,
+                target: dir(path),
+                origin: if self.plan.from_flag.contains(path) {
+                    GrantOrigin::Flag
+                } else {
+                    GrantOrigin::Config
+                },
+                removable: false,
+            });
+        }
+        for (id, path) in self.always.read().iter() {
+            rows.push(GrantRow {
+                id: *id,
+                target: dir(path),
+                origin: GrantOrigin::Always,
+                removable: false,
+            });
+        }
+        if let Some(grants) = session.and_then(|s| self.sessions.lock().get(s).cloned()) {
+            for (id, target) in grants {
+                rows.push(GrantRow {
+                    id,
+                    target,
+                    origin: GrantOrigin::Session,
+                    removable: true,
+                });
+            }
+        }
+        rows
+    }
+
+    /// Remove session grant `id` of `session`: what it granted, if it was
+    /// one.
+    pub(super) fn remove_session(&self, session: &SessionId, id: u64) -> Option<GrantTarget> {
+        let mut sessions = self.sessions.lock();
+        let grants = sessions.get_mut(session)?;
+        let at = grants.iter().position(|(grant, _)| *grant == id)?;
+        Some(grants.remove(at).1)
+    }
+
+    /// Forget `session`'s grants.
+    pub(super) fn forget(&self, session: &SessionId) {
+        self.sessions.lock().remove(session);
+    }
 }
 
 #[cfg(test)]

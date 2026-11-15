@@ -370,7 +370,7 @@ methods! {
     Unwire = "rkat/unwire" (UnwireParams) -> Unwired;
     /// `/auto check`: send the corpus cases the selection names through
     /// the daemon's classifier as a review shows them
-    /// ([`crate::approval::ApprovalEngine::check_classifier`]) and answer
+    /// ([`crate::approval::reviewer::Reviewer::check`]) and answer
     /// what came out. One at a time ([`CHECK_REFUSED`] while one runs, or
     /// without a classifier model); dropped when its client leaves
     /// ([`CANCELLED_ON_LEAVE`]).
