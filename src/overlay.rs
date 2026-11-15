@@ -1,9 +1,14 @@
 //! Command-line overlay for `tui.toml`.
 //!
 //! Every `--set <dotted.key>=<value>` becomes a small TOML document; the
-//! convenience flags (`--allow`, `--deny`, `--endpoint-def`, `--no-auto`,
-//! `--classifier-model`, `--[no-]auto-compact`, `--[no-]trust-project-builds`)
-//! desugar to the same documents, so there is one code path. The documents are
+//! convenience flags (`--allow`, `--deny`, `--endpoint-def`, and the
+//! shorthands the settings table declares for its settings: `--no-auto`,
+//! `--classifier-model`, `--[no-]auto-compact`,
+//! `--[no-]trust-project-builds`, `--no-pricing-fetch`, see
+//! [`crate::config::registry`]) desugar to the same documents, so there is
+//! one code path. A value for a setting of the table is checked as the
+//! table says (`auto.compact_warn_percent takes a whole number from 1 to
+//! 100`). The documents are
 //! merged (tables recursively, scalars replace, arrays append) into one
 //! [`RulesFile`] that [`crate::config::load_layered_with`] applies as
 //! the `cli` layer: after the global and realm files, before the project
@@ -16,6 +21,7 @@ use toml::{Table, Value};
 use crate::approval::rules::RuleOrigin;
 use crate::cli::Args;
 use crate::config::RulesFile;
+use crate::config::registry::{FlagValue, SETTINGS, lookup};
 use crate::endpoints::{ApiStyle, WireDialect, is_valid_endpoint_name};
 
 /// A command-line setting that cannot be applied. Fatal at start-up.
@@ -68,44 +74,19 @@ impl ConfigOverlay {
         for arg in &args.endpoint_def {
             overlay.add("--endpoint-def", arg, endpoint_def_table(arg)?)?;
         }
-        let auto = |key: &str, value: Value| nested(&["auto", key], value);
-        if args.no_auto {
-            overlay.add("--no-auto", "", auto("enabled", Value::Boolean(false)))?;
-        }
-        if let Some(model) = &args.classifier_model {
-            overlay.add(
-                "--classifier-model",
-                model,
-                auto("classifier_model", Value::String(model.clone())),
-            )?;
-        }
-        if args.auto_compact {
-            overlay.add(
-                "--auto-compact",
-                "",
-                auto("compact", Value::String("auto".into())),
-            )?;
-        }
-        if args.no_auto_compact {
-            overlay.add(
-                "--no-auto-compact",
-                "",
-                auto("compact", Value::String("warn".into())),
-            )?;
-        }
-        if args.trust_project_builds {
-            overlay.add(
-                "--trust-project-builds",
-                "",
-                auto("trust_project_builds", Value::Boolean(true)),
-            )?;
-        }
-        if args.no_trust_project_builds {
-            overlay.add(
-                "--no-trust-project-builds",
-                "",
-                auto("trust_project_builds", Value::Boolean(false)),
-            )?;
+        // The dedicated flags, each a shorthand the settings table declares.
+        for setting in SETTINGS {
+            for flag in setting.flags {
+                let Some(argument) = (flag.given)(args) else {
+                    continue;
+                };
+                let value = match flag.value {
+                    FlagValue::Fixed(literal) => parse_value(literal),
+                    FlagValue::Argument => Value::String(argument.clone()),
+                };
+                let path: Vec<&str> = flag.key.split('.').collect();
+                overlay.add(flag.flag, &argument, nested(&path, value))?;
+            }
         }
         Ok(overlay)
     }
@@ -341,8 +322,15 @@ fn to_rules_file(table: &Table) -> Result<RulesFile, String> {
         .map_err(|err| err.to_string().trim().to_string())
 }
 
-/// Whether one piece fits the schema and its rules and endpoints are valid.
+/// Whether one piece fits the schema, its settings hold values they take
+/// (as the settings table checks them) and its rules and endpoints are
+/// valid.
 fn validate(piece: &Table) -> Result<(), String> {
+    for setting in SETTINGS {
+        if let Some(value) = lookup(piece, setting.key) {
+            setting.check(value)?;
+        }
+    }
     let file = to_rules_file(piece)?;
     file.rules(RuleOrigin::Cli).map_err(|err| err.to_string())?;
     for (name, section) in &file.endpoints {
@@ -528,6 +516,24 @@ mod tests {
                 "--set auto.compact_warn_percent=300",
             ),
             (&["--set", "auto.enabled=maybe"], "invalid type"),
+            // A setting of the table says what it takes.
+            (
+                &["--set", "auto.compact_warn_percent=0"],
+                "auto.compact_warn_percent takes a whole number from 1 to 100",
+            ),
+            (&["--set", "ui.bell=1"], "ui.bell takes `true` or `false`"),
+            (
+                &["--set", "auto.mode=yolo"],
+                "auto.mode takes `default`, `accept-edits`, `plan`, `auto`",
+            ),
+            (
+                &["--set", "auto.compact_prepare_at=lots"],
+                "auto.compact_prepare_at: `lots` is no threshold",
+            ),
+            (
+                &["--set", "shell.user_timeout_secs=0"],
+                "shell.user_timeout_secs takes a whole number from 1",
+            ),
             (&["--set", "auto.compact=sometimes"], "sometimes"),
             (&["--set", "endpoints.x.dialect=cohere"], "unknown dialect"),
             (&["--allow", "shell=[unclosed"], "--allow shell=[unclosed"),
@@ -602,10 +608,15 @@ mod tests {
         assert_eq!(auto.compact, Some(CompactMode::Auto));
         assert_eq!(auto.trust_project_builds, Some(true));
 
-        let f = file(&["--no-auto-compact", "--no-trust-project-builds"]);
+        let f = file(&[
+            "--no-auto-compact",
+            "--no-trust-project-builds",
+            "--no-pricing-fetch",
+        ]);
         let auto = f.auto.unwrap();
         assert_eq!(auto.compact, Some(CompactMode::Warn));
         assert_eq!(auto.trust_project_builds, Some(false));
+        assert_eq!(f.pricing.fetch, Some(false));
         assert!(overlay(&[]).unwrap().rules_file().unwrap().is_none());
     }
 

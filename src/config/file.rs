@@ -229,26 +229,6 @@ pub struct SearchSection {
     pub max_entries: Option<u64>,
 }
 
-impl SearchSection {
-    /// Apply this section over `limits`; with `lower_only`, only where it
-    /// lowers them (a project file).
-    pub(crate) fn apply(&self, limits: &mut crate::tools::SearchLimits, lower_only: bool) {
-        let pick = |current: u64, set: u64| {
-            if lower_only {
-                current.min(set.max(1))
-            } else {
-                set.max(1)
-            }
-        };
-        if let Some(secs) = self.budget_secs {
-            limits.budget = std::time::Duration::from_secs(pick(limits.budget.as_secs(), secs));
-        }
-        if let Some(entries) = self.max_entries {
-            limits.max_entries = pick(limits.max_entries, entries);
-        }
-    }
-}
-
 /// `!` shell-mode settings after layering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShellSettings {
@@ -301,20 +281,6 @@ impl Default for UiSettings {
             helpers: HelperView::default(),
             bell: true,
             checklist: ChecklistView::default(),
-        }
-    }
-}
-
-impl UiSettings {
-    pub(crate) fn apply(&mut self, section: &UiSection) {
-        if let Some(helpers) = section.helpers {
-            self.helpers = helpers;
-        }
-        if let Some(bell) = section.bell {
-            self.bell = bell;
-        }
-        if let Some(checklist) = section.checklist {
-            self.checklist = checklist;
         }
     }
 }
@@ -586,6 +552,14 @@ impl RulesFile {
                 source,
             }),
         }
+    }
+
+    /// The file as a TOML table: the keys it sets, each as the file holds
+    /// it after reading (an older spelling kept, a threshold as
+    /// `300000` or `"70%"`).
+    #[must_use]
+    pub fn table(&self) -> toml::Table {
+        toml::Table::try_from(self).unwrap_or_default()
     }
 
     /// The file's rules, tagged with `origin`.

@@ -30,6 +30,7 @@
 pub mod file;
 pub mod layers;
 pub mod persist;
+pub mod registry;
 pub mod settings;
 #[cfg(test)]
 mod tests;

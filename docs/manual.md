@@ -1286,34 +1286,48 @@ Every key can be set in a user layer or for one run with
 after the global and realm files and before the project file: tables merge,
 scalars replace, arrays append, endpoints merge by name. A bad `--set`
 (unknown key, wrong type, invalid pattern or dialect) stops start-up and
-names the argument. Command-line rules show as `(cli)` in `/permissions list` and
+names the argument; a value a setting does not take is refused with what
+it takes (`auto.compact_warn_percent takes a whole number from 1 to
+100`). Command-line rules show as `(cli)` in `/permissions list` and
 are never written to a file.
 
-| Key | Flag | Default |
-|---|---|---|
-| `auto.mode` (`"default"`/`"accept-edits"`/`"plan"`/`"auto"`; `/mode` writes it to the realm file) | `--set auto.mode=plan` | `"auto"` |
-| `auto.enabled` (`false` is `mode = "default"`) | `--no-auto` (= `false`) | `true` |
-| `auto.classifier_model` (not from a project file; `[endpoint:]model`, `/auto model` writes it) | `--classifier-model <id>` | per-dialect default of the start-up endpoint |
-| `auto.allow` (statements; not from a project file) | — | none |
-| `auto.trust_project_builds` | `--trust-project-builds` / `--no-trust-project-builds` | unset: trusted while a sandbox contains the shell (a build after a dependency change too); uncontained, a build after such a change asks |
-| `auto.classifier_probe` | `--set auto.classifier_probe=false` | `true` |
-| `auto.compact` (`"warn"`/`"auto"`) | `--auto-compact` / `--no-auto-compact` | `"warn"` |
-| `auto.compact_warn_percent` | `--set auto.compact_warn_percent=N` | `75` |
-| `auto.compact_auto_percent` | `--set auto.compact_auto_percent=N` | `85` |
-| `auto.compact_prepare` (an instruction before an automatic compaction; `/compact prepare` writes the realm's) | `--set 'auto.compact_prepare=<text>'` | none |
-| `auto.compact_prepare_at` (tokens, or `"N%"` of the window) | `--set auto.compact_prepare_at=60%` | `"70%"` |
-| `auto.classifier_tools` | `--set auto.classifier_tools=false` | `true` |
-| `[[allow]]` / `[[deny]]` `tool`, `arg` (glob) or `literal` | `--allow` / `--deny <tool>[=<glob>]` (repeatable) | none |
-| `endpoints.<name>.dialect`, `.base_url`, `.api_key_env`, `.priority` (an inline `.api_key` is refused at start-up), `.api_style` (`"responses"`/`"chat_completions"`, `openai` dialect only) | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]` | `api_style`: `"responses"` |
-| `helpers.max_depth` (levels of helpers; a project file may only lower it) | `--set helpers.max_depth=N` | `1` |
-| `ui.helpers` (`"folded"`/`"expanded"`: how helper headers start) | `--set ui.helpers=expanded` | `"folded"` |
-| `ui.checklist` (`"hidden"`/`"shown"`: the task checklist under the input; Ctrl-T writes it) | `--set ui.checklist=shown` | `"hidden"` |
-| `shell.user_timeout_secs` (how long a `!` command may run; a project file may only lower it) | `--set shell.user_timeout_secs=N` | `120` |
-| `search.budget_secs` (how long one `glob` or `grep` may run before it answers with what it found; a project file may only lower it) | `--set search.budget_secs=N` | `10` |
-| `search.max_entries` (how many files and directories one `glob` or `grep` may examine; a project file may only lower it) | `--set search.max_entries=N` | `500000` |
-| `pricing."<model id>".input`, `.output`, `.cached_input`, `.cache_write` (USD per 1M tokens) | `--set 'pricing."<id>".input=15'` | fetched prices |
-| `pricing.fetch` (fetch the community price list; a project file may only set `false`) | `--no-pricing-fetch` (= `false`) | `true` |
-| `thinking."<endpoint:id or id>"` (`"adaptive"`, `{ enabled = <budget tokens> }` or `"default"`; Anthropic-dialect endpoints only, see "Thinking") | `--set 'thinking."proxy:my-alias"=adaptive'` | the engine's default |
+The table is generated from the settings table in the source
+(`src/config/registry.rs`); "takes effect" says when a change made while
+the daemon runs applies. Precedence is default, then your own
+`tui.toml`, then the workspace's realm `tui.toml`, then the command
+line; a project's `.rkat/tui.toml` counts as the "A project file"
+column says (where it may set a key, the command line still wins; where
+it may only lower a value, its lowering applies over every layer).
+
+<!-- settings-table:begin -->
+| Key | Takes | Default | A project file | Takes effect | Flag, command |
+|---|---|---|---|---|---|
+| `auto.mode`: The permission mode at start (`enabled = false` is the older `mode = "default"`). | `default`, `accept-edits`, `plan`, `auto` | auto | may only turn auto mode off (`enabled = false`) | at once | `--no-auto`, `/mode`, Shift+Tab |
+| `auto.classifier_model`: The model that reviews the agent's actions in auto mode. | a model, `[endpoint:]model` | the start-up endpoint's per-dialect default | may not set it | at once | `--classifier-model`, `/auto model` |
+| `auto.trust_project_builds`: Whether `cargo build\|test\|nextest\|check\|clippy` are tier 1. | `true` or `false` | unset: trusted while a sandbox contains the shell; uncontained, a build after a dependency change asks | may only set `false` | at the next start | `--trust-project-builds`, `--no-trust-project-builds` |
+| `auto.classifier_tools`: Whether the classifier's second stage may read project files. | `true` or `false` | true | may only set `false` | at the next start | — |
+| `auto.classifier_probe`: Whether the daemon checks the classifier model at start with two fixed cases. | `true` or `false` | true | may set it (the command line wins) | at the next start | — |
+| `auto.compact`: When the context fills up: the engine's own threshold, only warn, or compact at `compact_auto_percent`. | `native`, `warn`, `auto` | native | may set it (the command line wins) | at the next start | `--auto-compact`, `--no-auto-compact` |
+| `auto.compact_warn_percent`: Context usage (percent of the window) at which to warn once. | a whole number from 1 to 100 | 75 | may set it (the command line wins) | at the next start | — |
+| `auto.compact_auto_percent`: Context usage (percent of the window) at which to compact (`compact = "auto"`) or warn every turn. | a whole number from 1 to 100 | 85 | may set it (the command line wins) | at the next start | — |
+| `auto.compact_prepare`: What every agent is asked to do before an automatic compaction (empty: none here). | text (at most 2000 characters) | none | may set it (the command line wins) | at once | `/compact prepare <text>\|off\|default` |
+| `auto.compact_prepare_at`: Where the agents are asked to prepare: tokens, or a share of the window. | tokens (`300000`, `300k`, `1.2m`) or a share of the window (`"65%"`) | 70% | may set it (the command line wins) | at once | `/compact prepare at <threshold>\|default` |
+| `helpers.max_depth`: How many levels of helpers a session may have (0: none). | a whole number from 0 to 255 | 1 | may only lower it | at the next start | — |
+| `shell.user_timeout_secs`: How long a `!` command may run, in seconds. | a whole number from 1 | 120 | may only lower it | at the next start | — |
+| `search.budget_secs`: How long one `glob` or `grep` may run before it answers with what it found, in seconds. | a whole number from 1 | 10 | may only lower it | at the next start | — |
+| `search.max_entries`: How many files and directories one `glob` or `grep` may examine. | a whole number from 1 | 500000 | may only lower it | at the next start | — |
+| `ui.helpers`: How helper headers start in the transcript. | `folded`, `expanded` | folded | may set it (the command line wins) | at the next start | — |
+| `ui.bell`: Ring the bell when a turn ends or a prompt opens while the terminal is not focused. | `true` or `false` | true | may set it (the command line wins) | at the next start | — |
+| `ui.checklist`: Whether the task checklist shows under the input. | `hidden`, `shown` | hidden | may set it (the command line wins) | at once | Ctrl+T |
+| `pricing.fetch`: Whether the community price list is fetched for the cost readout. | `true` or `false` | true | may only set `false` | at the next start | `--no-pricing-fetch` |
+| `daemon.principal`: The person every attached client decides approval requests as. | text (at most 200 characters) | the login name ($USER, else $LOGNAME, else owner) | may not set it | at the next start | — |
+| `[[allow]] / [[deny]]`: Rules: `tool`, then `arg` (a glob) or `literal`. | a section | none | may only add deny rules | — | `--allow` / `--deny <tool>[=<glob>]`; /permissions, /approve |
+| `auto.allow`: Statements: kinds of action you allow, which the classifier reads. | a section | none | may not set it | — | —; /approve, /permissions |
+| `confinement.extra_read / extra_write`: Extra directories for the confined shell. | a section | none | may not set it | — | `--confinement-read` / `--confinement-write <dir>`; /approve |
+| `endpoints.<name>`: `dialect`, `base_url`, `api_key_env`, `priority`, `api_style` (an inline `api_key` is refused). | a section | none | may not set it | — | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]`; — |
+| `pricing."<model id>"`: `input`, `output`, `cached_input`, `cache_write` in USD per million tokens. | a section | none | may not set it | — | `--set 'pricing."<id>".input=15'`; — |
+| `thinking."<endpoint:id or id>"`: Anthropic thinking: `"adaptive"`, `{ enabled = <budget tokens> }` or `"default"`. | a section | none | may not set it | — | `--set 'thinking."proxy:my-alias"=adaptive'`; — |
+<!-- settings-table:end -->
 
 Other flags: `--model`/`-m <[endpoint:]id>`, `--endpoint <name>`,
 `--resume [ref]`, `-c`/`--continue`,

@@ -19,6 +19,18 @@
 
 ### Changed
 
+- A `--set` value for a setting is checked as the settings table says
+  and refused naming what the key takes
+  (`auto.compact_warn_percent takes a whole number from 1 to 100`,
+  `ui.bell takes true or false`); `--set` of a percentage out of
+  `1..=100` or a timeout or search limit of `0` is refused at start-up
+  instead of clamped (a `tui.toml` holding one still loads, clamped as
+  before).
+- The manual's configuration reference is generated from the settings
+  table: every scalar setting with what it takes, its default, what a
+  project file may do with it, when a change takes effect and its flags
+  and commands; `ui.bell` and `daemon.principal` are listed now, and
+  `auto.compact`'s default reads `native`.
 - `/compact prepare off` turns the instruction off for this workspace
   also when your own `tui.toml` has one, and it stays off across daemon
   restarts (an empty `compact_prepare` in the realm's `tui.toml`).

@@ -39,9 +39,10 @@ pub(crate) use glob::mention_walker;
 
 pub use read_only::ReadOnlyProjectTools;
 pub use scan::SearchLimits;
-pub(crate) use scan::run_cancellable;
 #[cfg(any(test, feature = "test-support"))]
-pub use scan::{DEFAULT_SEARCH_BUDGET_SECS, DEFAULT_SEARCH_MAX_ENTRIES, WalkProbe};
+pub use scan::WalkProbe;
+pub(crate) use scan::run_cancellable;
+pub use scan::{DEFAULT_SEARCH_BUDGET_SECS, DEFAULT_SEARCH_MAX_ENTRIES};
 #[cfg(any(test, feature = "test-support"))]
 pub use skill::MAX_SKILL_BYTES;
 pub use skill::{

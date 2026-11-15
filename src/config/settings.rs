@@ -280,64 +280,7 @@ impl<'de> Deserialize<'de> for PrepareAt {
 
 /// Which `tui.toml` layer the prepare instruction or its threshold in
 /// force comes from (`/compact prepare` and `/compact status` say it).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum PrepareSource {
-    /// No layer sets it.
-    #[default]
-    Default,
-    /// The user's own `tui.toml`.
-    User,
-    /// The realm's `tui.toml`, which `/compact prepare` writes.
-    Workspace,
-    /// `--set` on the command line.
-    CommandLine,
-    /// The project's `.rkat/tui.toml`.
-    Project,
-}
-
-impl PrepareSource {
-    /// The source of a value a `tui.toml` layer of `origin` set.
-    #[must_use]
-    pub fn of(origin: crate::approval::rules::RuleOrigin) -> Self {
-        use crate::approval::rules::RuleOrigin;
-        match origin {
-            RuleOrigin::Global => Self::User,
-            RuleOrigin::Realm | RuleOrigin::Session => Self::Workspace,
-            RuleOrigin::Cli => Self::CommandLine,
-            RuleOrigin::Project => Self::Project,
-        }
-    }
-
-    /// Where the value comes from, as the notices end with it.
-    #[must_use]
-    pub fn describe(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::User => "from your tui.toml",
-            Self::Workspace => "from this workspace (/compact prepare)",
-            Self::CommandLine => "from the command line (applies until the daemon restarts)",
-            Self::Project => "from the project's .rkat/tui.toml",
-        }
-    }
-
-    /// The layer by name (`your tui.toml has one`).
-    #[must_use]
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Default => "the default",
-            Self::User => "your tui.toml",
-            Self::Workspace => "this workspace",
-            Self::CommandLine => "the command line",
-            Self::Project => "the project's .rkat/tui.toml",
-        }
-    }
-
-    /// A layer over the workspace's (it wins again at the next start).
-    #[must_use]
-    pub fn over_workspace(self) -> bool {
-        matches!(self, Self::CommandLine | Self::Project)
-    }
-}
+pub type PrepareSource = super::registry::Level;
 
 /// A setting's value and the layer it comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]

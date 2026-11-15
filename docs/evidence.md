@@ -9503,3 +9503,52 @@ Pinned by the rig's `realm_settings::tui_set_settings_survive_a_daemon_stop`,
 `tui_set_settings_survive_a_shutdown` and
 `tui_set_settings_survive_a_retiring_shutdown` (a writer made to drop
 `compact_prepare` fails them).
+
+## One table of settings (owner decision, 2026-11-15), step 1
+
+The owner asked for one settings framework: every setting declared once,
+with its file key, its flag and its in-TUI form, synced between the
+files and running daemons, overriding correctly. Step 1 of three
+(`.handover/settings-status.md`): the table. `src/config/registry.rs`
+declares each scalar `tui.toml` setting as a `Setting` (dotted key,
+`Kind` with parse, check and print, `Fallback` default, `ProjectRule`,
+`Applies`, description, dedicated `Flag`s, friendly command, an older
+spelling it reads: `auto.enabled` for `auto.mode`) in `SETTINGS`; the
+structured sections (rules, statements, confinement grants, endpoints,
+prices, thinking) are listed in `SECTIONS` and keep their own handling.
+`Setting::resolve` gives a setting's value in force and its layer from
+the four layers' raw tables (`Layered::layers`, each file's `RulesFile`
+serialised back, so a file is read by the same serde schema as ever);
+`load_layered_with` now stores every scalar setting from it
+(`Layered::resolve_settings`), replacing `apply_auto`,
+`project_auto_without`, `prepare_sources`, `UiSettings::apply`,
+`SearchSection::apply` and the project layer's per-key lowering; the
+project layer keeps only its deny rules and notices. `--set` values for a
+table key are checked by `Setting::check`, and the dedicated flags
+desugar from the table's `Flag`s (`--no-pricing-fetch` now also lands in
+the command-line layer as `pricing.fetch = false`). The manual's
+configuration table is `registry::manual_table()`.
+
+The rules the table encodes, as the layering always had them: a project
+`Takes` a key unless the command line set it (the `[auto]` compaction
+keys, `classifier_probe`, `[ui]`); `OnlyFalse` applies over every layer
+(`trust_project_builds`, `classifier_tools`, `pricing.fetch`);
+`OnlyLower` applies over every layer when not above the value in force
+(`helpers.max_depth`, `shell.user_timeout_secs`, `search.*`); `Never`
+(`classifier_model`, `daemon.principal`); the mode `OnlyManual` (its
+`mode` is never read, its `enabled = false` turns auto into manual unless
+the command line set the mode).
+
+The behaviour-preserving test was written first and passed against the
+old layering before the loader moved: `config::registry::tests::every_setting_layers_as_it_always_did`
+loads every setting from all 81 combinations of the four layers (each
+unset or one of two values) and compares the typed view and
+`Setting::resolve` with a precedence oracle written out in the test (and
+the prepare keys' sources and "without the workspace" values). Also
+`the_mode_reads_its_older_spelling`,
+`keys_are_unique_and_every_flag_writes_a_key_the_setting_reads`,
+`values_are_parsed_checked_and_refused_with_what_the_key_takes`,
+`the_manual_s_settings_table_is_the_registry_s` (the manual's table
+between its `settings-table` markers is the generated one) and
+`overlay::tests::invalid_settings_name_the_argument`. The existing layering
+tests in `src/config/tests.rs` and the state fixtures pass unchanged.
