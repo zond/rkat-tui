@@ -13,9 +13,10 @@
 //! - **session**: lives in the daemon for the agent's session; its helpers'
 //!   and forks' calls are judged under that session, so they have it too.
 //! - **always**: written to the realm's `tui.toml` through the daemon's
-//!   trusted writer ([`crate::config::RealmFile`]) and active at once.
-//! - **config**: the user-level `tui.toml` (or the command line); listed,
-//!   removed only by editing that file.
+//!   writer ([`crate::config::write::SettingsFile`]) and active at once.
+//! - **config**: the user-level `tui.toml` (written there by "always, in
+//!   every workspace") or the command line; removed from the user's file,
+//!   or ending with the daemon for the command line's.
 //!
 //! At most [`MAX_STATEMENTS`] are active for a session, each at most
 //! [`MAX_STATEMENT_CHARS`] characters; [`normalize`] strips control
