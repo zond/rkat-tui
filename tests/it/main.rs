@@ -45,6 +45,7 @@ mod mob_destroy;
 mod mobs;
 mod models;
 mod pushes;
+mod realm_settings;
 mod realm_trust;
 mod rehome;
 mod render;

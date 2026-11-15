@@ -9483,3 +9483,23 @@ with an ellipsis. Pinned by `ui::picker::tests::a_pending_question_takes_only_y_
 `client::runner::tests::the_approve_picker_offers_once_session_and_always`
 (Enter during `s`'s question approves nothing) and the rig's picker
 checks in `approvals`, `agents` and `schedules`.
+
+## TUI-set settings across a daemon restart (2026-11-15)
+
+Nothing tested that a value set from the TUI comes back after the daemon
+restarts. Every writer of the realm's `tui.toml` (`RealmFile` in
+`src/config/persist.rs`: rules, mode, checklist view, classifier model,
+`[confinement] extra_write`, `[auto] allow`, `compact_prepare`,
+`compact_prepare_at`) is a read-modify-write of the whole `RulesFile`,
+whose sections are all `deny_unknown_fields` and fully serialised, so no
+writer drops another's key; the loader reads the same file
+(`<realm>/tui.toml`, `load_layered_with`), and nothing deletes or
+rewrites it on a stop, a shutdown or a retire. The v0.0.5 code reads the
+same for `/compact prepare <text>`. No defect found. A value the TUI
+wrote does not come back when a later layer sets the same key: the
+command line (`--set`, `--classifier-model`, `--auto-compact`) or, for
+the `[auto]` settings it may set, the project's `.rkat/tui.toml`.
+Pinned by the rig's `realm_settings::tui_set_settings_survive_a_daemon_stop`,
+`tui_set_settings_survive_a_shutdown` and
+`tui_set_settings_survive_a_retiring_shutdown` (a writer made to drop
+`compact_prepare` fails them).
