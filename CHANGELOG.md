@@ -2,24 +2,6 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- A settings file whose directory did not exist when the daemon started
-  (a project with no `.rkat/` yet, no `~/.rkat/tui/` yet) is followed once
-  the directory appears; before, its changes applied only at the next
-  start. A file written more often than every 200 ms is still read, at
-  least every 2 s.
-- `/set auto.mode plan` (or the settings picker) followed at once by a
-  prompt: the plan-mode note is in the agent's context before the run
-  starts, as it was already for Shift+Tab and `/mode`.
-- `/compact status` no longer says "(/compact prepare)" after a value that
-  comes from this workspace, and a default reads "the default".
-- After a change in a filtered `/settings` picker the list comes again
-  with the same filter, so the highlight stays on the setting changed.
-- A command held while `/compact now` is still unanswered (`/clear`,
-  `/model`) waits for the answer, also when a turn started meanwhile ends
-  first.
-
 ## [0.0.6] - 2026-11-15
 
 ### Added
@@ -101,6 +83,24 @@
   attachment (connecting, reconnecting, a failure, a daemon of another
   build) still leads it. `/status` prints the three on labelled lines
   (`daemon:`, `agent:`, `conversation:` with the full and the short id).
+
+### Fixed
+
+- A settings file whose directory did not exist when the daemon started
+  (a project with no `.rkat/` yet, no `~/.rkat/tui/` yet) is followed once
+  the directory appears; before, its changes applied only at the next
+  start. A file written more often than every 200 ms is still read, at
+  least every 2 s.
+- `/set auto.mode plan` (or the settings picker) followed at once by a
+  prompt: the plan-mode note is in the agent's context before the run
+  starts, as it was already for Shift+Tab and `/mode`.
+- `/compact status` no longer says "(/compact prepare)" after a value that
+  comes from this workspace, and a default reads "the default".
+- After a change in a filtered `/settings` picker the list comes again
+  with the same filter, so the highlight stays on the setting changed.
+- A command held while `/compact now` is still unanswered (`/clear`,
+  `/model`) waits for the answer, also when a turn started meanwhile ends
+  first.
 
 ## [0.0.5] - 2026-11-14
 
