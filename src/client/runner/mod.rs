@@ -1135,6 +1135,7 @@ impl Runner {
             Effect::Agents(None) => self.show_agent_picker(),
             Effect::NewAgent => self.new_agent(),
             Effect::RetireAgent(name) => self.retire_agent(name),
+            Effect::StopHelper(path) => self.stop_helper(path),
             Effect::Audit(lines) => self.show_audit(lines),
             Effect::Schedules(action) => self.schedules(action),
             Effect::PickedSchedule(op, id) => self.picked_schedule(op, id),

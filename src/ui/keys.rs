@@ -209,6 +209,12 @@ impl App {
     }
 
     pub(super) fn main_key(&mut self, key: &KeyEvent, now: Instant, fx: &mut Vec<Effect>) {
+        if self.stop_confirmation().is_some() {
+            self.quit.last_ctrl_c = None;
+            self.last_esc = None;
+            self.stop_confirm_key(key.code, fx);
+            return;
+        }
         if let InputMode::Search(search) = &mut self.mode {
             self.quit.last_ctrl_c = None;
             match search.key(key, &self.search_corpus) {
@@ -277,10 +283,13 @@ impl App {
                 _ => self.submit(now, fx),
             },
             Action::SendNow => self.interrupt_and_send(now, fx),
-            // Esc closes the helper view first, then drops the selection.
+            // Esc in a running helper's view asks whether to stop it; in
+            // another's it closes the view. Then it drops the selection.
             Action::Escape if view.is_some() => {
-                self.helper_view = None;
-                self.clear_selection();
+                if !self.ask_stop_in_view() {
+                    self.helper_view = None;
+                    self.clear_selection();
+                }
             }
             Action::Escape if self.panel_selection().is_some() => self.panel_selected = None,
             Action::HelperPrev => self.move_panel_selection(false),
@@ -411,7 +420,7 @@ impl App {
                 let id = *id;
                 match dialog.key(key) {
                     ModalKey::Stay => {}
-                    ModalKey::Close => self.stop_all_escalations(fx),
+                    ModalKey::Close => self.stop_escalations_of_shown(fx),
                     ModalKey::Choose(answer) => {
                         fx.push(Effect::RespondEscalation(id, answer));
                         self.advance_escalation();

@@ -3,8 +3,9 @@
 //! event, so a fast helper's whole run is seen), its session is bound in
 //! the registry (for nesting), what the daemon needs of its events is
 //! handed to a [`HelperWatch`] (each model call's usage, each run's end)
-//! until it leaves its mob, and a helper of its own whose `delegate` call
-//! ended without its result is retired ([`super::delegates`]). The mob's own structural events drive the
+//! until it leaves its mob, and its run ends and the ends of its own
+//! `delegate` calls go to [`super::endings`] (which retires a helper of its
+//! whose call timed out or failed). The mob's own structural events drive the
 //! rest (`MobHandle::events().subscribe()`, taken before the member's stream): a
 //! helper that is not a member yet is subscribed once its `MemberSpawned`
 //! arrives, and its `MemberRetired` (or the mob's destroy, reset or
@@ -120,12 +121,11 @@ async fn follow(
                             registry.bind_session(&key, &tag, session_id);
                             runs_as = Some(session_id.clone());
                         }
-                        for orphan in delegates.observe(runs_as.as_ref(), &envelope.payload) {
-                            if let Some(state) = state.upgrade() {
-                                tokio::spawn(async move {
-                                    super::delegates::retire_orphan(&state, &orphan).await;
-                                });
-                            }
+                        for (helper, how) in delegates.observe(runs_as.as_ref(), &envelope.payload) {
+                            registry.endings().call_ended(&helper, how);
+                        }
+                        if let Some(terminal) = super::endings::Terminal::of(&envelope.payload) {
+                            registry.endings().run_ended(&key, terminal);
                         }
                         observe(&*observer, &tag, &envelope.payload).await;
                     }
@@ -133,6 +133,9 @@ async fn follow(
                         Some(Some(gone)) => {
                             // Deliver what it published before it left.
                             while let Some(Some(envelope)) = futures::FutureExt::now_or_never(stream.next()) {
+                                if let Some(terminal) = super::endings::Terminal::of(&envelope.payload) {
+                                    registry.endings().run_ended(&key, terminal);
+                                }
                                 observe(&*observer, &tag, &envelope.payload).await;
                             }
                             retired = Some(gone);

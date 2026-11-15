@@ -650,14 +650,30 @@ fn plain_model(
 fn shape(
     spec: &mut SpawnMemberSpec,
     owner: &Owner,
-    label: &str,
+    key: &HelperKey,
     registry: &Arc<HelperRegistry>,
     engine: &Arc<ApprovalEngine>,
     tools: &HelperTools,
     shell_env: Option<&HashMap<String, String>>,
 ) {
-    let gate = ApprovalGate::for_helper(Arc::clone(engine), owner.session.clone(), label)
-        .after(spec.tool_dispatch_admission.take());
+    // A Stop answer to one of the helper's dialogs stops this helper only.
+    let on_stop: crate::approval::admission::OnStop = {
+        let registry = Arc::downgrade(registry);
+        let key = key.clone();
+        Arc::new(move || {
+            if let Some(registry) = registry.upgrade() {
+                let tag = registry.live_tag(&key);
+                registry.endings().stop(&key, tag);
+            }
+        })
+    };
+    let gate = ApprovalGate::for_helper(
+        Arc::clone(engine),
+        owner.session.clone(),
+        key.member.as_str(),
+    )
+    .after(spec.tool_dispatch_admission.take())
+    .stopping_with(on_stop);
     // A council it convenes works for its owner, through it.
     spec.tool_dispatch_admission = Some(Arc::new(super::council::Convening::new(
         Arc::new(gate),
@@ -868,7 +884,7 @@ impl HelperCustomizer {
         shape(
             spec,
             owner,
-            &label,
+            &key,
             &self.registry,
             &self.engine,
             &self.tools,

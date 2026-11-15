@@ -21,7 +21,7 @@
 //!   attaching mid-turn makes the turn's later calls attended;
 //! - the call belongs to a run the engine saw start after a client's input
 //!   to the session ([`super::ApprovalEngine::human_input`] and
-//!   [`super::ApprovalEngine::run_started`]): the user started it and may
+//!   [`super::ApprovalEngine::new_run_started`]): the user started it and may
 //!   have detached since (a detached agent keeps running, D2);
 //! - a client's input is waiting for its run and the call's run is not
 //!   known to have started yet (the event watcher has not seen it): that

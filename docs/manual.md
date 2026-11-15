@@ -118,8 +118,8 @@ the editor.
 
 *Esc while a turn runs* interrupts it, as in Claude Code, and Ctrl-C does
 the same (the first Esc or Ctrl-C after a mouse selection only clears it):
-the daemon stops the agent's run and its running helpers; a model request
-in flight is dropped at once. When the stop finds that the run the client
+the daemon stops the agent's own run (its helpers keep working, see
+**Helpers**); a model request in flight is dropped at once. When the stop finds that the run the client
 knew is no longer the agent's current one, or the run has not ended 10 s
 after the interrupt, the client cancels whatever run the agent has then
 (a notice says so) and waits 10 s more; if even that is not confirmed, the
@@ -355,8 +355,10 @@ and `n` (or Esc) do the same. Row 2 makes a session grant (see
 [Approving a blocked call](#approving-a-blocked-call)): the directory of a
 file tool's target outside the project (`writes under /data/x`), else the
 call's literal rule, for this conversation and its helpers until the
-daemon stops; with no grant that fits it allows once. `s` denies and stops the turn; Ctrl-C stops every open
-prompt. A held key only moves the cursor, it never answers. Choosing row 4
+daemon stops; with no grant that fits it allows once. `s` denies and stops the turn (on a
+helper's prompt, footed `s stop this helper`, it stops that helper only);
+Ctrl-C stops the open prompt and the others of the same caller (the agent's
+own, or that helper's). A held key only moves the cursor, it never answers. Choosing row 4
 (`4`, `n`, Esc, or Enter on it) opens a one-line field, "Tell the agent
 what to do instead": Enter denies the call and the model's tool error reads
 `denied by the user: <your text>` with an instruction to follow it (the
@@ -1128,10 +1130,10 @@ session's endpoint, never the model's provider default (its public URL with
 an environment key): a model the endpoint's dialect serves, or one the
 model catalog does not know, goes there; a model of another provider is
 refused, naming the configured endpoints that speak its dialect. Its tool calls pass the **delegating
-session's** gate (same rules, counters and Stop; escalations name the
+session's** gate (same rules and counters; escalations name the
 helper), so delegating never unlocks an action. The transcript shows each
-helper as one `[label · model]` line, the status bar counts running helpers,
-and an interrupt cancels them. A `delegate` call waits for its helper
+helper as one `[label · model]` line and the status bar counts running
+helpers. A `delegate` call waits for its helper
 three times as long as any one tool call may run: `[tools] default_timeout`
 (600 s unless the realm's `config.toml` sets it) or a longer
 `[tools.tool_timeouts]` entry, so 30 min by default; a helper's own tool
@@ -1143,6 +1145,44 @@ result, and the daemon then retires that helper; members started with
 A `delegate` helper is a member of the mob `implicit-<session id>` of the
 agent that started it, not of the workspace's mob (`tui`, where the agents
 are); the agent is told so.
+
+**Interrupts and helpers.** Esc, Ctrl-C, Ctrl+Enter and Ctrl-X Ctrl-S stop
+the agent's **own** run only: its helpers (delegate helpers, spawned
+members, forks, at any depth) keep working, their tool calls are still
+judged (the interrupt's Stop marks the agent's own calls only), and the
+approval prompts of their calls stay open for you to answer. A `delegate`
+helper whose call the interrupt cut off cannot return its answer through
+that call: when it finishes, its answer goes to its parent as a note
+instead. The daemon's stop still ends every helper.
+
+**Stopping one helper.** Esc in a running helper's full view asks
+`Stop helper scout? It cannot be undone: …`: `y` stops it, `n` or Esc
+keeps it running and returns to the transcript (a finished helper's view
+just closes). In `/helpers`, `s` asks the same for the highlighted helper.
+`s` (Stop) on the approval prompt of a helper's call stops that helper,
+not the agent. A stop cancels the helper's run and retires it; the
+helpers it started keep running (one level, as an interrupt).
+
+**How a helper ended.** Its parent (the agent, or for a nested helper the
+helper that started it) is told once, at once, however it ends: finished
+(with its answer, when its own call could not return it; an answer longer
+than 4 000 characters is cut and written in full to the agent's scratch
+directory), failed, stopped by you, timed out, or ended when the daemon
+stopped. A `delegate` call that returns the helper's answer is the
+notification itself and nothing more is said. Into a running parent the
+note goes at its next step; an idle parent starts a run with it (a run no
+user started, labelled `a helper ended`). Right after you interrupted the
+agent (no run started since) it is not woken: the note is held, the
+transcript says so at once, and it travels with your next message to the
+agent, before your words. A held note survives detaching and the daemon's
+restart (`held-notes.json` in the realm). Endings that come within a
+quarter second go as one note. The helper's line and its full view's
+title say how it ended in plain words (`stopped by you`, `timed out`,
+`failed: …`, `ended when the daemon stopped`), and a transcript notice
+says who was told and when. A `delegate` helper the daemon's stop left
+is run on by the engine at the next start (its answer then comes as a
+note); one the engine did not keep is told as `ended when the daemon
+stopped`.
 
 **Working or waiting.** The input's prompt marker shows whether the agent
 is busy: the plain `›` while it is idle; a turning braille spinner (`⠋`,
@@ -1169,7 +1209,8 @@ them, one line each, indented by nesting depth (the newest top-level helper
 first, its nested helpers under it): `[scout · model] ⠋ running · 4 tool
 calls · grep "fn resolve"` while it works (its last call, or the first line
 of its latest text), then `done · 7 tool calls · 2.1k tokens` (or `failed`,
-`cancelled`, `unmeasured`). A helper that finished stays listed until the
+`cancelled`, `unmeasured`, or how it ended when the daemon says: `stopped by
+you`, `timed out`, `failed: …`, `ended when the daemon stopped`). A helper that finished stays listed until the
 next turn starts. The panel takes at most six lines (beyond that, a window
 around the selection and `… and N more`) and is hidden when empty.
 Ctrl+↓/Ctrl+↑ move a selection in the panel (the newest first, wrapping
@@ -1193,7 +1234,8 @@ comes from the helper's own run start, so a helper whose start the TUI
 never saw begins with its work. PgUp/PgDn, Shift+↑/↓ and the wheel scroll
 it; it follows new output while at the bottom. The view stays open after
 the helper finishes, so its result can be read; Esc returns to the
-transcript, a second Esc drops the selection.
+transcript (for a running helper it first asks whether to stop it, see
+above), a second Esc drops the selection.
 
 The transcript keeps each helper's header where it was spawned, as the
 record: `▸ [scout · model] done · 7 tool calls`. A click on it unfolds the
@@ -1201,8 +1243,9 @@ helper's blocks in place (indented, tool output still collapsed), and
 `/helpers` (or `/tasks`) opens a list of this conversation's helpers, as
 their headers show them (label, model, state, calls, tokens; nested ones
 indented under their parent): Enter opens the highlighted helper's full
-view, as Ctrl+↓ then Enter does, and `f` folds or expands its block in the
-transcript; Esc, `q` or Ctrl-C close the list. `/helpers list` prints them
+view, as Ctrl+↓ then Enter does, `f` folds or expands its block in the
+transcript, and `s` then `y` stops a running one (a finished one says it
+has nothing to stop); Esc, `q` or Ctrl-C close the list. `/helpers list` prints them
 as a notice, and `/helpers expand|fold <label>|all` unfolds or folds them. `[ui] helpers = "expanded"` in `tui.toml` starts every header
 unfolded (default `"folded"`); a resumed session shows its helpers folded.
 
@@ -2212,13 +2255,13 @@ in `src/ui/commands.rs`, pinned to the keymap by a test):
 | Ctrl+Enter | Send now: interrupt the turn and send the input next (sends normally when idle; the same as Ctrl-X Ctrl-S) |
 | Shift+Enter, Alt+Enter, Ctrl+J | Insert a newline; so does a `\` typed right before Enter at a line end (the backslash is dropped) |
 | Ctrl-C | Interrupt the turn (as Esc), else clear the input, else press twice to quit |
-| Esc | Interrupt the turn; queued messages are sent next. The first Esc or Ctrl-C after a mouse selection only clears it |
+| Esc | Interrupt the turn (the agent's own run: its helpers keep working); queued messages are sent next. The first Esc or Ctrl-C after a mouse selection only clears it. In a running helper's full view: ask whether to stop that helper (`y` stops it, `n` or Esc keeps it) |
 | Esc Esc (idle, with text) | Clear the input and save it to the prompt history (↑ recalls it) |
 | Up (empty input) | Take queued messages back into the editor |
 | Ctrl-D | On an empty input, quit on a second press within 3 s (see [Sessions](#sessions) and [Detach and reattach](#the-workspace-daemon)); with text, delete forward |
 | Ctrl-O | Show everything in full, or fold it all back: every tool call's arguments, output and diff, every reasoning block, every job outcome, in the transcript and an open helper view; while on, new ones arrive shown (a click toggles one until the next Ctrl-O; scrolled back, the line at the top stays put) |
 | Ctrl-T | Show or hide the [task checklist](#task-checklist) |
-| Ctrl+Up/Down | Select a helper in the panel under the input (newest first); Enter on an empty input opens its full view: its task and later inputs with who gave them, its work and its answer, under a title with its kind, state and model (Esc returns, PgUp/PgDn scroll it) |
+| Ctrl+Up/Down | Select a helper in the panel under the input (newest first); Enter on an empty input opens its full view: its task and later inputs with who gave them, its work and its answer, under a title with its kind, state and model (Esc returns, asking first whether to stop a running helper; PgUp/PgDn scroll it) |
 | Ctrl-R | Search the prompt history, the workspace's then the global one (Ctrl-R again: older; Enter accepts; Esc cancels) |
 | Ctrl-X Ctrl-S | Interrupt and send the input (sends normally when idle) |
 | Ctrl-G, Ctrl-X Ctrl-E | Edit the input in `$VISUAL`, else `$EDITOR`, else `vi` (also while a turn runs) |
@@ -2241,7 +2284,8 @@ in `src/ui/commands.rs`, pinned to the keymap by a test):
 In the approval prompt: `1` or `y` allows once, `2` or `a` allows and adds
 the rule the row shows, `3`, `n` or Esc denies (type what the agent should
 do instead and Enter sends it with the denial), Up/Down, `j`/`k` and Enter
-move and pick, and `s` stops the turn (Ctrl-C stops every open prompt).
+move and pick, and `s` stops the turn, or on a helper's prompt that helper
+(Ctrl-C stops the open prompt and the others of its caller).
 
 Details the table leaves out:
 

@@ -1,5 +1,6 @@
-//! Runs no client started: a schedule's or a watch's (audited and told to
-//! the clients), and the profile hint for a read-only mob with comms.
+//! Runs no client started: a schedule's, a watch's or a helper's ending's
+//! (audited and told to the clients), and the profile hint for a read-only
+//! mob with comms.
 
 use std::sync::Arc;
 
@@ -56,6 +57,27 @@ impl Agents {
                 Some((session, run)),
                 "run_triggered",
                 format!("watch ({prompt})"),
+            );
+            return;
+        }
+        // The note of a helper's ending the daemon sent it.
+        let from_helper = {
+            let mut sent = self.helper_sent.lock();
+            if sent.get(name).is_some_and(|text| text == prompt) {
+                sent.remove(name);
+                true
+            } else {
+                false
+            }
+        };
+        if from_helper {
+            self.announce(
+                name,
+                session,
+                run,
+                "a helper ended".to_string(),
+                prompt,
+                "a helper's ending",
             );
             return;
         }

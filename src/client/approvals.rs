@@ -162,9 +162,9 @@ impl Change {
 /// The dialogs this client shows.
 #[derive(Debug, Default)]
 pub struct Approvals {
-    /// The decisions whose dialogs are open: their local id and the digest
-    /// of the rendering shown.
-    decisions: HashMap<String, (u64, String)>,
+    /// The decisions whose dialogs are open: their local id, the digest
+    /// of the rendering shown, and whether a helper's call asks.
+    decisions: HashMap<String, (u64, String, bool)>,
     decision_by_local: HashMap<u64, String>,
     next: u64,
 }
@@ -199,7 +199,11 @@ impl Approvals {
         let local = self.next;
         self.decisions.insert(
             notice.decision_id.clone(),
-            (local, presentation.subject_digest),
+            (
+                local,
+                presentation.subject_digest,
+                dialog.prompt.agent.is_some(),
+            ),
         );
         self.decision_by_local.insert(local, notice.decision_id);
         Some(Change::Show(dialog.prompt, EscalationId(local)))
@@ -208,7 +212,7 @@ impl Approvals {
     /// The daemon's `rkat/decision_ended` (its params): close the dialog
     /// this client did not answer, saying how it ended.
     pub fn decision_ended(&mut self, ended: &DecisionEnded) -> Option<Change> {
-        let (local, _) = self.decisions.remove(&ended.decision_id)?;
+        let (local, _, _) = self.decisions.remove(&ended.decision_id)?;
         self.decision_by_local.remove(&local);
         let text = match ended.phase {
             Some(WireDecisionPhase::Approved | WireDecisionPhase::Executed) => {
@@ -224,12 +228,13 @@ impl Approvals {
         Some(Change::Resolve(EscalationId(local), Some(text.to_string())))
     }
 
-    /// The UI answered dialog `id` of a decision: the decision and the
-    /// digest of what was shown (the dialog is closed from now on).
-    pub fn answer_decision(&mut self, id: EscalationId) -> Option<(String, String)> {
+    /// The UI answered dialog `id` of a decision: the decision, the
+    /// digest of what was shown, and whether a helper's call asked (the
+    /// dialog is closed from now on).
+    pub fn answer_decision(&mut self, id: EscalationId) -> Option<(String, String, bool)> {
         let decision = self.decision_by_local.remove(&id.0)?;
-        let (_, digest) = self.decisions.remove(&decision)?;
-        Some((decision, digest))
+        let (_, digest, helper) = self.decisions.remove(&decision)?;
+        Some((decision, digest, helper))
     }
 
     /// Forget every dialog (the connection is gone; the daemon pushes what
@@ -352,7 +357,7 @@ mod tests {
         };
         assert_eq!(
             approvals.answer_decision(id),
-            Some(("d2".to_string(), "sha256:abc".to_string()))
+            Some(("d2".to_string(), "sha256:abc".to_string(), false))
         );
         assert!(approvals.decision_ended(&ended("d2", "approved")).is_none());
         let params = decision_params(

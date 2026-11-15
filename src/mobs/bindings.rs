@@ -415,6 +415,17 @@ impl HelperBindings {
         self.change(|b| b.remove_mob(mob))
     }
 
+    /// Every member bound, with its tag, as the bindings hold them now.
+    #[must_use]
+    pub fn members(&self) -> Vec<(HelperKey, HelperTag)> {
+        self.memory
+            .lock()
+            .members
+            .iter()
+            .map(|(key, binding)| (key.clone(), binding.tag.clone()))
+            .collect()
+    }
+
     /// Drop what `owner` holds from memory (the file keeps it). Idempotent.
     pub fn forget_owner(&self, owner: &SessionId) {
         self.memory.lock().forget_owner(owner);

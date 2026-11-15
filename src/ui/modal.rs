@@ -874,10 +874,11 @@ fn escalation_lines(
     lines.push(Line::default());
     let Some(comment) = &dialog.comment else {
         lines.push(Line::styled(
-            if prompt.args_full.is_some() {
-                "Enter select · s stop · Ctrl+O all arguments · Ctrl+C stop all"
-            } else {
-                "Enter select · s stop the turn · Ctrl+C stop all"
+            match (prompt.args_full.is_some(), prompt.agent.is_some()) {
+                (true, _) => "Enter select · s stop · Ctrl+O all arguments · Ctrl+C stop all",
+                // A helper's call: Stop stops that helper, not the turn.
+                (false, true) => "Enter select · s stop this helper · Ctrl+C stop all",
+                (false, false) => "Enter select · s stop the turn · Ctrl+C stop all",
             },
             dim,
         ));

@@ -29,8 +29,9 @@
 //!
 //! [`watch`] follows the agent's events: a run start lifts a Stop,
 //! a model call is counted ([`super::usage`]), a run end refreshes the
-//! tool catalog, and the helper of a `delegate` call that ended without its
-//! result is retired ([`crate::mobs::delegates`]). [`HelperEvents`] does the same for the helpers, from the
+//! tool catalog, and how each `delegate` call ended goes to the helpers'
+//! endings ([`crate::mobs::endings`]: a timed-out or failed call's helper
+//! is retired, a cut-off one's keeps running). [`HelperEvents`] does the same for the helpers, from the
 //! follower's one subscription to each ([`crate::mobs::follow`]): their
 //! model calls are counted to their owner's conversation, and a helper's
 //! catalog is read after its first run; a helper that stays seated
@@ -140,6 +141,8 @@ impl ToolDispatchAdmission for RootGate {
 /// One escalation the desk waits on.
 struct Waiting {
     session: SessionId,
+    /// Whether the call is the session's own agent's (not a helper's).
+    own: bool,
     stop: Option<oneshot::Sender<()>>,
 }
 
@@ -207,11 +210,14 @@ impl Desk {
         *self.engine.lock() = Arc::downgrade(engine);
     }
 
-    /// The human interrupted `session`'s turn: its open escalations are
-    /// answered with Stop (the engine denies them and stops the session).
+    /// The human interrupted `session`'s turn: the open escalations of its
+    /// own agent's calls are answered with Stop (the engine denies them and
+    /// stops the session). Its helpers' stay open for the user to answer:
+    /// an interrupt does not stop them.
     pub fn stop(&self, session: &SessionId) {
         for waiting in self.waiting.lock().values_mut() {
             if &waiting.session == session
+                && waiting.own
                 && let Some(stop) = waiting.stop.take()
             {
                 let _ = stop.send(());
@@ -258,6 +264,7 @@ impl Desk {
             prompt.id,
             Waiting {
                 session: prompt.session_id.clone(),
+                own: prompt.shown.agent.is_none(),
                 stop: Some(stop_tx),
             },
         );
@@ -509,8 +516,8 @@ pub struct Watched {
 /// the agent the most recently active one (`agents`), every run end
 /// refreshes the session's tool catalog, every model call and compaction
 /// is counted ([`super::usage`]), each run's start and end tell
-/// [`super::activity`] when the agent is idle, and a `delegate` call that
-/// ends without its helper's result has the helper retired. When the agent is seated
+/// [`super::activity`] when the agent is idle, and how each `delegate`
+/// call ends goes to the helpers' endings. When the agent is seated
 /// again (a conversation switch, a reseat:
 /// [`super::conversations::Conversations::seatings`]) it subscribes again,
 /// from the new incarnation's first event: the member's old stream does
@@ -556,8 +563,8 @@ struct Following {
     run: Option<meerkat_core::RunId>,
     /// A compaction's history estimate, until it completes.
     compacting: Option<u64>,
-    /// The agent's open `delegate` calls: a helper whose call ends
-    /// without its result is retired.
+    /// The agent's open `delegate` calls: how each ends goes to the
+    /// helpers' endings ([`crate::mobs::endings`]).
     delegates: crate::mobs::delegates::DelegateCalls,
 }
 
@@ -725,14 +732,15 @@ impl Watcher {
         following: &mut Following,
     ) {
         let session = || event_session(&envelope.source, following.session.as_ref());
-        for orphan in following
+        let ended = following
             .delegates
-            .observe(session().as_ref(), &envelope.payload)
+            .observe(session().as_ref(), &envelope.payload);
+        if !ended.is_empty()
+            && let Some(agents) = self.watched.agents.upgrade()
         {
-            let state = Arc::clone(&self.watched.state);
-            tokio::spawn(async move {
-                crate::mobs::delegates::retire_orphan(&state, &orphan).await;
-            });
+            for (helper, how) in ended {
+                agents.core().registry.endings().call_ended(&helper, how);
+            }
         }
         match &envelope.payload {
             AgentEvent::RunStarted {
@@ -899,12 +907,17 @@ impl Watcher {
             agents,
             ..
         } = &self.watched;
-        engine.run_started(session, run);
+        let new = engine.new_run_started(session, run);
         activity.run_started(&self.name, run);
         let Some(agents) = agents.upgrade() else {
             return;
         };
         agents.touch(&self.name);
+        // Not just interrupted any more: a held helper's ending goes in
+        // (a replayed start of a run seen before changes nothing).
+        if new {
+            agents.helpers_run_started(&self.name);
+        }
         if let (Some(run), Some(prompt)) = (run, prompt)
             && !engine.human_run(session, run)
         {
@@ -1287,29 +1300,37 @@ mod tests {
         until(|| desk.waiting() == 0).await;
     }
 
+    /// An interrupt answers Stop to the open escalations of its session's
+    /// own agent only: another session's, and those of the session's
+    /// helpers (an interrupt does not stop them), stay open.
     #[tokio::test]
-    async fn an_interrupt_stops_the_sessions_waiting_escalations_only() {
+    async fn an_interrupt_stops_the_sessions_own_waiting_escalations_only() {
         let (desk, decisions, tx) = desk();
         let (mine, other) = (SessionId::new(), SessionId::new());
         let stopped = ask(&tx, prompt(1, &mine)).await;
         let kept = ask(&tx, prompt(2, &other)).await;
-        until(|| desk.waiting() == 2).await;
+        let mut helper = prompt(3, &mine);
+        helper.shown.agent = Some("scout".into());
+        let helper = ask(&tx, helper).await;
+        until(|| desk.waiting() == 3).await;
         desk.stop(&mine);
         assert_eq!(stopped.await.unwrap(), HumanDecision::Stop);
-        assert_eq!(desk.waiting(), 1);
-        // The stopped one is withdrawn; the other stays open.
-        until(|| open(&decisions).len() == 1).await;
-        let id = open(&decisions)[0].decision_id.clone();
-        decisions.settled(
-            &id,
-            Settled {
-                approve: true,
-                answer: None,
-                reason: None,
-                by: None,
-            },
-        );
+        assert_eq!(desk.waiting(), 2);
+        // The stopped one is withdrawn; the others stay open.
+        until(|| open(&decisions).len() == 2).await;
+        for row in open(&decisions) {
+            decisions.settled(
+                &row.decision_id,
+                Settled {
+                    approve: true,
+                    answer: None,
+                    reason: None,
+                    by: None,
+                },
+            );
+        }
         assert_eq!(kept.await.unwrap(), HumanDecision::AllowOnce);
+        assert_eq!(helper.await.unwrap(), HumanDecision::AllowOnce);
     }
 
     #[tokio::test]

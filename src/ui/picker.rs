@@ -124,6 +124,9 @@ pub enum PickAct {
     ViewHelper(BlockId),
     /// Fold or expand the helper's block in the transcript.
     FoldHelper(BlockId),
+    /// Stop the running helper (its run is cancelled and it is retired;
+    /// the helpers it started keep running).
+    StopHelper(BlockId),
     /// `/wire <workspace>/<agent>`.
     Wire {
         /// The other agent's workspace.
@@ -982,6 +985,7 @@ impl App {
                 self.helper_view = Some(OpenHelperView {
                     header,
                     scroll: ScrollState::default(),
+                    confirm_stop: false,
                 });
                 self.clear_selection();
             }
@@ -990,6 +994,7 @@ impl App {
                 let picker = self.helper_picker();
                 self.show_picker(picker, true);
             }
+            PickAct::StopHelper(header) => self.stop_helper(header, fx),
         }
     }
 }

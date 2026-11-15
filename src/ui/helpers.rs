@@ -4,8 +4,8 @@
 
 use super::transcript::HelperFold;
 use super::{
-    App, Block, BlockId, HelperTarget, HelperView, HelpersCommand, ListPicker, Modal, NoticeLevel,
-    OpenHelperView, PickAct, PickKey, PickRow, PickerKind, ScrollState,
+    App, Block, BlockId, Effect, HelperTarget, HelperView, HelpersCommand, ListPicker, Modal,
+    NoticeLevel, OpenHelperView, PickAct, PickKey, PickRow, PickerKind, ScrollState,
 };
 
 impl App {
@@ -73,6 +73,7 @@ impl App {
             self.helper_view = Some(OpenHelperView {
                 header,
                 scroll: ScrollState::default(),
+                confirm_stop: false,
             });
         }
         self.clear_selection();
@@ -163,18 +164,32 @@ impl App {
     /// The `/helpers` picker: the helpers of this conversation in
     /// transcript order, nested ones indented under their parent, each
     /// as the transcript's header shows it (label, model, state, calls,
-    /// tokens); Enter opens its full view, `f` folds or expands its block.
+    /// tokens); Enter opens its full view, `f` folds or expands its block,
+    /// `s` stops a running one after a confirmation.
     pub(super) fn helper_picker(&self) -> ListPicker {
         use ratatui::crossterm::event::KeyCode;
         let rows = self
             .transcript
             .helper_headers()
             .map(|(id, fold)| {
+                let stop = if fold.state.is_running() {
+                    PickKey::confirmed(
+                        KeyCode::Char('s'),
+                        PickAct::StopHelper(id),
+                        stop_question(&fold.label),
+                    )
+                } else {
+                    PickKey::refused(
+                        KeyCode::Char('s'),
+                        format!("helper {} is not running: nothing to stop", fold.label),
+                    )
+                };
                 PickRow::new(
                     helper_line(fold),
                     vec![
                         PickKey::now(KeyCode::Enter, PickAct::ViewHelper(id)),
                         PickKey::now(KeyCode::Char('f'), PickAct::FoldHelper(id)),
+                        stop,
                     ],
                 )
             })
@@ -183,9 +198,76 @@ impl App {
             PickerKind::Helpers,
             rows,
             "no helpers in this conversation yet (the agent starts them with delegate)",
-            "↑/↓ move · Enter full view (Esc returns) · f fold/expand in the transcript · Esc close",
+            "↑/↓ move · Enter full view · f fold/expand in the transcript · s stop · Esc close",
         )
     }
+
+    /// Stop the helper `header` (its labels from the transcript): the
+    /// daemon cancels its run and retires it, and tells its parent.
+    pub(super) fn stop_helper(&mut self, header: BlockId, fx: &mut Vec<Effect>) {
+        let path = self.transcript.helper_path(header);
+        if path.is_empty() {
+            return;
+        }
+        if self.helper_view() == Some(header) {
+            self.helper_view = None;
+        }
+        fx.push(Effect::StopHelper(path));
+    }
+
+    /// Esc in the full view of a running helper asks whether to stop it
+    /// (`true`); a helper that is not running has nothing to stop.
+    pub(super) fn ask_stop_in_view(&mut self) -> bool {
+        let Some(header) = self.helper_view() else {
+            return false;
+        };
+        let running =
+            matches!(self.transcript.block(header), Some(Block::Helper(f)) if f.state.is_running());
+        if running && let Some(view) = self.helper_view.as_mut() {
+            view.confirm_stop = true;
+        }
+        running
+    }
+
+    /// The question the full view of a running helper asks on Esc, when
+    /// it does.
+    #[must_use]
+    pub fn stop_confirmation(&self) -> Option<String> {
+        let view = self.helper_view.as_ref().filter(|view| view.confirm_stop)?;
+        match self.transcript.block(view.header) {
+            Some(Block::Helper(fold)) => Some(stop_question(&fold.label)),
+            _ => None,
+        }
+    }
+
+    /// A key while the full view asks whether to stop its helper: `y`
+    /// stops it, `n` or Esc keeps it running and goes back to the
+    /// transcript, anything else leaves the question up.
+    pub(super) fn stop_confirm_key(
+        &mut self,
+        code: ratatui::crossterm::event::KeyCode,
+        fx: &mut Vec<Effect>,
+    ) {
+        use ratatui::crossterm::event::KeyCode;
+        let Some(header) = self.helper_view() else {
+            return;
+        };
+        match code {
+            KeyCode::Char('y' | 'Y') => self.stop_helper(header, fx),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                self.helper_view = None;
+                self.clear_selection();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// What stopping the helper `label` asks.
+fn stop_question(label: &str) -> String {
+    format!(
+        "Stop helper {label}? It cannot be undone: its run ends and it is retired (the helpers it started keep running); its parent is told."
+    )
 }
 
 /// A helper header as a static line: indented by its depth, `▾` expanded

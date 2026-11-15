@@ -185,6 +185,8 @@ pub struct HelperRegistry {
     /// The agents' private scratch directories
     /// ([`crate::approval::scratch`]): an agent's helpers share its own.
     scratch: crate::approval::scratch::ScratchDirs,
+    /// How each helper ends, and when its parent is told.
+    endings: super::endings::HelperEndings,
 }
 
 impl HelperRegistry {
@@ -214,7 +216,62 @@ impl HelperRegistry {
             councils: Mutex::new(HashMap::new()),
             destroyed: tokio::sync::broadcast::channel(DESTROYED_QUEUE).0,
             scratch: crate::approval::scratch::ScratchDirs::off(),
+            endings: super::endings::HelperEndings::default(),
         }
+    }
+
+    /// How each helper ends ([`super::endings`]).
+    #[must_use]
+    pub fn endings(&self) -> &super::endings::HelperEndings {
+        &self.endings
+    }
+
+    /// The session that started the helper `key` (its parent): the session
+    /// of a `delegate` helper's implicit mob, else the session that
+    /// created its mob.
+    #[must_use]
+    pub fn parent_session(&self, key: &HelperKey) -> Option<SessionId> {
+        key.mob
+            .as_str()
+            .strip_prefix("implicit-")
+            .and_then(|session| SessionId::parse(session).ok())
+            .or_else(|| self.bindings.mob_owner(&key.mob))
+    }
+
+    /// The running helper that runs as `session`, with its tag.
+    #[must_use]
+    pub fn live_by_session(&self, session: &SessionId) -> Option<(HelperKey, HelperTag)> {
+        let (key, _) = self.bindings.member_by_session(session)?;
+        let tag = self.live.lock().get(&key).cloned()?;
+        Some((key, tag))
+    }
+
+    /// The running helper working for `owner` whose labels are `path`
+    /// (outermost first).
+    #[must_use]
+    pub fn live_by_path(
+        &self,
+        owner: &SessionId,
+        path: &[String],
+    ) -> Option<(HelperKey, HelperTag)> {
+        self.live
+            .lock()
+            .iter()
+            .find(|(_, tag)| &tag.owner == owner && tag.path == path)
+            .map(|(key, tag)| (key.clone(), tag.clone()))
+    }
+
+    /// The tag of the running helper `key`.
+    #[must_use]
+    pub fn live_tag(&self, key: &HelperKey) -> Option<HelperTag> {
+        self.live.lock().get(key).cloned()
+    }
+
+    /// The helpers bound in the bindings file now, each with its tag (at
+    /// a start: the ones the last daemon left).
+    #[must_use]
+    pub fn bound_members(&self) -> Vec<(HelperKey, HelperTag)> {
+        self.bindings.members()
     }
 
     /// The scratch directory of the agent `member`, made private when it
@@ -470,6 +527,7 @@ impl HelperRegistry {
     /// runs).
     pub fn spawning(&self, key: HelperKey, tag: HelperTag) -> Result<(), BindingsError> {
         self.bindings.bind(&key, &tag)?;
+        self.endings.spawned(&key, &tag);
         self.live.lock().insert(key, tag);
         Ok(())
     }

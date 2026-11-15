@@ -177,7 +177,10 @@ impl HelperFold {
             out.push(glyph);
             out.push(' ');
         }
-        out.push_str(self.state.text());
+        match self.ended.as_deref().filter(|_| !self.state.is_running()) {
+            Some(how) => out.push_str(how),
+            None => out.push_str(self.state.text()),
+        }
         let _ = write!(out, " · {}", crate::text::count(self.calls, "tool call"));
         if self.state.is_running() {
             match &self.last {
@@ -1374,17 +1377,26 @@ impl Transcript {
                     );
                 }
                 Some(h) => {
-                    let state = if error_report.class == meerkat_core::AgentErrorClass::Cancelled {
+                    let cancelled = error_report.class == meerkat_core::AgentErrorClass::Cancelled;
+                    let state = if cancelled {
                         HelperState::Cancelled
                     } else {
                         HelperState::Failed
                     };
                     self.update_fold(h.header, |f| f.state = state);
-                    let notice = self.push_notice(
-                        NoticeLevel::Error,
-                        format!("{} error: {}", h.tag, error_report.message),
-                    );
-                    self.set_owner(notice, scope);
+                    // A cancelled run's words are the engine's; how the
+                    // helper ended comes from the daemon (`helper_ended`).
+                    if !cancelled {
+                        let notice = self.push_notice(
+                            NoticeLevel::Error,
+                            format!(
+                                "{} error: {}",
+                                h.tag,
+                                crate::mobs::endings::plain_reason(&error_report.message)
+                            ),
+                        );
+                        self.set_owner(notice, scope);
+                    }
                 }
             },
             AgentEvent::RunStarted { input, .. } if let Some(h) = helper => {

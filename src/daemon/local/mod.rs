@@ -26,9 +26,11 @@
 //! run that takes it is one a user started (attended, see
 //! [`crate::approval::attendance`]); an
 //! interrupt
-//! (`mob/stop_member_run`, `mob/force_cancel`) stops the session's review
-//! and answers its open escalations with Stop, and stops the session's
-//! running helpers.
+//! (`mob/stop_member_run`, `mob/force_cancel`) stops the review of the
+//! agent's own calls and answers the open escalations of its own calls with
+//! Stop; its helpers keep running, and the endings of its helpers are held
+//! until the user's next message to it ([`super::agents::endings`]). A
+//! helper is stopped on its own ([`method::StopHelper`]).
 //!
 //! [`Local::call`] is the dispatch table, one line per method; the
 //! handlers live in files by concern: an agent's conversations and its
@@ -40,7 +42,6 @@
 /// The longest a prompt waits for a mode change the same client sent
 /// before it ([`Local::observe`]).
 const MODE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-
 mod inputs;
 mod lifecycle;
 mod model;
@@ -398,6 +399,7 @@ impl Local {
             method::Shutdown, protocol::ShutdownParams { retire } => Ok(self.shutdown(&caller, retire));
             method::Quit, Empty {} => self.quit(&caller).await;
             method::RetireAgent, protocol::AgentParams { name } => self.retire_other(&caller, &name).await;
+            method::StopHelper, protocol::StopHelperParams { path } => self.stop_helper(&caller, &path);
             method::Recall, protocol::RecallParams { input_ids } => self.recall(&caller, &input_ids).await;
             method::Inputs, protocol::RecallParams { input_ids } => self.input_fates(&caller, &input_ids).await;
             method::Schedules, Empty {} => self.schedules(&caller).await;
@@ -499,20 +501,26 @@ impl Local {
                         let key = InputKey::new(format!("rkat-attach:{}:{n}", std::process::id()));
                         self.core.engine.record_user_input(&session, key, &text);
                     }
+                    // The endings of helpers held since the user interrupted
+                    // the agent go with this message, before its words (the
+                    // classifier's transcript has the user's words only).
+                    if let Some(held) = self.agents.take_held(&agent, &session)
+                        && let Some(content) = params.get_mut("content")
+                    {
+                        prepend_note(content, &held);
+                    }
                 }
             }
             engine::STOP_MEMBER_RUN | engine::FORCE_CANCEL | engine::HARD_CANCEL_MEMBER => {
                 tracing::info!(%method, %agent, "the client interrupts the agent");
+                // The agent's own run only: its helpers keep running (the
+                // owner's decision of 2026-11-15), their calls are not
+                // denied by its Stop, their dialogs stay open, and their
+                // endings are held for the user's next message.
+                self.agents.interrupted(&agent);
                 if let Some(session) = self.core.conversations.current(&agent) {
                     self.core.engine.stop(&session);
                     self.parts.desk.stop(&session);
-                    // The `delegate` call that would retire a helper is
-                    // abandoned with the run: stop the helpers too.
-                    let state = Arc::clone(&self.core.state);
-                    let registry = Arc::clone(&self.core.registry);
-                    tokio::spawn(async move {
-                        crate::mobs::cancel_helpers(&state, &registry, &session).await;
-                    });
                 }
             }
             _ => {}
@@ -600,6 +608,25 @@ fn answer(result: impl serde::Serialize) -> Result<Value, Refusal> {
     serde_json::to_value(result).map_err(Refusal::internal)
 }
 
+/// Put `note` (what the daemon held for the agent) before the user's
+/// words in the wire content input `content`: a string gets it in front,
+/// a block list a text block first.
+fn prepend_note(content: &mut Value, note: &str) {
+    let lead = format!("{note}\n\n{HELD_NOTE_SEPARATOR}\n\n");
+    match content {
+        Value::String(text) => *text = format!("{lead}{text}"),
+        Value::Array(blocks) => blocks.insert(
+            0,
+            serde_json::json!({"type": "text", "text": lead.trim_end()}),
+        ),
+        _ => {}
+    }
+}
+
+/// What separates held notes from the user's message they travel with.
+const HELD_NOTE_SEPARATOR: &str =
+    "(rkat-tui noted the above while you were stopped; the user's message follows)";
+
 /// The text of a wire content input: a string, or the text blocks of a
 /// block list.
 fn content_text(content: &Value) -> Option<String> {
@@ -621,6 +648,24 @@ fn content_text(content: &Value) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_held_note_goes_before_the_user_s_words() {
+        let mut text = json!("fix it");
+        prepend_note(&mut text, "Your helper `a` finished.");
+        assert_eq!(
+            text,
+            json!(format!(
+                "Your helper `a` finished.\n\n{HELD_NOTE_SEPARATOR}\n\nfix it"
+            ))
+        );
+        let mut blocks = json!([{"type": "text", "text": "fix it"}]);
+        prepend_note(&mut blocks, "note");
+        assert_eq!(
+            content_text(&blocks).as_deref(),
+            Some(format!("note\n\n{HELD_NOTE_SEPARATOR}\nfix it").as_str())
+        );
+    }
 
     #[test]
     fn content_text_reads_strings_and_text_blocks() {

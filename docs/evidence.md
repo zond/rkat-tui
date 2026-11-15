@@ -130,7 +130,14 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
 
 - A `delegate` call whose future is dropped (the tool timeout) leaves its
   helper seated; the engine should retire it as it does after a completed
-  or failed turn (lukacf/meerkat#2206): "Orphaned delegate helpers".
+  or failed turn (lukacf/meerkat#2206): "Orphaned delegate helpers". (A
+  call an interrupt cut off is now meant to leave its helper running:
+  "Interrupts stop the agent only".)
+- `mob_append_system_context` refused right after an interrupted run
+  ("no exact durable-row lineage for the observed head"), and an agent
+  stopped by the daemon's stop in the middle of a `delegate` call that is
+  still running, taking no message, after the restart: "Interrupts stop
+  the agent only" (not posted; draft in `.handover/upstream-interrupt-asks.md`).
 - `delegate` waits under the same core tool deadline as each tool call of
   its helper; it should own its deadline as `fork_off` and `council` do
   (lukacf/meerkat#2207): "Tool deadlines inside a helper".
@@ -9897,3 +9904,117 @@ nothing is set), `litellm::a_helper_naming_its_model_in_an_inline_profile_runs_o
 `an_unregistered_self_hosted_model_is_refused_with_the_registered_ones`,
 `an_endpoint_prefix_is_the_owner_s_or_refused`,
 `daemon::settings::tests::both_helper_model_lists_are_refused_on_a_write_and_a_sync`.
+
+## Interrupts stop the agent only; helpers' endings are told (2026-11-15)
+
+Owner's decisions (`.handover/plan-0.0.8.md`, item 2): an interrupt stops
+the agent the client talks to and none of its helpers; the gate's Stop
+marks that agent's own calls only; a `delegate` helper the interrupt cut
+off keeps running and its answer reaches the parent as a note; a parent
+is told once, at once, of every ending; a helper is stopped on its own.
+
+What stopped the helpers before was rkat-tui, not the engine:
+`Local::observe` spawned `mobs::cancel_helpers` (force-cancel and retire
+every running helper of the session) on `mob/stop_member_run`,
+`mob/force_cancel` and `mob/hard_cancel_member`, and `DelegateCalls`
+retired the helper of every `delegate` call still open when the run
+ended. What the engine does on a cancelled `delegate` (Meerkat 0.9.14):
+
+- the interrupt races the whole run future against the interrupt and
+  drops it (meerkat-session `ephemeral.rs` 12148-12197, `drop(run_fut)`);
+  the `delegate` call's future goes with it, in the middle of
+  `DelegationExecutionService::execute` (meerkat-mob `runtime/delegation.rs`
+  1059-1094: `start`, then `await_terminal`, then `retire_terminalized`;
+  meerkat-mob-mcp `agent_tools.rs` 1306, `dispatch_delegate`). Neither
+  `DelegationExecutionHandle` nor `WorkTurnHandle` (`runtime/handle.rs`
+  4318: a receipt, a session id and a oneshot receiver) has a `Drop`: the
+  member is neither cancelled nor retired, and its run goes on. Nothing on
+  the engine's side tears the helper down, so no limitation is kept.
+- The stream tells a cut-off call from a timed-out one: the timeout emits
+  `ToolExecutionTimedOut` and then `ToolExecutionCompleted { is_error:
+  true }` (meerkat-core `agent/state.rs`); a cancelled run emits neither
+  for its in-flight calls, only its own `RunFailed` (class `cancelled`).
+  `DelegateCalls::observe` now says how each call ended
+  (`CallEnded::{Returned, TimedOut, Failed, CutOff}`).
+- What the agent reads of the cut-off call afterwards is the engine's
+  recovery: the call's result is `{"error":"outcome_uncertain","message":
+  "Outcome of tool 'delegate' is uncertain: the run was interrupted after
+  this call was issued and did not resume; …"}` and a system notice says
+  the run was closed "as InterruptedByRecovery". Both are the engine's
+  and stay; rkat-tui's own words never use the term.
+- A helper's end is its own stream's `RunCompleted { result }` (its final
+  text: the answer) or `RunFailed { error_report }`; its retirement is the
+  mob's `MemberRetired`.
+
+What rkat-tui does now:
+
+- `Local::observe` no longer stops helpers on an interrupt; it marks the
+  agent interrupted (`Agents::interrupted`) and still stops its review
+  (`ApprovalEngine::stop`) and answers its own open dialogs Stop
+  (`Desk::stop`, now only escalations whose prompt names no helper).
+  `ApprovalEngine::stopped` applies to the session's own agent's calls
+  only. A Stop answer to a helper's dialog denies that call and leaves the
+  session running; the helper's gate (`ApprovalGate::stopping_with`, set
+  by the customizer) then stops that helper.
+- `mobs::endings::HelperEndings` (in the registry) takes the ends of the
+  parent's `delegate` calls (agent watcher and helper follower), the
+  helpers' own run ends (follower), the user's stop (`rkat/stop_helper`,
+  or the gate) and the leftovers at a start, and decides once per helper:
+  a call that returned the answer settles silently; a timed-out or failed
+  one is told at once (a timed-out one's helper retired as before); a
+  cut-off one waits for the helper's own end, then tells it with its
+  answer and retires it. A long-lived member's run ends are no endings.
+- `daemon::agents::endings` words the note, finds the recipient (the
+  parent session: the implicit mob's session, else the mob's creator; a
+  parent gone hands it to the agent the helper worked for) and delivers:
+  a steer into a running parent, a message that starts a run for an idle
+  one (attributed as `a helper ended`, unattended unless a client is
+  with the agent), and, for an agent its user just interrupted (no new
+  run since), a held note: persisted in `held-notes.json`, announced to
+  the clients at once (`rkat/helper_ended`), and sent with the user's
+  next message. Endings within 250 ms go as one note.
+- The held note travels **in the user's message**, before the user's
+  words and a separator line, not as a system-context append: the probe
+  found `mob_append_system_context` refused for the agent right after its
+  interrupted run (`failed to prepare head-canonical boundary: session …
+  rewrite rejected: incoming session has no exact durable-row lineage for
+  the observed head; rematerialize it from the canonical rows before
+  append`). The classifier's record of the user's words has the user's
+  only (it is read before the note is added). Other notes the daemon
+  appends in that window (a roster or plan-mode note) fail the same way
+  and are logged; the engine ask is drafted in
+  `.handover/upstream-interrupt-asks.md`.
+- At a start, every agent counts as just interrupted (the stop ended its
+  run as an interrupt does; nothing is woken). A `delegate` helper the
+  last daemon left that its mob still seats was restored by the engine,
+  which runs it again (its model call after the restart shows it): it is
+  treated as cut off and its answer comes as a note. One its mob no
+  longer seats is told as `ended when the daemon stopped`.
+- Observed, not changed: an agent the daemon's stop caught in the middle
+  of its own `delegate` call lists no implicit-mob member after the
+  restart and reports itself running; a message to it got no model call
+  within 30 s (probe on the rig). It did so with the leftover handling
+  switched off too; whether the build before this change behaves the
+  same was not checked.
+
+Tests (rig): `helpers::an_interrupt_leaves_the_helper_running_and_its_answer_comes_with_the_next_message`
+(the helper's next model call after the confirmed interrupt; it pinned
+the opposite before; fails with the old `cancel_helpers` on interrupt),
+`helper_endings::an_interrupt_leaves_a_helper_s_dialog_open` (fails with
+the old `Desk::stop`), `helper_endings::stop_on_a_helper_s_dialog_stops_that_helper_only`,
+`helper_endings::stopping_a_helper_stops_it_alone_and_tells_its_running_agent`,
+`helper_endings::stopping_a_helper_that_is_not_running_says_so`,
+`helper_endings::a_delegate_that_returns_its_answer_sends_no_note`,
+`helper_endings::a_timed_out_delegate_is_retired_and_its_agent_told`,
+`helper_endings::an_ending_wakes_an_idle_agent_the_user_did_not_just_interrupt`,
+`helper_endings::a_held_ending_survives_a_daemon_restart`,
+`helper_endings::a_helper_the_engine_restores_after_a_restart_answers_its_agent`;
+unit: `mobs::endings::tests::*`, `mobs::delegates::tests::*`,
+`daemon::agents::endings::tests::*`,
+`approval::engine::tests::a_stop_marks_the_agent_s_own_calls_not_its_helpers`,
+`daemon::approvals::tests::an_interrupt_stops_the_sessions_own_waiting_escalations_only`,
+`daemon::local::tests::a_held_note_goes_before_the_user_s_words`,
+`ui::tests::helpers::{esc_in_a_running_helper_s_view_asks_to_stop_it,
+the_helper_picker_stops_a_running_helper_after_a_confirmation,
+a_helper_s_line_says_how_it_ended}`,
+`ui::tests::escalations::ctrl_c_on_a_dialog_stops_its_caller_s_dialogs_only`.

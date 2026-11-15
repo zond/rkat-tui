@@ -906,11 +906,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "helpers",
         aliases: &["tasks"],
         usage: "[list | expand|fold <label>|all]",
-        summary: "pick a helper (sub-agent): open its full view, or fold its work",
+        summary: "pick a helper (sub-agent): open its full view, fold its work, or stop it",
         help: &[
             (
                 "/helpers, /tasks",
-                "open a list of this conversation's helpers (sub-agents): label,\nmodel, state, calls and tokens, nested ones indented; Enter\nopens one's full view, f folds or expands its block",
+                "open a list of this conversation's helpers (sub-agents): label,\nmodel, state (or how it ended), calls and tokens, nested ones\nindented; Enter opens one's full view, f folds or expands its\nblock, s stops a running one after a y/n question (the helpers\nit started keep running; its parent is told)",
             ),
             (
                 "/helpers list",
@@ -1090,7 +1090,9 @@ Keys:
   Shift+Enter, Alt+Enter, Ctrl+J insert a newline (so does \\ right before Enter at a line end)
   Ctrl-C                         interrupt the turn (as Esc) · clear the input · press twice to quit
   Esc                            interrupt the turn; queued messages are sent next (no turn shown:
-                                 the client asks the daemon and says when nothing runs)
+                                 the client asks the daemon and says when nothing runs). It stops
+                                 the agent's own run only: its helpers keep working, and how each
+                                 ends comes to the agent with your next message
   Esc Esc (idle, with text)      clear the input and save it to the prompt history (↑ recalls it)
   Up (empty input)               take queued messages back into the editor (and commands
                                  waiting for the turn's end: /model, /new, /resume, /init, …)
@@ -1105,8 +1107,9 @@ Keys:
                                  task_create/task_update list: ☐ pending, ◐ in progress, ☑ done;
                                  nothing shows while there are no tasks; saved as [ui] checklist)
   Ctrl+Up/Down                   select a helper in the panel under the input (newest first);
-                                 Enter on an empty input opens its full view (Esc returns,
-                                 PgUp/PgDn scroll it); a click unfolds a header in the transcript
+                                 Enter on an empty input opens its full view (PgUp/PgDn scroll
+                                 it; Esc returns, and for a running helper first asks whether to
+                                 stop it: y stops it, n or Esc keeps it); a click unfolds a header
   Ctrl-R                         search history (Ctrl-R again: older · Enter accept · Esc cancel)
   Ctrl-X Ctrl-S                  interrupt and send the input (sends normally when idle)
   Ctrl-G, Ctrl-X Ctrl-E          edit the input in $VISUAL / $EDITOR / vi (also while a turn runs)
@@ -1148,7 +1151,8 @@ Approval prompt:
   Up/Down, j/k, Enter            move between the rows and pick one
   Ctrl+O                         show the whole arguments when the prompt abbreviates them
   PgUp/PgDn, Home/End            while they are shown whole: scroll them, start, end
-  s                              stop the turn (Ctrl-C stops every open prompt)
+  s                              stop the turn; on a helper's prompt it stops that helper only
+                                 (Ctrl-C stops the open prompt and the others of its caller)
 Agent picker (/agents):
   Up/Down, j/k, Enter            move; switch to the agent (the last row starts a new one)
   d, then y                      retire the agent: only one idle with no client (its
@@ -1166,8 +1170,10 @@ Lists (/schedules, /permissions, /approve, /helpers, /mode, /memory, /wire, /unw
   s, then y (/approve)           grant its directory or call for this session (exact)
   a, then y (/approve)           grant it always (the realm's tui.toml; exact)
   e (/approve)                   allow its kind of effect: edit the sentence, Tab session/always, Enter (judged by the classifier)
-  Enter (/helpers)               open the helper's full view (Esc returns)
+  Enter (/helpers)               open the helper's full view
   f (/helpers)                   fold or expand the helper's block in the transcript
+  s, then y (/helpers)           stop the running helper (its run ends and it is retired; the
+                                 helpers it started keep running; its parent is told)
   Enter (/mode)                  switch to the mode (a paused auto mode: resume it)
   Enter (/memory)                edit the file in $VISUAL / $EDITOR
   Esc, q, Ctrl-C                 close (an approval request takes over and the list comes back)";
@@ -1939,7 +1945,12 @@ mod tests {
         let keys = keys_help();
         assert!(keys.starts_with("Keys:\n  ? (empty input)"), "{keys}");
         assert!(keys.contains("Approval prompt:"));
-        assert!(keys.contains("stops every open prompt)"), "{keys}");
+        assert!(
+            keys.contains("on a helper's prompt it stops that helper only"),
+            "{keys}"
+        );
+        assert!(keys.contains("s, then y (/helpers)"), "{keys}");
+        assert!(keys.contains("its helpers keep working"), "{keys}");
         assert!(keys.contains("Agent picker (/agents):"), "{keys}");
         assert!(keys.contains("d, then y"), "{keys}");
         assert!(!keys.contains("/permissions [list]"));

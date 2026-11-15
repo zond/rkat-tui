@@ -23,6 +23,7 @@
 //! (`ResumeSessionBoundToAnotherMember`), so a conversation whose agent
 //! quit is seated again under that agent's name ([`Agents::bind`]).
 
+pub mod endings;
 mod names;
 mod notes;
 mod triggers;
@@ -123,6 +124,13 @@ pub struct Agents {
     /// The last watch event sent to each agent: a run it starts is the
     /// watch's.
     watch_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
+    /// The last note of a helper's ending sent to each agent: a run it
+    /// starts is that ending's.
+    helper_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
+    /// The agents whose last run the user interrupted ([`endings`]).
+    interrupted: endings::Interrupted,
+    /// The notes of helpers' endings held for them ([`endings`]).
+    held: endings::HeldNotes,
     table: parking_lot::Mutex<BTreeMap<String, Agent>>,
     /// One seat or retire at a time: two `new` binds seat two agents, a
     /// `recent` bind never sees half of one.
@@ -142,12 +150,16 @@ impl std::fmt::Debug for Agents {
 }
 
 impl Agents {
-    /// No agents yet ([`Self::start`] restores or seats them).
+    /// No agents yet ([`Self::start`] restores or seats them); `held` are
+    /// the notes of helpers' endings held for them.
     #[must_use]
-    pub fn new(core: Arc<Core>) -> Arc<Self> {
+    pub fn new(core: Arc<Core>, held: endings::HeldNotes) -> Arc<Self> {
         Arc::new(Self {
             core,
             watch_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            helper_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            interrupted: endings::Interrupted::default(),
+            held,
             table: parking_lot::Mutex::new(BTreeMap::new()),
             seating: tokio::sync::Mutex::new(()),
             clock: AtomicU64::new(0),
@@ -794,6 +806,7 @@ impl Agents {
         self.core.activity.forget(name);
         self.core.watches.forget(name);
         self.watch_sent.lock().remove(name);
+        self.helper_sent.lock().remove(name);
         self.core.wires.forget(name);
         if let Some(session) = session {
             self.core.engine.forget_session(session);

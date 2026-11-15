@@ -40,24 +40,50 @@ pub fn implicit_mob(session: &SessionId) -> MobId {
     MobId::from(format!("implicit-{session}"))
 }
 
+/// How a `delegate` call ended, as its caller's events show it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallEnded {
+    /// It completed with the helper's result: the caller has the answer.
+    Returned,
+    /// The engine's tool timeout dropped it (`ToolExecutionTimedOut`, then
+    /// its completion as an error): its helper is left seated.
+    TimedOut,
+    /// It completed as an error otherwise (the helper's turn failed, its
+    /// spawn was refused): the engine retired a helper it seated.
+    Failed,
+    /// The caller's run ended while it was open (an interrupt, or the run
+    /// failing): the call's future was dropped with the run, its helper
+    /// keeps running, and nothing will return its answer.
+    CutOff,
+}
+
 /// The `delegate` calls one session has open (by tool call id), each with
 /// the helper it names.
 #[derive(Debug, Default)]
 pub struct DelegateCalls {
     open: HashMap<String, HelperKey>,
+    /// The open calls the engine reported timed out (their completion
+    /// follows).
+    timed_out: std::collections::HashSet<String>,
 }
 
 impl DelegateCalls {
     /// Follow `event` of `session` (`None`: unknown, and its calls are not
-    /// followed); the helpers whose calls just ended without their
-    /// result, to retire.
+    /// followed); the helpers whose calls just ended, each with how.
     ///
-    /// A call ends without its result when it completes as an error (a
-    /// timed-out call completes with its timeout error) or when the run
-    /// ends while it is still open. A helper another open call still names
-    /// is not returned: that call may be the one that spawned it.
-    pub fn observe(&mut self, session: Option<&SessionId>, event: &AgentEvent) -> Vec<HelperKey> {
-        let ended: Vec<HelperKey> = match event {
+    /// A timed-out call is told apart from a cut-off one by the engine's
+    /// own events: the timeout emits `ToolExecutionTimedOut` and completes
+    /// the call with its error (meerkat-core `agent/state.rs`), while a
+    /// cancelled run drops its in-flight calls with the run future, so
+    /// they never complete (meerkat-session `ephemeral.rs`, the interrupt
+    /// race). A helper another open call still names is not returned: that
+    /// call may be the one that spawned it.
+    pub fn observe(
+        &mut self,
+        session: Option<&SessionId>,
+        event: &AgentEvent,
+    ) -> Vec<(HelperKey, CallEnded)> {
+        let ended: Vec<(HelperKey, CallEnded)> = match event {
             AgentEvent::ToolCallRequested { id, name, args } if name == DELEGATE => {
                 if let (Some(session), Some(member)) = (
                     session,
@@ -72,24 +98,41 @@ impl DelegateCalls {
                 }
                 Vec::new()
             }
+            AgentEvent::ToolExecutionTimedOut { id, name, .. } if name == DELEGATE => {
+                if self.open.contains_key(id) {
+                    self.timed_out.insert(id.clone());
+                }
+                Vec::new()
+            }
             AgentEvent::ToolExecutionCompleted {
                 id, name, is_error, ..
-            } if name == DELEGATE => match self.open.remove(id) {
-                Some(key) if *is_error => vec![key],
-                _ => Vec::new(),
-            },
+            } if name == DELEGATE => {
+                let timed_out = self.timed_out.remove(id);
+                match self.open.remove(id) {
+                    Some(key) if timed_out => vec![(key, CallEnded::TimedOut)],
+                    Some(key) if *is_error => vec![(key, CallEnded::Failed)],
+                    Some(key) => vec![(key, CallEnded::Returned)],
+                    None => Vec::new(),
+                }
+            }
             AgentEvent::RunCompleted { .. } | AgentEvent::RunFailed { .. } => {
-                self.open.drain().map(|(_, key)| key).collect()
+                self.timed_out.clear();
+                self.open
+                    .drain()
+                    .map(|(_, key)| (key, CallEnded::CutOff))
+                    .collect()
             }
             _ => Vec::new(),
         };
-        let mut orphans: Vec<HelperKey> = Vec::new();
-        for key in ended {
-            if !orphans.contains(&key) && !self.open.values().any(|open| open == &key) {
-                orphans.push(key);
+        let mut out: Vec<(HelperKey, CallEnded)> = Vec::new();
+        for (key, how) in ended {
+            if !out.iter().any(|(seen, _)| seen == &key)
+                && !self.open.values().any(|open| open == &key)
+            {
+                out.push((key, how));
             }
         }
-        orphans
+        out
     }
 }
 
@@ -140,35 +183,42 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_call_names_its_helper_and_a_completed_one_does_not() {
+    fn each_call_says_how_it_ended() {
         let session = SessionId::new();
         let mut calls = DelegateCalls::default();
-        assert!(
-            calls
-                .observe(Some(&session), &requested("d1", DELEGATE, "a"))
-                .is_empty()
-        );
-        assert!(
-            calls
-                .observe(Some(&session), &requested("d2", DELEGATE, "b"))
-                .is_empty()
-        );
-        assert!(
-            calls
-                .observe(Some(&session), &completed("d1", false))
-                .is_empty()
+        for (id, member) in [("d1", "a"), ("d2", "b"), ("d3", "c")] {
+            assert!(
+                calls
+                    .observe(Some(&session), &requested(id, DELEGATE, member))
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            calls.observe(Some(&session), &completed("d1", false)),
+            vec![(key(&session, "a"), CallEnded::Returned)]
         );
         assert_eq!(
             calls.observe(Some(&session), &completed("d2", true)),
-            vec![key(&session, "b")]
+            vec![(key(&session, "b"), CallEnded::Failed)]
+        );
+        // The engine's timeout comes before the call's error completion.
+        let timed_out = AgentEvent::ToolExecutionTimedOut {
+            id: "d3".into(),
+            name: DELEGATE.into(),
+            timeout_ms: 3000,
+        };
+        assert!(calls.observe(Some(&session), &timed_out).is_empty());
+        assert_eq!(
+            calls.observe(Some(&session), &completed("d3", true)),
+            vec![(key(&session, "c"), CallEnded::TimedOut)]
         );
         // Another tool's calls are not followed.
         calls.observe(Some(&session), &requested("s1", "shell", "c"));
-        assert!(calls.open.is_empty());
+        assert!(calls.open.is_empty() && calls.timed_out.is_empty());
     }
 
     #[test]
-    fn a_run_that_ends_with_a_call_open_names_its_helper_once() {
+    fn a_run_that_ends_with_a_call_open_cuts_it_off_once() {
         let session = SessionId::new();
         let mut calls = DelegateCalls::default();
         calls.observe(Some(&session), &requested("d1", DELEGATE, "a"));
@@ -191,7 +241,7 @@ mod tests {
         };
         assert_eq!(
             calls.observe(Some(&session), &ended),
-            vec![key(&session, "a")]
+            vec![(key(&session, "a"), CallEnded::CutOff)]
         );
         assert!(calls.open.is_empty());
     }

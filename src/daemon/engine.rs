@@ -286,7 +286,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         helper_external_tools(files, &helper_skills)
     });
     // The daemon follows its helpers: the
-    // registry's running set (an interrupt cancels it), and each helper's
+    // registry's running set (and how each ends), and each helper's
     // session bound for the helpers it delegates to in turn. Clients see
     // the helpers' events on the mobs' own streams.
     let (spawning, spawning_rx) = mpsc::unbounded_channel();

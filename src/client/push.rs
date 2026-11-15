@@ -35,6 +35,8 @@ pub enum Push {
     Idle(protocol::IdleNote),
     /// A notice for one agent's clients ([`protocol::AGENT_NOTICE`]).
     AgentNotice(protocol::AgentNotice),
+    /// A helper ended ([`protocol::HELPER_ENDED`]).
+    HelperEnded(protocol::HelperEnded),
     /// A setting in force changed ([`protocol::SETTING`]).
     Setting(protocol::SettingNote),
     /// An event of the stream `stream` (the conversation's own, or a mob's;
@@ -82,6 +84,7 @@ impl Push {
             protocol::MOB => Self::Mob(read(note)?),
             protocol::IDLE => Self::Idle(read(note)?),
             protocol::AGENT_NOTICE => Self::AgentNotice(read(note)?),
+            protocol::HELPER_ENDED => Self::HelperEnded(read(note)?),
             protocol::MODE => Self::Mode(read(note)?),
             protocol::SETTING => Self::Setting(read(note)?),
             STREAM_EVENT => {
@@ -146,6 +149,14 @@ mod tests {
         ));
         assert!(
             matches!(notice, Some(Push::AgentNotice(n)) if n.agent == "main-a" && !n.warn && n.text == "context at 300k")
+        );
+        let session = meerkat_core::SessionId::new();
+        let ended = Push::decode(note(
+            protocol::HELPER_ENDED,
+            json!({"agent": "main-a", "session_id": session, "path": ["scout"], "how": "stopped by you"}),
+        ));
+        assert!(
+            matches!(ended, Some(Push::HelperEnded(e)) if e.path == ["scout"] && e.how == "stopped by you" && e.told.is_none())
         );
         // Unreadable parameters and unknown methods are not acted on.
         assert!(Push::decode(note(protocol::COST, json!({"nope": true}))).is_none());

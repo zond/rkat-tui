@@ -148,24 +148,163 @@ fn enter_with_text_submits_despite_a_selection() {
     assert_eq!(app.panel_selection(), Some(fork));
 }
 
+/// Esc in a running helper's full view asks whether to stop it (the
+/// owner's decision of 2026-11-15; this test pinned Esc closing the view
+/// before): the question is drawn under the view, other keys leave it up,
+/// `n` (or Esc) keeps the helper running and goes back to the transcript,
+/// `y` stops it. A finished helper's view closes on Esc; then Esc drops
+/// the selection.
 #[test]
-fn esc_closes_the_view_then_drops_the_selection() {
+fn esc_in_a_running_helper_s_view_asks_to_stop_it() {
     let (mut app, _, fork) = helper_app();
     app.update(ctrl_key(KeyCode::Down));
     app.update(key(KeyCode::Enter));
     assert_eq!(app.helper_view(), Some(fork));
-    let fx = app.update(key(KeyCode::Esc));
-    assert!(fx.is_empty());
+    assert!(app.update(key(KeyCode::Esc)).is_empty());
+    assert_eq!(app.helper_view(), Some(fork));
+    let question = app.stop_confirmation().unwrap();
+    assert!(
+        question.starts_with("Stop helper fork-1? It cannot be undone")
+            && question.contains("the helpers it started keep running"),
+        "{question}"
+    );
+    let rows = screen(&mut app, 14).join("\n");
+    assert!(rows.contains("Stop helper fork-1?"), "{rows}");
+    assert!(
+        rows.contains("y stop it · n or Esc keep it running (back to the transcript)"),
+        "{rows}"
+    );
+    // Another key is not typed and leaves the question up.
+    assert!(app.update(key(KeyCode::Char('x'))).is_empty());
+    assert!(app.input.is_empty() && app.stop_confirmation().is_some());
+    // n: back to the transcript, the helper left running.
+    assert!(app.update(key(KeyCode::Char('n'))).is_empty());
     assert_eq!(app.helper_view(), None);
     assert_eq!(app.panel_selection(), Some(fork));
-    let fx = app.update(key(KeyCode::Esc));
-    assert!(fx.is_empty());
+    assert!(app.update(key(KeyCode::Esc)).is_empty());
     assert_eq!(app.panel_selection(), None);
-    // A finished helper's view stays open until Esc.
+    // y: the helper is stopped (by its labels) and the view closes.
+    app.update(ctrl_key(KeyCode::Down));
+    app.update(key(KeyCode::Enter));
+    app.update(key(KeyCode::Esc));
+    assert_eq!(
+        app.update(key(KeyCode::Char('y'))),
+        vec![Effect::StopHelper(vec!["fork-1".into()])]
+    );
+    assert_eq!(app.helper_view(), None);
+    // A finished helper's view closes on Esc, nothing asked.
+    app.update(key(KeyCode::Esc));
     app.update(ctrl_key(KeyCode::Down));
     app.update(key(KeyCode::Enter));
     app.update(live(&[]));
     assert_eq!(app.helper_view(), Some(fork));
+    assert!(app.update(key(KeyCode::Esc)).is_empty());
+    assert_eq!(app.helper_view(), None);
+    assert_eq!(app.stop_confirmation(), None);
+}
+
+/// The `/helpers` picker's `s` asks to stop a running helper (nested ones
+/// by their whole path) and refuses for one that is not running.
+#[test]
+fn the_helper_picker_stops_a_running_helper_after_a_confirmation() {
+    let (mut app, _, _) = helper_app();
+    app.update(Msg::Scoped(
+        crate::mobs::HelperTag {
+            owner: meerkat_core::SessionId::new(),
+            path: vec!["scout".into(), "inner".into()],
+            model: "m".into(),
+        }
+        .scope(AgentEvent::ToolCallRequested {
+            id: "b".into(),
+            name: "grep".into(),
+            args: test_args(json!({})),
+        }),
+    ));
+    type_str(&mut app, "/helpers");
+    app.update(key(KeyCode::Enter));
+    let line = |app: &App| match &app.modal {
+        Some(Modal::List(p)) => p.line.clone(),
+        other => panic!("{other:?}"),
+    };
+    // To scout's helper `inner`.
+    let at = match &app.modal {
+        Some(Modal::List(p)) => p
+            .rows
+            .iter()
+            .position(|r| r.text.contains("[inner"))
+            .unwrap(),
+        other => panic!("{other:?}"),
+    };
+    for _ in 0..at {
+        app.update(key(KeyCode::Down));
+    }
+    assert!(app.update(key(KeyCode::Char('s'))).is_empty());
+    assert!(
+        matches!(line(&app), Some(crate::ui::picker::PickerLine::Confirm { question, .. })
+            if question.starts_with("Stop helper inner?")),
+        "{:?}",
+        line(&app)
+    );
+    let rows = screen(&mut app, 24).join("\n");
+    assert!(rows.contains("Stop helper inner?"), "{rows}");
+    assert_eq!(
+        app.update(key(KeyCode::Char('y'))),
+        vec![Effect::StopHelper(vec!["scout".into(), "inner".into()])]
+    );
+    // A helper that is not running has nothing to stop.
+    app.update(Msg::HelperEnded {
+        path: vec!["scout".into()],
+        how: "stopped by you".into(),
+        told: None,
+    });
+    type_str(&mut app, "/helpers");
+    app.update(key(KeyCode::Enter));
+    assert!(app.update(key(KeyCode::Char('s'))).is_empty());
+    assert!(
+        matches!(line(&app), Some(crate::ui::picker::PickerLine::Refused(why))
+            if why == "helper scout is not running: nothing to stop"),
+        "{:?}",
+        line(&app)
+    );
+}
+
+/// How a helper ended is said in plain words: on its line in the panel and
+/// in its view's title instead of its state, and in a notice in the
+/// transcript that says who was told.
+#[test]
+fn a_helper_s_line_says_how_it_ended() {
+    let (mut app, scout, _) = helper_app();
+    app.update(Msg::HelperEnded {
+        path: vec!["scout".into()],
+        how: "stopped by you".into(),
+        told: Some("main-ab12 was told".into()),
+    });
+    let rows = screen(&mut app, 14);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("[scout · m] stopped by you · 1 tool call")),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("helper [scout · m] stopped by you; main-ab12 was told")),
+        "{rows:#?}"
+    );
+    assert!(matches!(
+        app.transcript.block(scout),
+        Some(Block::Helper(fold)) if fold.state == transcript::HelperState::Cancelled
+    ));
+    app.update(Msg::HelperEnded {
+        path: vec!["fork-1".into()],
+        how: "ended when the daemon stopped".into(),
+        told: None,
+    });
+    let text = screen(&mut app, 24).join(" ");
+    assert!(
+        text.contains("ended when the daemon stopped; nobody is told"),
+        "{text}"
+    );
+    assert!(!text.contains("InterruptedByRecovery"));
 }
 
 #[test]

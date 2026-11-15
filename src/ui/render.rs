@@ -247,18 +247,45 @@ fn draw_helper_view(frame: &mut Frame<'_>, app: &mut App, header: BlockId, area:
     let w = usize::from(area.width).max(4);
     let title = match app.transcript.block(header) {
         Some(Block::Helper(fold)) => {
-            helper_line(fold, &fold.view_status_text(), w, "◂ ", "  Esc back")
+            let esc = if fold.state.is_running() {
+                "  Esc stop?"
+            } else {
+                "  Esc back"
+            };
+            helper_line(fold, &fold.view_status_text(), w, "◂ ", esc)
         }
         _ => Line::default(),
     };
+    // Esc asked whether to stop the helper: the question under its view.
+    let question: Vec<Line<'static>> = app
+        .stop_confirmation()
+        .map(|question| {
+            let style = Style::default().fg(Color::Yellow);
+            let mut lines: Vec<Line<'static>> = crate::ui::markdown::wrap_text(&question, w)
+                .into_iter()
+                .map(|line| Line::styled(line, style))
+                .collect();
+            lines.push(Line::styled(
+                "y stop it · n or Esc keep it running (back to the transcript)",
+                style.add_modifier(Modifier::BOLD),
+            ));
+            lines
+        })
+        .unwrap_or_default();
     let body = app.transcript.helper_view_lines(header, area.width);
-    let body_height = height.saturating_sub(1);
+    let body_height = height.saturating_sub(1 + question.len());
     let start = app
         .helper_view_scroll()
         .map_or(0, |scroll| scroll.window(body.len(), body_height));
     let mut lines = Vec::with_capacity(height);
     lines.push(title.patch_style(Modifier::REVERSED));
     lines.extend(body.into_iter().skip(start).take(body_height));
+    let shown = lines.len();
+    lines.extend(std::iter::repeat_n(
+        Line::default(),
+        (1 + body_height).saturating_sub(shown),
+    ));
+    lines.extend(question);
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -522,7 +549,8 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
         InputHint::Menu => " Tab completes · ↑/↓ choose · Esc closes the menu ".into(),
         InputHint::Shell => app.shell_mode_hint().into(),
         InputHint::HelperView => {
-            " Esc back to the transcript · PgUp/PgDn scroll · Enter sends typed text ".into()
+            " Esc back (asks to stop a running helper) · PgUp/PgDn scroll · Enter sends typed text "
+                .into()
         }
         InputHint::PanelSelection => {
             " Enter opens the helper (empty input; with text Enter sends) · Esc deselects ".into()

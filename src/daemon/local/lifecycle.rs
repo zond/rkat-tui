@@ -168,6 +168,35 @@ impl Local {
         })
     }
 
+    /// `rkat/stop_helper` for `caller`: stop the running helper of its
+    /// agent's current conversation whose labels are `path` (its run
+    /// cancelled, it retired; the helpers it started keep running), and
+    /// tell its parent.
+    pub(super) fn stop_helper(&self, caller: &Caller, path: &[String]) -> Result<Empty, Refusal> {
+        let agent = self.agent_of(caller)?;
+        let named = path.join(" › ");
+        let Some(session) = self.core.conversations.current(&agent) else {
+            return Err(Refusal::new(
+                protocol::HELPER_REFUSED,
+                format!("agent {agent} runs no conversation, so it has no helper {named} to stop"),
+            ));
+        };
+        let Some((key, tag)) = self.core.registry.live_by_path(&session, path) else {
+            return Err(Refusal::new(
+                protocol::HELPER_REFUSED,
+                format!(
+                    "no running helper {named} works for agent {agent}: it may have ended already (/helpers lists the running ones)"
+                ),
+            ));
+        };
+        tracing::info!(helper = %key, %agent, "the user stops a helper");
+        self.audit(
+            crate::daemon::audit::Line::event("helper_stopped", key.to_string()).of_agent(&agent),
+        );
+        self.core.registry.endings().stop(&key, Some(tag));
+        Ok(Empty {})
+    }
+
     /// `rkat/retire_agent` for `caller`: retire `name` when it is another
     /// agent than the caller's, has no client and is idle, decided and done
     /// under the seating lock so no client binds to it in between.

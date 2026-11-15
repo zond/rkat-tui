@@ -507,11 +507,21 @@ impl Runner {
                 };
                 self.notice(level, notice.text);
             }
+            Push::HelperEnded(ended)
+                if ended.agent == link.connection.agent() && ended.session_id == link.session =>
+            {
+                self.send(Msg::HelperEnded {
+                    path: ended.path,
+                    how: ended.how,
+                    told: ended.told,
+                });
+            }
             Push::Triggered(_)
             | Push::Cost(_)
             | Push::Switched(_)
             | Push::Idle(_)
-            | Push::AgentNotice(_) => {}
+            | Push::AgentNotice(_)
+            | Push::HelperEnded(_) => {}
             Push::Mob(protocol::MobNote {
                 mob_id,
                 change: protocol::MobChange::Hosts,

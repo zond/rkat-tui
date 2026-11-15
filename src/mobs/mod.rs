@@ -13,8 +13,10 @@
 //!   the helper's owner on the spawn spec's `tool_dispatch_admission`: the
 //!   helper's calls are judged against the owner's transcript of the user's
 //!   words (the helper's task is assistant-authored and never recorded as
-//!   user intent), share its allow cache, Stop and the denial counters, and
-//!   the escalation dialog names the helper.
+//!   user intent), share its allow cache and the denial counters (not its
+//!   Stop: an interrupt stops the agent's own calls only), and the
+//!   escalation dialog names the helper; Stop on that dialog stops the
+//!   helper.
 //! - **The model.** A `delegate` helper runs on its delegator's model (the
 //!   implicit mob's profile); the customizer adds the owner's auth binding,
 //!   so a helper of a configured endpoint's session reaches the same
@@ -39,11 +41,16 @@
 //!   member or a destroyed mob is dropped from them; a forgotten session
 //!   ([`crate::approval::ApprovalEngine::forget_session`]) is dropped from
 //!   memory.
-//! - **Interrupts.** [`cancel_helpers`] force-cancels the running helpers of
-//!   a session when its turn is interrupted or its conversation is left.
-//! - **Orphans.** A `delegate` call that ends without its helper's result
-//!   (timed out, failed, or left open by its run's end) leaves the helper
-//!   seated; [`delegates`] names it from the caller's events and retires it.
+//! - **Interrupts.** An interrupt stops the agent's own run only: its
+//!   helpers keep running (the owner's decision of 2026-11-15). Leaving a
+//!   conversation ([`cancel_helpers`]) and the daemon's stop still end them;
+//!   the user stops one helper on its own ([`endings::HelperEndings::stop`]).
+//! - **Endings.** A `delegate` call that timed out or failed leaves no
+//!   helper seated ([`delegates`] names it from the caller's events and
+//!   retires it); one cut off by an interrupt leaves its helper running,
+//!   and its answer goes to the parent as a note when it finishes. Every
+//!   ending its parent's own call did not return is told to the parent
+//!   ([`endings`]).
 
 pub mod registry;
 
@@ -51,6 +58,7 @@ pub mod bindings;
 pub mod council;
 pub mod customizer;
 pub mod delegates;
+pub mod endings;
 pub(crate) mod follow;
 
 use std::sync::Arc;
@@ -63,18 +71,18 @@ pub use registry::{HelperStatus, HelperTag};
 use meerkat_mob_mcp::MobMcpState;
 
 /// Stop every running helper `registry` lists for `owner` in `state`'s mobs:
-/// force-cancel its run, then retire it. The `delegate` call that would
-/// have retired it is abandoned with the owner's run, so without the retire
-/// the helper would stay seated. Failures are logged: the gate already
-/// denies the helpers' reviewed calls once the owner is stopped. The daemon
-/// calls it when the agent's run is interrupted and before it
-/// switches conversations.
+/// force-cancel its run, then retire it. Failures are logged. The daemon
+/// calls it before an agent switches conversations (the conversation its
+/// helpers worked for is left, and nobody is told of their ending); an
+/// interrupt does not.
 pub(crate) async fn cancel_helpers(
     state: &MobMcpState,
     registry: &HelperRegistry,
     owner: &SessionId,
 ) {
     for key in registry.live_for(owner) {
+        // Left with its conversation: no parent is told.
+        registry.endings().left(&key);
         match state.handle_for(&key.mob).await {
             Ok(handle) => stop_helper(&handle, &key).await,
             Err(err) => tracing::warn!(helper = %key, error = %err, "cannot reach helper's mob"),
@@ -99,6 +107,7 @@ async fn stop_helper(handle: &meerkat_mob::MobHandle, key: &HelperKey) {
 /// closed (no mob's creator is recorded, so every helper spawn that no
 /// helper makes is refused).
 pub(crate) fn install_mob_hooks(state: &Arc<MobMcpState>, registry: &Arc<HelperRegistry>) {
+    registry.endings().bind(state);
     let created = Arc::downgrade(registry);
     let created_hook = state.set_before_create(Arc::new(
         move |request: meerkat_mob_mcp::MobCreateRequest| -> std::pin::Pin<

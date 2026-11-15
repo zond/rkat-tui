@@ -57,6 +57,8 @@ achieve the same effect another way: report what was blocked and why in your res
 - Skills listed in `<available_skills>` are opened with `skill_read`: open one that fits the task and follow it.
 - Helpers nest only as deep as the user allows: if starting another helper is \
 denied to you, you are at that limit and cannot delegate further, so do the work yourself.
+- A helper you start keeps working if your own run is stopped; when it ends you \
+are told in a note at once, so do not poll for it.
 - The agent that started you is in your `peers`: message it to ask a question or \
 report progress when that helps. The workspace's other agents are not reachable \
 from here and you need not tell them anything: the agent that started you \
@@ -106,6 +108,9 @@ agent, and you cannot message it; its outcome reaches you later. Announce its \
 file changes for it the same way.
 - `wire_members` is refused in the workspace's mob (only the host manages it), \
 so you cannot wire your helpers to each other there.
+- When your user interrupts you, your helpers keep working. When one of them ends \
+(finished, failed, stopped by the user, timed out), you are told in a note at once, \
+with its answer when its `delegate` call could not return it; do not poll for it.
 - If you are yourself a fork (a `fork_off` task in a conversation copied from \
 another agent), the lines above describe that agent, not you: you are wired to \
 no one, so do not try to message the other agents; put what they need to know \
@@ -172,10 +177,15 @@ mod tests {
             "If you are yourself a fork",
             "do not try to message the other agents",
             "`wire_members` is refused in the workspace's mob",
+            "When your user interrupts you, your helpers keep working.",
+            "you are told in a note at once",
+            "do not poll for it",
         ] {
             assert!(section.contains(line), "{line}: {section}");
         }
         for line in [
+            "A helper you start keeps working if your own run is stopped",
+            "do not poll for it",
             "The agent that started you is in your `peers`",
             "The workspace's other agents are not reachable",
             "announces your file changes for you",

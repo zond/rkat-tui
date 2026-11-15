@@ -528,6 +528,32 @@ impl Runner {
     /// again without the retired one ([`Msg::RefreshAgentPicker`]); a
     /// refusal is shown on the picker ([`Msg::AgentPickerRefused`]) as well
     /// as in the transcript.
+    /// Stop the helper `path` of this client's agent (`rkat/stop_helper`):
+    /// a refusal is a notice; the ending comes as the daemon's
+    /// `rkat/helper_ended`.
+    pub(super) fn stop_helper(&self, path: Vec<String>) {
+        let say = self.say();
+        let Some(connection) = self.link_or_say("the helper was not stopped") else {
+            return;
+        };
+        tokio::spawn(async move {
+            let named = path.join(" › ");
+            let params = protocol::StopHelperParams { path };
+            let stopped = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::StopHelper>(&connection, &params),
+            )
+            .await;
+            match stopped {
+                Ok(_) => say.notice(NoticeLevel::Info, format!("stopping helper {named}…")),
+                Err(err) => say.notice(
+                    NoticeLevel::Warn,
+                    format!("helper {named} was not stopped: {err}"),
+                ),
+            }
+        });
+    }
+
     pub(super) fn retire_agent(&self, name: String) {
         let say = self.say();
         let Some(connection) = self.link_or_say("the agent was not retired") else {
@@ -675,21 +701,24 @@ impl Runner {
 
     /// The UI answered an approval dialog: decide its decision.
     pub(super) fn respond_escalation(&mut self, id: EscalationId, answer: &EscalationAnswer) {
-        if let Some((decision, digest)) = self.approvals.answer_decision(id) {
-            self.decide(id, &decision, &digest, answer);
+        if let Some((decision, digest, helper)) = self.approvals.answer_decision(id) {
+            self.decide(id, &decision, &digest, answer, helper);
         }
     }
 
     /// The UI answered the dialog `id` of `decision`: decide it. A decision
     /// another client (or the daemon, when the engine gave up on it)
     /// settled first is refused by the engine (`not_open`) and the answer
-    /// is dropped; "deny and stop" also interrupts the turn.
+    /// is dropped; "deny and stop" of the agent's own call also interrupts
+    /// the turn, of a `helper`'s call it stops that helper only (the
+    /// daemon does that, from the answer).
     pub(super) fn decide(
         &mut self,
         id: EscalationId,
         decision: &str,
         digest: &str,
         answer: &EscalationAnswer,
+        helper: bool,
     ) {
         self.send(Msg::EscalationResolved(id));
         let Some(connection) = self.link_or_say(
@@ -719,7 +748,7 @@ impl Runner {
                 text: text.1,
             });
         });
-        if matches!(answer, EscalationAnswer::Stop) {
+        if matches!(answer, EscalationAnswer::Stop) && !helper {
             self.interrupt();
         }
     }

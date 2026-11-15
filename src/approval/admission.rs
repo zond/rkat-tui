@@ -52,7 +52,13 @@ pub struct ApprovalGate {
     helper: Option<String>,
     /// An admission the build already carried; it decides first.
     preceding: Option<Arc<dyn ToolDispatchAdmission>>,
+    /// What stops the helper this gate was built for, when the user
+    /// answers one of its dialogs with Stop.
+    on_stop: Option<OnStop>,
 }
+
+/// Stops one helper ([`ApprovalGate::stopping_with`]).
+pub type OnStop = Arc<dyn Fn() + Send + Sync>;
 
 impl std::fmt::Debug for ApprovalGate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -60,6 +66,7 @@ impl std::fmt::Debug for ApprovalGate {
             .field("session_id", &self.session_id)
             .field("helper", &self.helper)
             .field("preceding", &self.preceding.is_some())
+            .field("on_stop", &self.on_stop.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -73,13 +80,15 @@ impl ApprovalGate {
             session_id,
             helper: None,
             preceding: None,
+            on_stop: None,
         }
     }
 
     /// A gate for the calls of `helper`, which works for `session_id`: they
-    /// are judged with that session's transcript, allow cache and Stop, and
+    /// are judged with that session's transcript and allow cache, and
     /// count against the shared denial counters (see
-    /// [`ApprovalEngine::decide_as`]).
+    /// [`ApprovalEngine::decide_as`]). The session's Stop does not deny
+    /// them: an interrupt stops its own agent only.
     #[must_use]
     pub fn for_helper(
         engine: Arc<ApprovalEngine>,
@@ -91,7 +100,17 @@ impl ApprovalGate {
             session_id,
             helper: Some(helper.into()),
             preceding: None,
+            on_stop: None,
         }
+    }
+
+    /// Call `on_stop` when the user answers a dialog of this helper's calls
+    /// with Stop: it stops the helper (the call itself is denied as
+    /// stopped).
+    #[must_use]
+    pub fn stopping_with(mut self, on_stop: OnStop) -> Self {
+        self.on_stop = Some(on_stop);
+        self
     }
 
     /// The session this gate decides for.
@@ -165,7 +184,17 @@ impl ToolDispatchAdmission for ApprovalGate {
         };
         match self.engine.decide_as(caller, tool_call).await {
             Verdict::Allow { .. } => Ok(()),
-            Verdict::Deny { reason, .. } => Err(denial_error(&reason)),
+            Verdict::Deny { reason, .. } => {
+                // A helper's call is denied as stopped only by a Stop
+                // answer to its own dialog: that stops the helper.
+                if reason == super::DenyReason::Stopped
+                    && self.helper.is_some()
+                    && let Some(on_stop) = &self.on_stop
+                {
+                    on_stop();
+                }
+                Err(denial_error(&reason))
+            }
         }
     }
 

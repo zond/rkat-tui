@@ -221,7 +221,7 @@ fn escalation_modal_is_drawn_over_the_transcript() {
             "│  3. Yes, allow and add a rule (shell rm -rf build)   │",
             "│  4. No, and tell the agent what to do instead (Esc)  │",
             "│                                                      │",
-            "│Enter select · s stop the turn · Ctrl+C stop all      │",
+            "│Enter select · s stop this helper · Ctrl+C stop all   │",
             "└──────────────────────────────────────────────────────┘",
         ]
     );
@@ -1163,8 +1163,8 @@ fn helper_picker_snapshot() {
         all[top + 1..top + 4].to_vec(),
         vec![
             "  │  ▸ [scout · opus] running · 2 tool calls · grep \"fn resolve\"     │",
-            "  │↑/↓ move · Enter full view (Esc returns) · f fold/expand in the   │",
-            "  │transcript · Esc close                                            │",
+            "  │↑/↓ move · Enter full view · f fold/expand in the transcript · s  │",
+            "  │stop · Esc close                                                  │",
         ]
     );
     let row = u16::try_from(top + 1).unwrap();
@@ -1223,7 +1223,7 @@ fn a_helper_full_view_renders_title_prose_reasoning_and_tools() {
     let rows = rows(&buffer);
     assert_eq!(
         rows[0],
-        "◂ [scout · opus] ⠋ running · 1 tool call · glob \"*.rs\"  Esc back"
+        "◂ [scout · opus] ⠋ running · 1 tool call · glob \"*.rs\"  Esc stop?"
     );
     assert!(buffer[(0, 0)].modifier.contains(Modifier::REVERSED));
     assert_eq!(rows[1], "✻ thinking (18 chars, Ctrl-O to expand)");
@@ -1234,7 +1234,7 @@ fn a_helper_full_view_renders_title_prose_reasoning_and_tools() {
     // The transcript's own blocks are not drawn.
     assert!(rows.iter().all(|r| !r.contains("find it")), "{rows:?}");
     assert!(
-        rows[8].contains("Esc back to the transcript"),
+        rows[8].contains("Esc back (asks to stop a running helper)"),
         "{:?}",
         rows[8]
     );

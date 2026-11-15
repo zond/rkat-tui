@@ -557,9 +557,13 @@ impl Daemon {
                 ),
             )),
         });
-        let agents = agents::Agents::new(Arc::clone(&core));
+        let agents = agents::Agents::new(
+            Arc::clone(&core),
+            agents::endings::HeldNotes::open(&composed.scope.realm_root()),
+        );
         attach_engine(&core, &agents, &workspace)?;
         composed.desk.report_to(&composed.engine);
+        let endings_task = deliver_endings(&agents);
         let first_agent = start_agents(&agents, &composed).await?;
         let watch_task = deliver_watches(&agents, composed.watch_batches);
         let local = Arc::new(local::Local::new(
@@ -609,7 +613,8 @@ impl Daemon {
                 engine: Arc::clone(&core.engine),
                 compact_threshold: composed.root.compact_threshold,
             },
-            tasks: std::iter::once(watch_task)
+            tasks: [watch_task, endings_task]
+                .into_iter()
                 .chain(settings_watch::spawn(
                     Arc::downgrade(&local),
                     core.settings.watched(),
@@ -961,6 +966,13 @@ async fn start_agents(
     }
     // Records of schedules deleted while the daemon was down go.
     agents.core().schedules.reconcile().await;
+    // The `delegate` helpers the last daemon left: their parents are told
+    // how they ended with the user's next message (the stop ended the
+    // agents' runs as an interrupt does; no agent is woken by a start).
+    for name in agents.names() {
+        agents.interrupted(&name);
+    }
+    agents.settle_left_helpers().await;
     // The agents are idle now: their tool catalogs can be read.
     for (agent, session) in agents.live() {
         if !composed.origins.refresh(&session).await {
@@ -1070,6 +1082,14 @@ fn attach_engine(
 }
 
 /// The agents' file watches: each batch reaches its agent.
+/// Tell the parents of helpers how they ended ([`agents::endings`]):
+/// the registry's endings go to the agents from now on.
+fn deliver_endings(agents: &Arc<agents::Agents>) -> tokio::task::JoinHandle<()> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    agents.core().registry.endings().deliver_to(tx);
+    tokio::spawn(agents::endings::deliver(Arc::downgrade(agents), rx))
+}
+
 fn deliver_watches(
     agents: &Arc<agents::Agents>,
     mut batches: tokio::sync::mpsc::UnboundedReceiver<watches::Batch>,

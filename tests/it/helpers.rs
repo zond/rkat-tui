@@ -168,37 +168,135 @@ async fn a_delegated_helper_is_followed_with_its_result_and_cost() {
     daemon.stop().await;
 }
 
+/// The number of tool results in `messages`.
+fn results(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|m| matches!(m, Message::ToolResults { .. }))
+        .count()
+}
+
+/// A script where the agent delegates `HELPER-TASK` to `slow` on "go":
+/// the helper's first model call waits on `gate`, then calls `glob`, then
+/// answers `HELPER-ANSWER`; the agent answers "after" to anything else.
+fn interrupted_delegate(gate: &Arc<tokio::sync::Notify>) -> Arc<ScriptedLlmClient> {
+    let gate = Arc::clone(gate);
+    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        let user = common::user_texts(messages).concat();
+        if user.contains("HELPER-TASK") {
+            return match results(messages) {
+                0 => Step::Gated(
+                    Arc::clone(&gate),
+                    Box::new(Step::Tool {
+                        id: "g1",
+                        name: "glob",
+                        args: json!({"pattern": "*.nothing"}),
+                    }),
+                ),
+                _ => Step::Text("HELPER-ANSWER"),
+            };
+        }
+        if user.contains("go") && results(messages) == 0 && !user.contains("again") {
+            return delegate("d1", "slow", "HELPER-TASK: look around");
+        }
+        Step::Text("after")
+    }));
+    ScriptedLlmClient::new(vec![step; 20])
+}
+
+/// An interrupt stops the agent's run only (the owner's decision of
+/// 2026-11-15; this test pinned the opposite before: the daemon retired
+/// the helper with its parent's run). The `delegate` helper keeps running,
+/// shown by its next model call after the interrupt was confirmed; its
+/// answer cannot return through the cancelled call, so it is held for the
+/// agent its user just interrupted (no run is started for it), the client
+/// is told at once, and the user's next message carries it first. It is
+/// not retired as an orphan by the interrupt: it is retired after it
+/// finished.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn esc_during_a_helper_stops_the_agent_and_the_helper() {
+async fn an_interrupt_leaves_the_helper_running_and_its_answer_comes_with_the_next_message() {
     let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        delegate("d1", "slow", "wait forever"),
-        Step::Hang,
-        Step::Text("after"),
-    ]);
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let llm = interrupted_delegate(&gate);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("go".into()));
-    llm.wait_call(1).await;
     client.saw(one_helper("slow")).await;
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .any(|r| r.user().contains("HELPER-TASK"))
+    })
+    .await;
     client.send(Effect::Interrupt);
     let outcome = client.turn_finished().await;
     assert_eq!(outcome, Err(TurnFailure::Interrupted), "{outcome:?}");
-    client.saw(no_helpers).await;
-    // The daemon retired the helper with its parent's run.
+    // The interrupt is confirmed; the helper is still seated and goes on.
     let connection = daemon.connect().await;
     let mob = format!("implicit-{}", daemon.session);
-    common::until_async(async || {
-        let members = connection
-            .call("mob/members", json!({"mob_id": mob}))
-            .await
-            .unwrap();
-        members["members"].as_array().is_some_and(Vec::is_empty)
+    assert_eq!(members(&connection, &mob).await, vec!["slow".to_string()]);
+    let before = llm.recorded().len();
+    gate.notify_one();
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .skip(before)
+            .any(|r| r.user().contains("HELPER-TASK") && results(&r.messages) == 1)
     })
     .await;
-    // The agent serves the next prompt.
+    // It finished: the client is told how, and that the agent hears of it
+    // with the next message; the agent was not woken.
+    let ended = client
+        .saw(|m| matches!(m, Msg::HelperEnded { path, .. } if path == &["slow".to_string()]))
+        .await;
+    let Msg::HelperEnded { how, told, .. } = ended else {
+        unreachable!()
+    };
+    assert_eq!(how, "finished");
+    assert!(
+        told.as_deref()
+            .is_some_and(|t| t.contains("told with your next message")),
+        "{told:?}"
+    );
+    until_empty(&connection, &mob).await;
+    let agent_calls = |llm: &ScriptedLlmClient| {
+        llm.recorded()
+            .iter()
+            .filter(|r| !r.user().contains("HELPER-TASK"))
+            .count()
+    };
+    assert_eq!(agent_calls(&llm), 1, "no run was started for the agent");
+    // The next message carries the answer, before the message itself.
     client.send(Effect::StartTurn("again".into()));
     assert_eq!(client.turn_finished().await.unwrap().text, "after");
+    let request = llm
+        .recorded()
+        .into_iter()
+        .rfind(|r| r.user().contains("again"))
+        .unwrap();
+    let message = request
+        .messages
+        .iter()
+        .rev()
+        .find_map(|m| match m {
+            Message::User(u) if u.text_content().contains("again") => Some(u.text_content()),
+            _ => None,
+        })
+        .unwrap();
+    let note = message
+        .find("Your helper `slow` finished")
+        .unwrap_or_else(|| panic!("the helper's ending travels with the message: {message}"));
+    assert!(message[note..].contains("HELPER-ANSWER"), "{message}");
+    assert!(
+        note < message.rfind("again").unwrap(),
+        "the note comes before the user's words: {message}"
+    );
+    // The classifier's record of the user's words has the user's only.
+    let transcript = daemon.engine().transcript(&daemon.session).unwrap();
+    assert!(
+        transcript.contains("again") && !transcript.contains("HELPER-ANSWER"),
+        "{transcript}"
+    );
     client.quit().await;
     daemon.stop().await;
 }

@@ -485,6 +485,16 @@ pub enum Msg {
         /// The run's input.
         prompt: String,
     },
+    /// A helper of this conversation ended: its line says how, and a notice
+    /// says who was told and when.
+    HelperEnded {
+        /// Its labels, outermost first.
+        path: Vec<String>,
+        /// How it ended (`stopped by you`).
+        how: String,
+        /// Who was told and when, when anyone was.
+        told: Option<String>,
+    },
     /// `/compact now`: the engine took the request, so the session's next
     /// compaction check compacts (or why it did not). The
     /// `CompactionStarted`/`Completed` events confirm the compaction itself;
@@ -843,6 +853,11 @@ pub enum Effect {
     /// idle and has no client (`rkat/retire_agent`; answered with a
     /// notice).
     RetireAgent(String),
+    /// Stop the helper with these labels (outermost first), confirmed in
+    /// its full view or the `/helpers` picker (`rkat/stop_helper`; a
+    /// refusal answers with a notice, the ending with
+    /// [`Msg::HelperEnded`]).
+    StopHelper(Vec<String>),
     /// `/audit [n]`: show the daemon's audit log's last lines for this
     /// client's agent (answered with a notice).
     Audit(Option<usize>),
@@ -1140,6 +1155,8 @@ fn quote_short(text: &str) -> String {
 struct OpenHelperView {
     header: BlockId,
     scroll: ScrollState,
+    /// Esc asked whether to stop the (running) helper.
+    confirm_stop: bool,
 }
 
 /// Transcript scroll position.
@@ -1847,6 +1864,10 @@ impl App {
             Msg::Triggered { label, prompt } => {
                 self.transcript
                     .label_triggered(self.run_first_block, label, prompt);
+                self.scroll.bottom();
+            }
+            Msg::HelperEnded { path, how, told } => {
+                self.transcript.helper_ended(&path, &how, told.as_deref());
                 self.scroll.bottom();
             }
             Msg::ResetTranscript(blocks) => {

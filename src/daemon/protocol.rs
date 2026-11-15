@@ -58,6 +58,27 @@ pub const IDLE: &str = "rkat/idle";
 /// transcript (the smart compaction's steps): [`AgentNotice`].
 pub const AGENT_NOTICE: &str = "rkat/agent_notice";
 
+/// The notification that a helper ended and how its parent was told:
+/// [`HelperEnded`].
+pub const HELPER_ENDED: &str = "rkat/helper_ended";
+
+/// What [`HELPER_ENDED`] carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelperEnded {
+    /// The agent the helper worked for (at the top of its nesting).
+    pub agent: String,
+    /// The conversation it worked for.
+    pub session_id: SessionId,
+    /// Its labels, outermost first (its own last).
+    pub path: Vec<String>,
+    /// How it ended, in the words its line shows (`stopped by you`).
+    pub how: String,
+    /// Who was told and when, in plain words (`main-ab12 is told with your
+    /// next message`); `None`: nobody (its parent is gone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub told: Option<String>,
+}
+
 /// What [`AGENT_NOTICE`] carries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentNotice {
@@ -348,6 +369,11 @@ methods! {
     /// `/quit`), an agent with a client, or one whose turn runs (or whose
     /// state cannot be read); with [`NO_AGENT`] for one that is not live.
     RetireAgent = "rkat/retire_agent" (AgentParams) -> Retired;
+    /// Stop one helper of the caller's agent: its run is cancelled and it
+    /// is retired; the helpers it started keep running, and its parent is
+    /// told. Refused with [`HELPER_REFUSED`] for a helper that is not
+    /// running, or that works for another agent.
+    StopHelper = "rkat/stop_helper" (StopHelperParams) -> Empty;
     /// Take back messages the caller's agent has not read yet: each named
     /// input of its current conversation that the runtime still holds
     /// queued is abandoned, leaving the running turn alone; one that
@@ -547,6 +573,10 @@ pub const WIRE_REFUSED: i32 = -32015;
 /// model is configured, another check runs, or the selection names no
 /// case it can send. The message says which and what to do.
 pub const CHECK_REFUSED: i32 = -32016;
+
+/// A helper stop ([`method::StopHelper`]) refused: no running helper of
+/// the caller's agent has that name. The message says what to do.
+pub const HELPER_REFUSED: i32 = -32017;
 
 /// A local method's refusal: a JSON-RPC error code and message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1347,6 +1377,14 @@ impl WireRow {
 pub struct AgentParams {
     /// The agent's name (`main-<id>`).
     pub name: String,
+}
+
+/// [`method::StopHelper`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopHelperParams {
+    /// The helper's labels, outermost first (its own last), as its line
+    /// shows them.
+    pub path: Vec<String>,
 }
 
 /// The parameters of the methods on one conversation.

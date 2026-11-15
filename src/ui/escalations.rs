@@ -96,15 +96,24 @@ impl App {
         }
     }
 
-    pub(super) fn stop_all_escalations(&mut self, fx: &mut Vec<Effect>) {
-        if let Some(Modal::Escalation { id, .. }) = self.modal.take() {
-            fx.push(Effect::RespondEscalation(id, EscalationAnswer::Stop));
-        }
-        for (id, _) in self.pending_escalations.drain(..) {
-            fx.push(Effect::RespondEscalation(id, EscalationAnswer::Stop));
-        }
-        if self.modal.is_none() {
-            self.modal = self.parked.take();
-        }
+    /// Ctrl-C on the open dialog: Stop it and every waiting dialog of the same
+    /// caller. The agent's own call stops its run (its dialogs go with it);
+    /// a helper's stops that helper only (its other dialogs go with it), and
+    /// the other callers' dialogs stay, the next one shown.
+    pub(super) fn stop_escalations_of_shown(&mut self, fx: &mut Vec<Effect>) {
+        let Some(Modal::Escalation { id, prompt, .. }) = self.modal.take() else {
+            return;
+        };
+        fx.push(Effect::RespondEscalation(id, EscalationAnswer::Stop));
+        let caller = prompt.agent;
+        self.pending_escalations.retain(|(id, prompt)| {
+            if prompt.agent == caller {
+                fx.push(Effect::RespondEscalation(*id, EscalationAnswer::Stop));
+                false
+            } else {
+                true
+            }
+        });
+        self.advance_escalation();
     }
 }

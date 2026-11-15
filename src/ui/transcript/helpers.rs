@@ -132,6 +132,9 @@ pub struct HelperFold {
     pub kind: Option<HelperKind>,
     /// Its inputs shown so far (the first is its task).
     pub inputs: usize,
+    /// How it ended, in plain words, when the daemon said
+    /// (`stopped by you`): shown in place of its state.
+    pub ended: Option<String>,
 }
 
 impl HelperFold {
@@ -298,6 +301,21 @@ impl Transcript {
             .last()
     }
 
+    /// The labels of the helper `header` and the helpers above it,
+    /// outermost first (empty: `header` is no helper header).
+    pub fn helper_path(&self, header: BlockId) -> Vec<String> {
+        let mut path = Vec::new();
+        let mut at = Some(header);
+        while let Some(id) = at {
+            if let Some(Block::Helper(fold)) = self.block(id) {
+                path.push(fold.label.clone());
+            }
+            at = self.owner_of(id);
+        }
+        path.reverse();
+        path
+    }
+
     /// Whether the transcript has any helper header.
     #[cfg(any(test, feature = "test-support"))]
     pub fn has_helpers(&self) -> bool {
@@ -452,6 +470,7 @@ impl Transcript {
             this_turn: true,
             kind: self.helper_kinds.get(*label).copied(),
             inputs: 0,
+            ended: None,
         }));
         self.set_owner(id, parent);
         self.helper_folds.insert((*label).to_string(), id);
@@ -557,6 +576,41 @@ impl Transcript {
             self.set_owner(id, Some(helper.header));
         }
         self.update_fold(helper.header, |f| f.inputs += 1);
+    }
+
+    /// The daemon said the helper `path` ended `how` (`stopped by you`)
+    /// and who was `told`: its line says how instead of its state, and a
+    /// notice in the transcript says it.
+    pub fn helper_ended(&mut self, path: &[String], how: &str, told: Option<&str>) {
+        let Some(label) = path.last() else {
+            return;
+        };
+        let state = if how == "finished" {
+            HelperState::Done
+        } else if how.starts_with("failed") {
+            HelperState::Failed
+        } else {
+            HelperState::Cancelled
+        };
+        if let Some(id) = self.helper_folds.get(label.as_str()).copied() {
+            self.update_fold(id, |fold| {
+                fold.ended = Some(how.to_string());
+                fold.state = state;
+            });
+        }
+        let told = told.map_or_else(
+            || "; nobody is told (its parent is gone)".to_string(),
+            |told| format!("; {told}"),
+        );
+        let level = if state == HelperState::Failed {
+            super::NoticeLevel::Warn
+        } else {
+            super::NoticeLevel::Info
+        };
+        self.push_notice(
+            level,
+            format!("helper {} {how}{told}", self.helper_tag(label)),
+        );
     }
 
     /// The model of the helper `label`, when known.

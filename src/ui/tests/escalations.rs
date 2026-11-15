@@ -33,6 +33,53 @@ fn ctrl_c_with_modal_stops_every_pending_escalation() {
     assert_eq!(app.pending_escalations(), 0);
 }
 
+/// Ctrl-C on a dialog stops its caller's dialogs only: the agent's own stop
+/// its run and leave the helpers' open (an interrupt does not stop them);
+/// a helper's stop that helper and leave the agent's and other helpers'.
+#[test]
+fn ctrl_c_on_a_dialog_stops_its_caller_s_dialogs_only() {
+    let mut app = App::new(StatusInfo::default());
+    let prompt = |agent: Option<&str>| RecordedPrompt {
+        agent: agent.map(str::to_string),
+        tool: "shell".into(),
+        args_preview: "{}".into(),
+        ..RecordedPrompt::default()
+    };
+    app.update(Msg::Escalation(prompt(None), EscalationId(1)));
+    app.update(Msg::Escalation(prompt(Some("scout")), EscalationId(2)));
+    app.update(Msg::Escalation(prompt(None), EscalationId(3)));
+    app.update(Msg::Escalation(prompt(Some("other")), EscalationId(4)));
+    assert_eq!(
+        app.update(ctrl('c')),
+        vec![
+            Effect::RespondEscalation(EscalationId(1), EscalationAnswer::Stop),
+            Effect::RespondEscalation(EscalationId(3), EscalationAnswer::Stop),
+        ]
+    );
+    // The helper's dialog is shown next; Ctrl-C stops that helper's only.
+    assert!(matches!(
+        app.modal,
+        Some(Modal::Escalation {
+            id: EscalationId(2),
+            ..
+        })
+    ));
+    assert_eq!(
+        app.update(ctrl('c')),
+        vec![Effect::RespondEscalation(
+            EscalationId(2),
+            EscalationAnswer::Stop
+        )]
+    );
+    assert!(matches!(
+        app.modal,
+        Some(Modal::Escalation {
+            id: EscalationId(4),
+            ..
+        })
+    ));
+}
+
 #[test]
 fn escalation_keys_answer_and_advance() {
     let mut app = App::new(StatusInfo::default());

@@ -13,6 +13,40 @@
   own or the workspace's `tui.toml`, `/set`, `--set`; never a project
   file); a change applies to the next helper at once, and the agents are
   told which model helpers get and which are permitted when one is set.
+- Stopping one helper: Esc in a running helper's full view asks
+  `Stop helper <name>? …` (`y` stops it, `n` or Esc keeps it running and
+  goes back), `/helpers` has `s` for the same, and `s` (Stop) on the
+  approval prompt of a helper's call stops that helper, not the agent. A
+  stop cancels the helper's run and retires it; the helpers it started
+  keep running.
+- A parent is told when a helper of its ends, however it ends (finished,
+  failed, stopped by you, timed out, ended when the daemon stopped): one
+  note, at once, with the helper's answer when its own `delegate` call
+  could not return it (a longer answer is written in full to the agent's
+  scratch directory). A running parent reads it at its next step; an idle
+  one starts a run with it (shown as `a helper ended`). Right after you
+  interrupted the agent the note is held, shown at once, and travels with
+  your next message to the agent; it survives detaching and a daemon
+  restart (`held-notes.json` in the realm). Endings close together go as
+  one note. A `delegate` that returns its answer sends no note. The agents
+  are told this in their instructions.
+
+### Changed
+
+- **Behaviour change:** an interrupt (Esc, Ctrl-C, Ctrl+Enter, Ctrl-X
+  Ctrl-S) stops the agent's own run only. Its helpers (delegate helpers,
+  spawned members, forks, at any depth) keep working: their tool calls are
+  not denied by the interrupt, the approval prompts of their calls stay
+  open, and a `delegate` helper whose call the interrupt cut off finishes
+  and sends its answer to the agent as a note instead of being retired.
+  The daemon's stop still ends them; a `delegate` that really timed out is
+  still retired. Ctrl-C on an approval prompt stops the prompts of that
+  prompt's caller only.
+- A helper's line in the transcript and the panel says how it ended in
+  plain words (`stopped by you`, `timed out`, `failed: …`, `ended when the
+  daemon stopped`); a cancelled helper's run no longer shows the engine's
+  error text, and `InterruptedByRecovery` is said as "its run was cut off
+  when the daemon stopped".
 
 ### Fixed
 

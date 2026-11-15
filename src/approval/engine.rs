@@ -48,7 +48,7 @@
 //! A Stop (an interrupt, or the human's Stop answer) applies to the run that
 //! was current when it was given: every call of the session that needs
 //! review is denied until a run the engine has not seen before starts
-//! ([`ApprovalEngine::run_started`]). A late or replayed `RunStarted` of the
+//! ([`ApprovalEngine::new_run_started`]). A late or replayed `RunStarted` of the
 //! stopped run, or one without a run id, does not clear it.
 
 use std::collections::{HashMap, HashSet};
@@ -721,23 +721,31 @@ impl ApprovalEngine {
     /// The session's allow cache is cleared: the intent changed.
     ///
     /// Does not clear a previous Stop: only a new run does that
-    /// ([`Self::run_started`]).
+    /// ([`Self::new_run_started`]).
     pub fn record_user_input(&self, session_id: &SessionId, key: InputKey, text: &str) {
         let mut state = self.session(session_id);
         state.transcript.push_prompt(Some(key), text);
         state.allow_cache.clear();
     }
 
+    /// [`Self::new_run_started`] without its answer (tests).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn run_started(&self, session_id: &SessionId, run_id: Option<&RunId>) {
+        let _ = self.new_run_started(session_id, run_id);
+    }
+
     /// A run of `session_id` started. It clears a Stop only when it carries
     /// a run id the engine has not seen start before; a replayed or late
     /// start of a known run, or a start without an id, leaves the Stop.
-    pub fn run_started(&self, session_id: &SessionId, run_id: Option<&RunId>) {
+    /// Answers whether it was such a new run (`false`: a replay, or no id).
+    #[must_use = "the answer says whether the run is new"]
+    pub fn new_run_started(&self, session_id: &SessionId, run_id: Option<&RunId>) -> bool {
         let mut state = self.session(session_id);
         let Some(run_id) = run_id else {
-            return;
+            return false;
         };
         if !state.runs.started(run_id) {
-            return;
+            return false;
         }
         let clears = match &state.stop {
             StopState::Running => false,
@@ -746,6 +754,7 @@ impl ApprovalEngine {
         if clears {
             state.stop = StopState::Running;
         }
+        true
     }
 
     /// Whether `run` of `session_id` is one a client's input started (the
@@ -759,14 +768,23 @@ impl ApprovalEngine {
     }
 
     /// The human stopped `session_id`'s current run (an interrupt or a Stop
-    /// answer): every call of that session that needs review is denied,
-    /// without asking anyone, until a new run starts ([`Self::run_started`]).
+    /// answer to one of its own calls): every call of that session's own
+    /// agent that needs review is denied, without asking anyone, until a new
+    /// run starts ([`Self::new_run_started`]). Its helpers' calls are not: an
+    /// interrupt stops the agent's run only, and its helpers keep working
+    /// (the owner's decision of 2026-11-15).
     pub fn stop(&self, session_id: &SessionId) {
         let mut state = self.session(session_id);
         state.stop = StopState::Stopped(state.runs.current.clone());
     }
 
-    fn stopped(&self, session_id: &SessionId) -> bool {
+    /// Whether `caller`'s call is denied by a Stop: only the session's own
+    /// agent's calls are ([`Self::stop`]).
+    fn stopped(&self, caller: &Caller<'_>) -> bool {
+        caller.agent.is_none() && self.session_stopped(caller.session_id)
+    }
+
+    fn session_stopped(&self, session_id: &SessionId) -> bool {
         self.sessions
             .lock()
             .get(session_id)
@@ -1826,7 +1844,7 @@ impl ApprovalEngine {
     /// user: a stopped session's is denied; then [`Self::put_to_user`].
     /// The classifier and its pause play no part.
     async fn ask(&self, caller: Caller<'_>, facts: &Facts<'_>, ask: Ask) -> Evaluated {
-        if self.stopped(caller.session_id) {
+        if self.stopped(&caller) {
             return deny_at(ask.asking.tier(), DenyReason::Stopped).into();
         }
         let attended = self.attended(caller.session_id, caller.run);
@@ -1879,7 +1897,7 @@ impl ApprovalEngine {
     /// once more when its turn comes, [`Self::wait_turn`]).
     async fn review(&self, caller: Caller<'_>, facts: &Facts<'_>, content: bool) -> Evaluated {
         let session_id = caller.session_id;
-        if self.stopped(session_id) {
+        if self.stopped(&caller) {
             return deny3(DenyReason::Stopped).into();
         }
         // A turn no user started with nobody attached (the owner's decision
@@ -1922,7 +1940,7 @@ impl ApprovalEngine {
         }
 
         let (result, record) = self.classify(session_id, &facts.action, &payload).await;
-        if self.stopped(session_id) {
+        if self.stopped(&caller) {
             // A Stop given while the classifier reviewed: the call is
             // denied whatever the verdict, and the verdict is not applied
             // (no cached allow, no allow or denial counted for a call that
@@ -2218,7 +2236,7 @@ impl ApprovalEngine {
         let session_id = caller.session_id;
         let id = self.next_escalation.fetch_add(1, Ordering::Relaxed);
         let mut guard = match self
-            .wait_turn(session_id, facts, broker, &asking, fallback)
+            .wait_turn(caller, facts, broker, &asking, fallback)
             .await
         {
             Ok(guard) => guard,
@@ -2249,8 +2267,10 @@ impl ApprovalEngine {
         };
         shown.answered();
         // A Stop applies before the serial lock is released, so an
-        // escalation queued behind this one sees it.
-        if matches!(decision, HumanDecision::Stop) {
+        // escalation queued behind this one sees it. A Stop of a helper's
+        // call stops that helper only (its gate does that, on the Stop
+        // denial it gets), never the session it works for.
+        if matches!(decision, HumanDecision::Stop) && caller.agent.is_none() {
             self.stop(session_id);
         }
         drop(guard);
@@ -2272,19 +2292,20 @@ impl ApprovalEngine {
     /// the pause ended and the classifier's `fallback` verdict applies.
     async fn wait_turn(
         &self,
-        session_id: &SessionId,
+        caller: Caller<'_>,
         facts: &Facts<'_>,
         broker: &EscalationBroker,
         asking: &Asking,
         fallback: Option<ClassifierVerdict>,
     ) -> Result<super::escalation::SerialGuard, Evaluated> {
+        let session_id = caller.session_id;
         let tier = asking.tier();
         let entered = tokio::time::Instant::now();
         let guard = broker.serial(session_id).await;
         if guard.unanswered_at.is_some_and(|at| at >= entered) {
             return Err(deny_at(tier, DenyReason::EscalationTimedOut).into());
         }
-        if self.stopped(session_id) {
+        if self.stopped(&caller) {
             return Err(deny_at(tier, DenyReason::Stopped).into());
         }
         if !asking.rechecked() {
@@ -4050,6 +4071,65 @@ mod tests {
         assert_eq!(decide(&rig, "c3", &push()).await, stopped);
     }
 
+    /// A call of the helper `scout` working for `rig`'s session, on its
+    /// own task.
+    fn spawn_helper_call(
+        rig: &Rig,
+        id: &'static str,
+        args: Value,
+    ) -> tokio::task::JoinHandle<Verdict> {
+        let engine = Arc::clone(&rig.engine);
+        let session = rig.session.clone();
+        tokio::spawn(async move {
+            let raw = serde_json::value::to_raw_value(&args).unwrap();
+            let origin = origin("shell");
+            engine
+                .decide_as(
+                    Caller::helper(&session, "scout"),
+                    ToolCall {
+                        id,
+                        name: "shell",
+                        args: &raw,
+                        origin: Some(&origin),
+                    },
+                )
+                .await
+        })
+    }
+
+    /// The Stop of an interrupt marks the agent's own calls only: a helper
+    /// working for the stopped session is still asked about (its dialog
+    /// opens), and a Stop answer to the helper's dialog denies that call
+    /// without stopping the session its owner runs (the owner's decision of
+    /// 2026-11-15; before, both were denied as stopped).
+    #[tokio::test]
+    async fn a_stop_marks_the_agent_s_own_calls_not_its_helpers() {
+        let mut rig = rig(
+            vec![Err(ClassifierError::Timeout), Err(ClassifierError::Timeout)],
+            DEFAULT_ESCALATION_TIMEOUT,
+        );
+        rig.engine.run_started(&rig.session, Some(&RunId::new()));
+        rig.engine.stop(&rig.session);
+        let stopped = Verdict::Deny {
+            tier: Tier::Classifier,
+            reason: DenyReason::Stopped,
+        };
+        assert_eq!(decide(&rig, "own", &push()).await, stopped);
+        let helper = spawn_helper_call(&rig, "h1", push());
+        let request = rig.escalations.recv().await.unwrap();
+        assert_eq!(request.prompt.shown.agent.as_deref(), Some("scout"));
+        request.respond.send(HumanDecision::AllowOnce).unwrap();
+        assert!(helper.await.unwrap().is_allowed());
+        // A new run lifts the agent's Stop; a Stop of a helper's dialog
+        // then denies the helper's call and leaves the session running.
+        rig.engine.run_started(&rig.session, Some(&RunId::new()));
+        let helper = spawn_helper_call(&rig, "h2", push());
+        let request = rig.escalations.recv().await.unwrap();
+        request.respond.send(HumanDecision::Stop).unwrap();
+        assert_eq!(helper.await.unwrap(), stopped);
+        assert!(!rig.engine.session_stopped(&rig.session));
+    }
+
     /// Answers allow, but only once the test lets it: the test stops the
     /// session while the classifier is being asked.
     struct HeldAllow {
@@ -4156,7 +4236,7 @@ mod tests {
         // A replay of a remembered run does not clear a Stop.
         rig.engine.stop(&rig.session);
         rig.engine.run_started(&rig.session, Some(&runs[1]));
-        assert!(rig.engine.stopped(&rig.session));
+        assert!(rig.engine.session_stopped(&rig.session));
     }
 
     fn spawn_call(
