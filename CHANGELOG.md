@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-11-15
+
 ### Added
 
 - `/set <key> <value> [--user]` and `/unset <key> [--user]` change any
