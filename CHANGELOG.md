@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-11-15
+
 ### Fixed
 
 - After a smart auto-compaction the agent goes on with its task instead
