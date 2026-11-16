@@ -145,9 +145,11 @@ fn long_transcript_follows_bottom_and_scrolls_back() {
         ratatui::crossterm::event::KeyCode::PageUp,
     )));
     let rows = render(&mut app, now);
-    // PgUp moves by viewport height - 2 = 7 lines.
-    assert_eq!(rows[0], "› prompt 12");
-    assert_eq!(rows[8], "› prompt 16");
+    // PgUp moves by the viewport's height - 2; the top row is the bar that
+    // pins the last message above the view, the transcript under it.
+    assert_eq!(rows[0], " ↑ you: prompt 12");
+    assert_eq!(rows[1], "› prompt 13");
+    assert_eq!(rows[7], "› prompt 16");
     assert!(!app.scroll.follow);
 }
 

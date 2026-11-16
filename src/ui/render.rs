@@ -232,7 +232,28 @@ fn draw_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             app.scroll.anchor_bottom(total, bottom);
         }
     }
-    let start = app.scroll.window(total, height);
+    let mut start = app.scroll.window(total, height);
+    // The user's last message above the view stays pinned on the top row
+    // ([`pinned_prompt`]); the transcript scrolls in the rows under it.
+    let mut area = area;
+    let mut height = height;
+    if height > 2
+        && let Some(text) = pinned_prompt(app, start)
+    {
+        let bar = Rect { height: 1, ..area };
+        frame.render_widget(
+            Paragraph::new(pinned_line(&text, usize::from(area.width))),
+            bar,
+        );
+        area = Rect {
+            y: area.y + 1,
+            height: area.height - 1,
+            ..area
+        };
+        height -= 1;
+        app.set_viewport_height(height);
+        start = app.scroll.window(total, height);
+    }
     let mut lines = app.transcript.visible_lines(start, height);
     let rows = app.transcript.visible_blocks(start, height);
     if let Some(sel) = app.selection() {
@@ -244,6 +265,44 @@ fn draw_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
     app.set_transcript_rows(area, start, rows);
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// What the pinned row starts with: it is not a line of the transcript.
+const PINNED_MARK: &str = " ↑ you: ";
+
+/// The user's own message that the view's first line belongs to, when its
+/// start is scrolled out above line `first` (the view's first line were
+/// no row pinned): the last message the user
+/// sent before that line, on one line. `None` while its first line is on
+/// screen (or nothing was sent before it), so the row is only taken when
+/// it says something the screen does not.
+fn pinned_prompt(app: &App, first: usize) -> Option<String> {
+    app.transcript
+        .iter()
+        .rev()
+        .filter(|(id, block)| {
+            matches!(block, Block::User { .. }) && app.transcript.owner_of(*id).is_none()
+        })
+        .find_map(|(id, block)| {
+            let at = app.transcript.start_line(id)?;
+            let Block::User { text } = block else {
+                return None;
+            };
+            (at < first).then(|| sanitize(&text.split_whitespace().collect::<Vec<_>>().join(" ")))
+        })
+}
+
+/// The pinned row: a full-width reversed bar (as the status bar is, and
+/// nothing in the transcript), the mark, then the message cut to fit.
+fn pinned_line(text: &str, width: usize) -> Line<'static> {
+    let room = width.saturating_sub(display_width(PINNED_MARK) + 1);
+    let shown = truncate_to_width(text, room);
+    let used = display_width(PINNED_MARK) + display_width(&shown);
+    let pad = " ".repeat(width.saturating_sub(used));
+    Line::from(Span::styled(
+        format!("{PINNED_MARK}{shown}{pad}"),
+        Style::default().add_modifier(Modifier::REVERSED | Modifier::DIM),
+    ))
 }
 
 /// A helper's full view in place of the transcript: its header text as the
@@ -1161,13 +1220,34 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD);
             prefixed(text, w, "› ", "  ", style, &mut out);
         }
-        Block::Peer { from, text } => {
+        Block::Peer {
+            from,
+            text,
+            collapsed,
+        } => {
             let style = Style::default().fg(Color::Magenta);
-            out.push(Line::from(Span::styled(
-                format!("✉ from agent {from}"),
-                style.add_modifier(Modifier::BOLD),
-            )));
-            if !text.is_empty() {
+            let head = format!("✉ from agent {from}");
+            let bold = style.add_modifier(Modifier::BOLD);
+            if text.is_empty() {
+                out.push(Line::from(Span::styled(head, bold)));
+            } else if *collapsed {
+                // Folded: the sender and the message's first line, as a
+                // tool call's line is; a click or Ctrl-O shows it whole.
+                let first = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                let room = w.saturating_sub(display_width(&head) + 4);
+                out.push(Line::from(vec![
+                    Span::styled(head, bold),
+                    Span::styled(
+                        format!(": {}", truncate_to_width(&sanitize(&first), room)),
+                        style,
+                    ),
+                    Span::styled(" ▸", dim),
+                ]));
+            } else {
+                out.push(Line::from(vec![
+                    Span::styled(head, bold),
+                    Span::styled(" ▾", dim),
+                ]));
                 prefixed(text, w, "  ", "  ", style, &mut out);
             }
         }
@@ -1574,20 +1654,38 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
-    /// Another agent's message is a block headed by its sender.
+    /// Another agent's message is one line, its sender and the message's
+    /// start; shown in full it is headed by its sender.
     #[test]
     fn a_peer_message_is_labelled_with_its_sender() {
+        let folded = Block::Peer {
+            from: "main-ab12".into(),
+            text: "I am changing src/lib.rs\nand then src/main.rs, which will take a while longer"
+                .into(),
+            collapsed: true,
+        };
+        let lines: Vec<String> = block_lines(&folded, 60).iter().map(line_text).collect();
+        assert_eq!(
+            lines,
+            [
+                "✉ from agent main-ab12: I am changing src/lib.rs and then… ▸",
+                ""
+            ]
+        );
+        assert!(lines.iter().all(|l| display_width(l) <= 60), "{lines:#?}");
         let block = Block::Peer {
             from: "main-ab12".into(),
             text: "I am changing src/lib.rs".into(),
+            collapsed: false,
         };
         let lines: Vec<String> = block_lines(&block, 60).iter().map(line_text).collect();
-        assert_eq!(lines[0], "✉ from agent main-ab12");
+        assert_eq!(lines[0], "✉ from agent main-ab12 ▾");
         assert_eq!(lines[1], "  I am changing src/lib.rs");
         // Delivered into a running turn: the header alone.
         let bare = Block::Peer {
             from: "main-ab12".into(),
             text: String::new(),
+            collapsed: true,
         };
         let lines: Vec<String> = block_lines(&bare, 60).iter().map(line_text).collect();
         assert_eq!(lines, ["✉ from agent main-ab12", ""]);

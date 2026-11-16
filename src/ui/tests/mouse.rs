@@ -212,6 +212,69 @@ fn the_bottom_call_opens_upwards() {
     assert_eq!(transcript_rows(&mut app), before);
 }
 
+/// The user's last message above the view is pinned on the transcript's
+/// top row as a reversed bar, cut to one line; the transcript scrolls in
+/// the rows under it, a click on the bar toggles nothing, and at the top
+/// (the message itself on screen) there is no bar.
+#[test]
+fn the_last_message_above_the_view_is_pinned_on_the_top_row() {
+    let mut app = App::new(StatusInfo::default());
+    type_str(
+        &mut app,
+        "first question about the parser and its many edge cases",
+    );
+    app.update(key(KeyCode::Enter));
+    for i in 0..30 {
+        let id = format!("t{i}");
+        app.update(agent(AgentEvent::ToolCallRequested {
+            id: id.clone(),
+            name: "read_file".into(),
+            args: test_args(json!({"path": format!("f{i}.rs")})),
+        }));
+        app.update(agent(AgentEvent::ToolExecutionCompleted {
+            id: id.clone(),
+            name: "read_file".into(),
+            is_error: false,
+            duration_ms: 1,
+        }));
+        app.update(agent(test_tool_result(&id, "     1\tx\n")));
+    }
+    let rows = transcript_rows(&mut app);
+    assert_eq!(
+        rows[0].trim_end(),
+        " ↑ you: first question about the parser and its many edge cases",
+        "{rows:#?}"
+    );
+    assert!(
+        rows[1..].iter().all(|row| !row.contains("↑ you")),
+        "{rows:#?}"
+    );
+    // The bar is no transcript row: the rows under it are, and the bottom
+    // of the view is still the transcript's end.
+    assert!(app.block_at_row(0).is_none());
+    assert!(app.block_at_row(1).is_some());
+    let before = transcript_rows(&mut app);
+    click_at(&mut app, 0);
+    assert_eq!(transcript_rows(&mut app), before);
+    // Its style is the bar's, not the transcript's.
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 30)).unwrap();
+    terminal
+        .draw(|f| render::draw_at(f, &mut app, Instant::now()))
+        .unwrap();
+    let cell = &terminal.backend().buffer()[(1, 0)];
+    assert!(cell.modifier.contains(ratatui::style::Modifier::REVERSED));
+    let below = &terminal.backend().buffer()[(1, 1)];
+    assert!(!below.modifier.contains(ratatui::style::Modifier::REVERSED));
+    // Scrolled to the top the message is on screen: no bar.
+    app.update(key(KeyCode::Home));
+    for _ in 0..40 {
+        app.update(key(KeyCode::PageUp));
+    }
+    let top = transcript_rows(&mut app);
+    assert!(top.iter().all(|row| !row.contains("↑ you")), "{top:#?}");
+    assert!(top[0].contains("first question"), "{top:#?}");
+}
+
 #[test]
 fn clicks_are_ignored_under_a_modal() {
     let mut app = App::new(StatusInfo::default());

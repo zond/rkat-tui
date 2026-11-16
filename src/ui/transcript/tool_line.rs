@@ -735,11 +735,16 @@ pub fn outcome(name: &str, args: &Value, result: &str) -> Outcome {
 pub fn denial(reason: &str) -> String {
     use crate::approval::{CLASSIFIER_SOURCE, REVIEW_INCOMPLETE};
     if reason.contains(CLASSIFIER_SOURCE) {
-        let rule = reason
-            .split('[')
-            .nth(1)
-            .and_then(|rest| rest.split(']').next())
-            .filter(|rule| !rule.is_empty() && rule.len() <= 16 && !rule.contains(' '));
+        // The rule as the gate's notice names it (`[R1]`) or as the
+        // tool's own result does (`(rule R1)`).
+        let named = |open: &str, close: char| {
+            reason
+                .split(open)
+                .nth(1)
+                .and_then(|rest| rest.split(close).next())
+                .filter(|rule| !rule.is_empty() && rule.len() <= 16 && !rule.contains(' '))
+        };
+        let rule = named("[", ']').or_else(|| named("(rule ", ')'));
         return match rule {
             Some(rule) => format!("blocked by the classifier ({rule})"),
             None => "blocked by the classifier".to_string(),
@@ -772,14 +777,41 @@ pub fn denial(reason: &str) -> String {
     one_line(reason.lines().next().unwrap_or_default())
 }
 
-/// A failed call's reason: the first line of its result.
+/// The most columns a failed call's reason takes on its line: the rest
+/// is in its expansion, and the line keeps room for what was called.
+const REASON_COLUMNS: usize = 72;
+
+/// A failed call's reason in a few words: the message of a structured
+/// error (`{"data": {"code", "message"}, "error", "message"}`, the form
+/// the engine gives a refused call), a gate's block as [`denial`] words
+/// it, else the first line of the result; cut to [`REASON_COLUMNS`].
 #[must_use]
 pub fn failure_reason(result: &str) -> Option<String> {
-    result
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(one_line)
+    let structured = serde_json::from_str::<Value>(result.trim())
+        .ok()
+        .and_then(|value| {
+            let data = value.get("data");
+            let code = data
+                .and_then(|data| data.get("code"))
+                .and_then(Value::as_str);
+            let message = data
+                .and_then(|data| data.get("message"))
+                .or_else(|| value.get("message"))
+                .and_then(Value::as_str)?;
+            Some(if code == Some("auto_mode") {
+                denial(message)
+            } else {
+                one_line(message)
+            })
+        });
+    let reason = structured.or_else(|| {
+        result
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(one_line)
+    })?;
+    Some(truncate_to_width(&reason, REASON_COLUMNS))
 }
 
 /// `secs` in human units: `1.2s`, `48s`, `3m 2s`, `1h 5m`.
@@ -937,6 +969,33 @@ pub fn expanded_args(name: &str, args: &Value) -> Option<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A refused call's structured error reads as a few words, not as its
+    /// JSON: a gate's block names the rule, another error gives its
+    /// message, plain text its first line, each cut to leave the line room.
+    #[test]
+    fn a_failed_call_s_reason_is_a_few_words() {
+        let blocked = r#"{"data":{"code":"auto_mode","message":"Blocked by auto-mode safety policy: the safety classifier blocked it: Not covered by what the user asked for in this session; ask the user to confirm before doing it. (rule R3). Do not work around this block: do not try to reach the same effect another way."},"error":"execution_failed","message":"Tool execution failed"}"#;
+        assert_eq!(
+            failure_reason(blocked).as_deref(),
+            Some("blocked by the classifier (R3)")
+        );
+        let other = r#"{"data":{"agent_build_failure_cause":"LlmIdentityUnresolvable"},"error":"execution_failed","message":"Tool execution failed: tool 'delegate' failed: session error: connection target resolution failed for the binding that was named in this call"}"#;
+        let reason = failure_reason(other).unwrap();
+        assert!(
+            reason.starts_with("Tool execution failed: tool 'delegate' failed"),
+            "{reason}"
+        );
+        assert!(
+            reason.ends_with('…') && display_width(&reason) <= REASON_COLUMNS,
+            "{reason}"
+        );
+        assert_eq!(
+            failure_reason("\n  no such file: x.rs\nmore").as_deref(),
+            Some("no such file: x.rs")
+        );
+        assert_eq!(failure_reason("  \n"), None);
+    }
     use serde_json::json;
 
     fn line(name: &str, args: Value) -> String {

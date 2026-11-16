@@ -37,7 +37,8 @@ fn a_remote_turn_shows_its_prompt_and_keeps_the_ui_busy_until_it_ends() {
     );
 }
 
-/// Another agent's message is shown labelled with its sender.
+/// Another agent's message is shown labelled with its sender, folded to
+/// one line that a click opens.
 #[test]
 fn a_peer_message_is_shown_labelled() {
     let mut app = App::new(StatusInfo::default());
@@ -49,9 +50,59 @@ fn a_peer_message_is_shown_labelled() {
         app.transcript.blocks(),
         &[Block::Peer {
             from: "main-ab12".into(),
-            text: "I am changing src/lib.rs".into()
+            text: "I am changing src/lib.rs".into(),
+            collapsed: true,
         }]
     );
+    let id = app.transcript.iter().next().unwrap().0;
+    assert_eq!(app.transcript.toggle_tool(id), Some(false));
+}
+
+/// Messages that reach a running turn are named by their sender at once;
+/// the run that reads them carries their text, which fills those blocks
+/// in order instead of adding the raw input as a prompt.
+#[test]
+fn a_message_that_arrived_mid_turn_gets_its_text_when_the_run_reads_it() {
+    let mut app = App::new(StatusInfo::default());
+    for from in ["core", "review", "core"] {
+        app.update(Msg::Peer {
+            from: from.into(),
+            text: String::new(),
+        });
+    }
+    for (from, text) in [
+        ("core", "done"),
+        ("review", "verified"),
+        ("core", "no more edits"),
+    ] {
+        app.update(Msg::Peer {
+            from: from.into(),
+            text: text.into(),
+        });
+    }
+    let shown: Vec<(String, String)> = app
+        .transcript
+        .blocks()
+        .into_iter()
+        .filter_map(|block| match block {
+            Block::Peer { from, text, .. } => Some((from, text)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("core".to_string(), "done".to_string()),
+            ("review".to_string(), "verified".to_string()),
+            ("core".to_string(), "no more edits".to_string()),
+        ]
+    );
+    // One with no block waiting for it is a block of its own.
+    app.update(Msg::Peer {
+        from: "other".into(),
+        text: "hello".into(),
+    });
+    assert_eq!(app.transcript.blocks().len(), 4);
 }
 
 #[test]

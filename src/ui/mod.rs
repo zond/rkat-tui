@@ -1889,7 +1889,8 @@ impl App {
             }
             Msg::RemoteTurn { prompt } => self.remote_turn(prompt, now),
             Msg::Peer { from, text } => {
-                self.transcript.push(Block::Peer { from, text });
+                self.transcript
+                    .peer_message(self.run_first_block, from, text);
                 self.scroll.bottom();
             }
             Msg::Triggered { label, prompt } => {

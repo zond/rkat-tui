@@ -544,11 +544,12 @@ impl Transcript {
         let first = matches!(self.block(helper.header), Some(Block::Helper(f)) if f.inputs == 0);
         let parent = helper.parent.as_deref().unwrap_or("its parent");
         let mut blocks = Vec::new();
-        if let Some((from, body)) = crate::ui::peer::of_input(input) {
-            blocks.push(Block::Peer {
+        if let Some(messages) = crate::ui::peer::of_inputs(input) {
+            blocks.extend(messages.into_iter().map(|(from, body)| Block::Peer {
                 from: crate::ui::peer::short_name(&from).to_string(),
                 text: body,
-            });
+                collapsed: true,
+            }));
         } else if let Some(task) = fork_task(input) {
             self.update_fold(helper.header, |f| f.kind = Some(HelperKind::Fork));
             blocks.push(Block::Notice {

@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Added
+
+- The last message you sent stays pinned on the transcript's top row
+  while it is scrolled out of view: a reversed bar (` ↑ you: …`, one
+  line), which the transcript scrolls under. It is not a transcript line:
+  it goes away when the message itself is on screen.
+
+### Changed
+
+- A message from another agent is one line, its sender and how the
+  message starts, that a click or Ctrl-O opens, like a tool call.
+
+### Fixed
+
+- Several messages from other agents that reached a busy agent together
+  were shown raw, as if you had typed them ("Peer message / Peer message
+  from … / Delivery ID: …"). Each is now its own labelled line with its
+  text, and the lines that named the senders when the messages arrived
+  get their text instead of a second copy.
+- A call the gate blocked showed the raw error as its outcome
+  (`{"data":{"code":"auto_mode",…`), which also squeezed the command out
+  of its line. It now reads "blocked by the classifier (R3)", any other
+  structured error shows its message, and a long reason is cut so the
+  command stays readable.
+
 ## [0.0.12] - 2026-11-16
 
 ### Fixed

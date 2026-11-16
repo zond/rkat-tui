@@ -83,6 +83,7 @@ fn peer_blocks(notice: &meerkat_core::SystemNoticeMessage) -> Vec<Block> {
                 Some(Block::Peer {
                     from: crate::ui::peer::short_name(&from).to_string(),
                     text: body,
+                    collapsed: true,
                 })
             }
             _ => None,
@@ -190,7 +191,8 @@ mod tests {
             ]),
             vec![Block::Peer {
                 from: "main-gak7".into(),
-                text: "I am changing src/lib.rs".into()
+                text: "I am changing src/lib.rs".into(),
+                collapsed: true,
             }]
         );
     }

@@ -589,7 +589,7 @@ fn a_delegate_s_view_starts_with_its_task_and_shows_later_input_in_order() {
         .into_iter()
         .map(|id| match app.transcript.block(id) {
             Some(Block::Task { label, text }) => format!("task {label}: {text}"),
-            Some(Block::Peer { from, text }) => format!("peer {from}: {text}"),
+            Some(Block::Peer { from, text, .. }) => format!("peer {from}: {text}"),
             Some(Block::Tool { .. }) => "tool".into(),
             Some(Block::Assistant { md }) => format!("prose {md}"),
             other => panic!("unexpected block {other:?}"),

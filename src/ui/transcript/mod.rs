@@ -309,8 +309,10 @@ pub enum Block {
         /// The sending agent's name.
         from: String,
         /// The message (empty: delivered into a running turn, whose text
-        /// the live events do not carry).
+        /// the live events do not carry until the run that reads it).
         text: String,
+        /// Whether only its first line is shown.
+        collapsed: bool,
     },
     /// A detached job's outcome (a `fork_off` child, a council), compact
     /// ([`outcome::JobOutcome`]): a header with its counts and the result's
@@ -642,7 +644,7 @@ impl Transcript {
                         body(&mut out, output);
                     }
                 }
-                Block::Peer { from, text } => {
+                Block::Peer { from, text, .. } => {
                     let _ = writeln!(out, "## message from agent {from}");
                     body(&mut out, text);
                 }
@@ -853,6 +855,39 @@ impl Transcript {
         }
     }
 
+    /// A message from the agent `from`: with its `text`, it fills in the
+    /// first block of that sender since `run_first` that has none yet (the
+    /// message reached a running turn, whose events named only the sender;
+    /// the run that reads it carries the text), else it is a new block,
+    /// folded to its first line unless everything is shown in full.
+    pub fn peer_message(&mut self, run_first: BlockId, from: String, text: String) {
+        let waiting = (!text.is_empty())
+            .then(|| {
+                self.iter()
+                    .skip_while(|(id, _)| *id < run_first)
+                    .find(|(id, block)| {
+                        self.owner_of(*id).is_none()
+                            && matches!(block, Block::Peer { from: sender, text, .. }
+                                if *sender == from && text.is_empty())
+                    })
+                    .map(|(id, _)| id)
+            })
+            .flatten();
+        let block = Block::Peer {
+            from,
+            text,
+            collapsed: !self.detail,
+        };
+        match waiting {
+            Some(id) => {
+                self.replace_block(id, block);
+            }
+            None => {
+                self.push(block);
+            }
+        }
+    }
+
     /// Replace a block in place (keeps transcript order). Returns whether `id`
     /// existed.
     pub fn replace_block(&mut self, id: BlockId, block: Block) -> bool {
@@ -934,6 +969,7 @@ impl Transcript {
                 Block::Reasoning { collapsed, .. }
                 | Block::Tool { collapsed, .. }
                 | Block::Shell { collapsed, .. }
+                | Block::Peer { collapsed, .. }
                 | Block::Outcome { collapsed, .. } => {
                     let changed = *collapsed != collapse;
                     *collapsed = collapse;
@@ -1056,6 +1092,7 @@ impl Transcript {
                 Block::Tool { collapsed, .. }
                 | Block::Reasoning { collapsed, .. }
                 | Block::Shell { collapsed, .. }
+                | Block::Peer { collapsed, .. }
                 | Block::Outcome { collapsed, .. },
             ) => {
                 *collapsed = !*collapsed;
@@ -1897,6 +1934,7 @@ fn tool_has_output(block: &Block) -> bool {
             }
         )
         || matches!(block, Block::Outcome { md, .. } if !md.is_empty())
+        || matches!(block, Block::Peer { text, .. } if !text.is_empty())
 }
 
 /// A `!` command's state as the export and the header say it.

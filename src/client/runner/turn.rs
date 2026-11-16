@@ -71,6 +71,17 @@ impl Runner {
         });
     }
 
+    /// Other agents' messages a run input carried, each to the UI with its
+    /// sender's short name.
+    fn peer_messages(&self, messages: Vec<(String, String)>) {
+        for (from, text) in messages {
+            self.send(Msg::Peer {
+                from: crate::ui::peer::short_name(&from).to_string(),
+                text,
+            });
+        }
+    }
+
     /// A prompt or a steer of turn `turn` was sent (`result`): a steer is
     /// acknowledged (taken back from the turn when it failed); a prompt
     /// that failed ends its turn, if that turn is still the UI's.
@@ -475,22 +486,25 @@ impl Runner {
                         .prompt_text()
                         .filter(|_| own.is_empty())
                         .filter(|prompt| prompt != COMPACT_PROMPT);
-                    match prompt.as_deref().and_then(crate::ui::peer::of_input) {
-                        Some((from, text)) => {
-                            self.send(Msg::Peer {
-                                from: crate::ui::peer::short_name(&from).to_string(),
-                                text,
-                            });
+                    match prompt.as_deref().and_then(crate::ui::peer::of_inputs) {
+                        Some(messages) => {
+                            self.peer_messages(messages);
                             self.send(Msg::RemoteTurn { prompt: None });
                         }
                         None => self.send(Msg::RemoteTurn { prompt }),
                     }
                 } else if self.turn.saw_run && own.is_empty() {
-                    // Another client's steer: its text joins the turn.
+                    // What reached the agent during the turn joins it:
+                    // other agents' messages, each as its labelled block
+                    // (the block that named its sender when it arrived
+                    // gets its text), or another client's steer.
                     if let Some(prompt) = input.prompt_text() {
-                        self.send(Msg::RemoteTurn {
-                            prompt: Some(prompt),
-                        });
+                        match crate::ui::peer::of_inputs(&prompt) {
+                            Some(messages) => self.peer_messages(messages),
+                            None => self.send(Msg::RemoteTurn {
+                                prompt: Some(prompt),
+                            }),
+                        }
                     }
                 }
                 for id in own {
