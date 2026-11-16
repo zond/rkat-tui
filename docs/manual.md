@@ -1265,10 +1265,23 @@ levels: a helper at the limit gets no `delegate`, `mob_create`,
 `mob_spawn_member` or `council` tool (left out of its tool list and denied
 by its tool access policy), and a deeper spawn is refused.
 
-**Helper models.** A helper's model is, in this order: the model its spawn
-names (a `delegate` or `mob_spawn_member` call's inline or realm profile
-under `tooling`), else `helpers.model` (for a `delegate` helper), else its
-owner's model. A `fork_off` child keeps its source's model. Whatever the
+**Helper models.** A helper's model never comes from a stored profile. For
+every helper, however it is started (`delegate`, `spawn_member`,
+`mob_spawn_member` into any mob, by a profile's name, an inline profile or
+nothing), it is, in this order:
+
+1. the model the spawn names (an inline profile under `tooling`);
+2. else `helpers.model`;
+3. else its owner's current model.
+
+A profile the spawn names by its name (the workspace mob's `main`, or a
+profile of a mob the agent made with `mob_create`) still gives everything
+else it defines (tools, instructions and the rest), but its model, its
+provider and server, and its fallback chain are replaced: the workspace's
+mob keeps the `main` profile of its first start, on the model of that day,
+and a profile the agent wrote may name any model. A `fork_off` child is
+the one exception to step 2: it continues its parent's conversation, so it
+stays on its parent's current model. Whatever the
 source, the model runs through the owner's endpoint as above: on a
 self-hosted endpoint as its alias `<endpoint>:<model>`, also when an inline
 profile names it, and only a model the endpoint listed at start or that
@@ -1290,11 +1303,7 @@ named or by default, must pass: otherwise the spawn is refused and the
 agent's tool result says which model was refused, the list in force, and
 what to do (`name one of: …`, `name a model other than …`, or, when the
 spawn named none, that the call must name a permitted model). A
-`mob_spawn_member` member of a profile of its mob's own definition (made
-with `mob_create`) names its model in that definition, which the daemon
-does not see: while a list is in force such a spawn is refused, saying to
-name the model in the spawn's `tooling` profile. A `helpers.model` the list
-refuses is reported when the settings load or change, naming both
+`helpers.model` the list refuses is reported when the settings load or change, naming both
 settings, and the helpers that would use it are refused.
 
 ```toml
@@ -1309,11 +1318,11 @@ your own or the workspace's `tui.toml`; a project's `.rkat/tui.toml` may
 not set them. A change applies at once to the helpers spawned from then
 on, with one notice to the clients; a hand edit that sets both lists is not
 applied (the clients are told, and the last good settings stay), and both
-at start refuse the start as any bad `tui.toml` does. When one of the three
-is set, an agent's instructions (and those of a helper that may start
-helpers) say in one line which model helpers get by default and which are
-permitted, and every live agent is told of a change; when none is set they
-say nothing. The classifier's model (`auto.classifier_model`) is separate
+at start refuse the start as any bad `tui.toml` does. An agent's
+instructions (and those of a helper that may start helpers) say in one
+line where a helper's model comes from (a mob profile's own model is
+ignored), and, when one of the three is set, the default and which models
+are permitted; every live agent is told of a change. The classifier's model (`auto.classifier_model`) is separate
 and unaffected.
 
 The agent forks itself with the engine's `fork_off`: the child starts

@@ -9905,6 +9905,111 @@ nothing is set), `litellm::a_helper_naming_its_model_in_an_inline_profile_runs_o
 `an_endpoint_prefix_is_the_owner_s_or_refused`,
 `daemon::settings::tests::both_helper_model_lists_are_refused_on_a_write_and_a_sync`.
 
+## A helper's model never comes from a stored profile (2026-11-16)
+
+Bug from real use: an agent seated a helper with `spawn_member`
+`profile: "main"` and no model; it ran on the model the workspace's mob
+stored in its `main` profile at the realm's first start (the engine cannot
+update a stored definition, lukacf/meerkat#2184; `shape_root` overrides the
+profile for the agents only). Owner's rule: for every non-root member the
+customizer admits fresh, the model is the spawn's (an override, an inline
+profile's), else `helpers.model`, else the owner's current one; a
+`fork_off` child always its parent's (it continues the parent's
+conversation). Rebuilds, respawns and resumes keep their model.
+
+What the engine does with a profile named by a spawn (meerkat-mob 0.9.14):
+the profile is `spec.override_profile` or `definition.resolve_profile(role)`,
+and `model_override` replaces `profile.model` only
+(`runtime/actor/dormant_seat.rs` ~501, `runtime/actor.rs`
+`successor_build_provider` ~52520). The provider is the profile's declared
+one, else the mob's `[models]` entry, else the catalog
+(`portable_profile.rs` `resolved_profile_provider`); the build copies
+`provider` and `self_hosted_server_id` from the profile (`build.rs` ~445),
+and the factory refuses a declared provider the registry contradicts and
+keeps a declared server over the alias's (meerkat `factory.rs`
+`resolve_provider_from_registry`). `SpawnMemberSpec` has no provider field
+and `SpawnCustomizationContext` carries only the profile's name. Probed: a
+member of a `mob_create` profile declaring `provider: "anthropic"`, on an
+agent on a LiteLLM endpoint, was refused `binding 'rkat-tui-endpoints:litellm'
+resolves backend=SelfHosted auth=SelfHosted, expected provider Anthropic`.
+So `model_override` alone cannot do it; the customizer puts the stored
+profile on the spawn inline (`Seat::Stored`), with the chosen model, the
+owner's endpoint's provider and server and no `model_fallback`, as
+`shape_root` does for the agents. The profiles come from
+`RootMember::current_profile` (the workspace's `main`) and
+`mobs::profiles::MobProfiles`, which reads every mob's definition
+(`MobHandle::definition`, synchronous) at start and on each
+`mob_set_changes`; a mob not known yet is refused, saying to call again or
+pass the profile inline. The implicit mob's `delegate` profile is left as
+it is: the engine keeps it on the session's current model, provider and
+binding (`MobMcpState::ensure_implicit_mob_for_model`). The 0.0.8 refusal of
+a definition-profile member while a list is in force is gone. Found with
+it: `/model` did not update the registry's model of the session, so a
+helper's owner model (the rule's check, the helper view) was the old one;
+`rkat/set_model` now registers the new identity.
+
+Tests (each failed before the change, confirmed with `src/` stashed except
+where said): `helper_models::a_helper_of_the_stored_main_profile_runs_on_the_agent_s_model`
+(first start on `claude-sonnet-4-6`, restart on `claude-opus-4-8`: the
+helper ran on sonnet),
+`a_member_of_the_agent_s_mob_runs_on_the_agent_s_model_not_its_profile_s`,
+`a_member_of_the_agent_s_mob_runs_on_helpers_model`,
+`a_member_of_the_agent_s_mob_is_refused_when_its_parent_s_model_is`,
+`litellm::a_member_of_a_profile_naming_another_provider_runs_on_the_alias`;
+`a_model_the_spawn_names_wins_over_the_profile_s` and
+`a_fork_runs_on_its_parent_s_current_model` passed before too (regression
+pins); unit `mobs::customizer::tests::a_stored_profile_s_model_never_decides`,
+`mobs::profiles::tests::a_profile_is_found_missing_or_its_mob_unknown`.
+
+## A resumed run's `delegate` and the helper the stop left (2026-11-16)
+
+`resumed_runs::stopping_the_helper_of_a_resumed_run_tells_the_agent_in_that_run`
+failed twice on the slow hosted runner (`timed out` in `common::within`).
+Reproduced locally by pinning the tests to two cores beside six `nice 15`
+busy loops (`taskset -c 0,1`; the busy loops must have the test's
+priority, or the test only starves): the second daemon's `Daemon::start`
+never returned within the rig's 30 s. Traced with the engine's logs: at
+the stop the engine retires the `delegate` helper whose call the run had
+open; the next start's restore resumes the agent's run
+(`resume_point: ToolsPending`), which dispatches the `delegate` again with
+the same `member_id` and seats a new helper (the test's second
+`HELPER-TASK` call; the old helper is not restored). On a slow host that
+happens while the start is still running, and `start_agents` then awaited
+`DaemonToolOrigins::refresh`, whose `live_visible_tool_defs` waits behind
+the running turn (meerkat-session `persistent.rs`: the other read,
+`published_live_visible_tool_defs`, is the one that "never waits behind a
+running turn", and `MobSessionService` does not offer it) up to
+`CATALOG_READ` (30 s). The start now waits for a catalog at most 3 s
+(`CATALOG_AT_START`) and lets the read finish in the background. Pinned by
+`the_start_does_not_wait_behind_a_resumed_run_s_turn`, which holds the
+start before the reads (test-support `DaemonOptions::with_before_catalogs`)
+until the resumed run's helper made its call: it failed with the old await
+exactly as on CI.
+
+Found on the way: the start-up's `HelperEndings::lost` (a left helper its
+mob no longer seats) retired by the member id in a task that listed the
+mob later, which would take a new helper the resumed run had seated under
+that id; it retires nothing now
+(`mobs::endings::tests::a_lost_helper_is_told_and_nothing_is_retired_by_its_id`).
+Its "ended when the daemon stopped" for the old helper can reach the
+client before the user's stop of the new one, which the test's `saw` had
+taken for the stop. Unobserved but possible from the sources: the engine
+finishes a retirement the stop interrupted on a background task
+(meerkat-mob `builder.rs` ~12021), and a spawn whose identity is still in
+the roster is refused `MemberAlreadyExists` (`runtime/actor.rs` ~37243), so
+a re-dispatched `delegate` could meet the old member still retiring; not
+seen in the loaded runs, so nothing is done about it here.
+
+Left open: under the same load the sibling
+`a_run_stopped_inside_a_delegate_resumes_and_esc_stops_it_at_once` failed
+2 of 6 runs after the fix (and 2 of 6 before, then as the start's
+timeout). With the start no longer held, the engine can resume the run
+before the client attaches; the client learns a run's id only from the
+live `RunStarted` / `RunResumed`, so it misses the resumed one (the
+`resumed` helper's `saw` for `RunResumed` ran out once), and its Esc falls
+back to the force-cancel the test rules out (once). A client attaching to a
+run already resumed needs the run's id from the daemon; not done here.
+
 ## Interrupts stop the agent only; helpers' endings are told (2026-11-15)
 
 Owner's decisions (`.handover/plan-0.0.8.md`, item 2): an interrupt stops

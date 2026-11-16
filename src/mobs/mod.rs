@@ -60,6 +60,7 @@ pub mod customizer;
 pub mod delegates;
 pub mod endings;
 pub(crate) mod follow;
+pub mod profiles;
 
 use std::sync::Arc;
 

@@ -198,6 +198,15 @@ output now says why; report it rather than retrying silently:
   the call's confirmation and the daemon's `[ui]` push arrive in either
   order, and `wait_for` (new messages only) consumed the one awaited next.
   Waits whose order is not fixed use `saw` (seen before or arriving).
+- `stopping_the_helper_of_a_resumed_run_tells_the_agent_in_that_run`
+  (`tests/it/resumed_runs.rs`): failed twice on the slow hosted runner
+  (`within` of the second daemon's start ran out). Cause in the product: the
+  start awaited each agent's tool-catalog read, which the engine holds
+  behind a running turn for up to 30 s, and on a slow host the restore had
+  already resumed the agent's run inside its `delegate`. The read no longer
+  holds the start (`the_start_does_not_wait_behind_a_resumed_run_s_turn`
+  orders it so, and fails with the old await). Its `saw` also skips the
+  left helper's own "ended when the daemon stopped". No bound was raised.
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a

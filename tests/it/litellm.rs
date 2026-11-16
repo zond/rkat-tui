@@ -452,6 +452,66 @@ async fn a_helper_naming_its_model_in_an_inline_profile_runs_on_the_alias() {
     rig.quit().await;
 }
 
+/// A member of a mob the agent created, seated by its profile's name with
+/// no model, runs on the agent's alias through the endpoint, although the
+/// profile names another model and the provider of its public API: the
+/// customizer gives it the profile with the model, provider and server
+/// replaced by the owner's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_of_a_profile_naming_another_provider_runs_on_the_alias() {
+    let fake = FakeEndpoint::start(
+        models(),
+        vec![
+            Reply::Tool {
+                name: "mob_create",
+                args: json!({"definition": {"id": "team", "profiles": {"worker": {
+                    "model": "claude-sonnet-4-6",
+                    "provider": "anthropic",
+                    "tools": {"builtins": true, "comms": true},
+                }}}}),
+            },
+            Reply::Tool {
+                name: "mob_spawn_member",
+                args: json!({"mob_id": "team", "profile": "worker", "member_id": "w1", "initial_message": "say hi"}),
+            },
+            // The agent's last call and the member's first, in either order.
+            Reply::Text("done"),
+            Reply::Text("done"),
+        ],
+    )
+    .await;
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(Vec::new());
+    let mut rig = Attached::start_with(&ws.root, &llm, setup(&fake, LOCAL, &[])).await;
+    rig.daemon
+        .reveal(&rig.daemon.session, &["mob_create", "mob_spawn_member"])
+        .await;
+    rig.send(Effect::StartTurn("seat one".into()));
+    let outcome = rig.turn_finished().await;
+    assert_eq!(outcome.unwrap().text, "done");
+    // The agent's last request holds the spawn's result.
+    let spawned = fake
+        .turns()
+        .iter()
+        .rfind(|turn| turn.body.to_string().contains("seat one"))
+        .map(|turn| turn.body.to_string())
+        .unwrap_or_default();
+    assert!(!spawned.contains("Tool execution failed"), "{spawned}");
+    let turns = common::poll(async || {
+        let turns = fake.turns();
+        (turns.len() >= 4).then_some(turns)
+    })
+    .await;
+    for turn in &turns {
+        assert_eq!(turn.body["model"], LOCAL, "{spawned}");
+        assert_eq!(
+            turn.header("authorization"),
+            Some(format!("Bearer {}", key()).as_str())
+        );
+    }
+    rig.quit().await;
+}
+
 /// A helper on a model the self-hosted endpoint was not started with (it
 /// does not list it, so it has no alias): the spawn is refused with what
 /// the agent can do, naming the models the endpoint has, not only an

@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A helper started by a profile's name with no model (`spawn_member` with
+  `profile: "main"`, or a profile of a mob the agent made) ran on the
+  model that profile stored: for the workspace's `main`, the model of the
+  workspace's first start, which nobody chose now. It runs on the model
+  the spawn names, else `helpers.model`, else the agent's current model,
+  through the agent's endpoint, also when the profile names another
+  provider.
+- After `/model`, a helper that names no model is judged against
+  `helpers.allow_models` / `deny_models` as the new model, and the helper
+  view shows it.
+- A daemon restarted while an agent's run was inside a tool call could
+  take 30 s more to start (no client could attach meanwhile): it waited to
+  read the agent's tools behind the run it had just resumed. It serves at
+  once now. The start also no longer retires a helper the last daemon left
+  by its name, which could take a new helper the resumed run had started
+  under that name.
+
+### Changed
+
+- `helpers.model` applies to every helper that names no model, not only
+  `delegate` helpers; a `fork_off` child stays on its parent's model. A mob
+  profile's own model is ignored, so a member of a mob definition's
+  profile is no longer refused while `helpers.allow_models` or
+  `deny_models` is set.
+- The agents are always told, in one line, where a helper's model comes
+  from; the user's settings are added to it when set.
+
 ## [0.0.9] - 2026-11-15
 
 ### Changed

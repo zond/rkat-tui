@@ -212,9 +212,7 @@ impl Local {
             return (Vec::new(), None);
         }
         *self.core.helper_models.write() = now.clone();
-        let told = now.instruction().unwrap_or_else(|| {
-            "Helper models (the user's settings): none are set now; a helper that names no model runs on your own model, and any model your endpoint serves is permitted.".to_string()
-        });
+        let told = now.instruction();
         self.agents
             .note_everyone(&format!(
                 "{told} (This replaces what you were told before.)"

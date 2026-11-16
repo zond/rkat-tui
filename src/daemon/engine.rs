@@ -125,6 +125,9 @@ pub struct Composed {
     /// `helpers.model`, `allow_models` and `deny_models` in force (the
     /// customizer reads them per spawn).
     pub helper_models: crate::config::helper_models::SharedHelperModels,
+    /// The mobs' definitions the customizer seats members by; followed
+    /// once the workspace's mob is ensured ([`crate::mobs::profiles`]).
+    pub profiles: Arc<crate::mobs::profiles::MobProfiles>,
 }
 
 /// How the daemon composes its approval side (tests vary it).
@@ -290,6 +293,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     // session bound for the helpers it delegates to in turn. Clients see
     // the helpers' events on the mobs' own streams.
     let (spawning, spawning_rx) = mpsc::unbounded_channel();
+    let profiles = Arc::new(crate::mobs::profiles::MobProfiles::default());
     let customizer = HelperCustomizer::new(
         Arc::clone(&registry),
         Arc::clone(&approval.engine),
@@ -301,6 +305,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     .with_root(root)
     .with_endpoints(helper_endpoints)
     .with_models(Arc::clone(&helper_models))
+    .with_profiles(Arc::clone(&profiles))
     .with_realm_config(realm_config.path().to_path_buf())
     .with_gated_fork_off();
     // The members' tool policy from the engine's deny rules (tests may
@@ -428,6 +433,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         prepare,
         layers,
         helper_models,
+        profiles,
     })
 }
 
@@ -797,9 +803,9 @@ impl crate::mobs::customizer::RootHost for AgentHost {
             crate::bootstrap::persona::agents_persona(identity.as_str()),
             super::deferral::PERSONA.to_string(),
         ];
-        // Only when one of the three is set: no bytes otherwise. A change
-        // later reaches a live agent as a note.
-        sections.extend(self.helper_models.read().instruction());
+        // One line; a change of the settings later reaches a live agent as
+        // a note.
+        sections.push(self.helper_models.read().instruction());
         sections.extend(self.instructions.render());
         sections.extend(prompt_index(self.notes.user(), self.notes.workspace()));
         sections

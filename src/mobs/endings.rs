@@ -204,6 +204,8 @@ pub struct HelperEndings {
     state: OnceLock<Weak<MobMcpState>>,
     /// How many endings were told so far.
     told: std::sync::atomic::AtomicUsize,
+    /// How many retires these endings started.
+    retires: std::sync::atomic::AtomicUsize,
 }
 
 impl HelperEndings {
@@ -296,14 +298,18 @@ impl HelperEndings {
         }
     }
 
-    /// The daemon found `key` (`tag`) left over by its last stop, its run
-    /// gone: its parent is told, and it is retired.
+    /// The daemon found `key` (`tag`) left over by its last stop and no
+    /// longer seated (the engine retired it): its parent is told.
     pub fn lost(&self, key: &HelperKey, tag: HelperTag) {
         if self.is_settled(key) {
             return;
         }
+        // Nothing is retired: the helper is not seated, and a member
+        // seated under its id from now on is another helper, which a
+        // resumed run's `delegate` call (dispatched again with the same
+        // `member_id`) seats as the start goes on. Retiring by the id
+        // here retired that one when the mob listed it first.
         self.settle(key);
-        self.retire(key, false);
         self.tell(Ended {
             key: key.clone(),
             tag,
@@ -347,6 +353,8 @@ impl HelperEndings {
     /// and retires whatever member it is; otherwise only a `delegate`
     /// helper still seated is ([`super::delegates::retire_orphan`]).
     fn retire(&self, key: &HelperKey, any: bool) {
+        self.retires
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let Some(state) = self.state.get().and_then(Weak::upgrade) else {
             return;
         };
@@ -366,6 +374,13 @@ impl HelperEndings {
                 super::delegates::retire_orphan(&state, &key).await;
             }
         });
+    }
+
+    /// Tests: how many retires these endings started so far.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn retires(&self) -> usize {
+        self.retires.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Tests: whether `key` is followed and not ended yet.
@@ -417,6 +432,25 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         endings.deliver_to(tx);
         (endings, rx)
+    }
+
+    /// A helper the last daemon left that its mob no longer seats is told
+    /// to its parent and retires nothing: a member seated under its id
+    /// later is a new helper (a resumed run's `delegate` dispatched again),
+    /// which a retire by the id took when the mob listed it first. A timed
+    /// out call's helper is still retired.
+    #[test]
+    fn a_lost_helper_is_told_and_nothing_is_retired_by_its_id() {
+        let (endings, mut rx) = endings();
+        let key = delegate_key("slow");
+        endings.lost(&key, tag("slow"));
+        assert_eq!(rx.try_recv().unwrap().how, How::DaemonStopped);
+        assert_eq!(endings.retires(), 0);
+        // The same id spawned again is a new helper, followed afresh.
+        endings.spawned(&key, &tag("slow"));
+        endings.call_ended(&key, CallEnded::TimedOut);
+        assert_eq!(rx.try_recv().unwrap().how, How::TimedOut);
+        assert_eq!(endings.retires(), 1);
     }
 
     #[test]

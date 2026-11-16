@@ -204,8 +204,10 @@ async fn stopping_the_helper_of_a_resumed_run_tells_the_agent_in_that_run() {
     let (daemon, mut client) = resumed(&ws, &llm, name).await;
     common::until(|| helper_calls() == 2).await;
     client.send(Effect::StopHelper(vec!["slow".into()]));
+    // The stop's ending; the helper the last daemon left under the same
+    // name may be told ended first (`LEFT_ENDED`).
     let (how, told) = match client
-        .saw(|m| matches!(m, Msg::HelperEnded { path, .. } if path.last().is_some_and(|l| l == "slow")))
+        .saw(|m| matches!(m, Msg::HelperEnded { path, how, .. } if path.last().is_some_and(|l| l == "slow") && how != LEFT_ENDED))
         .await
     {
         Msg::HelperEnded { how, told, .. } => (how, told),
@@ -264,6 +266,65 @@ async fn a_run_stopped_inside_a_shell_call_resumes_with_its_outcome_uncertain() 
         client.turn_finished().await.unwrap().text,
         "answered after the stop"
     );
+    client.quit().await;
+    daemon.stop().await;
+}
+
+/// How the start tells a helper the last daemon left, its mob no longer
+/// seating it.
+const LEFT_ENDED: &str = "ended when the daemon stopped";
+
+/// The cause of `stopping_the_helper_of_a_resumed_run_tells_the_agent_in_that_run`
+/// failing on a slow runner (`within` of the second daemon's start ran out):
+/// the start read each agent's tool catalog, and the engine's read waits
+/// behind a running turn, up to 30 s; on a slow host the restore had
+/// already resumed the agent's run, inside its `delegate` call waiting for
+/// its hanging helper, so the start (and every client) waited the 30 s.
+/// Here the start is held until the resumed run's helper made its call, so
+/// the catalog read meets a running turn every time; the daemon must still
+/// serve at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_start_does_not_wait_behind_a_resumed_run_s_turn() {
+    let ws = Workspace::new();
+    let llm = script(delegate());
+    let helper_calls = {
+        let llm = Arc::clone(&llm);
+        move || {
+            llm.recorded()
+                .iter()
+                .filter(|r| r.user().contains("HELPER-TASK"))
+                .count()
+        }
+    };
+    let name = stop_inside(&ws, &llm, || helper_calls() == 1).await;
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let setup = rig::Setup::default();
+    let args = setup.command_line(&ws.root);
+    let options = setup
+        .options(&ws.root, &llm)
+        .with_before_catalogs(Arc::clone(&gate));
+    let start = tokio::spawn(async move { Running::try_start_with(&args, options).await });
+    // The resumed run is in its `delegate` call: its new helper called.
+    common::until(|| helper_calls() == 2).await;
+    gate.notify_one();
+    let started = std::time::Instant::now();
+    let daemon = start.await.unwrap().expect("the daemon starts");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(15),
+        "the start waited {:?} after the hold",
+        started.elapsed()
+    );
+    let mut client = Client::attach_agent(&ws.root, AgentChoice::Agent { name }).await;
+    client.send(Effect::StopHelper(vec!["slow".into()]));
+    let how = match client
+        .saw(|m| matches!(m, Msg::HelperEnded { path, how, .. } if path.last().is_some_and(|l| l == "slow") && how != LEFT_ENDED))
+        .await
+    {
+        Msg::HelperEnded { how, .. } => how,
+        _ => unreachable!(),
+    };
+    assert_eq!(how, "stopped by you");
+    assert_eq!(client.turn_finished().await.unwrap().text, "went on");
     client.quit().await;
     daemon.stop().await;
 }

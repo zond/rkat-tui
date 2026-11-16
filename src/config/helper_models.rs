@@ -267,12 +267,6 @@ impl HelperModels {
         Ok(Self { default, rule })
     }
 
-    /// Whether any of the three is set (the agents are told only then).
-    #[must_use]
-    pub fn is_set(&self) -> bool {
-        self.default.is_some() || self.rule != ModelRule::Any
-    }
-
     /// `helpers.model` set to a model the rule does not permit: the
     /// configuration error, naming both settings (`plain`: its model as
     /// the rule reads it, an `endpoint:` prefix removed).
@@ -317,31 +311,28 @@ impl HelperModels {
         })
     }
 
-    /// What an agent that can spawn helpers is told (`None`: none of the
-    /// three is set, and nothing is said).
+    /// The one line an agent that can spawn helpers is told: where a
+    /// helper's model comes from (a mob profile's own model never decides),
+    /// and the user's settings when any is set.
     #[must_use]
-    pub fn instruction(&self) -> Option<String> {
-        if !self.is_set() {
-            return None;
-        }
-        let default = match &self.default {
-            Some(model) => format!("a helper that names no model runs on `{model}`"),
-            None => "a helper that names no model runs on your own model".to_string(),
+    pub fn instruction(&self) -> String {
+        let mut line = match &self.default {
+            Some(model) => format!(
+                "Helper models: a helper runs on the model its spawn names (a mob profile's own model is ignored); one that names none runs on `{model}` (the user's helpers.model); a `fork_off` child stays on your model."
+            ),
+            None => "Helper models: a helper runs on the model its spawn names (a mob profile's own model is ignored), else on your own.".to_string(),
         };
         let permitted = match &self.rule {
-            ModelRule::Any => "any model your endpoint serves is permitted".to_string(),
-            ModelRule::Allow(patterns) => format!(
-                "helpers may run only on models matching {} (a trailing `*` is a prefix)",
-                joined(patterns)
-            ),
-            ModelRule::Deny(patterns) => format!(
-                "helpers may not run on models matching {} (a trailing `*` is a prefix)",
-                joined(patterns)
-            ),
+            ModelRule::Any => return line,
+            ModelRule::Allow(patterns) => format!("only on models matching {}", joined(patterns)),
+            ModelRule::Deny(patterns) => {
+                format!("on any model but those matching {}", joined(patterns))
+            }
         };
-        Some(format!(
-            "Helper models (the user's settings): {default}; {permitted}. A spawn on another model is refused."
-        ))
+        line.push_str(&format!(
+            " The user's settings let helpers run {permitted} (a trailing `*` is a prefix); a spawn on another model is refused."
+        ));
+        line
     }
 }
 
@@ -543,17 +534,22 @@ mod tests {
     }
 
     #[test]
-    fn the_agents_are_told_only_when_something_is_set() {
-        assert_eq!(HelperModels::default().instruction(), None);
+    fn the_agents_are_told_where_a_helper_s_model_comes_from() {
+        let plain = HelperModels::default().instruction();
+        assert_eq!(
+            plain,
+            "Helper models: a helper runs on the model its spawn names (a mob profile's own model is ignored), else on your own."
+        );
         let told = HelperModels {
             default: Some("claude-haiku-4-5".into()),
             rule: ModelRule::Deny(patterns(&["claude-opus-*"])),
         }
-        .instruction()
-        .unwrap();
+        .instruction();
         assert!(
-            told.contains("runs on `claude-haiku-4-5`")
-                && told.contains("may not run on models matching claude-opus-*"),
+            told.contains("a mob profile's own model is ignored")
+                && told.contains("one that names none runs on `claude-haiku-4-5`")
+                && told.contains("a `fork_off` child stays on your model")
+                && told.contains("run on any model but those matching claude-opus-*"),
             "{told}"
         );
         assert_eq!(told.lines().count(), 1);

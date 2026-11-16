@@ -286,6 +286,10 @@ pub struct DaemonOptions {
     /// Tests: how many of the next agent spawns fail.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) spawn_faults: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// Tests: the start waits for this before it reads the agents' tool
+    /// catalogs.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) before_catalogs: Option<Arc<tokio::sync::Notify>>,
     /// The state directory the default endpoint file goes in (`None`:
     /// the user's, [`endpoint::state_home`], or the runtime directory's).
     pub(crate) state_home: Option<PathBuf>,
@@ -303,6 +307,8 @@ impl Default for DaemonOptions {
             state_home: None,
             #[cfg(any(test, feature = "test-support"))]
             spawn_faults: None,
+            #[cfg(any(test, feature = "test-support"))]
+            before_catalogs: None,
         }
     }
 }
@@ -332,6 +338,15 @@ impl DaemonOptions {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_spawn_faults(mut self, faults: Arc<std::sync::atomic::AtomicUsize>) -> Self {
         self.spawn_faults = Some(faults);
+        self
+    }
+
+    /// Hold the start before it reads the agents' tool catalogs until
+    /// `gate` is notified (a test orders a resumed run's turn first).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_before_catalogs(mut self, gate: Arc<tokio::sync::Notify>) -> Self {
+        self.before_catalogs = Some(gate);
         self
     }
 
@@ -511,6 +526,13 @@ impl Daemon {
         let mut composed = engine::compose(parts, options.policy)?;
         let audit = open_audit(&mut composed);
         mob::ensure_mob(&composed.state, &composed.root).await?;
+        // After the mobs are restored: the follower's first read sees them.
+        composed
+            .tasks
+            .push(tokio::spawn(crate::mobs::profiles::MobProfiles::follow(
+                Arc::clone(&composed.profiles),
+                Arc::downgrade(&composed.state),
+            )));
         let conversations = open_conversations(
             &composed,
             #[cfg(any(test, feature = "test-support"))]
@@ -564,7 +586,13 @@ impl Daemon {
         attach_engine(&core, &agents, &workspace)?;
         composed.desk.report_to(&composed.engine);
         let endings_task = deliver_endings(&agents);
-        let first_agent = start_agents(&agents, &composed).await?;
+        let first_agent = start_agents(
+            &agents,
+            &composed,
+            #[cfg(any(test, feature = "test-support"))]
+            options.before_catalogs.clone(),
+        )
+        .await?;
         let watch_task = deliver_watches(&agents, composed.watch_batches);
         let local = Arc::new(local::Local::new(
             agents,
@@ -956,6 +984,7 @@ fn open_wires(composed: &mut engine::Composed, workspace: &Path) -> Arc<wires::W
 async fn start_agents(
     agents: &Arc<agents::Agents>,
     composed: &engine::Composed,
+    #[cfg(any(test, feature = "test-support"))] before_catalogs: Option<Arc<tokio::sync::Notify>>,
 ) -> Result<FirstAgent, DaemonError> {
     let (first, session, created) = agents.start().await?;
     // Schedules fire while the daemon runs, from its start: the runtime
@@ -973,12 +1002,30 @@ async fn start_agents(
         agents.interrupted(&name);
     }
     agents.settle_left_helpers().await;
-    // The agents are idle now: their tool catalogs can be read.
+    // Their tool catalogs. An idle agent's is read at once, before the
+    // daemon serves; but the engine's read waits behind a running turn
+    // (`live_visible_tool_defs`, up to `CATALOG_READ`), and a run the
+    // restore resumed may already be in one (a `delegate` dispatched
+    // again, waiting for its helper). Awaited in full, that held the
+    // start, and so every client, for 30 s; such a read goes on in the
+    // background.
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(gate) = before_catalogs {
+        gate.notified().await;
+    }
     for (agent, session) in agents.live() {
-        if !composed.origins.refresh(&session).await {
+        let origins = Arc::clone(&composed.origins);
+        let read = tokio::spawn(async move {
+            if !origins.refresh(&session).await {
+                tracing::info!(
+                    %agent,
+                    "the agent's tool catalog is read after its first run; until then only rkat-tui's own tools are known to the gate"
+                );
+            }
+        });
+        if tokio::time::timeout(CATALOG_AT_START, read).await.is_err() {
             tracing::info!(
-                %agent,
-                "the agent's tool catalog is read after its first run; until then only rkat-tui's own tools are known to the gate"
+                "an agent's run is in a turn; its tool catalog is read when the turn allows"
             );
         }
     }
@@ -1160,6 +1207,11 @@ fn is_database_file(path: &Path) -> bool {
 
 /// How long the managed mobs get to shut down at exit.
 const MOB_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long the start waits for an agent's tool catalog before it serves
+/// (an idle agent's is read well within it; a read behind a running turn
+/// goes on in the background).
+const CATALOG_AT_START: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Shut the managed mobs down, as the engine asks of a host before the
 /// runtime's own shutdown (which stands the mob state down but "does not

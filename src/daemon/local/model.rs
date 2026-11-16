@@ -87,6 +87,13 @@ impl Local {
             })?
             .map_err(Refusal::switch_failed)?;
         tracing::debug!(?report, "switched the agent's model");
+        // Its helpers from now on run on the new model, through its
+        // endpoint (a spawn names its owner's model, `crate::mobs::customizer`).
+        self.core.registry.register_session(
+            &session,
+            &report.new_identity.model,
+            report.new_identity.auth_binding.as_ref(),
+        );
         let (model, provider) = crate::endpoints::from_engine(
             &report.new_identity.model,
             report.new_identity.provider.as_str(),
