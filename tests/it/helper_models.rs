@@ -393,6 +393,22 @@ async fn a_fork_runs_on_its_parent_s_current_model() {
     })
     .await;
     assert_eq!(ran, [OPUS], "{forked}");
+    // The child's result reaches the agent as a run of its own once the
+    // child ends; a daemon stop while the engine delivers it can stall for
+    // its bounds (an engine race, `docs/evidence.md`, "A stop while a
+    // fork's result is delivered"), which is not what this test is about:
+    // the stop waits until that run ended.
+    common::poll(async || {
+        llm.recorded()
+            .iter()
+            .any(|request| {
+                !request.user().contains(TASK)
+                    && format!("{:?}", request.messages.last()).contains("finished (completed)")
+            })
+            .then_some(())
+    })
+    .await;
+    rig.daemon.idle(&rig.daemon.agent).await;
     rig.quit().await;
 }
 

@@ -458,6 +458,81 @@ async fn a_client_cannot_drive_another_agent_through_the_engine() {
     daemon.stop().await;
 }
 
+/// The daemon's notes (`agents::notes::append_note`: the roster, plan
+/// mode, grants, a compaction) are appended with the engine's
+/// `mob_append_system_context`, which writes a durable system message and
+/// admits no input. Meerkat 0.9.15 records as a known limitation
+/// (lukacf/meerkat#2346) that an external event admitted without a wake
+/// while a turn runs, or in the instant after its call answered, is taken
+/// as a new turn when the turn ends; a note shares none of that: appended
+/// while the turn's model call is in flight and again right after it
+/// answered, it starts no run, and the next turn the user starts carries
+/// both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_note_appended_while_a_turn_runs_starts_no_run_after_it() {
+    let ws = Workspace::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Gated(Arc::clone(&gate), Box::new(Step::Text("first done"))),
+        Step::Text("second done"),
+        Step::Text("an unstarted run"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let state = daemon.state();
+    let note = async |text: &str, key: &str| {
+        let mut request = meerkat_core::AppendSystemContextRequest::from_text(text.to_string());
+        request.source = Some("test".into());
+        request.idempotency_key = Some(key.into());
+        state
+            .mob_append_system_context(
+                &meerkat_mob::MobId::from(MOB_ID),
+                &meerkat_mob::AgentIdentity::from(daemon.agent.as_str()),
+                request,
+            )
+            .await
+            .unwrap();
+    };
+    let mut a = connect(&daemon).await;
+    let stream = a.open_stream().await;
+    a.ok("mob/member_send", a.prompt("USER-FIRST")).await;
+    llm.wait_call(0).await;
+    // The append to a member whose turn runs returns only when the turn
+    // ends (recorded in `docs/evidence.md`), so the call is answered
+    // while the note waits; the pause lets the note reach the engine
+    // first (were it later, it lands after the answer, the second case).
+    let released = std::sync::atomic::AtomicBool::new(false);
+    tokio::join!(
+        async {
+            note("NOTE-MID-CALL", "mid").await;
+            assert!(
+                released.load(std::sync::atomic::Ordering::SeqCst),
+                "the note returned before the turn ended"
+            );
+        },
+        async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            released.store(true, std::sync::atomic::Ordering::SeqCst);
+            gate.notify_one();
+        }
+    );
+    note("NOTE-AFTER-ANSWER", "after").await;
+    a.run_completed(&stream).await;
+    daemon.idle(&daemon.agent).await;
+    // The next run is the one this prompt starts: no run came between.
+    let stream = a.open_stream().await;
+    a.ok("mob/member_send", a.prompt("USER-SECOND")).await;
+    a.run_completed(&stream).await;
+    let recorded = llm.recorded();
+    assert_eq!(recorded.len(), 2, "no run after the first turn");
+    let second = format!("{:?}", recorded[1].messages);
+    assert!(recorded[1].user().contains("USER-SECOND"), "{second}");
+    assert!(
+        second.contains("NOTE-MID-CALL") && second.contains("NOTE-AFTER-ANSWER"),
+        "{second}"
+    );
+    daemon.stop().await;
+}
+
 /// A helper is driven by the client of the agent it works for only.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_cannot_cancel_another_agents_helper() {

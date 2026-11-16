@@ -10615,3 +10615,60 @@ in this move's gate runs; it stays in the flaky list.
   a boolean standing for a schema (it skipped them before) and fails
   without the fix, naming the two tools.
 - Not verified: no request was sent to a real LiteLLM proxy from here.
+
+## A stop while a fork's result is delivered (2026-11-16)
+
+- The intermittent stall of
+  `helper_models::a_fork_runs_on_its_parent_s_current_model` is an engine
+  race, not ours. A `fork_off` child's result is recorded and submitted as
+  a continuation for the parent (`meerkat-mob-mcp` 0.9.15
+  `agent_tools.rs` `spawn_detached_completion_custodian`,
+  `detached_completion_sink.rs` `submit`, `ContinuationHandling::Queue`);
+  its delivery wakes the parent (`MobHandle::wake_member_for_delivery`,
+  `WakeMember` cause `HostDelivery`) and runs it once more with the notice
+  "Background fork_off job … finished": a run no one started, whether the
+  child ends during the parent's turn or after it (the tool's own note
+  says so). A non-retiring stop (`rkat/shutdown` without `retire`, the
+  `/daemon stop`, SIGTERM) whose mob shutdown begins while that
+  `WakeMember` is in flight leaves the parent's
+  `unregister_session_inner_locked_authorized` unfinished: either after
+  "re-acquired mutation gate after drain" (no "staging unregister"; 2 s
+  later "runtime-loop exit teardown did not complete") or before it, with
+  "unregister is still waiting for the runtime loop to hand off the exact
+  executor" every 5 s. The daemon's stop then takes about 30 s
+  (`MOB_SHUTDOWN`, the runtime's 10 s registration bound, another 10 s)
+  and ends with `Shutdown(Store(RuntimeDeliveryOwnerRetirementIncomplete
+  { bound: 10s }))`.
+- Reproduced deterministically: the child's model answer gated, the
+  client quits, the gate is released and the stop sent 120 ms later. 11 of
+  12 stops stalled at 110 and 120 ms, 0 of 6 at 130 ms (the delivery done
+  first; 0 of 10 from 140 to 250 ms), 0 of 4 from -20 to 100 ms (the
+  result was then delivered at the
+  next start instead). Debug
+  logs of two stalls show the `WakeMember` 18 and 21 ms before "mob
+  admission closed", and no rkat-tui work in between (the client had
+  detached; no ending note, no steer). A retiring shutdown (`/quit` of the
+  client that started the daemon) was not seen to stall in 12 tries at
+  offsets from -160 to 140 ms: it retires the agent first, and the mob
+  shuts down with no sessions.
+- After a stalled stop the next start in a fresh process is clean (0.5 s),
+  and the child's result is delivered again (the engine's restart re-link)
+  as a run after the user's first turn. In the same process the start is
+  refused (`MobQuarantined … ParticipantNameOccupied
+  "tui/__mob_supervisor__"`), which only an in-process restart meets.
+- No mitigation here: retiring fork children before the agents' mob
+  (as is done for open delegates) does not help, the child has already
+  ended; what is in flight is the parent's delivery, which the host cannot
+  see or wait for. The test waits for the result's run to end before it
+  quits; 20 of 20 rounds passed under load (`taskset -c 0,1` beside two busy
+  loops). An upstream report is drafted, not filed.
+- Not shared with the 0.9.15 known limitation on external events
+  (lukacf/meerkat#2346, `accept_input_without_wake`): rkat-tui admits
+  nothing through that path. Its daemon notes use
+  `mob_append_system_context`, a system-message append that admits no
+  input; appended while the model call of a turn is in flight it returns
+  only when the turn ends, and appended right after the call answered it
+  starts no run either (`daemon::a_note_appended_while_a_turn_runs_starts_no_run_after_it`).
+  Watches, helper endings, the compaction steer and peer messages are
+  `mob/member_send` steers or comms inputs admitted with a wake, which
+  start a run on an idle agent by design.

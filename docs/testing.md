@@ -261,9 +261,14 @@ output now says why; report it rather than retrying silently:
   the daemon's 10 s (`mob did not shut down in time`), after the engine's
   "runtime-loop exit teardown did not complete ... Unregister teardown is
   still in progress" for the agent's session, and the runtime's own
-  shutdown waited 10 s more for a registration. Open: the stall is inside
-  the engine's teardown; nothing on rkat-tui's side was found holding it.
-  If it fails again, the log tail in the panic is the evidence.
+  shutdown waited 10 s more for a registration. Cause, found later: an
+  engine race. The child's result reaches the agent as a run of its own
+  (the engine's continuation delivery wakes the agent, `WakeMember`), and a
+  daemon stop that begins while that delivery is in flight stalls the
+  agent's unregister (`docs/evidence.md`, "A stop while a fork's result is
+  delivered"; 11 of 12 stops at the reproduced offset). The test now waits
+  for that run to end before it quits (a positive event, no bound raised);
+  20 of 20 loaded rounds passed after.
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a
