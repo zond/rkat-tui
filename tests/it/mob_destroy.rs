@@ -144,8 +144,17 @@ async fn a_mob_restored_by_a_later_daemon_is_destroyed_with_its_database() {
     assert!(rig.turn_finished().await.is_ok());
     // The member's first turn ended before the daemon stops.
     made_and_told(&rig, &llm).await;
+    let first = Arc::downgrade(&rig.daemon.state());
     rig.quit().await;
     assert!(database(&ws).exists());
+    // Nothing of the first daemon outlives its stop: its mob host held
+    // the mob's handle, which kept the database observed, and the second
+    // daemon's destroy could not drain it (an idle question left asking
+    // kept it for up to ten seconds, `Activity::stop`).
+    assert!(
+        first.upgrade().is_none(),
+        "the first daemon's mob host outlived its stop"
+    );
 
     let llm = script();
     let mut rig = Attached::start(&ws.root, &llm).await;

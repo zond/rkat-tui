@@ -117,6 +117,8 @@ pub struct Activity {
     probe: Probe,
     announce: Announce,
     this: Weak<Self>,
+    /// `true` once the daemon stopped ([`Self::stop`]).
+    stopped: tokio::sync::watch::Sender<bool>,
 }
 
 impl std::fmt::Debug for Activity {
@@ -137,7 +139,19 @@ impl Activity {
             probe,
             announce,
             this: this.clone(),
+            stopped: tokio::sync::watch::channel(false).0,
         })
+    }
+
+    /// The daemon stops: no question is asked from now on, and one under
+    /// way ends at once. A question holds this record, and through its
+    /// probe the runtime and everything the runtime holds (the mob host
+    /// with its mobs' handles, which keep their databases observed); one
+    /// left asking an agent whose conversation the shutdown unregistered
+    /// would keep all of it past the daemon's end, for up to
+    /// [`SETTLE_WAIT`].
+    pub fn stop(&self) {
+        self.stopped.send_replace(true);
     }
 
     /// `agent`'s run `run` of `session` started: whoever waited for it
@@ -263,6 +277,9 @@ impl Activity {
 
     /// Ask the runtime about `agent` unless it is busy or asked already.
     fn settle(&self, agent: &str) {
+        if *self.stopped.borrow() {
+            return;
+        }
         let Some(this) = self.this.upgrade() else {
             return;
         };
@@ -283,23 +300,30 @@ impl Activity {
     }
 
     /// Ask the runtime until the agent is idle, busy again, gone, or
-    /// [`SETTLE_WAIT`] has passed.
+    /// [`SETTLE_WAIT`] has passed, or the daemon stops ([`Self::stop`]).
     async fn check(self: Arc<Self>, agent: String) {
         let started = tokio::time::Instant::now();
         let mut wait = RECHECK_FIRST;
+        let mut stopped = self.stopped.subscribe();
         loop {
             let generation = match self.agents.lock().get(&agent) {
                 Some(state) => state.generation,
                 None => return,
             };
-            let probed = (self.probe)(agent.clone()).await;
+            let probed = tokio::select! {
+                probed = (self.probe)(agent.clone()) => probed,
+                () = until_stopped(&mut stopped) => return,
+            };
             let past = started.elapsed() >= SETTLE_WAIT;
             match self.conclude(&agent, generation, probed, past) {
                 Next::Done => return,
                 Next::Again => continue,
                 Next::Wait => {}
             }
-            tokio::time::sleep(wait).await;
+            tokio::select! {
+                () = tokio::time::sleep(wait) => {}
+                () = until_stopped(&mut stopped) => return,
+            }
             wait = (wait * 2).min(RECHECK_MAX);
         }
     }
@@ -339,6 +363,12 @@ impl Activity {
         (self.announce)(&note);
         Next::Done
     }
+}
+
+/// Resolves once `stopped` is `true` (also when it is already). Its
+/// sender is the `Activity` the caller holds, so it is never dropped first.
+async fn until_stopped(stopped: &mut tokio::sync::watch::Receiver<bool>) {
+    let _ = stopped.wait_for(|stopped| *stopped).await;
 }
 
 /// An input on its way to the engine ([`Activity::sending`]): dropped when
@@ -485,6 +515,50 @@ mod tests {
         tokio::time::sleep(SETTLE_WAIT).await;
         settle().await;
         assert_eq!(world.lock().asked, asked);
+    }
+
+    /// The daemon's stop ends a question under way at once (it held the
+    /// record, and through the probe the runtime, for up to the bound),
+    /// and asks none after it.
+    #[tokio::test(start_paused = true)]
+    async fn the_stop_ends_the_questions_and_lets_the_record_go() {
+        let session = SessionId::new();
+        let (activity, world) = activity(&session);
+        let run = RunId::new();
+        // A conversation the shutdown unregistered: never anything but held.
+        world.lock().unfinished = 1;
+        activity.run_started("a", &session, Some(&run));
+        activity.run_ended("a", Some(&run));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        settle().await;
+        assert!(world.lock().asked > 1, "asking while it holds input");
+        let held = Arc::downgrade(&activity);
+        activity.stop();
+        drop(activity);
+        settle().await;
+        assert!(
+            held.upgrade().is_none(),
+            "a question still holds the record after the stop"
+        );
+        let asked = world.lock().asked;
+        tokio::time::sleep(SETTLE_WAIT * 2).await;
+        settle().await;
+        assert_eq!(world.lock().asked, asked, "nothing asked after the stop");
+        assert!(world.lock().told.is_empty());
+    }
+
+    /// No question starts after the stop.
+    #[tokio::test(start_paused = true)]
+    async fn nothing_is_asked_after_the_stop() {
+        let session = SessionId::new();
+        let (activity, world) = activity(&session);
+        activity.stop();
+        let run = RunId::new();
+        activity.run_started("a", &session, Some(&run));
+        activity.run_ended("a", Some(&run));
+        drop(activity.sending("a"));
+        settle().await;
+        assert_eq!(world.lock().asked, 0);
     }
 
     /// A change while the runtime is asked (an input sent and answered in

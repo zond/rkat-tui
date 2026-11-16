@@ -771,6 +771,10 @@ impl Daemon {
         self.listener.remove_files();
         // Nor an agent's socket.
         self.local.core().wires.close();
+        // No more idle questions: one left asking about a conversation the
+        // shutdown unregisters would keep the runtime and the mobs' handles
+        // past the daemon's end (`activity::Activity::stop`).
+        self.local.core().activity.stop();
         // "Terminate": the agents leave with the daemon (their
         // conversations stay); else they are restored at the next start.
         if self.local.lifecycle().retires_all() {

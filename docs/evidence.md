@@ -10989,15 +10989,54 @@ at the tests' priority, `taskset -c 0,1`); the single-daemon sibling 0 of
   In the first daemon the follower's handle exists and the destroy passes:
   `MobDestroying` ends the follow, and `after_destroy` closes clients'
   streams (`daemon::serve`).
-- So the holder is the engine's own, most likely the dormant member's
-  teardown in the destroy; not pinned further. The engine's contract for
-  an incomplete destroy is a retry by the same caller, which continues the
-  cleanup (`MobMcpState::mob_destroy`).
+- The second daemon was the wrong place to look: the five belong to the
+  first one. Both daemons run in the test's one process, and the observer
+  registry is the process's, keyed by the database's path, so the second
+  daemon's stores attach to an observer the first daemon's leftovers
+  still own.
 
-Not fixed here: no product change; the test stays as it is (no retry
-added). Open: pin the engine holder and file it upstream, or word the
-agent's next step on `mob_destroy_incomplete` (the result is the engine's;
-the gate cannot rewrite it).
+Resolved (later the same day). Probe: a thread in the test polled
+`SqliteMobStores::drain_observers` every 10 ms from before the first
+daemon's quit, beside the strong counts of the first daemon's
+`MobMcpState`, `HelperRegistry` and `Local` (weak references taken while it
+served), all with wall-clock times next to the captured log.
+
+- In a round that passes, the first daemon's quit takes the owners 6, 5,
+  0 and the mob host to 0 within about 290 ms, before the quit returns.
+- In each round that leaked (2 of 10, 2 of 8 under load) the quit left
+  5 owners, the mob host at 3 and the registry at 4 (`Local` at 0), and
+  all of them went in one 10 ms poll, 10.0 to 10.6 s after the `team` mob
+  had shut down. With the daemon stopped, nothing logged then except a
+  temporary line at the end of `Activity::check`: its end fell within 5 ms
+  of the release in both leaking rounds (a check started during the quit,
+  ended 10.57 s later), and no check that long ran in the other rounds.
+- Five is one `MobHandle`: it holds five distinct store objects of the
+  mob's database (`events`, `identity_member`, `identity`, `run_store`,
+  `runtime_metadata`, `meerkat-mob` 0.9.15 `runtime/handle.rs`), each
+  holding the observer's owner; clones of a handle share them. The handle
+  is the first daemon's mob host's managed entry for `team`, alive as long
+  as the host is.
+- The holder of the host: `Activity::check` (`src/daemon/activity.rs`),
+  the idle question spawned on the runtime. It holds the `Activity`,
+  whose probe holds the runtime's `MeerkatMachine` (and through it the
+  agents' tools and the mob host). A run end or an answered input during
+  the quit starts one; the shutdown then unregisters the conversation, the
+  probe's input list fails, which counts as one input held, so the
+  question goes on to its bound, `SETTLE_WAIT` (10 s). The second daemon's
+  destroy, about 600 ms after the quit, gave the drain 1 s.
+
+Ours, and only of two daemons in one process (the rig; a daemon process
+that stops exits, and its tasks with it), so no user saw it. Fixed:
+`Activity::stop` ends a question under way at once and refuses new ones;
+the daemon calls it first in its stop, after the agents' sockets close
+(`Daemon::serve_until`). Tests: `daemon::activity::tests::the_stop_ends_the_questions_and_lets_the_record_go`
+and `nothing_is_asked_after_the_stop` (both fail with `stop` a no-op), and
+`a_mob_restored_by_a_later_daemon_is_destroyed_with_its_database` now
+asserts that the first daemon's mob host is gone when its stop returns.
+No retry of the destroy anywhere: the engine's 1 s is enough once nothing
+of ours outlives a stop. Loaded rounds of the module (two cores, two busy
+loops at the tests' priority in the same slice): 5 of 20 failed before
+(each the restored test, "5 owner handle(s)"), 0 of 20 after.
 
 ## `delegate` withdrawn (owner decision, 2026-11-16)
 
