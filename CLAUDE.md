@@ -179,6 +179,11 @@ repository). Open upstream issues this code waits on:
   roster note's states and "do not message an idle agent with no client"
   (`src/daemon/agents/notes.rs`, the persona) go then.
 
+- #2350: moving a tool call that is already running in the foreground to
+  the background (Ctrl-B Ctrl-B). Background shell jobs themselves wait on
+  #2180 (`approval::policy::SHELL_JOB_TOOLS`, `BACKGROUND_SHELL_UNAVAILABLE`
+  go when a mob member's shell keeps its `Detached` contract).
+
 - #2300: `blob_save_file` and `view_image` taking additional allowed
   directories from the host. The scratch-directory instruction's sentence
   about them (`src/bootstrap/persona.rs`) goes when it ships.
