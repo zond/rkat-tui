@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-11-16
+
 ### Changed
 
 - The engine is Meerkat 0.9.15 (from 0.9.14). What it brings that you can
