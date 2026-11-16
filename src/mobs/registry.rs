@@ -54,8 +54,12 @@ pub enum HelperKind {
     /// A member kept until retired (`spawn_member`, `mob_spawn_member`):
     /// its parent is told each time it goes idle.
     Member,
-    /// Anything else (a `delegate` helper, a `fork_off` child, a council's
-    /// participant, a member an earlier build bound).
+    /// A `fork_off` child: wired to its parent once seated; the engine
+    /// tells its parent of its first run's end, and its parent is told of
+    /// each later run that leaves it idle, as of a [`Self::Member`]'s.
+    Fork,
+    /// Anything else (a `delegate` helper, a council's participant, a
+    /// member an earlier build bound, a fork among them).
     #[default]
     Other,
 }

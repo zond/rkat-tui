@@ -41,6 +41,11 @@
 //! active (its parent or a peer made it so, by a message the sender knows
 //! of): each note costs its parent a model call, and one for every
 //! activation would let two agents wake each other forever.
+//!
+//! A `fork_off` child ([`super::HelperKind::Fork`]) is told as such a
+//! member, except for its first run: the engine tells the parent of that
+//! run's end itself ("Background fork_off job … finished"), and of no later
+//! run, which the parent's messages start now that the child is wired to it.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, OnceLock, Weak};
@@ -177,6 +182,8 @@ struct Tracked {
     runs: u64,
     /// The last tool call of its current run was a message to its parent.
     messaged_parent: bool,
+    /// Its first run's end is told by the engine (a fresh fork's outcome).
+    first_told_elsewhere: bool,
 }
 
 /// How many inputs the runtime holds for a helper that are not finished
@@ -270,7 +277,13 @@ pub struct HelperEndings {
     /// How many runs' ends were decided as a helper's going idle (told or
     /// not).
     idle_decided: std::sync::atomic::AtomicUsize,
+    /// The peer ids and names of the `assign` helpers retired when they
+    /// finished, newest last ([`Self::retired_peer`]).
+    retired_peers: Arc<Mutex<VecDeque<(String, String)>>>,
 }
+
+/// How many retired `assign` helpers' peer ids are remembered.
+const RETIRED_PEERS: usize = 64;
 
 /// [`InputsProbe`], held.
 struct Probe(InputsProbe);
@@ -306,6 +319,15 @@ impl HelperEndings {
             self.settled.lock().retain(|settled| settled != key);
         }
         self.tracked.lock().entry(key.clone()).or_default().tag = Some(tag.clone());
+    }
+
+    /// The fresh fork `key`'s first run's end reaches its parent from the
+    /// engine ("Background fork_off job … finished"): only its later runs
+    /// are told here.
+    pub fn first_run_told_by_engine(&self, key: &HelperKey) {
+        if let Some(tracked) = self.tracked.lock().get_mut(key) {
+            tracked.first_told_elsewhere = true;
+        }
     }
 
     /// The parent's `delegate` call that started `key` ended `how`.
@@ -405,12 +427,14 @@ impl HelperEndings {
     /// parent is told, and it is retired) and a long-lived member went idle
     /// (its parent is told, unless the run's last call was a message to it).
     fn went_idle(&self, key: &HelperKey, runs: u64, terminal: Terminal) {
-        let (tag, messaged_parent) = {
+        let (tag, messaged_parent, first_told_elsewhere) = {
             let tracked = self.tracked.lock();
             match tracked.get(key) {
-                Some(tracked) if tracked.runs == runs => {
-                    (tracked.tag.clone(), tracked.messaged_parent)
-                }
+                Some(tracked) if tracked.runs == runs => (
+                    tracked.tag.clone(),
+                    tracked.messaged_parent,
+                    tracked.first_told_elsewhere && runs <= 1,
+                ),
                 _ => return,
             }
         };
@@ -431,9 +455,12 @@ impl HelperEndings {
                         how,
                     });
                 }
-                self.retire(key, true);
+                self.retire_done(key);
             }
-            super::HelperKind::Member => {
+            super::HelperKind::Member | super::HelperKind::Fork => {
+                if first_told_elsewhere {
+                    return;
+                }
                 let how = match terminal {
                     Terminal::Completed(_) if messaged_parent => return,
                     Terminal::Completed(answer) => How::WentIdle {
@@ -585,6 +612,56 @@ impl HelperEndings {
                 super::delegates::retire_orphan(&state, &key).await;
             }
         });
+    }
+
+    /// Retire the `assign` helper `key`, which finished, off the caller's
+    /// task, remembering its peer id first: a message its parent sends it
+    /// from now on is refused saying it finished ([`Self::retired_peer`]),
+    /// not with the engine's "peer not found".
+    fn retire_done(&self, key: &HelperKey) {
+        self.retires
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(state) = self.state.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let key = key.clone();
+        let retired = Arc::clone(&self.retired_peers);
+        runtime.spawn(async move {
+            match state.handle_for(&key.mob).await {
+                Ok(handle) => {
+                    if let Ok(Some(endpoint)) = handle.member_peer_endpoint(&key.member).await {
+                        let mut retired = retired.lock();
+                        retired.push_back((
+                            endpoint.descriptor.peer_id.to_string(),
+                            key.member.to_string(),
+                        ));
+                        while retired.len() > RETIRED_PEERS {
+                            retired.pop_front();
+                        }
+                    }
+                    super::stop_helper(&handle, &key).await;
+                }
+                Err(err) => {
+                    tracing::warn!(helper = %key, error = %err, "cannot reach the finished helper's mob");
+                }
+            }
+        });
+    }
+
+    /// The name of the `assign` helper that ran as the peer `peer_id` and
+    /// was retired when it finished (`None`: no such helper is
+    /// remembered).
+    #[must_use]
+    pub fn retired_peer(&self, peer_id: &str) -> Option<String> {
+        self.retired_peers
+            .lock()
+            .iter()
+            .rev()
+            .find(|(peer, _)| peer == peer_id)
+            .map(|(_, name)| name.clone())
     }
 
     /// The `delegate` helpers whose parent's call is still open (no end of
@@ -858,6 +935,37 @@ mod tests {
         endings.run_ended(&fork, Terminal::Completed("forked".into()));
         assert!(rx.try_recv().is_err());
         assert_eq!(endings.idle_decided(), 4);
+    }
+
+    /// A fresh fork's first run's end is the engine's to tell: not told
+    /// here, but decided; each later run that leaves it idle is told as a
+    /// member's; a fork rebuilt after a restart has every run told.
+    #[test]
+    fn a_fork_is_told_of_its_runs_after_the_first() {
+        use crate::mobs::HelperKind;
+        let (endings, mut rx) = endings();
+        let key = HelperKey::new(MobId::from("tui"), AgentIdentity::from("kid"));
+        endings.spawned(&key, &tagged("kid", HelperKind::Fork));
+        endings.first_run_told_by_engine(&key);
+        endings.run_started(&key);
+        endings.run_ended(&key, Terminal::Completed("the outcome".into()));
+        assert!(rx.try_recv().is_err(), "the engine tells the first");
+        assert_eq!(endings.idle_decided(), 1);
+        endings.run_started(&key);
+        endings.run_ended(&key, Terminal::Completed("later".into()));
+        assert_eq!(
+            rx.try_recv().unwrap().how,
+            How::WentIdle {
+                answer: "later".into(),
+                failed: None
+            }
+        );
+        assert_eq!(endings.retires(), 0);
+        let rebuilt = HelperKey::new(MobId::from("tui"), AgentIdentity::from("kid2"));
+        endings.spawned(&rebuilt, &tagged("kid2", HelperKind::Fork));
+        endings.run_started(&rebuilt);
+        endings.run_ended(&rebuilt, Terminal::Completed("after a restart".into()));
+        assert!(matches!(rx.try_recv().unwrap().how, How::WentIdle { .. }));
     }
 
     #[test]

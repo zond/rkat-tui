@@ -171,12 +171,15 @@ repository). Open upstream issues this code waits on:
 - #2231: a call that compacts an idle session. The quiet run `/compact`
   starts itself (`ui::COMPACT_PROMPT`) goes when it ships.
 - #2232: a `fork_off` child wired to its parent; #2233: an agent wiring its
-  own children, and `auto_wire_parent` across mobs. The instructions'
-  "a fork reaches no one" and "helpers talk through the parent" go then.
-  Probed 2026-11-16: the host's own `mob_wire_members_batch` after the
-  fork is seated is accepted and usable from the fork's next step, both
-  ways (`docs/evidence.md`); wiring every fork that way is planned, which
-  ends our dependence on #2232.
+  own children, and `auto_wire_parent` across mobs. The daemon wires each
+  fork to its parent once it is seated, and holds the fork's calls until
+  then (`src/mobs/follow.rs` `wire_to_parent`, `ApprovalGate::waiting_for`):
+  both go when #2232 ships; "helpers talk through the parent" goes with
+  #2233.
+- #2374: a mob shutdown during a `fork_off` result's delivery leaves the
+  owner's unregister unfinished (the stop then takes about 30 s). Nothing
+  of ours goes when it ships; the tests with forks wait for the result's
+  run to end before they stop the daemon because of it.
 - #2234: the OpenAI dialect lowering nested tool schemas. The client
   wrapper `src/daemon/schema_compat.rs` goes when it ships.
 - #2235: a peer message that waits for an idle receiver's next run. The

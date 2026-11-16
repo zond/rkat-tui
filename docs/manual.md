@@ -1378,12 +1378,17 @@ and unaffected.
 The agent forks itself with the engine's `fork_off`: the child starts
 from the conversation so far, works on the task it is given, runs behind
 the same gate as every helper and shows as one (see [The workspace daemon](#the-workspace-daemon)).
-A fork is turn-driven and not wired to the agent that forked it, by the
-engine's design: the `fork_off` call returns at once while the child
-works in the background, and when the child ends its outcome is written
+The `fork_off` call returns at once while the child works in the
+background, and when the child's first run ends its outcome is written
 into the agent's transcript ("Background fork_off job … finished"): at
 the agent's next model call if it is mid-turn, else in a turn of its
-own. The child cannot message the parent or be messaged while it runs.
+own. The engine seats a fork wired to no one; the daemon wires it to the
+agent (or helper) that forked it as soon as it is seated, and its tool
+calls wait for that edge, so the two can message each other while it
+runs and after (the parent's message to its fork is a peer message, not
+reviewed). A message to a fork that has finished starts another run of
+it; when such a later run leaves it idle the parent is told, as for a
+member kept with `spawn_member` ("Your helper `kid` went idle …").
 A helper's status as the engine's `member_status` and `mob_check_member`
 give it shows no live progress: their `output_preview` and `tokens_used`
 are from the helper's last completed turn, so a fork's preview is the

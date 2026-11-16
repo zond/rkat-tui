@@ -1345,19 +1345,16 @@ async fn child_peers(route: &'static str) -> (String, String) {
     (peers, agent)
 }
 
-/// Every child an agent starts with `delegate` or `spawn_member` is wired
-/// to it without being asked: its `peers` names the agent. A `fork_off`
-/// child is wired to no one (the engine seats it without a trust edge and
-/// asks rkat-tui's customizer only for its gate), so its `peers` is empty;
-/// the persona says so.
+/// Every child an agent starts is wired to it without being asked: its
+/// `peers` names the agent, from its first call. A `fork_off` child too:
+/// the engine seats it without a trust edge, the daemon wires it once it is
+/// seated, and its first call waits for that edge (`forks` has the rest).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn children_are_wired_to_their_parent_except_forks() {
-    for route in ["delegate", "spawn_member"] {
+async fn children_are_wired_to_their_parent() {
+    for route in ["delegate", "spawn_member", "fork_off"] {
         let (peers, agent) = child_peers(route).await;
         assert!(peers.contains(&agent), "{route}: {peers}");
     }
-    let (peers, agent) = child_peers("fork_off").await;
-    assert!(!peers.contains(&agent), "fork_off: {peers}");
 }
 
 /// A parent messages its own child as it messages another agent: the

@@ -18,6 +18,13 @@
 
 ### Changed
 
+- A `fork_off` child can talk with its parent: it is wired to the agent
+  (or helper) that forked it, so each can message the other while it runs
+  and after. Its parent is still told of its first run's end by the
+  engine's outcome, and now also each time a later run (one a message
+  started) leaves it idle. The agents' instructions say so, and name the
+  three ways to start a helper (`assign`, `fork_off`, `spawn_member`) in
+  three lines.
 - A helper kept with `spawn_member` or `mob_spawn_member` tells its parent
   each time it goes idle, with its last message (`Your helper w1 went
   idle. …`); it stays seated. No note comes for its start or when it
@@ -32,6 +39,12 @@
 
 ### Fixed
 
+- A message to an `assign` helper that had finished failed with the
+  engine's "peer not found"; it now says the helper finished and was
+  retired, and to start another with `assign`.
+- A fork of an `assign` helper was taken for an `assign` helper itself
+  (it carries its source's labels): it would have been retired when its
+  first run ended, as if it had finished an assigned task.
 - An `/approve` made while the agent was working held back every later
   notice of the approval gate (decisions, "classifying", pauses, mode
   changes) until the agent's turn ended.

@@ -96,7 +96,7 @@ async fn follow(
     observer: Arc<dyn HelperWatch>,
     helper: Spawning,
 ) {
-    let Spawning { key, tag } = helper;
+    let Spawning { key, tag, wired } = helper;
     let retired = match subscribe(&state, &key.mob, &key.member).await {
         Ok(Followed {
             handle,
@@ -105,6 +105,15 @@ async fn follow(
             mut mob_events,
         }) => {
             observer.mob_hosts(&key.mob);
+            // A fresh fork, and one restored (the mob keeps the edge
+            // across a restart; one it lost is made again).
+            if tag.kind == super::HelperKind::Fork {
+                wire_to_parent(&state, &registry, &key, &tag).await;
+            }
+            // Its calls wait no more (dropped on any other path too).
+            if let Some(wired) = wired {
+                wired.send_replace(true);
+            }
             if let Some(session) = &session {
                 registry.bind_session(&key, &tag, session);
             }
@@ -199,6 +208,57 @@ async fn follow(
     }
 }
 
+/// The member that started the helper `tag`: the helper above it on its
+/// path, else the agent its owner session runs as (`None`: neither is
+/// seated here).
+fn parent_of(registry: &HelperRegistry, tag: &HelperTag) -> Option<super::HelperKey> {
+    if tag.parent_path().is_empty() {
+        registry.root_of_session(&tag.owner)
+    } else {
+        registry
+            .live_by_path(&tag.owner, tag.parent_path())
+            .map(|(key, _)| key)
+    }
+}
+
+/// Wire the fork child `key` to its parent, as the daemon wires its agents
+/// (the host's `mob_wire_members_batch`; an edge that exists stays). The
+/// engine seats a fork with no edge, and nothing can be set at its spawn
+/// (lukacf/meerkat#2232); the host can wire it after
+/// (`agents::a_fork_and_its_parent_talk_both_ways_and_its_later_runs_are_told`).
+/// A child seated in another mob than its parent's cannot be wired (an edge
+/// is within one mob): logged, and it reaches no one.
+async fn wire_to_parent(
+    state: &Weak<MobMcpState>,
+    registry: &HelperRegistry,
+    key: &super::HelperKey,
+    tag: &HelperTag,
+) {
+    let Some(parent) = parent_of(registry, tag) else {
+        tracing::warn!(helper = %key, "a fork's parent is not seated here; it is wired to no one");
+        return;
+    };
+    if parent.mob != key.mob {
+        tracing::warn!(helper = %key, parent = %parent, "a fork seated outside its parent's mob is wired to no one");
+        return;
+    }
+    let Some(state) = state.upgrade() else { return };
+    match state
+        .mob_wire_members_batch(&key.mob, vec![(parent.member.clone(), key.member.clone())])
+        .await
+    {
+        Ok(report) => tracing::debug!(
+            helper = %key,
+            wired = report.wired.len(),
+            already = report.already_wired.len(),
+            "wired a fork to its parent"
+        ),
+        Err(err) => {
+            tracing::warn!(helper = %key, error = %err, "cannot wire a fork to its parent");
+        }
+    }
+}
+
 /// The comms peer id of the member that started the helper `tag`: the
 /// helper above it on its path, else the agent its owner session runs as
 /// (`None`: neither is seated, or its endpoint cannot be read).
@@ -207,11 +267,7 @@ async fn peer_of_parent(
     registry: &HelperRegistry,
     tag: &HelperTag,
 ) -> Option<String> {
-    let parent = if tag.parent_path().is_empty() {
-        registry.root_of_session(&tag.owner)?
-    } else {
-        registry.live_by_path(&tag.owner, tag.parent_path())?.0
-    };
+    let parent = parent_of(registry, tag)?;
     let handle = state.upgrade()?.handle_for(&parent.mob).await.ok()?;
     let endpoint = handle.member_peer_endpoint(&parent.member).await.ok()??;
     Some(endpoint.descriptor.peer_id.to_string())

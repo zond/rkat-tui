@@ -206,6 +206,78 @@ async fn an_assigned_helper_runs_beside_its_parent_talks_both_ways_and_retires_w
     daemon.stop().await;
 }
 
+/// A message to an `assign` helper that finished and was retired is
+/// refused saying so and what to do, not with the engine's "peer not
+/// found".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_message_to_a_finished_helper_says_it_was_retired() {
+    let ws = Workspace::new();
+    let answer = Arc::new(tokio::sync::Notify::new());
+    let step = {
+        let answer = Arc::clone(&answer);
+        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+            let user = common::user_texts(messages).concat();
+            if user.contains("HELPER-TASK") {
+                return Step::Gated(Arc::clone(&answer), Box::new(Step::Text("HELPER-ANSWER")));
+            }
+            let all = format!("{messages:?}");
+            if all.contains("\"m1\"") {
+                return Step::Text("PARENT-DONE");
+            }
+            if all.contains("finished its task") {
+                return send(peer_id(messages, "scout"), "MORE-WORK");
+            }
+            if all.contains("\"p1\"") {
+                return Step::Text("WAITING");
+            }
+            if all.contains("\"a1\"") {
+                return peers();
+            }
+            assign("scout", "HELPER-TASK: answer")
+        }))
+    };
+    let llm = ScriptedLlmClient::new(vec![step; 20]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "go").await;
+    // The parent knows the helper's peer id before it finishes.
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .any(|r| !r.user().contains("HELPER-TASK") && peer_id(&r.messages, "scout").is_some())
+    })
+    .await;
+    answer.notify_one();
+    common::until(|| heard(&llm, false, "MORE-WORK")).await;
+    common::until(|| {
+        llm.recorded().iter().any(|r| {
+            matches!(r.messages.last(), Some(Message::ToolResults { results, .. })
+                if results.iter().any(|res| res.tool_use_id == "m1"))
+        })
+    })
+    .await;
+    let result = llm
+        .recorded()
+        .iter()
+        .find_map(|r| match r.messages.last() {
+            Some(Message::ToolResults { results, .. }) => results
+                .iter()
+                .find(|res| res.tool_use_id == "m1")
+                .map(meerkat_core::types::ToolResult::text_content),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        result.contains(
+            "helper `scout` finished its task and was retired; start another with `assign` for more work"
+        ),
+        "{result}"
+    );
+    daemon.idle(&daemon.agent).await;
+    drop(connection);
+    daemon.stop().await;
+}
+
 fn spawn_member(member: &str, kickoff: &str) -> Step {
     Step::Tool {
         id: "s1",

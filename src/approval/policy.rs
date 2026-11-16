@@ -150,7 +150,7 @@ pub const SHELL_JOB_TOOLS: [&str; 3] = ["shell_jobs", "shell_job_status", "shell
 /// (The engine drops the shell's background mode from the catalog of an
 /// agent that has the mob tools: `docs/evidence.md`, "Background shell
 /// jobs".)
-pub const BACKGROUND_SHELL_UNAVAILABLE: &str = "background shell jobs are not available here; run the command in the foreground instead, with `timeout_secs` for a long one";
+pub const BACKGROUND_SHELL_UNAVAILABLE: &str = "background shell jobs are not available here; run the command in the foreground instead, with `timeout_secs` for a long one, or, to keep working meanwhile, `assign` a helper to run it and report (where you have `assign`; long-lived processes such as servers are not possible yet)";
 
 /// Builtins that only read state or manage the agent's own bookkeeping.
 ///

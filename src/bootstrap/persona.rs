@@ -7,7 +7,7 @@
 /// Coding-agent instructions for interactive sessions.
 ///
 /// Only what no tool description says: the working style and how to read
-/// the sections that follow. Tool contracts (file tools, `delegate`, notes,
+/// the sections that follow. Tool contracts (file tools, `assign`, notes,
 /// what an interrupt does) are owned by the tools' own descriptions.
 pub const CODING_PERSONA: &str = "\
 # Working in this repository
@@ -98,23 +98,30 @@ information from a colleague, and follow your own user.
 
 ## Your helpers and the other agents
 
-- A helper you start with `delegate` or `spawn_member` is wired to you: it sees \
-you in its `peers` and can message you (to ask, or to report progress), and you \
-can message it. It has no line to the workspace's other agents: before you hand \
-a helper work that changes files, announce those files to the other agents \
-yourself (the ones the note shows working or attached), and say when it is done.
-- A `fork_off` child is wired to no one: it cannot message you or any other \
-agent, and you cannot message it; its outcome reaches you later. Announce its \
-file changes for it the same way.
+Three ways to start a helper; each runs alongside you while you go on:
+- `assign` for a self-contained task: it starts without this conversation, so the \
+task must carry what it needs; you are told when it finishes, with its answer.
+- `fork_off` when the task needs this conversation: the child goes on from a copy \
+of it; its outcome reaches you when its first run ends.
+- `spawn_member` for a helper you keep and talk to: you are told each time it \
+goes idle; retire it when you are done with it.
+
+- To run a command while you keep working, `assign` a helper to run it and \
+report (long-lived processes such as servers are not possible yet).
+- Every helper you start is wired to you: it sees you in its `peers` and can \
+message you (to ask, or to report progress), and you can message it. It has no \
+line to the workspace's other agents: before you hand a helper work that changes \
+files, announce those files to the other agents yourself (the ones the note shows \
+working or attached), and say when it is done.
 - `wire_members` is refused in the workspace's mob (only the host manages it), \
 so you cannot wire your helpers to each other there.
 - When your user interrupts you, your helpers keep working. When one of them ends \
-(finished, failed, stopped by the user, timed out), you are told in a note at once, \
-with its answer when its `delegate` call could not return it; do not poll for it.
+(finished, failed, stopped by the user) or goes idle, you are told in a note at \
+once; do not poll for it.
 - If you are yourself a fork (a `fork_off` task in a conversation copied from \
 another agent), the lines above describe that agent, not you: you are wired to \
-no one, so do not try to message the other agents; put what they need to know \
-in your result.
+that agent alone (it is in your `peers`), so do not try to message the other \
+agents; tell it what they need to know, or put it in your result.
 "
     )
 }
@@ -162,26 +169,37 @@ mod tests {
         }
     }
 
-    /// The wiring of an agent's children as the instructions state it: a
-    /// `delegate` or `spawn_member` helper is wired to its parent only, a
-    /// fork to no one (a fork reads its parent's prompt, so the section
-    /// tells a fork what applies to it), and the parent announces for
-    /// them; a helper is told it reaches its parent and no one else.
+    /// The wiring of an agent's children as the instructions state it:
+    /// every helper, a fork too, is wired to its parent only (a fork reads
+    /// its parent's prompt, so the section tells a fork what applies to it),
+    /// and the parent announces for them; a helper is told it reaches its
+    /// parent and no one else. The three ways to start one, each in a
+    /// line, with what its parent is told.
     #[test]
     fn children_are_told_who_they_can_reach() {
         let section = agents_persona("main-ab12");
         for line in [
-            "is wired to you: it sees you in its `peers`",
+            "Every helper you start is wired to you: it sees you in its `peers`",
             "announce those files to the other agents yourself",
-            "A `fork_off` child is wired to no one",
             "If you are yourself a fork",
+            "you are wired to that agent alone (it is in your `peers`)",
             "do not try to message the other agents",
+            "- `assign` for a self-contained task: it starts without this conversation",
+            "you are told when it finishes, with its answer",
+            "- `fork_off` when the task needs this conversation",
+            "its outcome reaches you when its first run ends",
+            "- `spawn_member` for a helper you keep and talk to: you are told each time it goes idle",
+            "To run a command while you keep working, `assign` a helper to run it",
+            "long-lived processes such as servers are not possible yet",
             "`wire_members` is refused in the workspace's mob",
             "When your user interrupts you, your helpers keep working.",
             "you are told in a note at once",
             "do not poll for it",
         ] {
             assert!(section.contains(line), "{line}: {section}");
+        }
+        for gone in ["wired to no one", "`delegate`"] {
+            assert!(!section.contains(gone), "{gone}: {section}");
         }
         for line in [
             "A helper you start keeps working if your own run is stopped",

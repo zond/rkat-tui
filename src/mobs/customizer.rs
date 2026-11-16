@@ -67,6 +67,10 @@ pub struct Spawning {
     pub key: HelperKey,
     /// What the helper is.
     pub tag: HelperTag,
+    /// A fresh fork child's latch: its tool calls wait (at most
+    /// [`crate::approval::admission::WIRE_WAIT`]) until the follower has
+    /// wired it to its parent and opened this, or dropped it.
+    pub wired: Option<Arc<tokio::sync::watch::Sender<bool>>>,
 }
 
 /// What the host supplies for its root members (the daemon's agents) on
@@ -716,17 +720,26 @@ fn plain_model(
     })
 }
 
+/// What [`shape`] puts on a helper's spec, besides its owner and key.
+struct Shaping<'a> {
+    registry: &'a Arc<HelperRegistry>,
+    engine: &'a Arc<ApprovalEngine>,
+    tools: &'a HelperTools,
+    shell_env: Option<&'a HashMap<String, String>>,
+    /// A fresh fork's latch ([`ApprovalGate::waiting_for`]).
+    wired: Option<tokio::sync::watch::Receiver<bool>>,
+}
+
 /// Apply the owner's gate, tools, instructions and the shell's environment
 /// to `spec` (its binding is [`helper_binding`]'s).
-fn shape(
-    spec: &mut SpawnMemberSpec,
-    owner: &Owner,
-    key: &HelperKey,
-    registry: &Arc<HelperRegistry>,
-    engine: &Arc<ApprovalEngine>,
-    tools: &HelperTools,
-    shell_env: Option<&HashMap<String, String>>,
-) {
+fn shape(spec: &mut SpawnMemberSpec, owner: &Owner, key: &HelperKey, shaping: Shaping<'_>) {
+    let Shaping {
+        registry,
+        engine,
+        tools,
+        shell_env,
+        wired,
+    } = shaping;
     // A Stop answer to one of the helper's dialogs stops this helper only.
     let on_stop: crate::approval::admission::OnStop = {
         let registry = Arc::downgrade(registry);
@@ -744,7 +757,8 @@ fn shape(
         key.member.as_str(),
     )
     .after(spec.tool_dispatch_admission.take())
-    .stopping_with(on_stop);
+    .stopping_with(on_stop)
+    .waiting_for(wired);
     spec.tool_dispatch_admission = Some(Arc::new(gate));
     if spec.external_tools.is_none() {
         spec.external_tools = Some(tools());
@@ -895,30 +909,29 @@ fn give_scratch(spec: &mut SpawnMemberSpec, dir: &std::path::Path, instruct: boo
 
 impl HelperCustomizer {
     /// Shape `spec` for `owner`, bind it as `key` and have it followed. A
-    /// fresh spawn that was `asked` for names its kind; any other keeps
-    /// the kind it was bound with.
+    /// fresh spawn names its `kind` (and, when it was `asked` for, its
+    /// model is chosen); a rebuild keeps the kind it was bound with.
     fn admit(
         &self,
         key: HelperKey,
         owner: &Owner,
         spec: &mut SpawnMemberSpec,
         session: Option<&SessionId>,
-        fresh: bool,
-        asked: Option<(Asked, Seat, super::HelperKind)>,
+        kind: Option<super::HelperKind>,
+        asked: Option<(Asked, Seat)>,
     ) -> Result<(), MobError> {
         let label = spec.identity.to_string();
-        let kind = match &asked {
-            Some((_, _, kind)) if fresh => *kind,
-            _ => self
-                .registry
+        let fresh = kind.is_some();
+        let kind = kind.unwrap_or_else(|| {
+            self.registry
                 .owner_for_resume(&key)
-                .map_or(super::HelperKind::Other, |tag| tag.kind),
-        };
+                .map_or(super::HelperKind::Other, |tag| tag.kind)
+        });
         // A rebuilt or respawned member keeps the model its spawn chose
         // (the engine gives its spec the persisted override or profile
         // back).
         let chosen = match asked.filter(|_| fresh) {
-            Some((asked, seat, _)) => {
+            Some((asked, seat)) => {
                 let models = self.models.read().clone();
                 let chosen = choose_model(owner, spec, &self.endpoints, &models, asked, seat)
                     .map_err(refuse)?;
@@ -954,17 +967,27 @@ impl HelperCustomizer {
         self.registry
             .spawning(key.clone(), tag.clone())
             .map_err(refuse)?;
+        if fresh && kind == super::HelperKind::Fork {
+            self.registry.endings().first_run_told_by_engine(&key);
+        }
         if let Some(session) = session {
             self.registry.bind_session(&key, &tag, session);
         }
+        // A fresh fork's first steps wait for its edge to its parent: its
+        // tools then find the parent in `peers` from its first call.
+        let wired = (fresh && kind == super::HelperKind::Fork)
+            .then(|| Arc::new(tokio::sync::watch::channel(false).0));
         shape(
             spec,
             owner,
             &key,
-            &self.registry,
-            &self.engine,
-            &self.tools,
-            self.shell_env.as_ref(),
+            Shaping {
+                registry: &self.registry,
+                engine: &self.engine,
+                tools: &self.tools,
+                shell_env: self.shell_env.as_ref(),
+                wired: wired.as_ref().map(|wired| wired.subscribe()),
+            },
         );
         // The helper shares its agent's scratch directory; its persona is
         // given again on every build, and so is this line.
@@ -983,7 +1006,7 @@ impl HelperCustomizer {
             drop_mob_tools(spec);
         }
         self.bind_policy(spec);
-        let _ = self.spawning.send(Spawning { key, tag });
+        let _ = self.spawning.send(Spawning { key, tag, wired });
         Ok(())
     }
 
@@ -1061,14 +1084,16 @@ impl SpawnMemberCustomizer for HelperCustomizer {
         // Every child is wired to the member that seats it, asked or not:
         // the engine wires a spawn in its parent's own mob only when this
         // is set (a `delegate` helper is wired across mobs by the engine
-        // itself, and a `fork_off` child is never shaped here).
+        // itself; a `fork_off` child's spawn ignores it, and the follower
+        // wires the child once it is seated, `super::follow`).
         if fresh {
             spec.auto_wire_parent = true;
         }
         let asked = Asked::of(ctx)
             .filter(|_| fresh)
-            .map(|asked| (asked, self.seat(ctx, spec), kind_of(ctx, spec)));
-        self.admit(key, &owner, spec, None, fresh, asked)
+            .map(|asked| (asked, self.seat(ctx, spec)));
+        let kind = fresh.then(|| kind_of(ctx, spec));
+        self.admit(key, &owner, spec, None, kind, asked)
     }
 
     fn customize_resume(
@@ -1119,17 +1144,28 @@ impl SpawnMemberCustomizer for HelperCustomizer {
             return Ok(());
         }
         let owner = self.persisted_owner(&key)?;
-        self.admit(key, &owner, spec, Some(&durable.session_id), false, None)
+        self.admit(key, &owner, spec, Some(&durable.session_id), None, None)
     }
 }
 
 /// What a fresh spawn starts, as far as its parent's notes go: an `assign`
 /// helper carries [`super::ASSIGN_LABEL`]; a member an agent or helper
 /// seats in a mob of its own (`spawn_member`, `mob_spawn_member`, a batch)
-/// is kept until retired; a `delegate` helper, a `fork_off` child and a
-/// council's participant are told of by their own tools.
+/// is kept until retired; a `fork_off` child is a fork (wired to its parent,
+/// its later runs told); a `delegate` helper and a council's participant are
+/// told of by their own tools.
 fn kind_of(ctx: &SpawnCustomizationContext, spec: &SpawnMemberSpec) -> super::HelperKind {
     use super::HelperKind;
+    // A fork first: a fork of an `assign` helper carries its source's
+    // labels, the assign label among them. A `fork_off` child's seat asks
+    // with `PersistedForkResume` (its fork is committed first), a
+    // prompt-context fork's with `Fork` (both probed 2026-11-16).
+    if matches!(
+        ctx.spawn_source,
+        SpawnSource::Fork | SpawnSource::PersistedForkResume
+    ) {
+        return HelperKind::Fork;
+    }
     if spec
         .labels
         .as_ref()
@@ -1139,9 +1175,7 @@ fn kind_of(ctx: &SpawnCustomizationContext, spec: &SpawnMemberSpec) -> super::He
     }
     let mob = ctx.mob_id.as_str();
     match ctx.spawn_source {
-        SpawnSource::Fork | SpawnSource::HelperSpawn | SpawnSource::AttachedForkedParticipant => {
-            HelperKind::Other
-        }
+        SpawnSource::HelperSpawn | SpawnSource::AttachedForkedParticipant => HelperKind::Other,
         _ if mob.starts_with("implicit-") || mob.starts_with("council") => HelperKind::Other,
         _ => HelperKind::Member,
     }

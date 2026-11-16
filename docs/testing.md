@@ -269,6 +269,25 @@ output now says why; report it rather than retrying silently:
   delivered"; 11 of 12 stops at the reproduced offset). The test now waits
   for that run to end before it quits (a positive event, no bound raised);
   20 of 20 loaded rounds passed after.
+- `a_mob_restored_by_a_later_daemon_is_destroyed_with_its_database`
+  (`tests/it/mob_destroy.rs`): NOT resolved. Failed once on the hosted
+  runner (commit 8d27a0f) and 3 of 20, then 2 of 15, loaded local rounds
+  (two cores, two busy loops at the tests' priority); its sibling in one
+  daemon, 0 of 20. The agent's `mob_destroy` answers `mob_destroy_incomplete`
+  (`retryable: true`): "the observer drain refused: 5 owner handle(s) still
+  observe this mob database". A probe that drained the database's observer
+  from the test after the failure saw the same 5 owners for about 5 s, then
+  none (`Ok(NotFound)`); the engine's own retries span about 1 s (10 ×
+  100 ms, `meerkat-mob-mcp` 0.9.15 `OBSERVER_DRAIN_RETRIES`). Nothing of
+  ours held the mob in the second daemon, checked positively: the
+  follower had no follow of its member (`w1` is restored dormant; the only
+  follow end logged was the first daemon's), the client opened no stream
+  on it (the proxy's stream opens named only `tui`), and `MobProfiles`
+  keeps definitions, not handles. The holder is the engine's own (a
+  restored member's teardown; not pinned further). The engine's contract
+  is that a retry by the same caller continues the cleanup
+  (`MobMcpState::mob_destroy`'s documentation). `docs/evidence.md`, "A
+  restored mob's destroy refused for a few seconds".
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a

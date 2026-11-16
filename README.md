@@ -122,7 +122,7 @@ agents").
   out; `--confinement=strict` also denies the network. Your own `!`
   commands run as you, with no sandbox, like anything else you type in a
   terminal.
-- **Helpers.** The agent can `delegate` subtasks to helper agents or fork
+- **Helpers.** The agent can `assign` or `delegate` subtasks to helper agents or fork
   itself; their calls pass the same gate, and a panel shows what they do.
 - **Any endpoint.** `anthropic`, `openai` (also OpenAI-compatible proxies)
   and `gemini`; `/model` switches between them, with a context gauge and a

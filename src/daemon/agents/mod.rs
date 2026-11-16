@@ -225,7 +225,13 @@ impl Agents {
                 return Some(PeerKind::OwnHelper);
             }
         }
-        None
+        // An `assign` helper that finished and was retired: its own still,
+        // and unreachable (`AgentAttendance::unreachable` says why).
+        self.core
+            .registry
+            .endings()
+            .retired_peer(peer_id)
+            .map(|_| PeerKind::OwnHelper)
     }
 
     /// `name`'s run ended: its watches that live for a turn go.
@@ -945,6 +951,11 @@ impl crate::approval::AgentPeers for AgentAttendance {
 
     async fn unreachable(&self, session: &SessionId, peer_id: &str) -> Option<String> {
         let agents = self.0.upgrade()?;
+        if let Some(helper) = agents.core.registry.endings().retired_peer(peer_id) {
+            return Some(format!(
+                "helper `{helper}` finished its task and was retired; start another with `assign` for more work"
+            ));
+        }
         let caller = agents.core.conversations.agent_of(session)?;
         agents.core.wires.unreachable(&caller, peer_id)
     }

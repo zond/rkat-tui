@@ -55,7 +55,14 @@ pub struct ApprovalGate {
     /// What stops the helper this gate was built for, when the user
     /// answers one of its dialogs with Stop.
     on_stop: Option<OnStop>,
+    /// A latch every call waits for first ([`Self::waiting_for`]).
+    wired: Option<tokio::sync::watch::Receiver<bool>>,
 }
+
+/// The longest a fork child's call waits for its edge to its parent
+/// ([`ApprovalGate::waiting_for`]): the follower's own bounds (the mob's
+/// reach, the member's join) and the wire itself.
+pub const WIRE_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Stops one helper ([`ApprovalGate::stopping_with`]).
 pub type OnStop = Arc<dyn Fn() + Send + Sync>;
@@ -81,6 +88,7 @@ impl ApprovalGate {
             helper: None,
             preceding: None,
             on_stop: None,
+            wired: None,
         }
     }
 
@@ -101,7 +109,19 @@ impl ApprovalGate {
             helper: Some(helper.into()),
             preceding: None,
             on_stop: None,
+            wired: None,
         }
+    }
+
+    /// Hold every call until `wired` reads true or its sender is gone, at
+    /// most [`WIRE_WAIT`] (`None`: no wait). A fork child's: the engine
+    /// seats it with no edge to its parent, and the follower wires it a
+    /// moment after; its first call (often `peers` or `send_message`) then
+    /// finds the parent.
+    #[must_use]
+    pub fn waiting_for(mut self, wired: Option<tokio::sync::watch::Receiver<bool>>) -> Self {
+        self.wired = wired;
+        self
     }
 
     /// Call `on_stop` when the user answers a dialog of this helper's calls
@@ -135,6 +155,15 @@ impl ApprovalGate {
     }
 }
 
+/// Wait until `wired` reads true or its sender is gone (the follower gave
+/// up), at most [`WIRE_WAIT`]; `None` returns at once.
+async fn wait_wired(wired: Option<&tokio::sync::watch::Receiver<bool>>) {
+    if let Some(wired) = wired {
+        let mut wired = wired.clone();
+        let _ = tokio::time::timeout(WIRE_WAIT, wired.wait_for(|wired| *wired)).await;
+    }
+}
+
 /// The model-facing error for a denial.
 #[must_use]
 pub fn denial_error(reason: &super::DenyReason) -> ToolError {
@@ -151,6 +180,7 @@ impl ToolDispatchAdmission for ApprovalGate {
         context: Option<&ToolDispatchContext>,
         effect_kind: LiveBridgeEffectKind,
     ) -> Result<(), ToolError> {
+        wait_wired(self.wired.as_ref()).await;
         if let Some(preceding) = &self.preceding {
             preceding
                 .await_dispatch_admission(call, context, effect_kind)
@@ -221,6 +251,29 @@ impl ToolDispatchAdmission for ApprovalGate {
 mod tests {
     use super::super::DenyReason;
     use super::*;
+
+    /// A fork's calls wait for its edge: held until the latch opens, let go
+    /// when the follower drops it or the bound passes; no latch, no wait.
+    #[tokio::test(start_paused = true)]
+    async fn a_call_waits_for_the_fork_s_edge() {
+        let (open, latch) = tokio::sync::watch::channel(false);
+        let mut waiting = Box::pin(wait_wired(Some(&latch)));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        assert!(futures::poll!(&mut waiting).is_pending());
+        open.send_replace(true);
+        assert!(futures::poll!(&mut waiting).is_ready());
+        let (dropped, latch) = tokio::sync::watch::channel(false);
+        let mut waiting = Box::pin(wait_wired(Some(&latch)));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        drop(dropped);
+        assert!(futures::poll!(&mut waiting).is_ready());
+        let (_kept, latch) = tokio::sync::watch::channel(false);
+        let started = tokio::time::Instant::now();
+        wait_wired(Some(&latch)).await;
+        assert_eq!(started.elapsed(), WIRE_WAIT);
+        assert!(futures::poll!(Box::pin(wait_wired(None))).is_ready());
+    }
 
     #[test]
     fn denials_are_policy_denied_with_the_reason() {

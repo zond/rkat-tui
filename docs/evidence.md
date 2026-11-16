@@ -10881,3 +10881,120 @@ stays and every fork child is to be wired to its parent; the product
 change (wiring at the child's seat, the gate's parent-child peer rule for
 forks, the personas, a note for a fork's runs after its outcome) is not
 built yet.
+
+## Every fork wired to its parent (owner decision, 2026-11-16)
+
+Built on the probe above. What the engine does, each found on the rig:
+
+- **How a fork reaches the customizer.** A `fork_off` child's seat asks the
+  spawn customizer once, with `SpawnSource::PersistedForkResume` (its fork
+  is committed first) and `spawner_identity` naming the forking member;
+  only the gate of its answer is used (`meerkat-mob` 0.9.15
+  `fork_build.rs`, "Tool dispatch admission"). So stage A's
+  `Asked::Fork` path (`SpawnSource::Fork`) is a prompt-context fork's, and
+  a `fork_off` child was bound as `HelperKind::Other`. A rebuild of a
+  fork-derived member after a restart asks with `Resume`.
+- **A helper's fork carries its source's labels.** A fork of an `assign`
+  helper carries `rkat-tui.assign`, so the label test bound it as an
+  assigned helper (retired as "finished its task" after its first run).
+  `kind_of` now takes the fork sources first: `HelperKind::Fork`
+  (persisted as `"fork"` in `tui_helpers.json`; the bindings an earlier
+  build wrote still open, a fork among them as `Other`, told of as before).
+- **Where a helper's fork sits.** With `helpers.max_depth = 2` an
+  `assign` helper's `fork_off` child is seated in the helper's own mob
+  (`tui`), path `[scout, kid]`; it is wired to the helper and not to the
+  agent (its `peers` lists `tui/main/scout` only; the roster's `wired_to`
+  of `kid` is `[scout]`).
+- **The edge across a restart.** With the follower's re-wire of a
+  restored fork switched off for the probe, the next start's roster still
+  names the edge and the parent's message reached the restored fork's
+  model: the mob keeps it. The re-wire stays (idempotent, as for agents:
+  an edge it lost is made again).
+- **The edge and a retire.** A retired fork leaves its parent's
+  `wired_to` (the engine's disposal unwires it); nothing of ours unwires.
+- **A first run that ended before the edge.** A fork whose first run
+  makes no call ends before the follower wires it; the edge lands after
+  and the parent can message it (the restart test's first half: its
+  `wired_to` names the agent after a call-less first run).
+- **Timing of the edge.** On the rig the edge always landed before the
+  fork's first tool call, with or without a wait (the tests pass with the
+  latch disabled), but nothing orders them: the follower wires at the
+  child's `MemberSpawned`, the child's run starts on its own. So the
+  fork's gate holds each call until the follower opened a latch (wired, or
+  given up: its sender dropped), at most `WIRE_WAIT` (15 s,
+  `ApprovalGate::waiting_for`).
+
+What was built: `HelperKind::Fork`; the follower wires every fork (fresh or
+restored) to its parent through the host (`mob_wire_members_batch`, the
+parent the helper above it on its path, else the owner's agent; a parent in
+another mob is logged and left unwired); the latch; `Agents::agent_peer`
+already lists a fork as the parent's own helper (it is in
+`registry.live_for`), so the parent's message to it is a peer message (no
+review). A fork's child-to-parent message is reviewed, as every helper's to
+its parent is (unchanged). Endings: a fresh fork's first run is decided but
+not told (the engine's "Background fork_off job … finished" tells it); each
+later run that leaves it idle is told as a kept member's (`WentIdle`), the
+same rule for a last message to the parent; a fork restored after a restart
+has every run told (its first run's outcome came in the earlier daemon).
+The personas name the three ways in three lines and say a fork is wired to
+its parent alone.
+
+Pinned by `forks::{a_fork_and_its_parent_talk_both_ways_and_its_later_runs_are_told,
+a_helper_s_fork_is_wired_to_the_helper,
+a_restored_fork_is_wired_and_a_retired_one_is_not}`,
+`agents::children_are_wired_to_their_parent` (formerly `…_except_forks`,
+which asserted the opposite), `approval::admission::tests::a_call_waits_for_the_fork_s_edge`,
+`mobs::endings::tests::a_fork_is_told_of_its_runs_after_the_first`,
+`bootstrap::persona::tests::children_are_told_who_they_can_reach`.
+Confirmed failing without the change: `a_helper_s_fork_is_wired_to_the_helper`
+(before the kind fix: `peers` empty; the helper's fork was bound as an
+assigned helper) and every fork test before the follower wired forks
+(`peers` empty). Not shown failing: the latch (the race did not happen on
+the rig); its unit test pins the wait itself.
+
+A message to a finished `assign` helper: the helper's peer id is
+remembered (the newest 64) as its retire starts, before the force-cancel
+and retire, and the gate answers a `send_message` to it with "helper
+`scout` finished its task and was retired; start another with `assign`
+for more work" (the wired-agent "unreachable" path: `Agents::agent_peer`
+counts the id as the caller's own helper, `AgentAttendance::unreachable`
+gives the reason). Before, the engine's
+`peer_not_found_or_not_trusted`. A message sent in the moment between the
+"finished" decision and the peer id's record still meets the engine's
+error. Pinned by `assign::a_message_to_a_finished_helper_says_it_was_retired`
+(fails without the change with the engine's error).
+
+## A restored mob's destroy refused for a few seconds (2026-11-16)
+
+Hosted failure of `mob_destroy::a_mob_restored_by_a_later_daemon_is_destroyed_with_its_database`
+on 8d27a0f: `mob_destroy_incomplete`, "the observer drain refused: 5 owner
+handle(s) still observe this mob database", `retryable: true`. Reproduced
+locally under load: 3 of 20 and 2 of 15 rounds (two cores, two busy loops
+at the tests' priority, `taskset -c 0,1`); the single-daemon sibling 0 of
+20. What is known:
+
+- The count is `Arc::strong_count` of the database observer's owner token
+  (`meerkat-mob` 0.9.15 `SqliteMobStores::drain_observers`): stores,
+  storage bundles, handles or runtimes opened on the path, and store
+  operations whose blocking work still runs.
+- After the failure the test drained the observer itself every 250 ms: 5
+  owners for about 5 s (20 tries), then `Ok(NotFound)`, so they let go on
+  their own. The destroy's own retries span about 1 s (10 × 100 ms, each
+  after the host's `after_destroy` hook).
+- None of ours in the second daemon, each checked positively with logs:
+  the restored member `w1` was never followed (it is restored dormant; its
+  customizer never ran, so no `Followed` handle, stream or mob-events
+  subscription); the client's mob-wide streams were opened on `tui` only;
+  `MobProfiles` keeps definitions and drops the snapshot's handles at once.
+  In the first daemon the follower's handle exists and the destroy passes:
+  `MobDestroying` ends the follow, and `after_destroy` closes clients'
+  streams (`daemon::serve`).
+- So the holder is the engine's own, most likely the dormant member's
+  teardown in the destroy; not pinned further. The engine's contract for
+  an incomplete destroy is a retry by the same caller, which continues the
+  cleanup (`MobMcpState::mob_destroy`).
+
+Not fixed here: no product change; the test stays as it is (no retry
+added). Open: pin the engine holder and file it upstream, or word the
+agent's next step on `mob_destroy_incomplete` (the result is the engine's;
+the gate cannot rewrite it).
