@@ -18,7 +18,7 @@
 //! a run starts or [`SETTLE_WAIT`] has passed; the agent is then reported
 //! idle with what it still holds ([`IdleNote::held`]).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -54,11 +54,19 @@ pub type Probe = Box<dyn Fn(String) -> BoxFuture<'static, Option<Probed>> + Send
 /// Tells the clients an agent is idle.
 pub type Announce = Box<dyn Fn(&IdleNote) + Send + Sync>;
 
+/// Told of a run's start once: the conversation and the run
+/// ([`Activity::when_running`]).
+pub type OnRun = Box<dyn FnOnce(&SessionId, &RunId) + Send>;
+
 /// One agent's activity as the daemon saw it.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct State {
-    /// Runs started and not ended.
-    open: HashSet<RunId>,
+    /// Runs started and not ended, with their conversation.
+    open: HashMap<RunId, SessionId>,
+    /// The run that started last.
+    latest: Option<RunId>,
+    /// Told of the next run's start ([`Activity::when_running`]).
+    waiting: Vec<OnRun>,
     /// The run that ended last.
     last_ended: Option<RunId>,
     /// Inputs forwarded and not answered yet.
@@ -80,6 +88,16 @@ impl State {
     fn change(&mut self) {
         self.generation += 1;
         self.idle = None;
+    }
+
+    /// The open run: the one that started last, else any still open.
+    fn open_run(&self) -> Option<(SessionId, RunId)> {
+        let run = self
+            .latest
+            .as_ref()
+            .filter(|run| self.open.contains_key(*run))
+            .or_else(|| self.open.keys().next())?;
+        Some((self.open.get(run)?.clone(), run.clone()))
     }
 }
 
@@ -122,14 +140,50 @@ impl Activity {
         })
     }
 
-    /// `agent`'s run `run` started.
-    pub fn run_started(&self, agent: &str, run: Option<&RunId>) {
-        let mut agents = self.agents.lock();
-        let state = agents.entry(agent.to_string()).or_default();
-        state.change();
+    /// `agent`'s run `run` of `session` started: whoever waited for it
+    /// ([`Self::when_running`]) is told.
+    pub fn run_started(&self, agent: &str, session: &SessionId, run: Option<&RunId>) {
+        let waiting = {
+            let mut agents = self.agents.lock();
+            let state = agents.entry(agent.to_string()).or_default();
+            state.change();
+            let Some(run) = run else {
+                return;
+            };
+            state.open.insert(run.clone(), session.clone());
+            state.latest = Some(run.clone());
+            std::mem::take(&mut state.waiting)
+        };
         if let Some(run) = run {
-            state.open.insert(run.clone());
+            for told in waiting {
+                told(session, run);
+            }
         }
+    }
+
+    /// The open run of `agent` and its conversation, as the daemon read
+    /// it (`None`: none open).
+    #[must_use]
+    pub fn open_run(&self, agent: &str) -> Option<(SessionId, RunId)> {
+        self.agents.lock().get(agent)?.open_run()
+    }
+
+    /// Tell `told` of `agent`'s open run: at once when one is open, else
+    /// at the next run's start. For a client that attached while the
+    /// engine ran a run whose start this record had not read yet.
+    pub fn when_running(&self, agent: &str, told: OnRun) {
+        let open = {
+            let mut agents = self.agents.lock();
+            let state = agents.entry(agent.to_string()).or_default();
+            match state.open_run() {
+                Some(open) => open,
+                None => {
+                    state.waiting.push(told);
+                    return;
+                }
+            }
+        };
+        told(&open.0, &open.1);
     }
 
     /// `agent`'s run `run` ended.
@@ -356,8 +410,8 @@ mod tests {
         let session = SessionId::new();
         let (activity, world) = activity(&session);
         let (first, second) = (RunId::new(), RunId::new());
-        activity.run_started("a", Some(&first));
-        activity.run_started("a", Some(&second));
+        activity.run_started("a", &session, Some(&first));
+        activity.run_started("a", &session, Some(&second));
         activity.run_ended("a", Some(&first));
         settle().await;
         assert!(world.lock().told.is_empty(), "a run is still open");
@@ -383,13 +437,13 @@ mod tests {
         let (activity, world) = activity(&session);
         let (first, follow_up) = (RunId::new(), RunId::new());
         world.lock().unfinished = 1;
-        activity.run_started("a", Some(&first));
+        activity.run_started("a", &session, Some(&first));
         activity.run_ended("a", Some(&first));
         tokio::time::sleep(Duration::from_millis(700)).await;
         settle().await;
         assert!(world.lock().told.is_empty());
         assert!(world.lock().asked > 1, "asked again while it held input");
-        activity.run_started("a", Some(&follow_up));
+        activity.run_started("a", &session, Some(&follow_up));
         let asked = world.lock().asked;
         tokio::time::sleep(SETTLE_WAIT * 2).await;
         settle().await;
@@ -416,7 +470,7 @@ mod tests {
         let run = RunId::new();
         world.lock().unfinished = 2;
         world.lock().run = Some(RunState::Running);
-        activity.run_started("a", Some(&run));
+        activity.run_started("a", &session, Some(&run));
         activity.run_ended("a", Some(&run));
         tokio::time::sleep(SETTLE_WAIT / 2).await;
         settle().await;
@@ -440,7 +494,7 @@ mod tests {
         let session = SessionId::new();
         let (activity, world) = activity(&session);
         let run = RunId::new();
-        activity.run_started("a", Some(&run));
+        activity.run_started("a", &session, Some(&run));
         activity.run_ended("a", Some(&run));
         // Before the spawned question runs: an input comes and is answered.
         drop(activity.sending("a"));
@@ -448,5 +502,36 @@ mod tests {
         let world = world.lock();
         assert_eq!(world.told.len(), 1, "told once: {:?}", world.told);
         assert!(world.asked >= 1);
+    }
+
+    /// The open run is the one that started last while it is open; one
+    /// waiting for a run is told at once when one is open, else once, at
+    /// the next start, and a reseat forgets the runs.
+    #[tokio::test(start_paused = true)]
+    async fn the_open_run_is_told_now_or_at_the_next_start() {
+        let session = SessionId::new();
+        let (activity, _world) = activity(&session);
+        let (first, second) = (RunId::new(), RunId::new());
+        let told = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let tell = || {
+            let told = Arc::clone(&told);
+            Box::new(move |_: &SessionId, run: &RunId| told.lock().push(run.clone())) as OnRun
+        };
+        assert_eq!(activity.open_run("a"), None);
+        activity.when_running("a", tell());
+        assert!(told.lock().is_empty(), "nothing is open");
+        activity.run_started("a", &session, Some(&first));
+        activity.run_started("a", &session, Some(&second));
+        assert_eq!(*told.lock(), vec![first.clone()], "told once, at the start");
+        assert_eq!(
+            activity.open_run("a"),
+            Some((session.clone(), second.clone()))
+        );
+        activity.run_ended("a", Some(&second));
+        assert_eq!(activity.open_run("a"), Some((session, first.clone())));
+        activity.when_running("a", tell());
+        assert_eq!(*told.lock(), vec![first.clone(), first], "at once");
+        activity.changed("a", true);
+        assert_eq!(activity.open_run("a"), None, "a new incarnation");
     }
 }

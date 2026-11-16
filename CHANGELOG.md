@@ -20,6 +20,16 @@
   once now. The start also no longer retires a helper the last daemon left
   by its name, which could take a new helper the resumed run had started
   under that name.
+- A TUI that attached while its agent's run was already going (after
+  `/detach`, as a second TUI, or after a daemon restart that resumed the
+  run) showed no running turn until the run printed something, and Esc in
+  it could only ask the agent to stop at its next step: inside a
+  `delegate` or a long shell command the run ended only when the 10 s
+  hard cancel took it, and the message typed meanwhile came back as
+  cancelled. The daemon now tells an attaching TUI the open run, so the
+  turn shows at once and Esc stops it at once.
+- After `/model`, the helper view showed a new helper on the model the
+  agent had when the TUI attached until the helper's own model was read.
 
 ### Changed
 

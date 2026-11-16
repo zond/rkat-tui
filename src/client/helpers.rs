@@ -130,6 +130,12 @@ impl Followers {
         model.clone_into(&mut self.default_model);
     }
 
+    /// The model a helper is shown on until its own is read.
+    #[cfg(test)]
+    pub(crate) fn default_model(&self) -> &str {
+        &self.default_model
+    }
+
     /// Whether `mob` should be opened: one of this agent's (the daemon's
     /// mob, the implicit mob of the agent's session or of one of its
     /// helpers' sessions; another agent's helpers are its own clients'),

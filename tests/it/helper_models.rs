@@ -341,11 +341,27 @@ async fn a_helper_of_the_stored_main_profile_runs_on_the_agent_s_model() {
     })
     .await;
     assert_eq!(ran, [OPUS]);
-    // The client's helper view names it.
+    // The client's helper view names it, and never the start-up model.
+    // `spawn_member` does not hold the agent's turn, so its end may show
+    // before the view: both are waited for as seen or arriving.
     rig.saw(|m| matches!(m, Msg::Status(StatusUpdate::Helpers(h)) if h.len() == 1 && h[0].model == OPUS))
         .await;
+    let shown: Vec<String> = rig
+        .seen
+        .iter()
+        .filter_map(|m| match m {
+            Msg::Status(StatusUpdate::Helpers(h)) => Some(h.iter().map(|h| h.model.clone())),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert!(shown.iter().all(|model| model == OPUS), "{shown:?}");
     gate.notify_one();
-    assert_eq!(rig.turn_finished().await.unwrap().text, "agent done");
+    let finished = rig.saw(|m| matches!(m, Msg::TurnFinished(_))).await;
+    assert!(
+        matches!(&finished, Msg::TurnFinished(Ok(summary)) if summary.text == "agent done"),
+        "{finished:?}"
+    );
     rig.quit().await;
 }
 

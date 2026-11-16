@@ -207,6 +207,41 @@ output now says why; report it rather than retrying silently:
   holds the start (`the_start_does_not_wait_behind_a_resumed_run_s_turn`
   orders it so, and fails with the old await). Its `saw` also skips the
   left helper's own "ended when the daemon stopped". No bound was raised.
+- `a_run_stopped_inside_a_delegate_resumes_and_esc_stops_it_at_once`
+  (`tests/it/resumed_runs.rs`): failed locally under load (two cores,
+  busy loops of the test's priority) by the previous change's account: the
+  client attached after the engine resumed the run, so it saw no
+  `run_resumed`, knew no run id, and its Esc fell back to the force-cancel.
+  Cause in the product: a client learned a run's id only from the run's
+  live start. The daemon now pushes the open run as a client attaches
+  (`rkat/running`); `resumed()` waits for the engine's open run and the
+  client's joined turn, never for `run_resumed`, and
+  `a_client_attaching_inside_a_resumed_delegate_stops_the_run_by_its_id`
+  orders the attach after the resumption every time. After that change it
+  still failed once in 18 loaded runs at a 30 s `until` bound whose line
+  the panic does not name (`docs/evidence.md`, "An attaching client is
+  told the open run"); if it fails again, the wait is the thing to find.
+- `a_helper_of_the_stored_main_profile_runs_on_the_agent_s_model`
+  (`tests/it/helper_models.rs`): failed on the hosted runner, and every
+  time locally under the same load. `spawn_member` does not hold the
+  agent's turn (a `delegate` does), so the turn's `TurnFinished` can come
+  before the helper view's status; the `saw` for the view then read it into
+  the seen messages and the next `turn_finished()`, which waits for new
+  messages only, never got one. The test waits for both with `saw`. Found
+  with it: after `/model` the view showed the helper on the attach-time
+  model first (`a_model_switch_moves_the_helpers_shown_model`).
+- `a_helpers_owner_survives_a_restart_until_it_retires` and
+  `a_followed_helper_stays_live_until_its_member_retired_arrives`
+  (`tests/it/mobs.rs`): the test creates the mob `team` on the engine and
+  spawns into it at once, but the daemon reads a new mob's profiles only
+  when the set of mobs changes (`mobs::profiles`, on its own task), so the
+  spawn could be refused "not known to rkat-tui yet ... call the spawn
+  again" (failed once in 8 loaded rounds). The tests now call it again on
+  that refusal, as the refusal tells an agent to.
+- `a_fork_runs_on_its_parent_s_current_model` (`tests/it/helper_models.rs`):
+  failed once in a full local gate run at a 30 s `within` bound (the poll
+  for the fork child's model call, the only `within` wait it has); passed
+  8 of 8 loaded rounds of its module after. Cause not found.
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a

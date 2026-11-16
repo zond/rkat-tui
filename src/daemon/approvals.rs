@@ -918,7 +918,7 @@ impl Watcher {
             ..
         } = &self.watched;
         let new = engine.new_run_started(session, run);
-        activity.run_started(&self.name, run);
+        activity.run_started(&self.name, session, run);
         let Some(agents) = agents.upgrade() else {
             return;
         };

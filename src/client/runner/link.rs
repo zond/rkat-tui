@@ -499,6 +499,11 @@ impl Runner {
             {
                 self.idle_reported(note);
             }
+            Push::Running(note)
+                if note.agent == link.connection.agent() && note.session_id == link.session =>
+            {
+                self.run_noted(note.run_id);
+            }
             Push::AgentNotice(notice) if notice.agent == link.connection.agent() => {
                 let level = if notice.warn {
                     NoticeLevel::Warn
@@ -520,6 +525,7 @@ impl Runner {
             | Push::Cost(_)
             | Push::Switched(_)
             | Push::Idle(_)
+            | Push::Running(_)
             | Push::AgentNotice(_)
             | Push::HelperEnded(_) => {}
             Push::Mob(protocol::MobNote {

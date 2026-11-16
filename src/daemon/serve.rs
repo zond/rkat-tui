@@ -597,15 +597,8 @@ impl LocalMethods for Local {
             protocol::MODE,
             &self.mode(),
         )));
-        if let Some(note) = caller
-            .agent
-            .as_deref()
-            .and_then(|agent| self.core().activity.idle(agent))
-        {
-            let _ = out.send(Outgoing::line(protocol::notification_line(
-                protocol::IDLE,
-                &note,
-            )));
+        if let Some(agent) = caller.agent.as_deref() {
+            self.tell_activity(agent, &out);
         }
         guard
     }
@@ -617,6 +610,63 @@ impl LocalMethods for Local {
     fn destroyed_mobs(&self) -> Option<tokio::sync::broadcast::Receiver<meerkat_mob::MobId>> {
         Some(self.registry().destroyed_mobs())
     }
+}
+
+impl Local {
+    /// Tell a client of `agent` that attaches now what the daemon knows of
+    /// its activity: its open run ([`protocol::RUNNING`]: a run that
+    /// started before the client's stream opened shows it no start, and
+    /// the client stops it by this id), else that it is idle. When it knows
+    /// neither and the engine says a run is open (its start not read here
+    /// yet: the record follows the agent's stream), the client is told at
+    /// that start.
+    fn tell_activity(&self, agent: &str, out: &ClientOut) {
+        let activity = &self.core().activity;
+        if let Some((session, run)) = activity.open_run(agent) {
+            let _ = out.send(running_line(agent, session, run));
+            return;
+        }
+        if let Some(note) = activity.idle(agent) {
+            let _ = out.send(Outgoing::line(protocol::notification_line(
+                protocol::IDLE,
+                &note,
+            )));
+            return;
+        }
+        let core = Arc::clone(self.core());
+        let agent = agent.to_string();
+        let out = out.downgrade();
+        tokio::spawn(async move {
+            if core.conversations.running(&agent).await != super::conversations::RunState::Running {
+                return;
+            }
+            let name = agent.clone();
+            core.activity.when_running(
+                &agent,
+                Box::new(move |session, run| {
+                    if let Some(out) = out.upgrade() {
+                        let _ = out.send(running_line(&name, session.clone(), run.clone()));
+                    }
+                }),
+            );
+        });
+    }
+}
+
+/// The [`protocol::RUNNING`] line for `agent`'s run `run` of `session`.
+fn running_line(
+    agent: &str,
+    session: meerkat_core::SessionId,
+    run: meerkat_core::RunId,
+) -> Outgoing {
+    Outgoing::line(protocol::notification_line(
+        protocol::RUNNING,
+        &protocol::RunningNote {
+            agent: agent.to_string(),
+            session_id: session,
+            run_id: run,
+        },
+    ))
 }
 
 /// Carry one client's lines: from the client, a local method is answered

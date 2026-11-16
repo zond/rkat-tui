@@ -33,6 +33,8 @@ pub enum Push {
     Mode(crate::approval::desk::ModeStatus),
     /// An agent is idle ([`protocol::IDLE`]).
     Idle(protocol::IdleNote),
+    /// A run of an agent is open ([`protocol::RUNNING`]).
+    Running(protocol::RunningNote),
     /// A notice for one agent's clients ([`protocol::AGENT_NOTICE`]).
     AgentNotice(protocol::AgentNotice),
     /// A helper ended ([`protocol::HELPER_ENDED`]).
@@ -83,6 +85,7 @@ impl Push {
             protocol::SWITCHED => Self::Switched(read(note)?),
             protocol::MOB => Self::Mob(read(note)?),
             protocol::IDLE => Self::Idle(read(note)?),
+            protocol::RUNNING => Self::Running(read(note)?),
             protocol::AGENT_NOTICE => Self::AgentNotice(read(note)?),
             protocol::HELPER_ENDED => Self::HelperEnded(read(note)?),
             protocol::MODE => Self::Mode(read(note)?),
@@ -157,6 +160,14 @@ mod tests {
         ));
         assert!(
             matches!(ended, Some(Push::HelperEnded(e)) if e.path == ["scout"] && e.how == "stopped by you" && e.told.is_none())
+        );
+        let run = meerkat_core::RunId::new();
+        let running = Push::decode(note(
+            protocol::RUNNING,
+            json!({"agent": "main-a", "session_id": session, "run_id": run}),
+        ));
+        assert!(
+            matches!(running, Some(Push::Running(r)) if r.agent == "main-a" && r.run_id == run)
         );
         // Unreadable parameters and unknown methods are not acted on.
         assert!(Push::decode(note(protocol::COST, json!({"nope": true}))).is_none());

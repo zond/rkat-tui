@@ -201,9 +201,10 @@ impl Runner {
         }
     }
 
-    /// Esc: stop the run the stream reported; a second Esc after
-    /// [`STOP_GRACE`] (or a first one before any run was reported)
-    /// force-cancels the member. With no turn of this client's open the
+    /// Esc: stop the run the stream reported, or the one the daemon said
+    /// was open as this client attached ([`Self::run_noted`]); a second Esc
+    /// after [`STOP_GRACE`] (or a first one while this client knows no
+    /// run's id) force-cancels the member. With no turn of this client's open the
     /// daemon is asked whether the agent runs ([`Self::interrupt_unseen`]).
     /// Every press acts or says why not.
     pub(super) fn interrupt(&mut self) {
@@ -219,7 +220,11 @@ impl Runner {
         };
         let reports = self.reporter();
         let stop = match (&self.turn.interrupted_at, &self.turn.current_run) {
-            (None, Some(run)) if self.turn.open_runs.contains(run) => Some(run.to_string()),
+            (None, Some(run))
+                if self.turn.open_runs.contains(run) || self.turn.noted.as_ref() == Some(run) =>
+            {
+                Some(run.to_string())
+            }
             (None, _) => None,
             (Some(first), _)
                 if now.duration_since(*first) >= STOP_GRACE && !self.turn.force_cancelled =>
@@ -409,7 +414,12 @@ impl Runner {
         let mut terminal = false;
         // A run already going when this client attached (its start was shown
         // before it detached): the UI is busy until its end.
-        if !self.turn.active && joins_a_run(&envelope.payload) {
+        // Not the end of a run the last turn saw end (on the idle notice,
+        // before its end event arrived).
+        if !self.turn.active
+            && joins_a_run(&envelope.payload)
+            && !run_of(&envelope.payload).is_some_and(|run| self.finished_runs.contains(run))
+        {
             self.turn = Turn {
                 active: true,
                 saw_run: true,
@@ -439,21 +449,32 @@ impl Runner {
             AgentEvent::RunStarted {
                 identity, input, ..
             } => {
+                // A run this client did not start: no turn is open, or the
+                // turn was joined on the daemon's note and shows its first
+                // run start now.
+                let joining = !self.turn.active || self.turn.joined_unseen();
                 // A run after the first (a follow-up run, or a run of a
                 // turn that starts now while steers of this client are
                 // still with the agent: a turn ended before the runtime
                 // ran them) carries the steers that missed the boundary.
-                let own = if self.turn.saw_run || !self.turn.active {
+                let own = if self.turn.saw_run || joining {
                     self.steers.take_all()
                 } else {
                     Vec::new()
                 };
-                if !self.turn.active {
-                    self.turn = Turn {
-                        active: true,
-                        ..Turn::default()
-                    };
-                    let prompt = input.prompt_text().filter(|_| own.is_empty());
+                if joining {
+                    if !self.turn.active {
+                        self.turn = Turn {
+                            active: true,
+                            ..Turn::default()
+                        };
+                    }
+                    // Another client's `/compact` run, shown as the turn
+                    // joined on the note already: its prompt is not.
+                    let prompt = input
+                        .prompt_text()
+                        .filter(|_| own.is_empty())
+                        .filter(|prompt| prompt != COMPACT_PROMPT);
                     match prompt.as_deref().and_then(crate::ui::peer::of_input) {
                         Some((from, text)) => {
                             self.send(Msg::Peer {
@@ -477,8 +498,7 @@ impl Runner {
                 }
                 self.turn.saw_run = true;
                 if let Some(run) = &identity.run_id {
-                    self.turn.open_runs.insert(run.clone());
-                    self.turn.current_run = Some(run.clone());
+                    self.turn.run_seen(run);
                 }
             }
             // A run the engine resumed at a daemon's start, in place of its
@@ -487,8 +507,7 @@ impl Runner {
             // next boundary, which a resumed `delegate` holds off).
             AgentEvent::RunResumed { run_id, .. } => {
                 self.turn.saw_run = true;
-                self.turn.open_runs.insert(run_id.clone());
-                self.turn.current_run = Some(run_id.clone());
+                self.turn.run_seen(run_id);
             }
             AgentEvent::ToolExecutionCompleted { name, .. }
                 if crate::daemon::tasks::changes_tasks(name) =>
@@ -509,8 +528,7 @@ impl Runner {
                 ..
             } => {
                 if let Some(run) = &identity.run_id {
-                    self.turn.open_runs.remove(run);
-                    self.turn.ended.insert(run.clone());
+                    self.turn.run_over(run);
                 }
                 let usage = usage.as_usage();
                 self.turn.record(Ok(TurnSummary {
@@ -526,8 +544,7 @@ impl Runner {
                 ..
             } => {
                 if let Some(run) = &identity.run_id {
-                    self.turn.open_runs.remove(run);
-                    self.turn.ended.insert(run.clone());
+                    self.turn.run_over(run);
                 }
                 let interrupted = self.turn.interrupted_at.is_some()
                     || error_report.class == AgentErrorClass::Cancelled;
@@ -556,14 +573,12 @@ impl Runner {
             AgentEvent::RunStarted { identity, .. } => {
                 self.turn.saw_run = true;
                 if let Some(run) = &identity.run_id {
-                    self.turn.open_runs.insert(run.clone());
-                    self.turn.current_run = Some(run.clone());
+                    self.turn.run_seen(run);
                 }
             }
             AgentEvent::RunCompleted { identity, .. } => {
                 if let Some(run) = &identity.run_id {
-                    self.turn.open_runs.remove(run);
-                    self.turn.ended.insert(run.clone());
+                    self.turn.run_over(run);
                 }
                 self.turn.record(Ok(TurnSummary::default()));
                 terminal = true;
@@ -574,8 +589,7 @@ impl Runner {
                 ..
             } => {
                 if let Some(run) = &identity.run_id {
-                    self.turn.open_runs.remove(run);
-                    self.turn.ended.insert(run.clone());
+                    self.turn.run_over(run);
                 }
                 self.turn
                     .record(Err(TurnFailure::Failed(error_report.message.clone())));
@@ -593,6 +607,37 @@ impl Runner {
             self.save_cursor();
             self.settle_turn();
         }
+    }
+
+    /// The daemon says the agent's run `run` is open (`rkat/running`): as
+    /// this client attached, or at the start of a run the engine ran then
+    /// whose start the daemon had not read yet. Either way the run started
+    /// before this client's stream opened, so no start of it shows here:
+    /// with no turn open the UI joins the run's turn, and Esc stops the run
+    /// by this id. A run this client saw start already, or saw end (in this
+    /// turn or the last), changes nothing; one it did not is the run to
+    /// stop from now on.
+    pub(super) fn run_noted(&mut self, run: RunId) {
+        if self.finished_runs.contains(&run)
+            || self.turn.ended.contains(&run)
+            || self.turn.open_runs.contains(&run)
+        {
+            return;
+        }
+        if !self.turn.active {
+            self.turn = Turn {
+                active: true,
+                from_note: true,
+                ..Turn::default()
+            };
+            self.send(Msg::RemoteTurn { prompt: None });
+        }
+        if let Some(earlier) = self.turn.noted.replace(run.clone())
+            && earlier != run
+        {
+            self.turn.ended.insert(earlier);
+        }
+        self.turn.current_run = Some(run);
     }
 
     /// The daemon says the agent is idle (`rkat/idle`): no run open and
@@ -679,8 +724,26 @@ impl Runner {
         let Some(idle) = &self.idle else {
             return;
         };
+        // The noted run's end, which may have fallen before this client's
+        // stream opened (or before the render's last event) and so never
+        // shows here: the idle notice after that run says it ended.
+        if self.turn.noted.is_some() && self.turn.noted == idle.last_run {
+            if let Some(run) = self.turn.noted.take() {
+                self.turn.ended.insert(run);
+            }
+            if self.turn.interrupted_at.is_some() && self.turn.result.is_none() {
+                self.notice(
+                    NoticeLevel::Info,
+                    "the agent's run had already ended when the interrupt reached it",
+                );
+            }
+        }
+        let Some(idle) = &self.idle else {
+            return;
+        };
         if !self.turn.active
             || !self.turn.open_runs.is_empty()
+            || self.turn.noted.is_some()
             || self.steers.sending_any()
             || !idle
                 .last_run
@@ -719,6 +782,9 @@ impl Runner {
         if !turn.active {
             return;
         }
+        // Not the runs still open: an unconfirmed turn's run shows again
+        // when it reports.
+        self.finished_runs.clone_from(&turn.ended);
         if turn.quiet {
             match &turn.result {
                 Some(Err(TurnFailure::Failed(why))) => self.notice(
@@ -881,6 +947,10 @@ impl Runner {
                 {
                     let dialect = WireDialect::parse(&set.provider);
                     self.show_model(&switch.endpoint, dialect, &set.model);
+                    // A helper that names no model runs on the agent's
+                    // model as it is now: its view shows that until the
+                    // helper's own session is read.
+                    self.followers.set_default_model(&set.model);
                     // The agent was seated again: its stream is new.
                     if set.reseated {
                         self.rerender(set.session_id.clone(), Shown::Reseated);
@@ -1054,6 +1124,17 @@ pub(super) async fn repeats_the_last_prompt(
             if user.transcript_role == meerkat_core::TranscriptUserRole::Conversational
                 && user.text_content().trim() == text.trim()
     )
+}
+
+/// The run a run's own event names (its resumption or its end).
+fn run_of(event: &AgentEvent) -> Option<&RunId> {
+    match event {
+        AgentEvent::RunResumed { run_id, .. } => Some(run_id),
+        AgentEvent::RunCompleted { identity, .. } | AgentEvent::RunFailed { identity, .. } => {
+            identity.run_id.as_ref()
+        }
+        _ => None,
+    }
 }
 
 /// Events only a running run publishes (its start aside).

@@ -475,6 +475,14 @@ struct Turn {
     open_runs: HashSet<RunId>,
     /// The run to stop.
     current_run: Option<RunId>,
+    /// The run the daemon says is open ([`protocol::RUNNING`]) whose start
+    /// and end this client has not seen: it started before this client's
+    /// stream opened. A live start of it moves it to `open_runs`; the
+    /// daemon's idle notice naming it is its end, which may have fallen
+    /// before the stream too.
+    noted: Option<RunId>,
+    /// The turn was joined on the daemon's note, not on an event.
+    from_note: bool,
     /// A run of this turn started.
     saw_run: bool,
     /// The runs that ended in it: the daemon's idle notice names the run
@@ -507,6 +515,34 @@ impl Turn {
 
     fn deadline(&self) -> Option<Instant> {
         self.give_up_at
+    }
+
+    /// Joined on the daemon's note, with no run start seen yet: the next
+    /// run start is shown as the start of a run this client did not start.
+    fn joined_unseen(&self) -> bool {
+        self.from_note && !self.saw_run
+    }
+
+    /// The run `run` started (or was resumed), as the stream shows it: the
+    /// run to stop. Another run noted before it has ended unseen (an
+    /// agent runs one run at a time).
+    fn run_seen(&mut self, run: &RunId) {
+        if let Some(noted) = self.noted.take()
+            && noted != *run
+        {
+            self.ended.insert(noted);
+        }
+        self.open_runs.insert(run.clone());
+        self.current_run = Some(run.clone());
+    }
+
+    /// The run `run` ended.
+    fn run_over(&mut self, run: &RunId) {
+        if self.noted.as_ref() == Some(run) {
+            self.noted = None;
+        }
+        self.open_runs.remove(run);
+        self.ended.insert(run.clone());
     }
 }
 
@@ -605,6 +641,9 @@ pub struct Runner {
     link_epoch: u64,
     mark: Option<Mark>,
     turn: Turn,
+    /// The runs the last turn saw end: a note of one, or its end arriving
+    /// after the turn ended on the daemon's idle notice, joins no turn.
+    finished_runs: HashSet<RunId>,
     /// This client's steers on their way to the agent, followed across
     /// turns by the inputs the runtime admitted them as.
     steers: Steers,
@@ -735,6 +774,7 @@ impl Runner {
             link_epoch: 0,
             mark: None,
             turn: Turn::default(),
+            finished_runs: HashSet::new(),
             steers: Steers::default(),
             idle: None,
             asking_fates: None,
@@ -2484,6 +2524,15 @@ mod tests {
             })
         }
 
+        fn resumed(&mut self, run: &RunId) -> EventEnvelope<AgentEvent> {
+            self.envelope(AgentEvent::RunResumed {
+                session_id: self.session.clone(),
+                run_id: run.clone(),
+                round: 1,
+                resume_point: meerkat_core::event::RunResumePointKind::ToolsPending,
+            })
+        }
+
         fn applied(&mut self, input: &InputId) -> EventEnvelope<AgentEvent> {
             self.envelope(AgentEvent::BoundaryAppendApplied {
                 run_id: RunId::new(),
@@ -2546,6 +2595,149 @@ mod tests {
         runner.on_event(feed.completed(&follow_up), None);
         assert!(!runner.turn.active);
         assert_eq!(turn_ends(&drain(&mut rx)), 1);
+    }
+
+    fn remote_turns(msgs: &[Msg]) -> Vec<Option<String>> {
+        msgs.iter()
+            .filter_map(|m| match m {
+                Msg::RemoteTurn { prompt } => Some(prompt.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The daemon's note of an open run joins its turn and makes it the
+    /// run to stop. A live start or resumption of the same run after it is
+    /// no second turn; its end and the idle notice end the turn; a stale
+    /// idle notice of an earlier run ends nothing; the same note again (a
+    /// reconnect) and the run's end replayed after the turn do not join.
+    #[tokio::test]
+    async fn the_daemon_s_note_of_an_open_run_joins_its_turn_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut rx) = runner(dir.path());
+        let mut feed = Feed {
+            session: SessionId::new(),
+            seq: 0,
+        };
+        let (earlier, run) = (RunId::new(), RunId::new());
+        runner.idle_reported(feed.idle(&earlier, 0));
+        runner.run_noted(run.clone());
+        assert!(runner.turn.active);
+        assert_eq!(runner.turn.current_run.as_ref(), Some(&run));
+        assert_eq!(remote_turns(&drain(&mut rx)), vec![None]);
+        runner.settle_turn();
+        assert!(runner.turn.active, "the stale notice ends nothing");
+        runner.on_event(feed.resumed(&run), None);
+        runner.run_noted(run.clone());
+        assert_eq!(runner.turn.noted, None, "the stream shows it now");
+        assert!(runner.turn.open_runs.contains(&run));
+        assert!(remote_turns(&drain(&mut rx)).is_empty(), "one turn");
+        runner.on_event(feed.completed(&run), None);
+        runner.idle_reported(feed.idle(&run, 0));
+        assert!(!runner.turn.active);
+        assert_eq!(turn_ends(&drain(&mut rx)), 1);
+        runner.run_noted(run.clone());
+        runner.on_event(feed.completed(&run), None);
+        assert!(!runner.turn.active, "the run ended in the last turn");
+        let msgs = drain(&mut rx);
+        assert!(remote_turns(&msgs).is_empty(), "{msgs:?}");
+    }
+
+    /// A noted run whose end fell before this client's stream opened: the
+    /// idle notice naming it ends the turn, and its end arriving after all
+    /// joins no turn. A run that starts in between ends the noted one (an
+    /// agent runs one run at a time): its start is shown as another
+    /// client's, it is the run to stop, and its end ends the turn.
+    #[tokio::test]
+    async fn a_noted_run_ends_on_its_idle_notice_or_when_another_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut rx) = runner(dir.path());
+        let mut feed = Feed {
+            session: SessionId::new(),
+            seq: 0,
+        };
+        let run = RunId::new();
+        runner.run_noted(run.clone());
+        runner.idle_reported(feed.idle(&run, 0));
+        assert!(!runner.turn.active, "its end did not show here");
+        runner.on_event(feed.completed(&run), None);
+        assert!(!runner.turn.active);
+        let msgs = drain(&mut rx);
+        assert_eq!(turn_ends(&msgs), 1, "{msgs:?}");
+        assert_eq!(remote_turns(&msgs), vec![None], "{msgs:?}");
+
+        let (noted, next) = (RunId::new(), RunId::new());
+        runner.run_noted(noted.clone());
+        runner.on_event(feed.started(&next), None);
+        assert_eq!(runner.turn.current_run.as_ref(), Some(&next));
+        assert_eq!(runner.turn.noted, None);
+        assert!(runner.turn.ended.contains(&noted));
+        assert_eq!(
+            remote_turns(&drain(&mut rx)),
+            vec![None, Some("x".to_string())],
+            "the new run's prompt shows"
+        );
+        runner.idle_reported(feed.idle(&noted, 0));
+        assert!(runner.turn.active, "the next run is open");
+        runner.on_event(feed.completed(&next), None);
+        runner.idle_reported(feed.idle(&next, 0));
+        assert!(!runner.turn.active);
+        assert_eq!(turn_ends(&drain(&mut rx)), 1);
+    }
+
+    /// `/model` moves the model a helper is shown on until its own is read:
+    /// a helper that names no model runs on the agent's model as it is now,
+    /// not as it was at the attach.
+    #[tokio::test]
+    async fn a_model_switch_moves_the_helpers_shown_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, _rx) = runner(dir.path());
+        let session = SessionId::new();
+        runner.conn = up(link("live", session.clone()).await);
+        runner.followers.set_default_model("at-attach");
+        let switch = ModelSwitch {
+            model: "now".into(),
+            provider: Some("anthropic".into()),
+            auth_binding: None,
+            endpoint: "anthropic".into(),
+            listed: None,
+        };
+        runner.model_set(
+            switch,
+            Ok(protocol::ModelSet {
+                session_id: session,
+                model: "now".into(),
+                provider: "anthropic".into(),
+                reseated: false,
+            }),
+        );
+        assert_eq!(runner.followers.default_model(), "now");
+    }
+
+    /// In this client's own turn, a note before the stream's start of the
+    /// run makes it the run to stop and joins no second turn; the prompt is
+    /// not shown again when the start arrives.
+    #[tokio::test]
+    async fn a_note_in_this_client_s_own_turn_only_names_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut rx) = runner(dir.path());
+        let mut feed = Feed {
+            session: SessionId::new(),
+            seq: 0,
+        };
+        runner.turn = Turn {
+            active: true,
+            prompt: Some("x".into()),
+            id: 1,
+            ..Turn::default()
+        };
+        let run = RunId::new();
+        runner.run_noted(run.clone());
+        assert_eq!(runner.turn.current_run.as_ref(), Some(&run));
+        runner.on_event(feed.started(&run), None);
+        assert!(runner.turn.open_runs.contains(&run));
+        assert_eq!(runner.turn.noted, None);
+        assert!(remote_turns(&drain(&mut rx)).is_empty());
     }
 
     /// A steer whose send is unanswered keeps the turn open past the idle

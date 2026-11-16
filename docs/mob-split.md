@@ -427,7 +427,13 @@ mark. A first attach, a cursor of another daemon (the cursor records a
 digest of the daemon's token) or without an epoch, or a truncated stream
 renders the conversation from its start: the committed messages from
 `rkat/transcript`, the session's last sequence from `events/snapshot`,
-its gauge from `rkat/usage`, then the live stream. A reconnect retries with backoff
+its gauge from `rkat/usage`, then the live stream. As a client attaches
+the daemon pushes what it knows of the agent's activity: `rkat/running`
+with the open run's id (a run that started before the client's stream
+opened shows it no start), else `rkat/idle`; when it knows neither and the
+engine says a run is open, `rkat/running` follows when the daemon reads
+that run's start. The client joins that run's turn and Esc stops it by
+the id (`mob/stop_member_run`). A reconnect retries with backoff
 and, in auto mode, restarts a dead daemon (at most every 30 s).
 
 **Helpers and `fork_off`.** The daemon fills the builder's mob-tools slot

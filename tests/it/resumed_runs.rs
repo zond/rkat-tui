@@ -53,6 +53,11 @@ async fn members(connection: &Connection, mob: &str) -> Vec<String> {
 /// The agent's script: `call` first, `went on` once a result is in, an
 /// answer for each later message; a helper's task hangs.
 fn script(call: Step) -> Arc<ScriptedLlmClient> {
+    script_gated(call, None)
+}
+
+/// [`script`], its `went on` held until `gate` is notified.
+fn script_gated(call: Step, gate: Option<Arc<tokio::sync::Notify>>) -> Arc<ScriptedLlmClient> {
     let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
         let user = common::user_texts(messages);
         if user.concat().contains("HELPER-TASK") {
@@ -64,9 +69,10 @@ fn script(call: Step) -> Arc<ScriptedLlmClient> {
         if user.last().is_some_and(|last| last == "typed meanwhile") {
             return Step::Text("read the message");
         }
-        match results(messages) {
-            0 => call.clone(),
-            _ => Step::Text("went on"),
+        match (results(messages), &gate) {
+            (0, _) => call.clone(),
+            (_, None) => Step::Text("went on"),
+            (_, Some(gate)) => Step::Gated(Arc::clone(gate), Box::new(Step::Text("went on"))),
         }
     }));
     ScriptedLlmClient::new(vec![step; 20])
@@ -104,14 +110,21 @@ async fn stop_inside(
 }
 
 /// The next daemon, and a client of the agent that joined its resumed run.
+/// The client attaches once the engine runs the resumed run, so it sees no
+/// `run_resumed`: the daemon tells it the open run's id as it attaches.
 async fn resumed(ws: &Workspace, llm: &Arc<ScriptedLlmClient>, name: String) -> (Running, Client) {
     let daemon = Running::start(&ws.root, llm).await;
-    let mut client = Client::attach_agent(&ws.root, AgentChoice::Agent { name }).await;
-    client
-        .saw(|m| matches!(m, Msg::Agent(env) if matches!(env.payload, AgentEvent::RunResumed { .. })))
-        .await;
-    client.saw(|m| matches!(m, Msg::RemoteTurn { .. })).await;
+    let client = join(&daemon, &ws.root, name).await;
     (daemon, client)
+}
+
+/// Once the agent's run is open, a client of the agent `name`, which
+/// joined its turn.
+async fn join(daemon: &Running, root: &std::path::Path, name: String) -> Client {
+    common::until_async(async || daemon.status().await.agents[0].running == Some(true)).await;
+    let mut client = Client::attach_agent(root, AgentChoice::Agent { name }).await;
+    client.saw(|m| matches!(m, Msg::RemoteTurn { .. })).await;
+    client
 }
 
 /// Esc on the joined run, the message typed meanwhile, and a new message:
@@ -187,6 +200,67 @@ async fn a_run_stopped_inside_a_delegate_resumes_and_esc_stops_it_at_once() {
     daemon.stop().await;
 }
 
+/// The order the sibling above may meet only on a slow host, every time:
+/// the client attaches after the next daemon resumed the run and the
+/// helper of its `delegate` made its call, so it sees neither the run's
+/// `run_resumed` nor any other event of it. The daemon tells it the open
+/// run as it attaches: it joins the turn, the message typed meanwhile
+/// waits, and Esc stops the run by its id at once. Before, it showed no
+/// turn at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_attaching_inside_a_resumed_delegate_stops_the_run_by_its_id() {
+    let ws = Workspace::new();
+    let llm = script(delegate());
+    let helper_calls = || {
+        llm.recorded()
+            .iter()
+            .filter(|r| r.user().contains("HELPER-TASK"))
+            .count()
+    };
+    let name = stop_inside(&ws, &llm, || helper_calls() == 1).await;
+    let daemon = Running::start(&ws.root, &llm).await;
+    common::until(|| helper_calls() == 2).await;
+    let mut client = join(&daemon, &ws.root, name).await;
+    assert!(
+        !client
+            .events()
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RunResumed { .. })),
+        "the run's resumption fell before the attach"
+    );
+    interrupt_and_go_on(&daemon, &mut client, &llm).await;
+    client.quit().await;
+    daemon.stop().await;
+}
+
+/// No restart: a client detaches while the agent's run is inside a slow
+/// shell call, and a client that attaches again joins that turn from the
+/// daemon's note (no event of the run comes while the command sleeps).
+/// Esc stops the run by its id at once, the message typed meanwhile then
+/// gets its model call, and so does the next. Before, the attaching client
+/// showed no turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_reattaching_inside_a_slow_shell_call_stops_the_run_by_its_id() {
+    let ws = Workspace::new();
+    let llm = script(Step::Tool {
+        id: "s1",
+        name: "shell",
+        args: json!({"command": "echo ran >> runs.txt; sleep 60", "timeout_secs": 60}),
+    });
+    let runs = ws.root.join("runs.txt");
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut first = Client::attach(&ws.root).await;
+    let name = first.agent().await;
+    first.send(Effect::StartTurn("go".into()));
+    common::until(|| runs.exists()).await;
+    first.send(Effect::Leave(Departure::Detach));
+    first.quit().await;
+    let mut client = join(&daemon, &ws.root, name).await;
+    interrupt_and_go_on(&daemon, &mut client, &llm).await;
+    client.quit().await;
+    daemon.stop().await;
+}
+
 /// A helper of a resumed run that the user stops is told to the agent in
 /// that run (the resumed run counts as the agent's run, so the agent is not
 /// "just interrupted" by the stop any more), and the run goes on.
@@ -236,11 +310,16 @@ async fn stopping_the_helper_of_a_resumed_run_tells_the_agent_in_that_run() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_run_stopped_inside_a_shell_call_resumes_with_its_outcome_uncertain() {
     let ws = Workspace::new();
-    let llm = script(Step::Tool {
-        id: "s1",
-        name: "shell",
-        args: json!({"command": "echo ran >> runs.txt; sleep 60", "timeout_secs": 60}),
-    });
+    // The resumed run's model call waits for the client to join it.
+    let joined = Arc::new(tokio::sync::Notify::new());
+    let llm = script_gated(
+        Step::Tool {
+            id: "s1",
+            name: "shell",
+            args: json!({"command": "echo ran >> runs.txt; sleep 60", "timeout_secs": 60}),
+        },
+        Some(Arc::clone(&joined)),
+    );
     let runs = ws.root.join("runs.txt");
     let lines = || {
         std::fs::read_to_string(&runs)
@@ -249,6 +328,7 @@ async fn a_run_stopped_inside_a_shell_call_resumes_with_its_outcome_uncertain() 
     };
     let name = stop_inside(&ws, &llm, || lines() == 1).await;
     let (daemon, mut client) = resumed(&ws, &llm, name).await;
+    joined.notify_one();
     assert_eq!(client.turn_finished().await.unwrap().text, "went on");
     let read = llm
         .requests()

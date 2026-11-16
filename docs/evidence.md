@@ -10008,7 +10008,8 @@ before the client attaches; the client learns a run's id only from the
 live `RunStarted` / `RunResumed`, so it misses the resumed one (the
 `resumed` helper's `saw` for `RunResumed` ran out once), and its Esc falls
 back to the force-cancel the test rules out (once). A client attaching to a
-run already resumed needs the run's id from the daemon; not done here.
+run already resumed needs the run's id from the daemon: done in "An
+attaching client is told the open run" below.
 
 ## Interrupts stop the agent only; helpers' endings are told (2026-11-15)
 
@@ -10234,3 +10235,115 @@ next message`),
   (the engine's test hook between the push and the write asks for a sync;
   it waits, finds nothing, and nothing is told; with the guard switched
   off the sync ran in the window and told the rule's removal).
+
+## An attaching client is told the open run (2026-11-16)
+
+A client learned a run's id only from the run's live `run_started` or
+`run_resumed`. A client that attached while a run was open (a reattach
+after `/detach`, a second client, a daemon start that resumed the run
+first) never saw that event: it showed no turn until the run published
+something, and joined then without an id, so Esc sent `mob/force_cancel`,
+which the engine applies at the next boundary. Inside a `delegate` or a
+long shell call that boundary does not come; the run ended by the hard
+cancel 10 s later and the message typed meanwhile came back cancelled.
+
+Where the id travels. The daemon's activity record (`daemon::activity`)
+is already the authority for "idle" and what a client is told of it as it
+attaches (`rkat/idle`, pushed in `Local::connect`'s path before the client
+sends anything). It now keeps each open run's conversation and the run
+that started last (`Activity::open_run`), and that same push says
+`rkat/running {agent, session_id, run_id}` when a run is open, else
+`rkat/idle` as before. One source, one push, no second request: the push
+is queued on the client's connection before its stream opens, so it comes
+before every event of the stream. The engine's member status carries no
+run id (`MobMemberSnapshot`), so the record is the only place it is.
+
+The orderings, as handled (`client::runner::turn`, `Turn::noted`):
+
+- The run goes on: the client joins its turn on the note (`RemoteTurn`),
+  the run is the one to stop, Esc sends `mob/stop_member_run` with it.
+- A live start or resumption of the same run later (a cursor replay)
+  moves it from `noted` to `open_runs`: no second turn; a joined turn that
+  has shown no run start shows that start's prompt as another client's
+  (a `/compact` prompt is not shown).
+- A new run starts in between: the noted one has ended unseen (an agent
+  runs one run at a time); the new run is the one to stop.
+- The run ended before the client's stream opened (or before the render's
+  last event, which the mark drops): its end never shows. The daemon's
+  `rkat/idle` naming that run ends the turn; Esc meanwhile stops nothing
+  (`not_current`), the existing fallback hard-cancels whatever runs now, and
+  the idle notice ends the turn with "the agent's run had already ended
+  when the interrupt reached it". A stale idle notice of an earlier run
+  ends nothing. If the idle notice overtakes the run's end event, the turn
+  ends without the run's text, and the late end joins no new turn (the
+  last turn's ended runs, `Runner::finished_runs`); not seen.
+- The record lags the engine by an event (the client attached between the
+  engine's resumption and the watcher reading it): the connect path then
+  knows neither an open run nor idle, asks the engine whether a run is
+  open, and if so registers the client (`Activity::when_running`, checked
+  under the record's lock, so a start in between is not missed) to be told
+  at the start the watcher reads next. Not reproduced: no test orders it.
+- The force-cancel stays for a turn whose run this client knows no id of
+  (a run with no id); its texts were not changed.
+
+Tests: `resumed_runs::a_client_attaching_inside_a_resumed_delegate_stops_the_run_by_its_id`
+(the attach held until the resumed run's helper called: no `run_resumed`
+seen, `mob/stop_member_run` forwarded once, no force or hard cancel, no
+"did not end within", the typed message then gets its model call),
+`resumed_runs::a_client_reattaching_inside_a_slow_shell_call_stops_the_run_by_its_id`
+(no restart), and `a_run_stopped_inside_a_shell_call_resumes_with_its_outcome_uncertain`
+now with the resumed run's model call held until the client joined; all
+three failed with `src/` stashed (the wait for `RemoteTurn` ran out).
+`resumed()` waits for the engine's open run before the attach and for
+the joined turn, never for `run_resumed`. Unit:
+`client::runner::tests::the_daemon_s_note_of_an_open_run_joins_its_turn_once`,
+`a_noted_run_ends_on_its_idle_notice_or_when_another_starts`,
+`a_note_in_this_client_s_own_turn_only_names_the_run`,
+`daemon::activity::tests::the_open_run_is_told_now_or_at_the_next_start`.
+
+Load (all cargo through `.handover/lim`, `taskset -c 0,1`, busy loops
+of the same priority in the same slice): before the change the
+`resumed_runs` tests passed 6 of 6 rounds beside six loops and 4 of 4
+beside fourteen (the earlier failures did not reproduce here). After it,
+beside six loops with `helper_models` in the same run: 6 rounds, every
+other `resumed_runs` test passed 6 of 6 (the two new ones included), and
+`a_run_stopped_inside_a_delegate_resumes_and_esc_stops_it_at_once`
+failed once: a `common::within` bound (30 s) of one of its `until` waits
+ran out, the panic names no line. 12 more rounds of that test alone under
+the same load with backtraces passed 12 of 12, so the failing wait is
+not known. Left open; the waits that test has and its deterministic
+sibling has not are the members check (`["slow"]`, the case of a
+re-dispatched `delegate` meeting the old member still retiring, noted
+above as possible from the sources) and the order of `join` before the
+helper's call.
+
+Found on the way, `helper_models::a_helper_of_the_stored_main_profile_runs_on_the_agent_s_model`
+(hosted failure on 523b815, and 5 of 5 rounds locally beside six loops):
+the agent's `spawn_member` returns at once, so its turn's `TurnFinished`
+may come before the helper view's status; the `saw` for the view read
+it into the seen messages, and the next `turn_finished()` (new messages
+only) never got one. A test assumption; the test waits for both with
+`saw`. The view also showed that helper on the attach-time model first:
+`/model` did not move the followers' default model, which a helper is
+shown on until its own session is read. Fixed in `Runner::model_set`
+(`client::runner::tests::a_model_switch_moves_the_helpers_shown_model`);
+the integration test also asserts every view status named the new model,
+which only catches the old behaviour when the view's first status comes
+before the snapshot. The other new tests of `helper_models.rs` and
+`litellm.rs` were checked for the same pattern: each starts its turn after
+its waits, or its turn is held by a `delegate` until the waited status.
+
+Two more from the same commit's code, met in the loaded and full runs:
+`mobs::a_helpers_owner_survives_a_restart_until_it_retires` failed once
+in 8 loaded rounds with the customizer's "the profiles of the mob `team`
+are not known to rkat-tui yet ... call the spawn again": the test creates
+the mob on the engine and spawns at once, and `MobProfiles::follow`
+reads the new definition on its own task after `mob_set_changes`. The
+customizer is synchronous and `MobMcpState` has no synchronous read of a
+mob's definition, so the refusal with its "call again" stays the
+product's answer (an agent's next call comes a model round later); the
+two tests that do this now call the spawn again on that refusal. And
+`helper_models::a_fork_runs_on_its_parent_s_current_model` failed once in
+a full local gate run at the 30 s bound of its poll for the fork child's
+model call; 8 loaded rounds of its module passed after, and the cause is
+not known.

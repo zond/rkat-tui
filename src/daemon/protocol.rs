@@ -54,6 +54,13 @@ pub const MOB: &str = "rkat/mob";
 /// agent becomes idle, and to a client as it attaches when it is idle
 /// then.
 pub const IDLE: &str = "rkat/idle";
+/// The notification that a run of an agent is open ([`RunningNote`],
+/// [`super::activity`]), the counterpart of [`IDLE`] for a client that
+/// cannot have seen the run start: pushed to a client as it attaches
+/// while a run of its agent is open, and, when the engine ran a run then
+/// whose start the daemon had not read yet, at that start. A client joins
+/// the run's turn on it and stops the run by its id.
+pub const RUNNING: &str = "rkat/running";
 /// The notification of something one agent's clients should see in the
 /// transcript (the smart compaction's steps): [`AgentNotice`].
 pub const AGENT_NOTICE: &str = "rkat/agent_notice";
@@ -1153,6 +1160,17 @@ pub struct IdleNote {
     /// no run for them within [`super::activity::SETTLE_WAIT`].
     #[serde(default, skip_serializing_if = "is_zero")]
     pub held: usize,
+}
+
+/// [`RUNNING`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunningNote {
+    /// The agent.
+    pub agent: String,
+    /// The conversation the run is of.
+    pub session_id: SessionId,
+    /// The open run.
+    pub run_id: meerkat_core::RunId,
 }
 
 fn is_zero(n: &usize) -> bool {
