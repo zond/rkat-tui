@@ -10347,3 +10347,102 @@ two tests that do this now call the spawn again on that refusal. And
 a full local gate run at the 30 s bound of its poll for the fork child's
 model call; 8 loaded rounds of its module passed after, and the cause is
 not known.
+
+## A spawn right after its mob's create; a stop inside a `delegate` (2026-11-16)
+
+**The spawn.** Since "A helper's model never comes from a stored profile"
+the customizer puts a profile-named member's stored profile on the spawn
+inline, and the profiles came only from `MobProfiles::follow`, a task that
+reads the definitions after `mob_set_changes`. A `mob_create` then
+`mob_spawn_member` at once (the normal use) could be refused "not known to
+rkat-tui yet ... call the spawn again". What was weighed (Meerkat 0.9.14):
+
+- Taken: a synchronous read at the lookup. `MobProfiles` keeps the mob
+  set's epoch its definitions were read at; a lookup that finds the epoch
+  moved reads them itself (`read_now`: `block_in_place` and the runtime's
+  `block_on` over `MobMcpState::mob_handles_snapshot`, bounded by 5 s).
+  The customizer runs synchronously on the mob's actor task, a worker of
+  the multi-thread runtime (`host_stack::run_host` builds one; the rig's
+  tests are `multi_thread`): `block_in_place` hands that worker's other
+  tasks to another thread, and the read takes only the state's lock of the
+  mob set, which the spawn does not hold; it does not need the actor that
+  waits. The read always holds the mob: a spawn reaches the customizer
+  only through the mob's handle (`handle_for`, the managed set), and the
+  create inserts the mob and bumps the epoch in one write of that set
+  (meerkat-mob-mcp `lib.rs` ~5932). A mob destroyed and made again under
+  its id moves the epoch too, so a stale definition is not used either.
+  The follower stays, so the usual lookup is a map read.
+- Rejected: reaching a handle synchronously by other means. `MobMcpState`'s
+  map is private behind a tokio lock with no sync accessor; the
+  `before_activation` hook gets a `MobReadHandle`, which has no
+  `definition()`; `before_create` runs before the mob exists and is told
+  only its id.
+- Rejected: learning the definition from the `mob_create` call's
+  arguments in our admission layer. The admission sees the call before it
+  runs, not the definition the engine builds from it, and parallel calls
+  gain nothing from it (below).
+- Rejected: a wait for the follower. It blocks the same worker for the
+  same reason as the read, longer, and on a two-core host the follower
+  could need the worker it blocks.
+- Parallel calls of one response: the engine dispatches a batch with
+  `join_all` (meerkat-core `agent/state.rs` ~11984), so a spawn beside its
+  mob's create reaches `handle_for` before the mob exists and the engine
+  answers `mob not found: team` itself (seen on every run); the customizer
+  is never asked. Not ours to change; an agent reads it and calls again.
+
+What can still be refused, now worded "rkat-tui could not read the
+profiles of the mob ... in time ... call the spawn again": the read
+failing or running out of its bound, or a lookup outside a multi-thread
+runtime. Tests:
+`helper_models::a_member_spawned_right_after_its_mob_s_create_is_seated_on_the_chosen_model`
+(the daemon starts no follower, `DaemonOptions::with_profiles_unfollowed`;
+fails with the read switched off), `helper_models::a_member_spawned_in_the_same_batch_as_its_mob_s_create_is_seated_on_the_chosen_model`,
+`mobs::profiles::tests::an_older_read_does_not_replace_a_newer_one`; the two
+`tests/it/mobs.rs` tests that called the spawn again on the refusal spawn
+once again.
+
+**The stop.** `resumed_runs::*` failed under load (two cores, six busy
+loops of the test's priority) in about a third of the module's rounds
+(3 of 10, then 4 of 10), at different waits. The waits now name their
+line and the log (below), and the tests fail at once with the `delegate`
+call's result when the run went on past it. That showed one cause: the
+daemon's stop shut the mobs down in the snapshot's order, the helper's
+`implicit-<session>` before the agents' `tui`. The helper's turn was
+suspended first, which ended the agent's open `delegate` with "delegated
+turn failed: input ... stays queued across the stop ..." (and retired the
+helper, stuck at `retire-session-archive`); the agent's run, still live,
+read that and went on during the shutdown. Then either the engine refused
+to suspend it ("the machine refused to suspend the run; it is cancelled",
+so nothing resumed and the test waited for a helper call that never
+came), or it resumed past the call. Shutting the agents' mob down first
+suspends the run inside its `delegate`, but then the helper survives the
+stop, is restored, and the resumed run's `delegate`, dispatched again
+with the same `member_id`, is refused `mob member already exists: slow`:
+the `MemberAlreadyExists` path of the last entry, now forced every time
+(two of the module's tests failed on every run with only the reorder).
+So the stop now shuts the agents' mob first, then retires the helpers of
+the `delegate` calls still open (`HelperEndings::open_delegates`: spawned,
+no end of their call seen), while their mobs run, then shuts the others
+down. The resumed run seats a new helper for the task from its start, as
+before. After it: 20 of 20 loaded rounds of the module passed. A helper's
+own nested `delegate` is covered the same way (its helper is open in the
+endings); the order among the other mobs is still the snapshot's.
+
+**The waits.** `common::within`, `until`, `until_async`, `poll` and the
+client's `wait_for`, `saw`, `turn_finished`, `attached`, `agent` and
+`escalation` take `#[track_caller]` (plain functions returning the
+future: `#[track_caller]` on an `async fn` is not stable) and a timeout
+panics with the caller's line and the last 60 lines of the process's log
+(nextest runs a test per process; the rig's `Workspace::new` installs a
+capture at `RKAT_TEST_LOG`, default `info,rkat_tui=debug`). So do the
+rig's `Running::stop`, `ended` and the clients' `quit`.
+
+`helper_models::a_fork_runs_on_its_parent_s_current_model` failed once in
+20 loaded rounds of its module (0 of 20 alone). The labelled wait was the
+daemon's stop, not the poll for the child's call: the agents' mob, with
+the agent and its fork child `kid`, did not shut down within
+`MOB_SHUTDOWN` after the engine logged "runtime-loop exit teardown did not
+complete; the registration is detached ... Unregister teardown is still in
+progress" for the agent's session, and the runtime's shutdown then waited
+its own 10 s for "a runtime registration under way". Nothing on our side
+was found holding it; open, in the flaky list.

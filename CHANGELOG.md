@@ -30,6 +30,12 @@
   turn shows at once and Esc stops it at once.
 - After `/model`, the helper view showed a new helper on the model the
   agent had when the TUI attached until the helper's own model was read.
+- A daemon stopped while an agent waited in a `delegate` call could stop
+  the helper first: the agent read "delegated turn failed ... stays
+  queued across the stop", and after the restart its run was gone or had
+  gone on without the helper's answer. The daemon now stops the agents
+  first, so the run resumes inside the call and its helper starts the
+  task again.
 
 ### Changed
 

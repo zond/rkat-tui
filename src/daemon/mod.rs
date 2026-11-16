@@ -290,6 +290,10 @@ pub struct DaemonOptions {
     /// catalogs.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) before_catalogs: Option<Arc<tokio::sync::Notify>>,
+    /// Tests: no follower reads the mobs' profiles, so every spawn by a
+    /// profile's name reads them itself (`mobs::profiles`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) profiles_unfollowed: bool,
     /// The state directory the default endpoint file goes in (`None`:
     /// the user's, [`endpoint::state_home`], or the runtime directory's).
     pub(crate) state_home: Option<PathBuf>,
@@ -309,6 +313,8 @@ impl Default for DaemonOptions {
             spawn_faults: None,
             #[cfg(any(test, feature = "test-support"))]
             before_catalogs: None,
+            #[cfg(any(test, feature = "test-support"))]
+            profiles_unfollowed: false,
         }
     }
 }
@@ -347,6 +353,16 @@ impl DaemonOptions {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_before_catalogs(mut self, gate: Arc<tokio::sync::Notify>) -> Self {
         self.before_catalogs = Some(gate);
+        self
+    }
+
+    /// Start no follower of the mobs' profiles: a spawn by a profile's
+    /// name always finds them unread (a test of a spawn that comes before
+    /// the follower).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_profiles_unfollowed(mut self) -> Self {
+        self.profiles_unfollowed = true;
         self
     }
 
@@ -525,14 +541,25 @@ impl Daemon {
         let file = places.choose(&parts.confinement)?;
         let mut composed = engine::compose(parts, options.policy)?;
         let audit = open_audit(&mut composed);
+        // Bound before any spawn: a spawn by a profile's name the follower
+        // has not read yet is read for at once. A spawn by an agent's tool
+        // call reaches the customizer only after the engine's restore, so
+        // that read never waits behind it.
+        composed.profiles.bind(&composed.state);
         mob::ensure_mob(&composed.state, &composed.root).await?;
         // After the mobs are restored: the follower's first read sees them.
-        composed
-            .tasks
-            .push(tokio::spawn(crate::mobs::profiles::MobProfiles::follow(
-                Arc::clone(&composed.profiles),
-                Arc::downgrade(&composed.state),
-            )));
+        #[cfg(any(test, feature = "test-support"))]
+        let follow = !options.profiles_unfollowed;
+        #[cfg(not(any(test, feature = "test-support")))]
+        let follow = true;
+        if follow {
+            composed
+                .tasks
+                .push(tokio::spawn(crate::mobs::profiles::MobProfiles::follow(
+                    Arc::clone(&composed.profiles),
+                    Arc::downgrade(&composed.state),
+                )));
+        }
         let conversations = open_conversations(
             &composed,
             #[cfg(any(test, feature = "test-support"))]
@@ -765,7 +792,7 @@ impl Daemon {
         // The usage counted since the last run end, off the loop.
         let ledger = Arc::clone(&self.local.core().ledger);
         let _ = tokio::task::spawn_blocking(move || ledger.flush()).await;
-        stop_mobs(&self.state).await;
+        stop_mobs(&self.state, self.local.core().registry.endings()).await;
         let shutdown = self.runtime.try_shutdown().await;
         connections.abort_all();
         while connections.join_next().await.is_some() {}
@@ -1219,20 +1246,51 @@ const CATALOG_AT_START: std::time::Duration = std::time::Duration::from_secs(3);
 /// mob in a snapshot down. Their members are not retired, so the next
 /// start restores them; until a mob is shut down its comms names stay
 /// taken in this process.
-async fn stop_mobs(state: &Arc<MobMcpState>) {
+async fn stop_mobs(state: &Arc<MobMcpState>, endings: &crate::mobs::endings::HelperEndings) {
     let deadline = std::time::Instant::now() + MOB_SHUTDOWN;
     if let meerkat_mob_mcp::MobStateStandDown::Unsettled { reasons } =
         state.close_admission(deadline).await
     {
         tracing::warn!(?reasons, "mob admission did not close cleanly");
     }
-    let handles = match state.mob_handles_snapshot().await {
+    let mut handles = match state.mob_handles_snapshot().await {
         Ok(handles) => handles,
         Err(err) => {
             tracing::warn!(error = %err, "cannot list the mobs to shut down");
             return;
         }
     };
+    // The agents' mob first: an agent's run stopped inside a `delegate` is
+    // suspended there and resumes at the next start. Its helper's mob shut
+    // down first suspended the helper's turn, which ended the `delegate`
+    // with an error; the agent's run read it and went on during the
+    // shutdown, so the next start had nothing to resume, or resumed past
+    // the call.
+    handles.sort_by_key(|(mob, _)| mob.as_str() != MOB_ID);
+    let mut handles = handles.into_iter();
+    if let Some((mob, handle)) = handles.next() {
+        match tokio::time::timeout(MOB_SHUTDOWN, handle.shutdown()).await {
+            Ok(Ok(())) => tracing::info!(%mob, "mob shut down"),
+            Ok(Err(err)) => tracing::warn!(%mob, error = %err, "mob shutdown failed"),
+            Err(_) => tracing::warn!(%mob, "mob did not shut down in time"),
+        }
+    }
+    // The helpers of the `delegate` calls the stopped runs had open: the
+    // next start resumes each run, which dispatches its call again under
+    // the same `member_id` and seats a new helper for the task from its
+    // start. The old one, restored, would take the name (the engine refuses
+    // the spawn `MemberAlreadyExists`), so it is retired now, while its mob
+    // still runs.
+    let open = endings.open_delegates();
+    if !open.is_empty() {
+        let retired = futures::future::join_all(
+            open.iter()
+                .map(|key| crate::mobs::delegates::retire_orphan(state, key)),
+        );
+        if tokio::time::timeout(MOB_SHUTDOWN, retired).await.is_err() {
+            tracing::warn!(helpers = ?open, "the open delegate calls' helpers did not retire in time");
+        }
+    }
     for (mob, handle) in handles {
         match tokio::time::timeout(MOB_SHUTDOWN, handle.shutdown()).await {
             Ok(Ok(())) => tracing::info!(%mob, "mob shut down"),

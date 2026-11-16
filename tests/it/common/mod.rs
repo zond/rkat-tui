@@ -28,38 +28,59 @@ pub const MODEL: &str = "claude-sonnet-4-6";
 /// Upper bound on any await that could hang on a wiring bug.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
 
-pub async fn within<F: Future>(future: F) -> F::Output {
-    tokio::time::timeout(TIMEOUT, future)
-        .await
-        .expect("timed out")
+/// Where a wait was made: its panic names the line.
+pub type At = &'static std::panic::Location<'static>;
+
+/// `future`, which must end within [`TIMEOUT`]; a timeout panics naming
+/// the caller's line and the daemon's last log lines ([`log_tail`]).
+#[track_caller]
+pub fn within<F: Future>(future: F) -> impl Future<Output = F::Output> {
+    within_at(std::panic::Location::caller(), future)
+}
+
+/// [`within`] for the wait made at `at`.
+pub async fn within_at<F: Future>(at: At, future: F) -> F::Output {
+    match tokio::time::timeout(TIMEOUT, future).await {
+        Ok(output) => output,
+        Err(_) => timed_out(at, ""),
+    }
+}
+
+/// The panic of the wait at `at` that ran out, with `detail`.
+pub fn timed_out(at: At, detail: &str) -> ! {
+    panic!(
+        "timed out after {TIMEOUT:?}: the wait at {at}{detail}\nthe daemon's last log lines:\n{}",
+        log_tail(60)
+    )
 }
 
 /// How often [`until`] and [`poll`] look again.
 pub const POLL: Duration = Duration::from_millis(20);
 
 /// Wait, [`within`] the bound, until `ready` holds.
-pub async fn until(mut ready: impl FnMut() -> bool) {
-    within(async {
+#[track_caller]
+pub fn until(mut ready: impl FnMut() -> bool) -> impl Future<Output = ()> {
+    within_at(std::panic::Location::caller(), async move {
         while !ready() {
             tokio::time::sleep(POLL).await;
         }
     })
-    .await;
 }
 
 /// [`until`] with a condition that awaits.
-pub async fn until_async(mut ready: impl AsyncFnMut() -> bool) {
-    within(async {
+#[track_caller]
+pub fn until_async(mut ready: impl AsyncFnMut() -> bool) -> impl Future<Output = ()> {
+    within_at(std::panic::Location::caller(), async move {
         while !ready().await {
             tokio::time::sleep(POLL).await;
         }
     })
-    .await;
 }
 
 /// Wait, [`within`] the bound, until `probe` yields a value.
-pub async fn poll<T>(mut probe: impl AsyncFnMut() -> Option<T>) -> T {
-    within(async {
+#[track_caller]
+pub fn poll<T>(mut probe: impl AsyncFnMut() -> Option<T>) -> impl Future<Output = T> {
+    within_at(std::panic::Location::caller(), async move {
         loop {
             if let Some(found) = probe().await {
                 return found;
@@ -67,7 +88,63 @@ pub async fn poll<T>(mut probe: impl AsyncFnMut() -> Option<T>) -> T {
             tokio::time::sleep(POLL).await;
         }
     })
-    .await
+}
+
+/// The log lines of this test process (nextest runs each test in its own),
+/// the last [`LOG_LINES`] of them: the in-process daemon's and the
+/// engine's, at `RKAT_TEST_LOG` (an `EnvFilter`, default
+/// [`DEFAULT_TEST_LOG`]). Captured from the first [`Workspace`] on.
+static LOG: Mutex<std::collections::VecDeque<String>> =
+    Mutex::new(std::collections::VecDeque::new());
+
+/// How many log lines [`LOG`] keeps.
+const LOG_LINES: usize = 400;
+
+/// The filter of the captured log when `RKAT_TEST_LOG` names none.
+const DEFAULT_TEST_LOG: &str = "info,rkat_tui=debug";
+
+/// A writer of one formatted event into [`LOG`].
+struct LogLine;
+
+impl std::io::Write for LogLine {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let mut log = LOG.lock();
+        if log.len() == LOG_LINES {
+            log.pop_front();
+        }
+        log.push_back(String::from_utf8_lossy(bytes).trim_end().to_string());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Capture the process's log into [`LOG`] (once; a subscriber another
+/// test installed first stays).
+fn capture_log() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::try_from_env("RKAT_TEST_LOG")
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_TEST_LOG));
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(false)
+            .with_writer(|| LogLine)
+            .try_init();
+    });
+}
+
+/// The last `lines` captured log lines, one per line.
+pub fn log_tail(lines: usize) -> String {
+    let log = LOG.lock();
+    let skip = log.len().saturating_sub(lines);
+    log.iter()
+        .skip(skip)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The result of the tool call `id` in `messages`.
@@ -393,6 +470,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new() -> Self {
+        capture_log();
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap().join("project");
         std::fs::create_dir_all(&root).unwrap();

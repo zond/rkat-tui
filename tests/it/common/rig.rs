@@ -253,8 +253,15 @@ impl Running {
     }
 
     /// Wait for the daemon to end by itself (`rkat/shutdown`).
-    pub async fn ended(self) {
-        within(self.task).await.unwrap().expect("clean shutdown");
+    #[track_caller]
+    pub fn ended(self) -> impl Future<Output = ()> {
+        let at = std::panic::Location::caller();
+        async move {
+            crate::common::within_at(at, self.task)
+                .await
+                .unwrap()
+                .expect("clean shutdown");
+        }
     }
 
     /// Whether the daemon still serves (it has not ended).
@@ -262,9 +269,18 @@ impl Running {
         !self.task.is_finished()
     }
 
-    pub async fn stop(self) {
+    /// Stop the daemon and wait for its clean shutdown; a timeout names
+    /// the caller's line.
+    #[track_caller]
+    pub fn stop(self) -> impl Future<Output = ()> {
+        let at = std::panic::Location::caller();
         let _ = self.stop.send(());
-        within(self.task).await.unwrap().expect("clean shutdown");
+        async move {
+            crate::common::within_at(at, self.task)
+                .await
+                .unwrap()
+                .expect("clean shutdown");
+        }
     }
 }
 
@@ -362,14 +378,25 @@ impl Client {
     /// Wait for a message matching `pred` (seen before or arriving): the
     /// wait for one of several messages whose order is not fixed (a call's
     /// answer and the daemon's push it caused). The first such message.
-    pub async fn saw(&mut self, pred: impl Fn(&Msg) -> bool) -> Msg {
-        match self.seen.iter().find(|msg| pred(msg)) {
-            Some(msg) => msg.clone(),
-            None => self.wait_for(pred).await,
+    #[track_caller]
+    pub fn saw(&mut self, pred: impl Fn(&Msg) -> bool) -> impl Future<Output = Msg> {
+        let at = std::panic::Location::caller();
+        async move {
+            match self.seen.iter().find(|msg| pred(msg)) {
+                Some(msg) => msg.clone(),
+                None => self.wait_for_at(at, pred).await,
+            }
         }
     }
 
-    pub async fn wait_for(&mut self, pred: impl Fn(&Msg) -> bool) -> Msg {
+    /// Wait for a new message matching `pred`; a timeout names the
+    /// caller's line and the last messages.
+    #[track_caller]
+    pub fn wait_for(&mut self, pred: impl Fn(&Msg) -> bool) -> impl Future<Output = Msg> {
+        self.wait_for_at(std::panic::Location::caller(), pred)
+    }
+
+    async fn wait_for_at(&mut self, at: crate::common::At, pred: impl Fn(&Msg) -> bool) -> Msg {
         let seen = &mut self.seen;
         let rx = &mut self.harness.ui_rx;
         let found = tokio::time::timeout(TIMEOUT, async {
@@ -386,43 +413,55 @@ impl Client {
             Ok(msg) => msg,
             Err(_) => {
                 let tail = &self.seen[self.seen.len().saturating_sub(20)..];
-                panic!("timed out; the last messages: {tail:#?}")
+                crate::common::timed_out(at, &format!("; the last messages: {tail:#?}"))
             }
         }
     }
 
-    pub async fn attached(&mut self) {
-        self.wait_for(|msg| {
-            matches!(
-                msg,
-                Msg::Status(StatusUpdate::Connection(
-                    rkat_tui::ui::Connection::Attached { .. }
-                ))
-            )
-        })
-        .await;
+    #[track_caller]
+    pub fn attached(&mut self) -> impl Future<Output = ()> {
+        let at = std::panic::Location::caller();
+        async move {
+            self.wait_for_at(at, |msg| {
+                matches!(
+                    msg,
+                    Msg::Status(StatusUpdate::Connection(
+                        rkat_tui::ui::Connection::Attached { .. }
+                    ))
+                )
+            })
+            .await;
+        }
     }
 
     /// The agent this client works with, as the daemon told it.
-    pub async fn agent(&mut self) -> String {
-        let shown = |msg: &Msg| match msg {
-            Msg::Status(StatusUpdate::Agent(Some(agent))) => Some(agent.clone()),
-            _ => None,
-        };
-        if let Some(agent) = self.seen.iter().rev().find_map(shown) {
-            return agent;
+    #[track_caller]
+    pub fn agent(&mut self) -> impl Future<Output = String> {
+        let at = std::panic::Location::caller();
+        async move {
+            let shown = |msg: &Msg| match msg {
+                Msg::Status(StatusUpdate::Agent(Some(agent))) => Some(agent.clone()),
+                _ => None,
+            };
+            if let Some(agent) = self.seen.iter().rev().find_map(shown) {
+                return agent;
+            }
+            let msg = self.wait_for_at(at, |msg| shown(msg).is_some()).await;
+            shown(&msg).unwrap()
         }
-        let msg = self.wait_for(|msg| shown(msg).is_some()).await;
-        shown(&msg).unwrap()
     }
 
-    pub async fn turn_finished(&mut self) -> Result<TurnSummary, TurnFailure> {
-        match self
-            .wait_for(|msg| matches!(msg, Msg::TurnFinished(_)))
-            .await
-        {
-            Msg::TurnFinished(outcome) => outcome,
-            _ => unreachable!(),
+    #[track_caller]
+    pub fn turn_finished(&mut self) -> impl Future<Output = Result<TurnSummary, TurnFailure>> {
+        let at = std::panic::Location::caller();
+        async move {
+            match self
+                .wait_for_at(at, |msg| matches!(msg, Msg::TurnFinished(_)))
+                .await
+            {
+                Msg::TurnFinished(outcome) => outcome,
+                _ => unreachable!(),
+            }
         }
     }
 
@@ -445,13 +484,17 @@ impl Client {
             .count()
     }
 
-    pub async fn escalation(&mut self) -> (RecordedPrompt, EscalationId) {
-        match self
-            .wait_for(|msg| matches!(msg, Msg::Escalation(..)))
-            .await
-        {
-            Msg::Escalation(prompt, id) => (prompt, id),
-            _ => unreachable!(),
+    #[track_caller]
+    pub fn escalation(&mut self) -> impl Future<Output = (RecordedPrompt, EscalationId)> {
+        let at = std::panic::Location::caller();
+        async move {
+            match self
+                .wait_for_at(at, |msg| matches!(msg, Msg::Escalation(..)))
+                .await
+            {
+                Msg::Escalation(prompt, id) => (prompt, id),
+                _ => unreachable!(),
+            }
         }
     }
 
@@ -483,9 +526,15 @@ impl Client {
     }
 
     /// Quit; where the messages the daemon never got were saved.
-    pub async fn quit(self) -> Option<rkat_tui::workbench::SavedUnsent> {
+    #[track_caller]
+    pub fn quit(self) -> impl Future<Output = Option<rkat_tui::workbench::SavedUnsent>> {
+        let at = std::panic::Location::caller();
         self.send(Effect::Quit);
-        within(self.harness.task).await.unwrap()
+        async move {
+            crate::common::within_at(at, self.harness.task)
+                .await
+                .unwrap()
+        }
     }
 }
 
@@ -597,6 +646,9 @@ pub struct Setup {
     /// workspace; a test whose shell is granted the temp dir puts it
     /// elsewhere, or the daemon refuses it as exposed).
     pub endpoint_file: Option<PathBuf>,
+    /// The daemon starts no follower of the mobs' profiles
+    /// ([`DaemonOptions::with_profiles_unfollowed`]).
+    pub profiles_unfollowed: bool,
 }
 
 impl Setup {
@@ -616,7 +668,13 @@ impl Setup {
 
     /// The daemon's options for `root` with `llm`.
     pub fn options(&self, root: &Path, llm: &Arc<ScriptedLlmClient>) -> DaemonOptions {
-        DaemonOptions::default()
+        let options = DaemonOptions::default();
+        let options = if self.profiles_unfollowed {
+            options.with_profiles_unfollowed()
+        } else {
+            options
+        };
+        options
             .with_bootstrap(BootstrapOptions {
                 // A setup on the engine's own clients (a fake endpoint)
                 // has no scripted LLM.
@@ -702,10 +760,24 @@ impl Attached {
     }
 
     /// The client quits, then the daemon stops.
-    pub async fn quit(self) -> Option<rkat_tui::workbench::SavedUnsent> {
-        let unsent = self.client.quit().await;
-        self.daemon.stop().await;
-        unsent
+    /// Quit the client, then stop the daemon; a timeout of either names
+    /// the caller's line.
+    #[track_caller]
+    pub fn quit(self) -> impl Future<Output = Option<rkat_tui::workbench::SavedUnsent>> {
+        let at = std::panic::Location::caller();
+        async move {
+            self.client.send(Effect::Quit);
+            let unsent = crate::common::within_at(at, self.client.harness.task)
+                .await
+                .unwrap();
+            let daemon = self.daemon;
+            let _ = daemon.stop.send(());
+            crate::common::within_at(at, daemon.task)
+                .await
+                .unwrap()
+                .expect("clean shutdown");
+            unsent
+        }
     }
 }
 

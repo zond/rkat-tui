@@ -384,12 +384,15 @@ async fn a_fork_runs_on_its_parent_s_current_model() {
     rig.wait_for(|m| matches!(m, Msg::Status(StatusUpdate::Model { model, .. }) if model == OPUS))
         .await;
     one_turn(&mut rig).await;
+    // The call's result names the child, or why there is none.
+    let forked = delegate_result(&llm, "f1");
+    assert!(!forked.contains("\"error\""), "{forked}");
     let ran = common::poll(async || {
         let ran = helper_models(&llm);
         (!ran.is_empty()).then_some(ran)
     })
     .await;
-    assert_eq!(ran, [OPUS], "{}", delegate_result(&llm, "f1"));
+    assert_eq!(ran, [OPUS], "{forked}");
     rig.quit().await;
 }
 
@@ -400,6 +403,68 @@ async fn a_member_of_the_agent_s_mob_runs_on_the_agent_s_model_not_its_profile_s
     let llm = calls(vec![create_team(HAIKU), spawn_worker(None)]);
     let (ran, result) = spawn_in_a_team(&llm, Setup::default(), 1).await;
     assert_eq!(ran, [MODEL], "{result}");
+}
+
+/// A spawn by a profile's name right after the mob's create, before the
+/// daemon's follower of the mobs' profiles read the new mob (here it never
+/// does): the customizer reads the definition itself, and the member is
+/// seated on the chosen model, never refused as not known yet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_spawned_right_after_its_mob_s_create_is_seated_on_the_chosen_model() {
+    let llm = calls(vec![create_team(HAIKU), spawn_worker(None)]);
+    let setup = Setup {
+        profiles_unfollowed: true,
+        ..Setup::args(&["--set", &format!("helpers.model={OPUS}")])
+    };
+    let (ran, result) = spawn_in_a_team(&llm, setup, 1).await;
+    assert_eq!(ran, [OPUS], "{result}");
+    assert!(!result.contains("not known"), "{result}");
+}
+
+/// The same, with the create and the spawn as parallel calls of one
+/// response: the engine dispatches them together (`join_all`), so the
+/// spawn can reach the engine before the mob exists (the engine's own
+/// answer then); once the mob exists, the member is seated on the chosen
+/// model and is never refused as not known.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_spawned_in_the_same_batch_as_its_mob_s_create_is_seated_on_the_chosen_model() {
+    let (create, spawn) = (create_team(HAIKU), spawn_worker(None));
+    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        if common::user_texts(messages).concat().contains(TASK) {
+            return Step::Text("helper done");
+        }
+        if messages
+            .iter()
+            .any(|m| matches!(m, Message::ToolResults { .. }))
+        {
+            return Step::Text("agent done");
+        }
+        Step::Tools(vec![create.clone(), spawn.clone()])
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 30]);
+    let setup = Setup {
+        profiles_unfollowed: true,
+        ..Setup::args(&["--set", &format!("helpers.model={OPUS}")])
+    };
+    let ws = Workspace::new();
+    let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
+    rig.daemon.reveal(&rig.daemon.session, &MOB_TOOLS).await;
+    one_turn(&mut rig).await;
+    let result = delegate_result(&llm, "s1");
+    assert!(!result.contains("not known"), "{result}");
+    if result.contains("mob not found: team") {
+        // The engine's answer to a spawn that came first (seen on every
+        // run so far): the customizer was never asked.
+        assert!(helper_models(&llm).is_empty(), "{result}");
+    } else {
+        let ran = common::poll(async || {
+            let ran = helper_models(&llm);
+            (!ran.is_empty()).then_some(ran)
+        })
+        .await;
+        assert_eq!(ran, [OPUS], "{result}");
+    }
+    rig.quit().await;
 }
 
 /// The same member with `helpers.model` set runs on it.

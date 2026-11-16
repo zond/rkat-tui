@@ -539,7 +539,8 @@ enum Seat {
     /// The mob's definition has no inline profile of the name: the engine
     /// refuses the spawn itself, naming it.
     Missing,
-    /// The mob's definition is not known here.
+    /// The mob's definition could not be read: the lookup's own read
+    /// failed or ran out of its bound ([`super::profiles`]).
     Unknown {
         /// The mob.
         mob: MobId,
@@ -601,7 +602,7 @@ fn choose_model(
         }
         Seat::Unknown { mob } => {
             return Err(format!(
-                "the profiles of the mob `{mob}` are not known to rkat-tui yet, so `{}` cannot be given its model; call the spawn again, or give the profile inline in `tooling`",
+                "rkat-tui could not read the profiles of the mob `{mob}` in time, so `{}` cannot be given its model; call the spawn again, or give the profile inline in `tooling`",
                 spec.identity
             ));
         }
@@ -1348,7 +1349,8 @@ mod tests {
     /// owner's endpoint's provider and server, and no fallback chain; the
     /// model is the spawn's, else `helpers.model`, else the owner's, and
     /// the rule judges it (there is no refusal of an unchecked profile
-    /// model any more). A mob not known yet is refused with what to do.
+    /// model any more). A mob whose definition could not be read is
+    /// refused with what to do.
     #[test]
     fn a_stored_profile_s_model_never_decides() {
         use crate::endpoints::{Endpoint, SecretString, WireDialect};
@@ -1422,7 +1424,7 @@ mod tests {
             rule: ModelRule::Allow(vec![ModelPattern::parse("local-*").unwrap()]),
         };
         assert!(run(&local, None, Asked::Spawn, seat()).is_ok());
-        // A mob whose definition is not known yet.
+        // A mob whose definition could not be read.
         let unknown = run(
             &HelperModels::default(),
             None,

@@ -376,6 +376,21 @@ impl HelperEndings {
         });
     }
 
+    /// The `delegate` helpers whose parent's call is still open (no end of
+    /// it seen): at the daemon's stop, the helpers of the calls a stopped
+    /// run will dispatch again when the next start resumes it.
+    #[must_use]
+    pub fn open_delegates(&self) -> Vec<HelperKey> {
+        self.tracked
+            .lock()
+            .iter()
+            .filter(|(key, tracked)| {
+                is_delegate(key) && tracked.tag.is_some() && tracked.call.is_none()
+            })
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
     /// Tests: how many retires these endings started so far.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]

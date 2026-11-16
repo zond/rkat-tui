@@ -91,6 +91,47 @@ fn delegate() -> Step {
     }
 }
 
+/// How many model calls the helper (whose task names `HELPER-TASK`) made.
+fn helper_calls(llm: &ScriptedLlmClient) -> usize {
+    llm.recorded()
+        .iter()
+        .filter(|r| r.user().contains("HELPER-TASK"))
+        .count()
+}
+
+/// Wait until the resumed run's `delegate`, dispatched again, seated its
+/// new helper and that helper called (the second helper call). A run that
+/// went on without it (the agent's next model call read the call's result)
+/// fails at once, with that result.
+#[track_caller]
+fn redispatched(llm: &ScriptedLlmClient) -> impl Future<Output = ()> + '_ {
+    common::until(move || {
+        if let Some(results) = went_on(llm) {
+            panic!(
+                "the resumed run went on without seating the helper again: {results}\nthe daemon's last log lines:\n{}",
+                common::log_tail(150)
+            );
+        }
+        helper_calls(llm) == 2
+    })
+}
+
+/// The tool results of the agent's first model call that read one (its run
+/// went on past the call it was stopped in), if it made one.
+fn went_on(llm: &ScriptedLlmClient) -> Option<String> {
+    llm.recorded()
+        .iter()
+        .find(|r| !r.user().contains("HELPER-TASK") && results(&r.messages) > 0)
+        .map(|r| {
+            r.messages
+                .iter()
+                .filter(|m| matches!(m, Message::ToolResults { .. }))
+                .map(|m| format!("{m:?}"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+}
+
 /// Start the agent's turn, wait for `inside` (its run is in the call), and
 /// stop the daemon with the run open; the agent's name.
 async fn stop_inside(
@@ -114,14 +155,29 @@ async fn stop_inside(
 /// `run_resumed`: the daemon tells it the open run's id as it attaches.
 async fn resumed(ws: &Workspace, llm: &Arc<ScriptedLlmClient>, name: String) -> (Running, Client) {
     let daemon = Running::start(&ws.root, llm).await;
-    let client = join(&daemon, &ws.root, name).await;
+    let client = join(&daemon, &ws.root, name, Some(llm)).await;
     (daemon, client)
 }
 
 /// Once the agent's run is open, a client of the agent `name`, which
-/// joined its turn.
-async fn join(daemon: &Running, root: &std::path::Path, name: String) -> Client {
-    common::until_async(async || daemon.status().await.agents[0].running == Some(true)).await;
+/// joined its turn. With `resumed`, a run that went on past the call it
+/// was stopped in fails the wait at once, with what it read.
+async fn join(
+    daemon: &Running,
+    root: &std::path::Path,
+    name: String,
+    resumed: Option<&ScriptedLlmClient>,
+) -> Client {
+    common::until_async(async || {
+        if let Some(results) = resumed.and_then(went_on) {
+            panic!(
+                "the resumed run went on before the client joined it: {results}\nthe daemon's last log lines:\n{}",
+                common::log_tail(150)
+            );
+        }
+        daemon.status().await.agents[0].running == Some(true)
+    })
+    .await;
     let mut client = Client::attach_agent(root, AgentChoice::Agent { name }).await;
     client.saw(|m| matches!(m, Msg::RemoteTurn { .. })).await;
     client
@@ -189,7 +245,7 @@ async fn a_run_stopped_inside_a_delegate_resumes_and_esc_stops_it_at_once() {
     let name = stop_inside(&ws, &llm, || helper_calls() == 1).await;
     let (daemon, mut client) = resumed(&ws, &llm, name).await;
     // The call was dispatched again: its helper is seated and runs anew.
-    common::until(|| helper_calls() == 2).await;
+    redispatched(&llm).await;
     let connection = daemon.connect().await;
     let mob = format!("implicit-{}", daemon.session);
     common::until_async(async || members(&connection, &mob).await == ["slow"]).await;
@@ -219,8 +275,8 @@ async fn a_client_attaching_inside_a_resumed_delegate_stops_the_run_by_its_id() 
     };
     let name = stop_inside(&ws, &llm, || helper_calls() == 1).await;
     let daemon = Running::start(&ws.root, &llm).await;
-    common::until(|| helper_calls() == 2).await;
-    let mut client = join(&daemon, &ws.root, name).await;
+    redispatched(&llm).await;
+    let mut client = join(&daemon, &ws.root, name, Some(&llm)).await;
     assert!(
         !client
             .events()
@@ -255,7 +311,7 @@ async fn a_client_reattaching_inside_a_slow_shell_call_stops_the_run_by_its_id()
     common::until(|| runs.exists()).await;
     first.send(Effect::Leave(Departure::Detach));
     first.quit().await;
-    let mut client = join(&daemon, &ws.root, name).await;
+    let mut client = join(&daemon, &ws.root, name, None).await;
     interrupt_and_go_on(&daemon, &mut client, &llm).await;
     client.quit().await;
     daemon.stop().await;
@@ -276,7 +332,7 @@ async fn stopping_the_helper_of_a_resumed_run_tells_the_agent_in_that_run() {
     };
     let name = stop_inside(&ws, &llm, || helper_calls() == 1).await;
     let (daemon, mut client) = resumed(&ws, &llm, name).await;
-    common::until(|| helper_calls() == 2).await;
+    redispatched(&llm).await;
     client.send(Effect::StopHelper(vec!["slow".into()]));
     // The stop's ending; the helper the last daemon left under the same
     // name may be told ended first (`LEFT_ENDED`).
@@ -327,7 +383,9 @@ async fn a_run_stopped_inside_a_shell_call_resumes_with_its_outcome_uncertain() 
             .unwrap_or(0)
     };
     let name = stop_inside(&ws, &llm, || lines() == 1).await;
-    let (daemon, mut client) = resumed(&ws, &llm, name).await;
+    // Its resumed run goes on past the call by design: no check of that.
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = join(&daemon, &ws.root, name, None).await;
     joined.notify_one();
     assert_eq!(client.turn_finished().await.unwrap().text, "went on");
     let read = llm
@@ -385,7 +443,7 @@ async fn the_start_does_not_wait_behind_a_resumed_run_s_turn() {
         .with_before_catalogs(Arc::clone(&gate));
     let start = tokio::spawn(async move { Running::try_start_with(&args, options).await });
     // The resumed run is in its `delegate` call: its new helper called.
-    common::until(|| helper_calls() == 2).await;
+    redispatched(&llm).await;
     gate.notify_one();
     let started = std::time::Instant::now();
     let daemon = start.await.unwrap().expect("the daemon starts");

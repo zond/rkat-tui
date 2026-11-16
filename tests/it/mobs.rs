@@ -303,19 +303,6 @@ fn team(id: &str) -> meerkat_mob::MobDefinition {
     definition
 }
 
-/// Spawn `spec` into the mob of `handle`, which was just created: the
-/// daemon reads a new mob's profiles when the set of mobs changes, so a
-/// spawn right after the create may be refused as not known yet, with
-/// "call the spawn again"; it is, as an agent would.
-async fn spawn_into_new_mob(handle: &meerkat_mob::MobHandle, spec: meerkat_mob::SpawnMemberSpec) {
-    common::poll(async || match handle.spawn_spec(spec.clone()).await {
-        Ok(_) => Some(()),
-        Err(err) if err.to_string().contains("not known to rkat-tui yet") => None,
-        Err(err) => panic!("the spawn failed: {err}"),
-    })
-    .await;
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helper_no_open_session_owns_is_refused() {
     let ws = Workspace::new();
@@ -372,7 +359,7 @@ async fn a_followed_helper_stays_live_until_its_member_retired_arrives() {
     let handle = within(daemon.state().handle_for(&mob)).await.unwrap();
     let mut spec = meerkat_mob::SpawnMemberSpec::new("delegate", "worker");
     spec.initial_message = Some("start".into());
-    spawn_into_new_mob(&handle, spec).await;
+    within(handle.spawn_spec(spec)).await.unwrap();
     llm.wait_call(0).await;
     let registry = daemon.registry();
     // Idle after its turn: still followed, still live. The sleep gives a
@@ -416,7 +403,7 @@ async fn a_helpers_owner_survives_a_restart_until_it_retires() {
     // It runs a turn, so its durable session exists.
     let mut spec = meerkat_mob::SpawnMemberSpec::new("delegate", "worker");
     spec.initial_message = Some("start".into());
-    spawn_into_new_mob(&handle, spec).await;
+    within(handle.spawn_spec(spec)).await.unwrap();
     assert_eq!(daemon.registry().live_for(&owner), vec![key.clone()]);
     llm.wait_call(0).await;
     // The daemon stops: its mob shuts down (not retiring anyone).

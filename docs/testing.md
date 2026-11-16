@@ -219,8 +219,17 @@ output now says why; report it rather than retrying silently:
   `a_client_attaching_inside_a_resumed_delegate_stops_the_run_by_its_id`
   orders the attach after the resumption every time. After that change it
   still failed once in 18 loaded runs at a 30 s `until` bound whose line
-  the panic does not name (`docs/evidence.md`, "An attaching client is
-  told the open run"); if it fails again, the wait is the thing to find.
+  the panic did not name. With the waits labelled, the module failed in
+  about a third of its loaded rounds, all of one cause in the product: the
+  daemon's stop shut the helper's mob down before the agents', which ended
+  the agent's open `delegate` with an error its run read and went on from
+  during the shutdown, so the next start had no run to resume or resumed
+  past the call. The stop now shuts the agents' mob first and retires the
+  open calls' helpers, which the resumed `delegate` would otherwise meet
+  as `mob member already exists` (`docs/evidence.md`, "A spawn right after
+  its mob's create; a stop inside a `delegate`"). 20 of 20 loaded rounds
+  passed after; the tests fail at once with the call's result if the run
+  goes on past it again.
 - `a_helper_of_the_stored_main_profile_runs_on_the_agent_s_model`
   (`tests/it/helper_models.rs`): failed on the hosted runner, and every
   time locally under the same load. `spawn_member` does not hold the
@@ -236,12 +245,25 @@ output now says why; report it rather than retrying silently:
   spawns into it at once, but the daemon reads a new mob's profiles only
   when the set of mobs changes (`mobs::profiles`, on its own task), so the
   spawn could be refused "not known to rkat-tui yet ... call the spawn
-  again" (failed once in 8 loaded rounds). The tests now call it again on
-  that refusal, as the refusal tells an agent to.
+  again" (failed once in 8 loaded rounds). Cause in the product: a lookup
+  now reads the definitions itself when the mob set moved since the
+  follower's read (`docs/evidence.md`, "A spawn right after its mob's
+  create"), so the tests spawn once again, with no retry;
+  `a_member_spawned_right_after_its_mob_s_create_is_seated_on_the_chosen_model`
+  runs with no follower at all and failed with the old lookup.
 - `a_fork_runs_on_its_parent_s_current_model` (`tests/it/helper_models.rs`):
-  failed once in a full local gate run at a 30 s `within` bound (the poll
-  for the fork child's model call, the only `within` wait it has); passed
-  8 of 8 loaded rounds of its module after. Cause not found.
+  failed once in a full local gate run at a 30 s bound, then taken for the
+  poll for the fork child's model call. With the waits labelled it failed
+  once in 20 loaded rounds of its module (and 0 of 20 alone): the poll
+  passed, and the wait that ran out was the daemon's stop at the end
+  (`rig.rs` `Running::stop`, now naming the test's line). The log: the
+  agents' mob, holding the agent and its fork child, did not shut down in
+  the daemon's 10 s (`mob did not shut down in time`), after the engine's
+  "runtime-loop exit teardown did not complete ... Unregister teardown is
+  still in progress" for the agent's session, and the runtime's own
+  shutdown waited 10 s more for a registration. Open: the stall is inside
+  the engine's teardown; nothing on rkat-tui's side was found holding it.
+  If it fails again, the log tail in the panic is the evidence.
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a
