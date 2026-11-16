@@ -454,6 +454,10 @@ pub async fn assemble(
         )
         .with_inputs(project_inputs.clone()),
     );
+    realm_config.set_turn_limit(crate::config::registry::int_in_force(
+        &crate::config::registry::CHECKPOINT_STEPS,
+        &layered.layers,
+    ));
     project_endpoints(realm_config.runtime(), endpoints.as_slice()).await?;
     let listed = models
         .as_ref()

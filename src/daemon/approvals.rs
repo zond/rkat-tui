@@ -560,6 +560,10 @@ struct Following {
     run: Option<meerkat_core::RunId>,
     /// A compaction's history estimate, until it completes.
     compacting: Option<u64>,
+    /// The model calls of the run now (a checkpoint names them).
+    steps: u64,
+    /// The last run that ended at its limit (its checkpoint began).
+    limited: Option<meerkat_core::RunId>,
 }
 
 /// One agent's event watcher ([`watch`]).
@@ -726,6 +730,9 @@ impl Watcher {
         following: &mut Following,
     ) {
         let session = || event_session(&envelope.source, following.session.as_ref());
+        if let AgentEvent::TurnCompleted { .. } = &envelope.payload {
+            following.steps += 1;
+        }
         match &envelope.payload {
             AgentEvent::RunStarted {
                 session_id,
@@ -734,6 +741,7 @@ impl Watcher {
                 ..
             } => {
                 following.run.clone_from(&identity.run_id);
+                following.steps = 0;
                 self.run_started(session_id, identity.run_id.as_ref(), input.prompt_text())
                     .await;
                 // A prepare instruction held for this run goes now.
@@ -752,6 +760,7 @@ impl Watcher {
                 session_id, run_id, ..
             } => {
                 following.run = Some(run_id.clone());
+                following.steps = 0;
                 self.run_started(session_id, Some(run_id), None).await;
             }
             AgentEvent::ToolCallRequested {
@@ -833,12 +842,27 @@ impl Watcher {
                 session_id,
                 identity,
                 ..
-            }
-            | AgentEvent::RunFailed {
+            } => self.run_ended(session_id, identity.run_id.as_ref()),
+            AgentEvent::RunFailed {
                 session_id,
                 identity,
+                error_report,
                 ..
-            } => self.run_ended(session_id, identity.run_id.as_ref()),
+            } => {
+                self.run_ended(session_id, identity.run_id.as_ref());
+                // At its turn limit: its checkpoint, never for another
+                // failure (`super::checkpoint`). A replayed end of a run
+                // seen before (a resubscribe) is no new one.
+                if error_report.class == meerkat_core::AgentErrorClass::MaxTurns
+                    && self.watched.current.current(&self.name).as_ref() == Some(session_id)
+                    && let Some(run) = &identity.run_id
+                    && following.limited.as_ref() != Some(run)
+                    && let Some(agents) = self.watched.agents.upgrade()
+                {
+                    following.limited = Some(run.clone());
+                    agents.agent_at_limit(&self.name, session_id, following.steps);
+                }
+            }
             _ => {}
         }
     }

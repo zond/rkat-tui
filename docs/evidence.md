@@ -11109,3 +11109,90 @@ caller heard no one and could not answer. What was done:
   the daemon while the agent is held in a model call beside its helper:
   the engine resumes the run, which makes that call again, and restores
   the helper, which runs anew.
+
+## Checkpoints of long runs (owner decision, 2026-11-16)
+
+The owner hit `Terminal failure: Failed (TurnLimitReached): turn limit
+reached` in real use; rkat-tui never set the engine's limit. Agreed: the
+limit becomes a checkpoint.
+
+- **What the engine does at the limit** (meerkat-core 0.9.15
+  `agent/state.rs` `run_loop_rounds`: the check `turn_count >= max_turns`
+  at the top of each round, after the last round's tool results are
+  committed; `turn_execution_authority.rs`: `TurnLimitReached` maps to
+  `AgentErrorClass::MaxTurns`). Probed on the rig with the limit at 10: the
+  run makes exactly 10 model calls, ends with `RunFailed` whose
+  `error_report` is `{class: MaxTurns, reason: TurnTerminalCause {outcome:
+  Failed, cause_kind: TurnLimitReached}, message: "Terminal failure: Failed
+  (TurnLimitReached): turn limit reached"}`; the session's last message is
+  the tenth call's `ToolResults` (no dangling call); a plain input after it
+  runs in a new run with the whole conversation (23 messages, both user
+  inputs). A new run counts from zero (a resumed one carries its count).
+- **How the limit is set.** `AgentConfig::max_turns` (`config.rs`, default
+  `DEFAULT_MAX_TURNS = 100` applied in `AgentBuilder::build_inner`), which
+  the factory takes from the realm config's `[agent] max_turns`
+  (`factory.rs` `builder.max_turns`). No spawn spec or turn option carries
+  it. rkat-tui sets it as a load-time override of every read of the realm
+  config (`RealmConfigStore::set_turn_limit`), from
+  `agent.checkpoint_steps`, so agents and helpers alike get it. Probed: a
+  session keeps the limit it was built with (a `/set` while it lives did
+  not change its next run: 10 calls again), so the setting applies to the
+  conversations and helpers started after a change
+  (`checkpoints::a_project_cannot_set_the_checkpoint_and_set_reaches_the_next_conversation`).
+- **The status run** is a member turn with a tool overlay whose
+  `tool_choice_plan` is `[ToolChoice::None]` (`MemberHandle::start_turn_bounded`,
+  its answer read with `wait_bounded`), so it is one model call with no
+  tools; the request is recorded with `ToolChoice::None`.
+- **The review** is the classifier's (`ActionClassifier::review_checkpoint`,
+  one tool-less call in the stage-1 time budget, `approval/checkpoint.rs`)
+  on the reasoning-blind session transcript; a first-line `CONTINUE:` or
+  `STOP:` decides, anything else, an error, a timeout or a classifier with
+  no model (the trait's default) stops.
+- **Decisions the brief left open.** The status and continue runs show in
+  the agent's transcript as runs the daemon started (labelled), beside the
+  one verdict line; the cap is checked before the review (no classifier
+  call when it is reached; with 0 every checkpoint stops); a helper's
+  streak goes on only from its continue run (two runs after the one it
+  continued) and breaks on any other run of it; a user's message to an
+  agent during its checkpoint cancels it, as Esc does; Esc while the
+  classifier reviews reaches the daemon because the agent reports busy
+  during its checkpoint (`rkat/status`), and the client's cancel is
+  observed before it is forwarded. Nothing is persisted: a daemon stop
+  aborts the checkpoint; the next start resumes a status run that was in
+  flight, which finishes, and nothing follows it
+  (`a_stop_during_a_checkpoint_leaves_the_agent_idle`).
+- **Helpers.** A helper's run at the limit (`Terminal::Limit`) is no
+  ending: `HelperEndings` hands it to the checkpoint and holds the status
+  run's end too, so an `assign` helper is not told failed or retired
+  meanwhile. A stop tells the parent (`How::CheckpointStopped`), retires an
+  `assign` helper with its status as its answer, leaves a member seated.
+  A fork's first run is the engine's to tell: at the limit its own
+  `fork_off` outcome says that run failed, whatever the checkpoint does
+  after (not ours to change).
+- Tests: `tests/it/checkpoints.rs` (14), `approval::checkpoint`,
+  `daemon::checkpoint`, `mobs::endings::a_run_at_its_limit_goes_to_its_checkpoint_before_any_ending`.
+
+## A fork wired before it is seated (2026-11-16)
+
+Hosted CI failed `forks::a_restored_fork_is_wired_and_a_retired_one_is_not`
+on commit 4fec2f6: the follower wired the fork when its event stream
+opened, the engine answered `mob member not found: kid`, and 9 ms later
+logged `spawn built … elapsed_ms=1654`: the member's stream opens before
+the roster lists it, and a slow build widens that. The one attempt was
+the last. `wire_to_parent` now waits until the roster lists the fork
+(looked at on its `MemberSpawned`, from the mob's structural events, and
+else after a pause of 25 ms doubling to 500 ms) and tries a "not found"
+again, within 12 s (inside the 15 s the fork's calls wait); the latch
+opens when the edge is in place, or when the wire gives up. It runs off
+the follower's task, which reads the fork's events meanwhile; a restored
+fork takes the same path. `forks::a_fork_wired_before_it_is_seated_is_wired_once_it_is`
+wires as the spawn is announced (`HelperRegistry::wire_forks_early`, a
+test hook) and failed before (the edge never came: the wait for it timed
+out at 30 s). Loaded rounds of `forks::` (`taskset -c 0,1` beside two
+busy loops in the build slice, 20 rounds each, the old one-attempt wire
+for "before"): the new test 20/20 failed before, 0/20 after;
+`a_restored_fork_is_wired_and_a_retired_one_is_not` 6/20 before, 3/20
+after. Those 3 are another, open cause (`docs/testing.md`, the flaky
+list): the fork's retirement is in flight when the first daemon stops,
+the engine crash-quiesces the mob for cold replay, and the next daemon
+never follows the fork.

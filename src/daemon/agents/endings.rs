@@ -110,6 +110,24 @@ fn item_text(item: &NoteItem) -> String {
         How::DaemonStopped => format!(
             "Your helper `{label}` ended when the rkat-tui daemon stopped, before it finished. {NOT_CONTINUED}"
         ),
+        How::CheckpointStopped {
+            steps,
+            reason,
+            status,
+            retired: true,
+        } => format!(
+            "Your helper `{label}` stopped at its checkpoint after {steps} steps and was not continued: {reason}. Its last status, as its answer:\n\n{}\n\nIt is retired: it takes no more messages (start another with `assign` to go on).",
+            bounded(status, item.rest.as_deref())
+        ),
+        How::CheckpointStopped {
+            steps,
+            reason,
+            status,
+            retired: false,
+        } => format!(
+            "Your helper `{label}` stopped at its checkpoint after {steps} steps and was not continued: {reason}. Its last status:\n\n{}\n\nIt is still seated, idle: message it with `send_message` to go on, or retire it with `retire_member`.",
+            bounded(status, item.rest.as_deref())
+        ),
     }
 }
 
@@ -420,8 +438,10 @@ impl Agents {
     /// full to its agent's scratch directory (`None`: not cut, or there is
     /// no directory, or it could not be written).
     fn write_rest(&self, ended: &Ended) -> Option<PathBuf> {
-        let (How::Finished { answer } | How::Done { answer } | How::WentIdle { answer, .. }) =
-            &ended.how
+        let (How::Finished { answer }
+        | How::Done { answer }
+        | How::WentIdle { answer, .. }
+        | How::CheckpointStopped { status: answer, .. }) = &ended.how
         else {
             return None;
         };
@@ -458,7 +478,10 @@ impl Agents {
     /// heard of it (`told`).
     fn announce_ended(&self, ended: &Ended, told: Option<String>) {
         // An idle member did not end: its view shows its run's end itself.
-        if matches!(ended.how, How::WentIdle { .. }) {
+        if matches!(
+            ended.how,
+            How::WentIdle { .. } | How::CheckpointStopped { retired: false, .. }
+        ) {
             return;
         }
         let Some(agent) = self.agent_running_as(&ended.tag.owner) else {

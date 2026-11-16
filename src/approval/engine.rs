@@ -719,6 +719,51 @@ impl ApprovalEngine {
             .map(|state| state.transcript.render())
     }
 
+    /// Review a run of `session_id` (an agent's, or one of its helpers')
+    /// at its checkpoint after `steps` model calls, with the agent's
+    /// `status` ([`super::checkpoint`]): the classifier the reviews use
+    /// now, on the session's reasoning-blind transcript. Counted for
+    /// `/auto stats` by [`Self::checkpoint_decided`].
+    ///
+    /// # Errors
+    ///
+    /// The classifier's failure (none configured, a provider error, a
+    /// timeout, an answer that does not parse): the caller stops the run.
+    pub async fn review_checkpoint(
+        &self,
+        session_id: &SessionId,
+        status: &str,
+        steps: u64,
+    ) -> Result<super::checkpoint::CheckpointVerdict, super::classifier::ClassifierError> {
+        let transcript = self
+            .sessions
+            .lock()
+            .get(session_id)
+            .map(|state| state.transcript.clone())
+            .unwrap_or_default();
+        let classifier = self.reviewer.current();
+        classifier
+            .review_checkpoint(super::checkpoint::CheckpointInput {
+                session_id,
+                transcript: &transcript,
+                status,
+                steps,
+            })
+            .await
+    }
+
+    /// A checkpoint of `session_id` was decided (`continued`: it went on).
+    pub fn checkpoint_decided(&self, session_id: &SessionId, continued: bool) {
+        self.stats.add(Some(session_id), |stats| {
+            stats.checkpoints += 1;
+            if continued {
+                stats.checkpoint_continues += 1;
+            } else {
+                stats.checkpoint_stops += 1;
+            }
+        });
+    }
+
     /// Adopt a session this process opened from its authoritative history
     /// (on resume): seed its transcript from typed authorship (the human's
     /// turn inputs and tool calls, never assistant prose, tool output or

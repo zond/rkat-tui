@@ -95,7 +95,26 @@ async fn follow(
     observer: Arc<dyn HelperWatch>,
     helper: Spawning,
 ) {
-    let Spawning { key, tag, wired } = helper;
+    let Spawning {
+        key,
+        tag,
+        mut wired,
+    } = helper;
+    // Tests: the fork's wire is made as its spawn is announced, before it
+    // is seated (what a slow spawn does to the normal order).
+    #[cfg(any(test, feature = "test-support"))]
+    let wiring_early = tag.kind == super::HelperKind::Fork && registry.wires_forks_early();
+    #[cfg(not(any(test, feature = "test-support")))]
+    let wiring_early = false;
+    if wiring_early {
+        tokio::spawn(wire_fork(
+            Weak::clone(&state),
+            Arc::clone(&registry),
+            key.clone(),
+            tag.clone(),
+            wired.take(),
+        ));
+    }
     let retired = match subscribe(&state, &key.mob, &key.member).await {
         Ok(Followed {
             handle,
@@ -105,14 +124,19 @@ async fn follow(
         }) => {
             observer.mob_hosts(&key.mob);
             // A fresh fork, and one restored (the mob keeps the edge
-            // across a restart; one it lost is made again).
-            if tag.kind == super::HelperKind::Fork {
-                wire_to_parent(&state, &registry, &key, &tag).await;
+            // across a restart; one it lost is made again): wired once it
+            // is seated, off this task, which reads its events meanwhile.
+            if tag.kind == super::HelperKind::Fork && !wiring_early {
+                tokio::spawn(wire_fork(
+                    Weak::clone(&state),
+                    Arc::clone(&registry),
+                    key.clone(),
+                    tag.clone(),
+                    wired.take(),
+                ));
             }
-            // Its calls wait no more (dropped on any other path too).
-            if let Some(wired) = wired {
-                wired.send_replace(true);
-            }
+            // Nothing else waits for an edge (dropped on any other path).
+            drop(wired);
             if let Some(session) = &session {
                 registry.bind_session(&key, &tag, session);
             }
@@ -121,6 +145,8 @@ async fn follow(
             // whose last call messaged the parent tells the parent nothing
             // more when it goes idle.
             let mut parent_peer: Option<String> = None;
+            // The model calls of its current run (a checkpoint names them).
+            let mut steps: u64 = 0;
             loop {
                 tokio::select! {
                     envelope = stream.next() => {
@@ -129,7 +155,11 @@ async fn follow(
                             registry.bind_session(&key, &tag, session_id);
                         }
                         match &envelope.payload {
-                            AgentEvent::RunStarted { .. } => registry.endings().run_started(&key),
+                            AgentEvent::RunStarted { .. } => {
+                                steps = 0;
+                                registry.endings().run_started(&key);
+                            }
+                            AgentEvent::TurnCompleted { .. } => steps += 1,
                             AgentEvent::ToolCallRequested { name, args, .. } => {
                                 let to_parent = if name == "send_message" {
                                     if parent_peer.is_none() {
@@ -149,7 +179,7 @@ async fn follow(
                             _ => {}
                         }
                         if let Some(terminal) = super::endings::Terminal::of(&envelope.payload) {
-                            registry.endings().run_ended(&key, terminal);
+                            registry.endings().run_ended(&key, counted(terminal, steps));
                         }
                         observe(&*observer, &tag, &envelope.payload).await;
                     }
@@ -158,7 +188,7 @@ async fn follow(
                             // Deliver what it published before it left.
                             while let Some(Some(envelope)) = futures::FutureExt::now_or_never(stream.next()) {
                                 if let Some(terminal) = super::endings::Terminal::of(&envelope.payload) {
-                                    registry.endings().run_ended(&key, terminal);
+                                    registry.endings().run_ended(&key, counted(terminal, steps));
                                 }
                                 observe(&*observer, &tag, &envelope.payload).await;
                             }
@@ -199,6 +229,14 @@ async fn follow(
     }
 }
 
+/// `terminal` with the `steps` its run made, when it reached its limit.
+fn counted(terminal: super::endings::Terminal, steps: u64) -> super::endings::Terminal {
+    match terminal {
+        super::endings::Terminal::Limit { .. } => super::endings::Terminal::Limit { steps },
+        other => other,
+    }
+}
+
 /// The member that started the helper `tag`: the helper above it on its
 /// path, else the agent its owner session runs as (`None`: neither is
 /// seated here).
@@ -212,40 +250,121 @@ fn parent_of(registry: &HelperRegistry, tag: &HelperTag) -> Option<super::Helper
     }
 }
 
+/// How long a fork's wire waits for the fork to be seated in its mob's
+/// roster: inside the bound its first calls wait for the edge
+/// ([`crate::approval::admission::WIRE_WAIT`]).
+const SEAT_WAIT: Duration = Duration::from_secs(12);
+/// The first pause before looking at the roster again; each next doubles.
+const SEAT_RECHECK_FIRST: Duration = Duration::from_millis(25);
+/// The longest pause between two looks.
+const SEAT_RECHECK_MAX: Duration = Duration::from_millis(500);
+
+/// Wire the fork `key` to its parent ([`wire_to_parent`]), then open its
+/// calls' latch (`wired`): when the edge is in place. When it cannot be
+/// made the latch is dropped, which opens it too.
+async fn wire_fork(
+    state: Weak<MobMcpState>,
+    registry: Arc<HelperRegistry>,
+    key: super::HelperKey,
+    tag: HelperTag,
+    wired: Option<Arc<tokio::sync::watch::Sender<bool>>>,
+) {
+    let edge = wire_to_parent(&state, &registry, &key, &tag).await;
+    if edge && let Some(wired) = wired {
+        wired.send_replace(true);
+    }
+}
+
 /// Wire the fork child `key` to its parent, as the daemon wires its agents
-/// (the host's `mob_wire_members_batch`; an edge that exists stays). The
-/// engine seats a fork with no edge, and nothing can be set at its spawn
-/// (lukacf/meerkat#2232); the host can wire it after
+/// (the host's `mob_wire_members_batch`; an edge that exists stays), once
+/// it is seated. The engine seats a fork with no edge, and nothing can be
+/// set at its spawn (lukacf/meerkat#2232); the host can wire it after
 /// (`agents::a_fork_and_its_parent_talk_both_ways_and_its_later_runs_are_told`).
-/// A child seated in another mob than its parent's cannot be wired (an edge
-/// is within one mob): logged, and it reaches no one.
+/// Its spawn may still be building when the follower hears of it (its
+/// stream opens before the roster lists it; a slow build took 1.6 s on a
+/// hosted runner): the wire is made when the roster lists it, looked at on
+/// its `MemberSpawned` and else after a short pause that doubles, and a
+/// "member not found" is tried again, all within [`SEAT_WAIT`]. Whether
+/// the edge is in place. A child seated in another mob than its parent's
+/// cannot be wired (an edge is within one mob): logged, and it reaches no
+/// one.
 async fn wire_to_parent(
     state: &Weak<MobMcpState>,
     registry: &HelperRegistry,
     key: &super::HelperKey,
     tag: &HelperTag,
-) {
+) -> bool {
     let Some(parent) = parent_of(registry, tag) else {
         tracing::warn!(helper = %key, "a fork's parent is not seated here; it is wired to no one");
-        return;
+        return false;
     };
     if parent.mob != key.mob {
         tracing::warn!(helper = %key, parent = %parent, "a fork seated outside its parent's mob is wired to no one");
-        return;
+        return false;
     }
-    let Some(state) = state.upgrade() else { return };
-    match state
-        .mob_wire_members_batch(&key.mob, vec![(parent.member.clone(), key.member.clone())])
-        .await
-    {
-        Ok(report) => tracing::debug!(
-            helper = %key,
-            wired = report.wired.len(),
-            already = report.already_wired.len(),
-            "wired a fork to its parent"
-        ),
+    let handle = match mob_handle(state, &key.mob).await {
+        Ok(handle) => handle,
         Err(err) => {
-            tracing::warn!(helper = %key, error = %err, "cannot wire a fork to its parent");
+            tracing::warn!(helper = %key, error = %err, "cannot wire a fork to its parent: its mob is not reachable");
+            return false;
+        }
+    };
+    // Its seat shows on the mob's structural events.
+    let mut events = handle.events().subscribe().await.ok();
+    let deadline = tokio::time::Instant::now() + SEAT_WAIT;
+    let mut pause = SEAT_RECHECK_FIRST;
+    loop {
+        if is_member(&handle, &key.member).await {
+            let Some(state) = state.upgrade() else {
+                return false;
+            };
+            match state
+                .mob_wire_members_batch(&key.mob, vec![(parent.member.clone(), key.member.clone())])
+                .await
+            {
+                Ok(report) => {
+                    tracing::debug!(
+                        helper = %key,
+                        wired = report.wired.len(),
+                        already = report.already_wired.len(),
+                        "wired a fork to its parent"
+                    );
+                    return true;
+                }
+                // Listed, but not seated for the wire yet: again.
+                Err(MobError::MemberNotFound(_)) => {}
+                Err(err) => {
+                    tracing::warn!(helper = %key, error = %err, "cannot wire a fork to its parent");
+                    return false;
+                }
+            }
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        registry.fork_not_seated();
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            tracing::warn!(helper = %key, waited_secs = SEAT_WAIT.as_secs(), "cannot wire a fork to its parent: it was not seated in time");
+            return false;
+        }
+        let _ =
+            tokio::time::timeout(pause.min(deadline - now), seated(&mut events, &key.member)).await;
+        pause = (pause * 2).min(SEAT_RECHECK_MAX);
+    }
+}
+
+/// Wait for `identity`'s `MemberSpawned` on `events` (never, when they
+/// are not followed or ended).
+async fn seated(events: &mut Option<MobEventsSubscription>, identity: &AgentIdentity) {
+    loop {
+        match recv(events).await.map(|event| event.kind) {
+            Some(MobEventKind::MemberSpawned(spawned)) if &spawned.agent_identity == identity => {
+                return;
+            }
+            Some(_) => {}
+            None => {
+                *events = None;
+                std::future::pending::<()>().await;
+            }
         }
     }
 }

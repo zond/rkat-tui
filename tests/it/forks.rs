@@ -220,6 +220,62 @@ async fn a_fork_and_its_parent_talk_both_ways_and_its_later_runs_are_told() {
     daemon.stop().await;
 }
 
+/// The wire comes before the fork is seated (on a slow machine its spawn
+/// is still building when the follower hears of it; here the wire is made
+/// as the spawn is announced, `HelperRegistry::wire_forks_early`): a
+/// "not seated" is tried again until it is, the fork ends up wired, and
+/// its first call, which waited for the edge, lists its parent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_wired_before_it_is_seated_is_wired_once_it_is() {
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if common::user_texts(messages).concat().contains("FORK-TASK") {
+            if after_peers(messages) {
+                return Step::Text("FORK-DONE");
+            }
+            return peers("fp1");
+        }
+        if tail_is_outcome(messages) {
+            return Step::Text("NOTED");
+        }
+        if matches!(messages.last(), Some(Message::ToolResults { .. })) {
+            return Step::Text("PARENT-WAITS");
+        }
+        fork("FORK-TASK: list peers")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let registry = daemon.registry();
+    registry.wire_forks_early();
+    daemon.reveal(&daemon.session, &["fork_off"]).await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "go").await;
+    let agent = daemon.agent.clone();
+    common::until_async(async || wired_to(&connection, "kid").await.contains(&agent)).await;
+    assert!(
+        registry.forks_not_seated() >= 1,
+        "the wire came before the fork was seated"
+    );
+    common::until(|| heard(&llm, true, "\"peers\"")).await;
+    let first = llm
+        .recorded()
+        .iter()
+        .filter(|r| r.user().contains("FORK-TASK"))
+        .find(|r| after_peers(&r.messages))
+        .map(|r| last(&r.messages))
+        .unwrap();
+    assert!(first.contains(&format!("tui/main/{agent}")), "{first}");
+    common::until(|| heard(&llm, false, "Background fork_off job")).await;
+    daemon.idle(&agent).await;
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// Whether the last message is the engine's outcome of a fork's first run.
+fn tail_is_outcome(messages: &[Message]) -> bool {
+    last(messages).contains("Background fork_off job")
+}
+
 /// A helper's fork (helpers may nest: `helpers.max_depth = 2`) is seated
 /// in the helper's own mob, the workspace's, and wired to the helper that
 /// forked it, not to the agent.

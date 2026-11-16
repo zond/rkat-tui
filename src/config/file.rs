@@ -148,6 +148,20 @@ pub struct HelpersSection {
     pub deny_models: Option<Vec<super::helper_models::ModelPattern>>,
 }
 
+/// `[agent]` section of a rules file: the checkpoints of long runs
+/// ([`crate::daemon::checkpoint`]; the registry's `agent.*` settings say
+/// what each takes). User layers only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSection {
+    /// `agent.checkpoint_steps`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_steps: Option<u64>,
+    /// `agent.checkpoint_continues`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_continues: Option<u64>,
+}
+
 /// `[shell]` section of a rules file: `!` shell mode. Unset fields inherit
 /// from lower layers; the project file may only lower them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -433,6 +447,9 @@ pub struct RulesFile {
     /// Extra directories for the confined shell (user layers only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confinement: Option<ConfinementSection>,
+    /// The checkpoints of long runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentSection>,
     /// Helper (sub-agent) limits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub helpers: Option<HelpersSection>,

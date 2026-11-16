@@ -41,6 +41,15 @@
 //! of): each note costs its parent a model call, and one for every
 //! activation would let two agents wake each other forever.
 //!
+//! A run of any of these that reaches its turn limit ([`Terminal::Limit`])
+//! is no ending: it goes to the daemon's checkpoint
+//! ([`HelperEndings::checkpoints_to`], `crate::daemon::checkpoint`), and
+//! the end of the run its status is asked in is held too. The checkpoint
+//! either continues it ([`HelperEndings::checkpoint_continues`]: the runs
+//! after are told as any) or stops it ([`HelperEndings::checkpoint_stopped`]:
+//! an `assign` helper is done with its status as its answer and retired, a
+//! member stays seated, idle; its parent is told either way).
+//!
 //! A `fork_off` child ([`super::HelperKind::Fork`]) is told as such a
 //! member, except for its first run: the engine tells the parent of that
 //! run's end itself ("Background fork_off job … finished"), and of no later
@@ -93,6 +102,20 @@ pub enum How {
     StoppedByUser,
     /// It did not survive the daemon's stop (told at the next start).
     DaemonStopped,
+    /// A run of it reached its checkpoint after `steps` model calls and
+    /// was not continued (`crate::daemon::checkpoint`): `status` is what
+    /// it said of its work when asked. An `assign` helper is `retired`
+    /// with it as its answer; a long-lived member stays seated, idle.
+    CheckpointStopped {
+        /// The steps its run made.
+        steps: u64,
+        /// Why it was not continued, in plain words.
+        reason: String,
+        /// Its status (its answer, for an `assign` helper).
+        status: String,
+        /// It was retired.
+        retired: bool,
+    },
 }
 
 impl How {
@@ -109,6 +132,9 @@ impl How {
             Self::Failed { reason } => format!("failed: {}", plain_reason(reason)),
             Self::StoppedByUser => "stopped by you".to_string(),
             Self::DaemonStopped => "ended when the daemon stopped".to_string(),
+            Self::CheckpointStopped { steps, reason, .. } => {
+                format!("stopped at its checkpoint after {steps} steps: {reason}")
+            }
         }
     }
 }
@@ -147,24 +173,44 @@ pub enum Terminal {
     Failed(String),
     /// It was cancelled.
     Cancelled,
+    /// It reached its turn limit after `steps` model calls: its checkpoint
+    /// (`crate::daemon::checkpoint`), not a failure.
+    Limit {
+        /// The model calls its run made (0 when unknown).
+        steps: u64,
+    },
 }
 
 impl Terminal {
-    /// The run end `event` is (`None`: no run end).
+    /// The run end `event` is (`None`: no run end). A run at its turn
+    /// limit is [`Self::Limit`] with no steps counted.
     #[must_use]
     pub fn of(event: &AgentEvent) -> Option<Self> {
         match event {
             AgentEvent::RunCompleted { result, .. } => Some(Self::Completed(result.clone())),
-            AgentEvent::RunFailed { error_report, .. } => Some(
-                if error_report.class == meerkat_core::AgentErrorClass::Cancelled {
-                    Self::Cancelled
-                } else {
-                    Self::Failed(error_report.message.clone())
-                },
-            ),
+            AgentEvent::RunFailed { error_report, .. } => Some(match error_report.class {
+                meerkat_core::AgentErrorClass::Cancelled => Self::Cancelled,
+                meerkat_core::AgentErrorClass::MaxTurns => Self::Limit { steps: 0 },
+                _ => Self::Failed(error_report.message.clone()),
+            }),
             _ => None,
         }
     }
+}
+
+/// A helper's run reached its checkpoint: what the daemon's checkpoint
+/// ([`HelperEndings::checkpoints_to`]) is handed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LimitReached {
+    /// The helper.
+    pub key: HelperKey,
+    /// What it is and whom it works for.
+    pub tag: HelperTag,
+    /// The model calls its run made.
+    pub steps: u64,
+    /// Which of its runs it is (counted from its first; a checkpoint's
+    /// continue run is two after the run it continues).
+    pub run: u64,
 }
 
 /// What is known of one helper that has not ended yet.
@@ -181,6 +227,10 @@ struct Tracked {
     messaged_parent: bool,
     /// Its first run's end is told by the engine (a fresh fork's outcome).
     first_told_elsewhere: bool,
+    /// The ends of its runs up to this one are its checkpoint's (the run
+    /// at its limit and the status run after it): no ending of it (0: no
+    /// checkpoint yet).
+    hold_through: u64,
 }
 
 /// How many inputs the runtime holds for a helper that are not finished
@@ -216,6 +266,9 @@ fn decide(delegate: bool, tracked: &Tracked) -> Option<How> {
         Terminal::Cancelled => Some(How::Failed {
             reason: "its run was cancelled".to_string(),
         }),
+        Terminal::Limit { .. } => Some(How::Failed {
+            reason: "its run reached its step limit".to_string(),
+        }),
     }
 }
 
@@ -246,6 +299,9 @@ pub struct HelperEndings {
     /// The peer ids and names of the `assign` helpers retired when they
     /// finished, newest last ([`Self::retired_peer`]).
     retired_peers: Arc<Mutex<VecDeque<(String, String)>>>,
+    /// Where a run at its limit goes for its checkpoint
+    /// ([`Self::checkpoints_to`]); unset, it is a failure.
+    checkpoints: OnceLock<mpsc::UnboundedSender<LimitReached>>,
 }
 
 /// How many retired `assign` helpers' peer ids are remembered.
@@ -266,6 +322,74 @@ impl HelperEndings {
         if self.sink.set(sink).is_err() {
             tracing::warn!("helper endings already have a sink; the second is ignored");
         }
+    }
+
+    /// Hand every helper's run that reaches its limit to `sink` for its
+    /// checkpoint from now on (once).
+    pub fn checkpoints_to(&self, sink: mpsc::UnboundedSender<LimitReached>) {
+        if self.checkpoints.set(sink).is_err() {
+            tracing::warn!("helper checkpoints already have a sink; the second is ignored");
+        }
+    }
+
+    /// The checkpoint of `key` continues it: the end of the run its
+    /// status was asked in is no ending (the runs after it are).
+    pub fn checkpoint_continues(&self, key: &HelperKey) {
+        if let Some(tracked) = self.tracked.lock().get_mut(key) {
+            tracked.hold_through = tracked.hold_through.max(tracked.runs);
+        }
+    }
+
+    /// The checkpoint of `key` after `steps` model calls stopped it for
+    /// `reason`, with its `status`: an `assign` helper is done (its parent
+    /// is told, with its status as its answer, and it is retired), a
+    /// long-lived member or a fork stays seated, idle (its parent is told).
+    /// A helper that ended meanwhile (the user stopped it) tells nothing.
+    pub fn checkpoint_stopped(&self, key: &HelperKey, steps: u64, reason: String, status: String) {
+        let tag = {
+            let mut tracked = self.tracked.lock();
+            let Some(entry) = tracked.get_mut(key) else {
+                return;
+            };
+            entry.hold_through = entry.hold_through.max(entry.runs);
+            entry.tag.clone()
+        };
+        let Some(tag) = tag else { return };
+        match tag.kind {
+            super::HelperKind::Assigned => {
+                if let Some(tag) = self.settle(key) {
+                    self.tell(Ended {
+                        key: key.clone(),
+                        tag,
+                        how: How::CheckpointStopped {
+                            steps,
+                            reason,
+                            status,
+                            retired: true,
+                        },
+                    });
+                }
+                self.retire_done(key);
+            }
+            super::HelperKind::Member | super::HelperKind::Fork => self.tell(Ended {
+                key: key.clone(),
+                tag,
+                how: How::CheckpointStopped {
+                    steps,
+                    reason,
+                    status,
+                    retired: false,
+                },
+            }),
+            super::HelperKind::Other => {}
+        }
+    }
+
+    /// Whether `key` is followed and not ended (a checkpoint of it may go
+    /// on).
+    #[must_use]
+    pub fn is_live(&self, key: &HelperKey) -> bool {
+        !self.is_settled(key) && self.tracked.lock().contains_key(key)
     }
 
     /// Retire helpers through `state` (once).
@@ -336,16 +460,48 @@ impl HelperEndings {
         if terminal == Terminal::Cancelled {
             return;
         }
-        let runs = {
-            let tracked = self.tracked.lock();
-            match tracked.get(key) {
+        let (runs, tag) = {
+            let mut tracked = self.tracked.lock();
+            match tracked.get_mut(key) {
                 Some(Tracked {
                     tag: Some(tag),
                     runs,
+                    hold_through,
                     ..
-                }) if tag.kind != super::HelperKind::Other => *runs,
+                }) if tag.kind != super::HelperKind::Other => {
+                    // Its checkpoint's runs end no helper.
+                    if *hold_through > 0 && *runs <= *hold_through {
+                        return;
+                    }
+                    if let Terminal::Limit { .. } = terminal
+                        && self.checkpoints.get().is_some()
+                    {
+                        *hold_through = *runs + 1;
+                    }
+                    (*runs, tag.clone())
+                }
                 _ => return,
             }
+        };
+        let terminal = match terminal {
+            Terminal::Limit { steps } => match self.checkpoints.get() {
+                Some(sink) => {
+                    if sink
+                        .send(LimitReached {
+                            key: key.clone(),
+                            tag,
+                            steps,
+                            run: runs,
+                        })
+                        .is_err()
+                    {
+                        tracing::debug!("the helper checkpoints' sink is gone");
+                    }
+                    return;
+                }
+                None => Terminal::Failed("its run reached its step limit".to_string()),
+            },
+            other => other,
         };
         let probe = self.probe.get().map(|probe| Arc::clone(&probe.0));
         match (probe, tokio::runtime::Handle::try_current()) {
@@ -415,7 +571,8 @@ impl HelperEndings {
                 let how = match terminal {
                     Terminal::Completed(answer) => How::Done { answer },
                     Terminal::Failed(reason) => How::Failed { reason },
-                    Terminal::Cancelled => return,
+                    // A run at its limit goes to its checkpoint before.
+                    Terminal::Cancelled | Terminal::Limit { .. } => return,
                 };
                 if let Some(tag) = self.settle(key) {
                     self.tell(Ended {
@@ -440,7 +597,7 @@ impl HelperEndings {
                         answer: String::new(),
                         failed: Some(reason),
                     },
-                    Terminal::Cancelled => return,
+                    Terminal::Cancelled | Terminal::Limit { .. } => return,
                 };
                 self.tell(Ended {
                     key: key.clone(),
@@ -876,6 +1033,70 @@ mod tests {
         endings.run_started(&rebuilt);
         endings.run_ended(&rebuilt, Terminal::Completed("after a restart".into()));
         assert!(matches!(rx.try_recv().unwrap().how, How::WentIdle { .. }));
+    }
+
+    /// A run at its limit is no ending: it goes to the checkpoint, and the
+    /// status run's end after it is held too. Continued, the helper's
+    /// later run ends it as any; stopped, an `assign` helper is done with
+    /// its status and retired, a member stays.
+    #[test]
+    fn a_run_at_its_limit_goes_to_its_checkpoint_before_any_ending() {
+        use crate::mobs::HelperKind;
+        let (endings, mut rx) = endings();
+        let (tx, mut limits) = mpsc::unbounded_channel();
+        endings.checkpoints_to(tx);
+        let key = HelperKey::new(MobId::from("tui"), AgentIdentity::from("scout"));
+        endings.spawned(&key, &tagged("scout", HelperKind::Assigned));
+        endings.run_started(&key);
+        endings.run_ended(&key, Terminal::Limit { steps: 10 });
+        let reached = limits.try_recv().unwrap();
+        assert_eq!((reached.steps, reached.run), (10, 1));
+        assert!(rx.try_recv().is_err(), "no failure, no ending");
+        // The status run.
+        endings.run_started(&key);
+        endings.run_ended(&key, Terminal::Completed("my status".into()));
+        assert!(rx.try_recv().is_err(), "the status run is the checkpoint's");
+        endings.checkpoint_continues(&key);
+        endings.run_started(&key);
+        endings.run_ended(&key, Terminal::Completed("the answer".into()));
+        assert_eq!(
+            rx.try_recv().unwrap().how,
+            How::Done {
+                answer: "the answer".into()
+            }
+        );
+        // Stopped: done with its status, retired.
+        let stopped = HelperKey::new(MobId::from("tui"), AgentIdentity::from("loop"));
+        endings.spawned(&stopped, &tagged("loop", HelperKind::Assigned));
+        endings.run_started(&stopped);
+        endings.run_ended(&stopped, Terminal::Limit { steps: 10 });
+        endings.checkpoint_stopped(&stopped, 10, "it loops".into(), "my status".into());
+        assert_eq!(
+            rx.try_recv().unwrap().how,
+            How::CheckpointStopped {
+                steps: 10,
+                reason: "it loops".into(),
+                status: "my status".into(),
+                retired: true
+            }
+        );
+        assert!(endings.settled(&stopped) && !endings.is_live(&stopped));
+        // A member stays.
+        let member = HelperKey::new(MobId::from("tui"), AgentIdentity::from("w1"));
+        endings.spawned(&member, &tagged("w1", HelperKind::Member));
+        endings.run_started(&member);
+        endings.run_ended(&member, Terminal::Limit { steps: 10 });
+        endings.checkpoint_stopped(&member, 10, "enough".into(), "s".into());
+        assert!(matches!(
+            rx.try_recv().unwrap().how,
+            How::CheckpointStopped { retired: false, .. }
+        ));
+        assert!(endings.is_live(&member));
+        // Without a checkpoint sink the limit is a failure, as it was.
+        let (plain, mut told) = super::tests::endings();
+        plain.spawned(&key, &tagged("scout", HelperKind::Assigned));
+        plain.run_ended(&key, Terminal::Limit { steps: 10 });
+        assert!(matches!(told.try_recv().unwrap().how, How::Failed { .. }));
     }
 
     #[test]

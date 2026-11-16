@@ -42,6 +42,16 @@ pub struct ReviewStats {
     pub output_tokens: u64,
     /// The time its reviews took, in milliseconds.
     pub review_ms: u64,
+    /// Runs that reached their checkpoint and were decided
+    /// ([`super::checkpoint`]).
+    #[serde(default)]
+    pub checkpoints: u64,
+    /// Of those, the ones that continued automatically.
+    #[serde(default)]
+    pub checkpoint_continues: u64,
+    /// And the ones that stopped.
+    #[serde(default)]
+    pub checkpoint_stops: u64,
 }
 
 impl ReviewStats {
@@ -74,8 +84,16 @@ impl ReviewStats {
             format!(" ({})", listed.join(", "))
         };
         let blocked = self.blocked();
+        let checkpoints = if self.checkpoints == 0 {
+            String::new()
+        } else {
+            format!(
+                " · checkpoints {}: continued {}, stopped {}",
+                self.checkpoints, self.checkpoint_continues, self.checkpoint_stops
+            )
+        };
         format!(
-            "reviews {} · flagged by stage 1 {} ({}) · blocked {blocked}{rules} · failed {} · pauses {} · /approve overrides {} ({} of blocks) · asked you {}, allowed {} ({}) · classifier {} in / {} out tokens, {:.1} s",
+            "reviews {} · flagged by stage 1 {} ({}) · blocked {blocked}{rules} · failed {} · pauses {} · /approve overrides {} ({} of blocks) · asked you {}, allowed {} ({}) · classifier {} in / {} out tokens, {:.1} s{checkpoints}",
             self.reviews,
             self.flagged,
             pct(self.flagged, self.reviews),
@@ -185,10 +203,21 @@ mod tests {
         ] {
             assert!(text.contains(part), "{part}: {text}");
         }
+        assert!(!text.contains("checkpoints"), "{text}");
         assert!(
             ReviewStats::default()
                 .describe()
                 .contains("flagged by stage 1 0 (-)")
+        );
+        stats.checkpoints = 3;
+        stats.checkpoint_continues = 2;
+        stats.checkpoint_stops = 1;
+        assert!(
+            stats
+                .describe()
+                .ends_with(" · checkpoints 3: continued 2, stopped 1"),
+            "{}",
+            stats.describe()
         );
     }
 }

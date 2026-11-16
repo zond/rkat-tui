@@ -79,6 +79,10 @@ fn rules_file_round_trip() {
             extra_read: vec![PathBuf::from("/data")],
             extra_write: vec![PathBuf::from("/scratch")],
         }),
+        agent: Some(AgentSection {
+            checkpoint_steps: Some(40),
+            checkpoint_continues: Some(0),
+        }),
         helpers: Some(HelpersSection {
             max_depth: Some(2),
             ..HelpersSection::default()

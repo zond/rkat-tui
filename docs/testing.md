@@ -294,6 +294,31 @@ output now says why; report it rather than retrying silently:
   that the first daemon's mob host is gone once it stopped. Loaded rounds
   of the module: 5 of 20 failed before, 0 of 20 after. `docs/evidence.md`, "A restored mob's destroy
   refused for a few seconds".
+- `a_restored_fork_is_wired_and_a_retired_one_is_not` (`tests/it/forks.rs`):
+  failed on a hosted runner (commit 4fec2f6) waiting for the fork's edge
+  in the first daemon. A real race: the follower wired the fork as soon as
+  its event stream opened, which comes before the roster lists it; that
+  spawn took 1.6 s to build, the engine answered "mob member not found",
+  and the one attempt was the last (the fork stayed unwired and its
+  calls' latch let them through at its 15 s bound). The wire now waits
+  until the roster lists the fork (on its `MemberSpawned`, else a short
+  doubling pause) and tries a "not found" again, within 12 s
+  (`mobs::follow::wire_to_parent`); the latch opens when the edge is in
+  place. Pinned deterministically by
+  `a_fork_wired_before_it_is_seated_is_wired_once_it_is`, which wires as
+  the spawn is announced (`HelperRegistry::wire_forks_early`), failing
+  before. Loaded rounds of the module (`taskset -c 0,1` beside two busy
+  loops, 20 each; "before" is the one-attempt wire): the new test failed
+  20 of 20 before and 0 of 20 after; this test failed 6 of 20 before and
+  3 of 20 after. **Still open:** the 3 after (and some of the 6 before)
+  are another cause: in the first daemon the fork's retirement is under
+  way when the daemon stops (`retire-stop-host-loop` …
+  `retire-projection-cleanup`, then "interrupting in-flight member
+  retirement for shutdown", "crash-quiescing and terminating mob actor
+  for cold replay"), and the next daemon never follows the fork (nothing
+  is logged of it), so the wait for its edge after the restart (line 408)
+  times out. What starts that retirement is not pinned yet: the log
+  tail does not reach back to it.
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a

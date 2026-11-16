@@ -24,6 +24,8 @@ fn samples(setting: &Setting) -> [Value; 2] {
             Value::Array(vec![text("claude-haiku-*")]),
             Value::Array(vec![text("gpt-5.5"), text("claude-*")]),
         ],
+        "agent.checkpoint_steps" => [int(40), int(250)],
+        "agent.checkpoint_continues" => [int(0), int(3)],
         "shell.user_timeout_secs" => [int(30), int(300)],
         "search.budget_secs" => [int(5), int(20)],
         "search.max_entries" => [int(1_000), int(900_000)],
@@ -99,6 +101,10 @@ fn typed_value(key: &str, layered: &Layered) -> Option<Value> {
                 | ("helpers.deny_models", ModelRule::Deny(patterns)) => list(patterns),
                 _ => None,
             }
+        }
+        // Read where they apply, from the layers.
+        "agent.checkpoint_steps" | "agent.checkpoint_continues" => {
+            int(int_in_force(Setting::find(key).unwrap(), &layered.layers))
         }
         "shell.user_timeout_secs" => int(layered.shell.user_timeout_secs),
         "search.budget_secs" => int(layered.search.budget.as_secs()),

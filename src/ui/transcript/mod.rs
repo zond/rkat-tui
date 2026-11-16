@@ -1417,6 +1417,10 @@ impl Transcript {
                     };
                 }
             }
+            // A run at its limit is at its checkpoint, no failure: the
+            // daemon's line says what follows (`crate::daemon::checkpoint`).
+            AgentEvent::RunFailed { error_report, .. }
+                if error_report.class == meerkat_core::AgentErrorClass::MaxTurns => {}
             AgentEvent::RunFailed { error_report, .. } => match helper {
                 None => {
                     self.push_notice(

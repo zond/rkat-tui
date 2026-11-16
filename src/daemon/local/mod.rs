@@ -486,6 +486,9 @@ impl Local {
                     wait = self.after_mode_changes();
                 }
                 self.agents.touch(&agent);
+                // The user takes over: a checkpoint under way is cancelled,
+                // and its automatic continues count from none again.
+                self.agents.user_acted(&agent, true);
                 // On its way until the engine answers: the agent is not
                 // idle meanwhile.
                 input = Some(self.core.activity.sending(&agent));
@@ -519,6 +522,8 @@ impl Local {
                 // denied by its Stop, their dialogs stay open, and their
                 // endings are held for the user's next message.
                 self.agents.interrupted(&agent);
+                // A checkpoint under way is cancelled: nothing continues.
+                self.agents.user_acted(&agent, false);
                 if let Some(session) = self.core.conversations.current(&agent) {
                     self.core.engine.stop(&session);
                     self.parts.desk.stop(&session);

@@ -292,6 +292,8 @@ pub struct Recorded {
     pub schemas: Vec<Value>,
     /// The request's tool definitions in full.
     pub defs: Vec<Arc<meerkat_core::ToolDef>>,
+    /// Whether the request lets the model call tools.
+    pub tool_choice: meerkat_core::ToolChoice,
     pub messages: Vec<Message>,
 }
 
@@ -423,6 +425,7 @@ impl LlmClient for ScriptedLlmClient {
                 .map(|t| t.input_schema.clone())
                 .collect(),
             defs: request.tools.clone(),
+            tool_choice: request.tool_choice.clone(),
             messages: request.messages.clone(),
         });
         let _ = self.calls.send(index);

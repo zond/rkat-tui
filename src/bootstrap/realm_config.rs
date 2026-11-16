@@ -8,6 +8,11 @@
 //! when it exists and skills are on, and so is the inventory threshold
 //! that names them ([`super::skills::default_inventory_threshold`]).
 //!
+//! The turn limit is a load-time override too: every read carries
+//! `agent.checkpoint_steps` as `[agent] max_turns`
+//! ([`RealmConfigStore::set_turn_limit`]), so every session and member the
+//! factory builds from then on reaches its checkpoint there.
+//!
 //! Every read goes to the document, so what rkat-tui writes into it (the
 //! endpoint connections, the self-hosted servers and aliases; see
 //! [`crate::endpoints`]) is what the next session build sees. Writes go to
@@ -33,6 +38,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use async_trait::async_trait;
 use meerkat_core::config::{ConfigError, ConfigWarning};
@@ -51,9 +57,26 @@ pub struct RealmConfigStore {
     state_path: PathBuf,
     global: Option<GlobalDirs>,
     inputs: Option<ProjectInputs>,
+    /// `agent.checkpoint_steps`: every session built from this store gets
+    /// it as its turn limit (`[agent] max_turns`), so a run reaches its
+    /// checkpoint there ([`crate::daemon::checkpoint`]).
+    turn_limit: AtomicU32,
 }
 
 impl RealmConfigStore {
+    /// The turn limit the sessions built from now on get
+    /// (`agent.checkpoint_steps`, [`Self::turn_limit`]).
+    pub fn set_turn_limit(&self, steps: u64) {
+        self.turn_limit
+            .store(u32::try_from(steps).unwrap_or(u32::MAX), Ordering::Relaxed);
+    }
+
+    /// The turn limit a session built now gets.
+    #[must_use]
+    pub fn turn_limit(&self) -> u32 {
+        self.turn_limit.load(Ordering::Relaxed)
+    }
+
     /// The store of the realm document at `path` whose generation sidecar
     /// is `state_path` (`<realm>/config_state.json`, the file every
     /// `ConfigRuntime` of the realm uses); `global` supplies the
@@ -74,6 +97,10 @@ impl RealmConfigStore {
             state_path,
             global,
             inputs: None,
+            turn_limit: AtomicU32::new(
+                u32::try_from(crate::config::registry::DEFAULT_CHECKPOINT_STEPS)
+                    .unwrap_or(u32::MAX),
+            ),
         }
     }
 
@@ -123,6 +150,7 @@ impl RealmConfigStore {
             }
         }
         config.apply_env_overrides()?;
+        config.agent.max_turns = Some(self.turn_limit());
         super::instructions::apply_system_md(&mut config, self.global.as_ref());
         super::skills::apply_user_skills(&mut config, self.global.as_ref()).await;
         super::skills::default_inventory_threshold(&mut config);

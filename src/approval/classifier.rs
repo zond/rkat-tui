@@ -564,6 +564,17 @@ pub trait ActionClassifier: Send + Sync {
         &self,
         input: ClassifierInput<'_>,
     ) -> Result<ClassifierVerdict, ClassifierError>;
+
+    /// Review a run at its checkpoint ([`super::checkpoint`]). A
+    /// classifier that has no model reviews none: the run stops.
+    async fn review_checkpoint(
+        &self,
+        _input: super::checkpoint::CheckpointInput<'_>,
+    ) -> Result<super::checkpoint::CheckpointVerdict, ClassifierError> {
+        Err(ClassifierError::Provider(
+            "no classifier model is configured".to_string(),
+        ))
+    }
 }
 
 /// Placeholder used until an LLM classifier is configured: every Tier-3 action
@@ -1216,6 +1227,20 @@ impl ActionClassifier for LlmClassifier {
         let verdict = self.stage2(&input).await?;
         tracing::debug!(model = %self.model, tool = input.tool, %verdict, "classifier stage 2 verdict");
         Ok(verdict)
+    }
+
+    /// One tool-less call within the stage-1 time budget; its first line
+    /// is the verdict ([`super::checkpoint::parse_checkpoint`]).
+    async fn review_checkpoint(
+        &self,
+        input: super::checkpoint::CheckpointInput<'_>,
+    ) -> Result<super::checkpoint::CheckpointVerdict, ClassifierError> {
+        let (system, user) = super::checkpoint::render_checkpoint(&input);
+        let request = self.request(system, user, super::checkpoint::CHECKPOINT_MAX_TOKENS);
+        let answer = self.complete_stage1(input.session_id, request).await?;
+        let verdict = super::checkpoint::parse_checkpoint(&answer);
+        tracing::debug!(model = %self.model, ?verdict, "checkpoint review");
+        verdict
     }
 }
 

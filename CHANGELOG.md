@@ -4,6 +4,16 @@
 
 ### Added
 
+- Checkpoints of long runs: when one run of an agent or a helper reaches
+  `agent.checkpoint_steps` model calls (100 by default), the agent is
+  asked for a short status, the classifier's model judges from your
+  messages and the actions taken whether going on is sensible, and the
+  run continues on its own (`checkpoint after 100 steps: continuing
+  (<reason>)`) or stops with the reason and what to do. At most
+  `agent.checkpoint_continues` (5) checkpoints in a row continue
+  automatically; your next message starts the count again. A failed or
+  unclear review, or no classifier model, stops the run. `/auto stats`
+  counts them.
 - `assign`: the agent starts a single-use helper on a self-contained
   task and goes on at once, so it still hears you and answers while the
   helper works. The helper starts from a fresh context, is wired to its
@@ -18,6 +28,9 @@
 
 ### Changed
 
+- A run no longer fails with "Terminal failure: Failed (TurnLimitReached)"
+  after 100 model calls: the engine's limit is `agent.checkpoint_steps`,
+  and reaching it is a checkpoint (above).
 - A `fork_off` child can talk with its parent: it is wired to the agent
   (or helper) that forked it, so each can message the other while it runs
   and after. Its parent is still told of its first run's end by the

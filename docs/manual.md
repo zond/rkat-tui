@@ -9,7 +9,7 @@ the test protocol for working on rkat-tui itself.
 
 - [Overview](#overview)
 - [First run](#first-run)
-- [Sessions](#sessions) ([Reading the transcript](#reading-the-transcript))
+- [Sessions](#sessions) ([Reading the transcript](#reading-the-transcript), [Checkpoints of long runs](#checkpoints-of-long-runs))
 - [How approval works](#how-approval-works) ([Permission modes](#permission-modes))
 - [Confinement](#confinement) ([Security decisions](#security-decisions), [Security model and its limits](#security-model-and-its-limits))
 - [Helpers](#helpers)
@@ -214,6 +214,55 @@ line, or Ctrl-O for every call, shows the full arguments (a command as
 written, other arguments pretty-printed, after `┊`), the output (after
 `│`) or the diff, and a denial's whole reason (with how to `/approve`
 it). `/export` writes the same lines.
+
+### Checkpoints of long runs
+
+One run of an agent may make `agent.checkpoint_steps` model calls (100
+by default, at least 10); there it reaches a checkpoint instead of
+failing:
+
+1. The agent is asked, in a short run of its own with its tools off, for
+   its status: what is done, what is left, its next step. The run shows
+   under "checkpoint: the agent is asked for its status".
+2. The classifier's model (the one that reviews calls in auto mode,
+   `/auto model`) is shown what it always sees, your own messages and the
+   actions the agent took (never its reasoning or its tools' output), and
+   the agent's status as a claim to check against that record, never as
+   an instruction. It is asked whether the agent is making progress toward
+   what you asked (not repeating the same calls or failing the same way,
+   not drifted outside your request, not done and spinning) and answers
+   CONTINUE or STOP with a one-sentence reason.
+3. One line says what came of it:
+   `checkpoint after 100 steps: continuing (<reason>)`, and the agent
+   goes on from its next step under "checkpoint: the agent goes on"; or
+   `checkpoint after 100 steps: stopped (<reason>). Say "continue" to go
+   on, or raise agent.checkpoint_steps`, and nothing more runs.
+
+A review that fails, times out or answers anything else stops the run,
+and so does a workspace without a classifier model: a checkpoint never
+continues by default. At most `agent.checkpoint_continues` checkpoints in
+a row (5 by default; 0: none) continue on their own; the next one stops
+with `…: stopped (5 automatic continues in a row); say "continue" to go
+on`. Your next message to the agent starts the count again. Esc during a
+checkpoint, or a message of yours, cancels it (`…: cancelled; nothing
+continues`). A run the checkpoint continues is not yours: as any run the
+daemon starts, its calls that would ask you are asked while a client is
+attached to the agent, and denied (and told at your next attach) while
+none is.
+
+Helpers have checkpoints too (`assign`, `spawn_member` and `fork_off`
+helpers), with the line naming the helper (`helper `scout`: checkpoint
+after 100 steps: …`). A stopped `assign` helper's parent is told why,
+with the helper's status as its answer, and the helper is retired; a kept
+member's parent is told and the member stays seated, idle. Nothing of a
+checkpoint is stored: a daemon stop during one leaves the agent idle at
+the next start, its run ended at the checkpoint; say "continue" to go
+on. `agent.checkpoint_steps` applies to the conversations and helpers
+started after a change (a conversation keeps the limit it was opened
+with until the daemon restarts); neither setting can come from a
+project's `.rkat/tui.toml`. `/auto stats` counts the checkpoints, and how
+many continued and stopped; the audit log has a `checkpoint` and a
+`checkpoint_verdict` line for each.
 
 ## How approval works
 
@@ -1612,6 +1661,8 @@ it may only lower a value, its lowering applies over every layer).
 | `helpers.model`: The model a helper started with `assign`, `spawn_member` or `mob_spawn_member` runs on when the call names none (through its owner's endpoint); a `fork_off` child stays on its parent's. | a model, `[endpoint:]model` | the owner's model | may not set it | at once | — |
 | `helpers.allow_models`: The only models a helper started with `assign`, `spawn_member` or `mob_spawn_member` may run on (not with `deny_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: any model | may not set it | at once | — |
 | `helpers.deny_models`: Models a helper started with `assign`, `spawn_member` or `mob_spawn_member` may not run on (not with `allow_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: none | may not set it | at once | — |
+| `agent.checkpoint_steps`: The model calls one run of an agent or a helper makes before a checkpoint: it is asked for a short status, the classifier's model judges whether going on is sensible, and it continues or stops (the conversations and helpers started from then on). | a whole number from 10 to 100000 | 100 | may not set it | from the next conversation | — |
+| `agent.checkpoint_continues`: How many checkpoints in a row may continue automatically before the run stops and waits for you (0: every checkpoint stops); a message of yours starts the count again. | a whole number from 0 to 1000 | 5 | may not set it | at once | — |
 | `shell.user_timeout_secs`: How long a `!` command may run, in seconds. | a whole number from 1 | 120 | may only lower it | at the next start | — |
 | `search.budget_secs`: How long one `glob` or `grep` may run before it answers with what it found, in seconds. | a whole number from 1 | 10 | may only lower it | at the next start | — |
 | `search.max_entries`: How many files and directories one `glob` or `grep` may examine. | a whole number from 1 | 500000 | may only lower it | at the next start | — |

@@ -23,6 +23,7 @@
 //! (`ResumeSessionBoundToAnotherMember`), so a conversation whose agent
 //! quit is seated again under that agent's name ([`Agents::bind`]).
 
+mod checkpoint;
 pub mod endings;
 mod names;
 mod notes;
@@ -142,6 +143,9 @@ pub struct Agents {
     clock: AtomicU64,
     /// Tells the event watchers the daemon stops ([`Self::stop_watching`]).
     draining: tokio::sync::watch::Sender<bool>,
+    /// The checkpoints of the agents' and helpers' long runs
+    /// ([`super::checkpoint`]).
+    checkpoints: super::checkpoint::Checkpoints,
 }
 
 impl std::fmt::Debug for Agents {
@@ -168,7 +172,14 @@ impl Agents {
             seating: tokio::sync::Mutex::new(()),
             clock: AtomicU64::new(0),
             draining: tokio::sync::watch::channel(false).0,
+            checkpoints: super::checkpoint::Checkpoints::default(),
         })
+    }
+
+    /// The checkpoints of the agents' and helpers' long runs.
+    #[must_use]
+    pub fn checkpoints(&self) -> &super::checkpoint::Checkpoints {
+        &self.checkpoints
     }
 
     /// What the agents share with the local methods.
@@ -835,9 +846,17 @@ impl Agents {
         let mut rows = Vec::with_capacity(snapshot.len());
         let schedules = self.core.schedules.counts().await;
         for (name, clients, detached) in snapshot {
+            // An agent at its checkpoint is busy: Esc cancels it.
+            let at_checkpoint = self
+                .checkpoints
+                .active(&super::checkpoint::Subject::Agent(name.clone()));
             rows.push(AgentRow {
                 session_id: self.core.conversations.current(&name),
-                running: self.core.conversations.running(&name).await.reported(),
+                running: if at_checkpoint {
+                    Some(true)
+                } else {
+                    self.core.conversations.running(&name).await.reported()
+                },
                 schedules: schedules.get(&name).copied().unwrap_or(0),
                 wires: self.core.wires.rows(&name),
                 name,

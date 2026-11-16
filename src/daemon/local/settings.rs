@@ -89,7 +89,8 @@ impl Local {
             | Hook::TrustBuilds
             | Hook::Prepare
             | Hook::Ui
-            | Hook::HelperModels => {
+            | Hook::HelperModels
+            | Hook::CheckpointSteps => {
                 return Ok(());
             }
         }
@@ -190,6 +191,17 @@ impl Local {
                 (Vec::new(), None)
             }
             Hook::HelperModels => self.apply_helper_models().await,
+            Hook::CheckpointSteps => {
+                let steps =
+                    crate::config::registry::int_in_force(setting, &self.core.settings.layers());
+                self.parts.realm_config.set_turn_limit(steps);
+                (
+                    vec![format!(
+                        "the conversations and helpers started from now on reach a checkpoint after {steps} steps"
+                    )],
+                    None,
+                )
+            }
             Hook::None | Hook::Mode | Hook::ClassifierModel | Hook::TrustBuilds | Hook::Ui => {
                 (Vec::new(), None)
             }

@@ -215,6 +215,13 @@ pub struct HelperRegistry {
     scratch: crate::approval::scratch::ScratchDirs,
     /// How each helper ends, and when its parent is told.
     endings: std::sync::Arc<super::endings::HelperEndings>,
+    /// Tests: forks are wired as their spawn is announced
+    /// ([`Self::wire_forks_early`]).
+    #[cfg(any(test, feature = "test-support"))]
+    forks_early: std::sync::atomic::AtomicBool,
+    /// Tests: how often a fork's wire found it not seated yet.
+    #[cfg(any(test, feature = "test-support"))]
+    forks_not_seated: std::sync::atomic::AtomicUsize,
 }
 
 impl HelperRegistry {
@@ -244,7 +251,42 @@ impl HelperRegistry {
             destroyed: tokio::sync::broadcast::channel(DESTROYED_QUEUE).0,
             scratch: crate::approval::scratch::ScratchDirs::off(),
             endings: std::sync::Arc::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            forks_early: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-support"))]
+            forks_not_seated: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// Tests: wire every fork as its spawn is announced, before the
+    /// follower opens its stream (so before its spawn is built and it is
+    /// seated): what a slow spawn does to the order.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn wire_forks_early(&self) {
+        self.forks_early
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests: whether forks are wired early ([`Self::wire_forks_early`]).
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn wires_forks_early(&self) -> bool {
+        self.forks_early.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Tests: a fork's wire found it not seated yet.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fork_not_seated(&self) {
+        self.forks_not_seated
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Tests: how often a fork's wire found it not seated yet.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn forks_not_seated(&self) -> usize {
+        self.forks_not_seated
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// How each helper ends ([`super::endings`]).

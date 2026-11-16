@@ -329,6 +329,9 @@ pub enum Hook {
     /// `helpers.model`, `allow_models` and `deny_models`; the agents are
     /// told.
     HelperModels,
+    /// The engine's turn limit for the sessions built from then on
+    /// (`agent.checkpoint_steps`).
+    CheckpointSteps,
 }
 
 /// Every scalar setting in force over `layers` as one table, each value at
@@ -745,6 +748,68 @@ pub const PREPARE_AT: Setting = Setting {
     hook: Hook::Prepare,
 };
 
+/// The model calls one run of an agent or a helper may make before its
+/// checkpoint ([`crate::daemon::checkpoint`]): the turn limit rkat-tui
+/// gives the engine (`[agent] max_turns` of the realm config,
+/// [`crate::bootstrap::RealmConfigStore::set_turn_limit`]).
+pub const CHECKPOINT_STEPS: Setting = Setting {
+    key: "agent.checkpoint_steps",
+    kind: Kind::Int {
+        min: MIN_CHECKPOINT_STEPS,
+        max: 100_000,
+        clamp: true,
+    },
+    default: Fallback::Int(DEFAULT_CHECKPOINT_STEPS),
+    project: ProjectRule::Never,
+    applies: Applies::NextConversation,
+    about: "The model calls one run of an agent or a helper makes before a checkpoint: it is asked for a short status, the classifier's model judges whether going on is sensible, and it continues or stops (the conversations and helpers started from then on).",
+    flags: &[],
+    command: None,
+    hook: Hook::CheckpointSteps,
+};
+
+/// How many checkpoints in a row may continue without the user
+/// ([`crate::daemon::checkpoint`]).
+pub const CHECKPOINT_CONTINUES: Setting = Setting {
+    key: "agent.checkpoint_continues",
+    kind: Kind::Int {
+        min: 0,
+        max: 1_000,
+        clamp: false,
+    },
+    default: Fallback::Int(DEFAULT_CHECKPOINT_CONTINUES),
+    project: ProjectRule::Never,
+    applies: Applies::Live,
+    about: "How many checkpoints in a row may continue automatically before the run stops and waits for you (0: every checkpoint stops); a message of yours starts the count again.",
+    flags: &[],
+    command: None,
+    hook: Hook::None,
+};
+
+/// [`CHECKPOINT_STEPS`]'s default: the engine's own turn limit.
+pub const DEFAULT_CHECKPOINT_STEPS: u64 = 100;
+/// The fewest model calls a run may make before its checkpoint.
+pub const MIN_CHECKPOINT_STEPS: u64 = 10;
+/// [`CHECKPOINT_CONTINUES`]'s default.
+pub const DEFAULT_CHECKPOINT_CONTINUES: u64 = 5;
+
+/// A whole-number setting's value in force over `layers` (its default
+/// when a layer holds something else, which the layering refuses before).
+#[must_use]
+pub fn int_in_force(setting: &Setting, layers: &Layers) -> u64 {
+    let default = match setting.default {
+        Fallback::Int(value) => value,
+        _ => 0,
+    };
+    setting
+        .resolve(layers)
+        .value
+        .as_ref()
+        .and_then(Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(default)
+}
+
 /// Every scalar setting, in the order the manual and `/settings` list
 /// them.
 pub static SETTINGS: &[Setting] = &[
@@ -912,6 +977,8 @@ pub static SETTINGS: &[Setting] = &[
         command: None,
         hook: Hook::HelperModels,
     },
+    CHECKPOINT_STEPS,
+    CHECKPOINT_CONTINUES,
     Setting {
         key: "shell.user_timeout_secs",
         kind: Kind::Int {

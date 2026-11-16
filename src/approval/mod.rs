@@ -44,6 +44,7 @@ pub mod audit;
 pub mod blocks;
 pub mod builds;
 pub mod catalog;
+pub mod checkpoint;
 pub mod classifier;
 pub mod corpus;
 pub mod counters;

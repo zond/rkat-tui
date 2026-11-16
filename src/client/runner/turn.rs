@@ -562,11 +562,17 @@ impl Runner {
                 }
                 let interrupted = self.turn.interrupted_at.is_some()
                     || error_report.class == AgentErrorClass::Cancelled;
-                self.turn.record(Err(if interrupted {
-                    TurnFailure::Interrupted
+                if interrupted {
+                    self.turn.record(Err(TurnFailure::Interrupted));
+                } else if error_report.class == AgentErrorClass::MaxTurns {
+                    // Its checkpoint, no failure: the daemon asks for the
+                    // agent's status and says what follows
+                    // (`crate::daemon::checkpoint`).
+                    self.turn.record(Ok(TurnSummary::default()));
                 } else {
-                    TurnFailure::Failed(error_report.message.clone())
-                }));
+                    self.turn
+                        .record(Err(TurnFailure::Failed(error_report.message.clone())));
+                }
                 terminal = true;
             }
             _ => {}

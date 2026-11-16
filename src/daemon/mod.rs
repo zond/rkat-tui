@@ -31,6 +31,7 @@ pub mod agents;
 pub mod approvals;
 pub mod assign;
 pub mod audit;
+pub mod checkpoint;
 pub mod context;
 pub mod conversations;
 pub mod core;
@@ -617,6 +618,7 @@ impl Daemon {
         attach_engine(&core, &agents, &workspace)?;
         composed.desk.report_to(&composed.engine);
         let endings_task = deliver_endings(&agents);
+        let checkpoints_task = deliver_checkpoints(&agents);
         let first_agent = start_agents(
             &agents,
             &composed,
@@ -672,7 +674,7 @@ impl Daemon {
                 engine: Arc::clone(&core.engine),
                 compact_threshold: composed.root.compact_threshold,
             },
-            tasks: [watch_task, endings_task]
+            tasks: [watch_task, endings_task, checkpoints_task]
                 .into_iter()
                 .chain(settings_watch::spawn(
                     Arc::downgrade(&local),
@@ -775,6 +777,9 @@ impl Daemon {
         // shutdown unregisters would keep the runtime and the mobs' handles
         // past the daemon's end (`activity::Activity::stop`).
         self.local.core().activity.stop();
+        // Nor a checkpoint: one under way is aborted, nothing of it is
+        // stored, and the agent is idle at the next start.
+        self.local.agents().checkpoints().stop();
         // "Terminate": the agents leave with the daemon (their
         // conversations stay); else they are restored at the next start.
         if self.local.lifecycle().retires_all() {
@@ -1204,6 +1209,22 @@ fn deliver_endings(agents: &Arc<agents::Agents>) -> tokio::task::JoinHandle<()> 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     agents.core().registry.endings().deliver_to(tx);
     tokio::spawn(agents::endings::deliver(Arc::downgrade(agents), rx))
+}
+
+/// Hand every helper's run that reaches its limit to its checkpoint
+/// ([`checkpoint`]).
+fn deliver_checkpoints(agents: &Arc<agents::Agents>) -> tokio::task::JoinHandle<()> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agents.core().registry.endings().checkpoints_to(tx);
+    let agents = Arc::downgrade(agents);
+    tokio::spawn(async move {
+        while let Some(reached) = rx.recv().await {
+            let Some(agents) = agents.upgrade() else {
+                return;
+            };
+            agents.helper_at_limit(reached);
+        }
+    })
 }
 
 fn deliver_watches(
