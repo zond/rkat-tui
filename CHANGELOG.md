@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-11-16
+
+### Changed
+
+- Expanding or folding in the transcript (a click on a tool call or a
+  helper, Ctrl-O, `/helpers expand|fold`) keeps the line at the bottom of
+  the screen where it is: what you opened grows upwards, the view no
+  longer jumps, and folding it again brings back exactly the view you
+  had. Before, a click kept the top line and stopped following new
+  output, and Ctrl-O kept the top line when scrolled back.
+- `helpers.model` applies to every helper that names no model, not only
+  `delegate` helpers; a `fork_off` child stays on its parent's model. A mob
+  profile's own model is ignored, so a member of a mob definition's
+  profile is no longer refused while `helpers.allow_models` or
+  `deny_models` is set.
+- The agents are always told, in one line, where a helper's model comes
+  from; the user's settings are added to it when set.
+
 ### Fixed
 
 - A helper started by a profile's name with no model (`spawn_member` with
@@ -36,27 +54,6 @@
   gone on without the helper's answer. The daemon now stops the agents
   first, so the run resumes inside the call and its helper starts the
   task again.
-
-### Changed
-
-- `helpers.model` applies to every helper that names no model, not only
-  `delegate` helpers; a `fork_off` child stays on its parent's model. A mob
-  profile's own model is ignored, so a member of a mob definition's
-  profile is no longer refused while `helpers.allow_models` or
-  `deny_models` is set.
-- The agents are always told, in one line, where a helper's model comes
-  from; the user's settings are added to it when set.
-
-## [0.0.9] - 2026-11-15
-
-### Changed
-
-- Expanding or folding in the transcript (a click on a tool call or a
-  helper, Ctrl-O, `/helpers expand|fold`) keeps the line at the bottom of
-  the screen where it is: what you opened grows upwards, the view no
-  longer jumps, and folding it again brings back exactly the view you
-  had. Before, a click kept the top line and stopped following new
-  output, and Ctrl-O kept the top line when scrolled back.
 
 ## [0.0.8] - 2026-11-15
 
