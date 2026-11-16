@@ -3733,7 +3733,7 @@ dependencies = [
 
 [[package]]
 name = "rkat-tui"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "async-trait",
  "chrono",

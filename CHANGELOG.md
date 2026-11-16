@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-11-16
+
+### Fixed
+
+- A Gemini model behind LiteLLM failed every request with
+  "litellm.APIConnectionError: argument of type 'bool' is not iterable"
+  once the agent had the mob tools in its request: two of the engine's
+  tool definitions (`council`, `mob_wire`) use the boolean schema `true`
+  ("any value") where LiteLLM's converter for Gemini expects an object.
+  rkat-tui now writes such schemas in their object form for every
+  request, which means the same and every provider accepts.
+
 ## [0.0.11] - 2026-11-16
 
 ### Changed
