@@ -310,15 +310,19 @@ output now says why; report it rather than retrying silently:
   before. Loaded rounds of the module (`taskset -c 0,1` beside two busy
   loops, 20 each; "before" is the one-attempt wire): the new test failed
   20 of 20 before and 0 of 20 after; this test failed 6 of 20 before and
-  3 of 20 after. **Still open:** the 3 after (and some of the 6 before)
-  are another cause: in the first daemon the fork's retirement is under
-  way when the daemon stops (`retire-stop-host-loop` …
-  `retire-projection-cleanup`, then "interrupting in-flight member
-  retirement for shutdown", "crash-quiescing and terminating mob actor
-  for cold replay"), and the next daemon never follows the fork (nothing
-  is logged of it), so the wait for its edge after the restart (line 408)
-  times out. What starts that retirement is not pinned yet: the log
-  tail does not reach back to it.
+  3 of 20 after. The 3 after (5 of 20 in the next count) were another
+  cause, the test's: it waited for "Background fork_off job" in any of
+  the parent's requests, and the `fork_off` call's own result says those
+  words, so on a loaded machine the first daemon stopped during the
+  fork's first run. The engine's fork supervisor takes the run the stop
+  cancelled for a failed one and retires the fork (interrupted by the
+  shutdown, finished at the next start), so there was no fork to wire
+  after the restart (the wait at the line after the second start timed
+  out). The tests now wait for the outcome notice itself
+  (`forks.rs` `outcome_heard`); what the engine does is pinned by
+  `a_fork_stopped_in_its_first_run_is_retired_and_its_parent_told`
+  (`docs/evidence.md`, "A fork stopped in its first run"). Loaded
+  rounds: 5 of 20 before, 0 of 20 after (the new test 0 of 20).
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a

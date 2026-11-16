@@ -1450,6 +1450,12 @@ runs and after (the parent's message to its fork is a peer message, not
 reviewed). A message to a fork that has finished starts another run of
 it; when such a later run leaves it idle the parent is told, as for a
 member kept with `spawn_member` ("Your helper `kid` went idle …").
+A fork stays seated after its first run until it is retired, across
+daemon restarts too; but a fork still in its first run when the daemon
+stops does not survive the stop: the engine counts the stopped run as
+failed and retires the fork, and after the next start the parent is told
+`Background fork_off job … finished (failed)` in a run of its own
+(often only right after its next run).
 A helper's status as the engine's `member_status` and `mob_check_member`
 give it shows no live progress: their `output_preview` and `tokens_used`
 are from the helper's last completed turn, so a fork's preview is the

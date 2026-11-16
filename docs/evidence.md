@@ -11192,7 +11192,78 @@ out at 30 s). Loaded rounds of `forks::` (`taskset -c 0,1` beside two
 busy loops in the build slice, 20 rounds each, the old one-attempt wire
 for "before"): the new test 20/20 failed before, 0/20 after;
 `a_restored_fork_is_wired_and_a_retired_one_is_not` 6/20 before, 3/20
-after. Those 3 are another, open cause (`docs/testing.md`, the flaky
-list): the fork's retirement is in flight when the first daemon stops,
-the engine crash-quiesces the mob for cold replay, and the next daemon
-never follows the fork.
+after. Those 3 are another cause, found next ("A fork stopped in its
+first run"): the test stopped the first daemon during the fork's first
+run, and the engine retires a fork whose first run a stop cancelled.
+
+## A fork stopped in its first run; who retired `kid` (2026-11-16)
+
+The 3 open failures of `forks::a_restored_fork_is_wired_and_a_retired_one_is_not`
+(the previous entry) are the test's, and the retirement is the engine's.
+Found with the whole captured log of each failing round (5 of 20 loaded
+rounds) and a warning with a backtrace at every place of ours that
+retires a member (`mobs::stop_helper`, which `HelperEndings::retire`,
+`retire_done`, `cancel_helpers` and `retire_left_helper` all reach, and
+`Conversations::retire`): none of ours fired in any of the five.
+
+- **The wait was wrong.** The test waited for "Background fork_off job"
+  in any request of the parent, meaning the fork's outcome. The
+  `fork_off` call's own result says the same words ("When it ends, the
+  result is added to your conversation as \"Background fork_off job <id>
+  finished\"", `meerkat-mob-mcp` 0.9.15 `agent_tools.rs`
+  `detached_started_note`), so the wait passed as soon as the call
+  returned, and on a loaded machine the stop came while the fork's first
+  run was still in its model call. The tests now wait for the notice
+  itself, a message of the parent's request other than the call's result
+  (`forks.rs` `outcome_heard`).
+- **What the engine does with a fork stopped in its first run.** The
+  shutdown cancels the run ("the machine refused to suspend the run; it
+  is cancelled ... cause=RequeueStop"); the child's supervisor
+  (`meerkat-mob` 0.9.15 `runtime/handle.rs`
+  `fork_member_then_run_detached`, its task awaiting `wait_bounded`)
+  takes that for a failed turn and calls `retire_failed_fork_child`
+  (`retire_with_descendants`). The retirement starts after "mob shutdown
+  admitted ... in_flight_retirements=0", the shutdown interrupts it
+  ("interrupting in-flight member retirement for shutdown"), its effect
+  custody is retained and the mob actor ends "crash-quiescing ... for
+  cold replay". The next start re-drives the started retirement to
+  "member retirement settled: retired", and the parent is told
+  `Background fork_off job … finished (failed)`, whose error says the
+  input "stays queued ... and runs ... on the next start" and "helper
+  retirement also failed: mob actor reply channel closed". It comes as a
+  run of its own: unloaded, the start woke the parent with it; on two
+  loaded cores 13 of 20 starts did not within 30 s (the re-link found the
+  completion already admitted, `fork_relink.rs` `relink_owned_child`
+  `AlreadyDelivered`), and in 5 of 6 probed starts it came about 300 ms
+  after the parent's next run (the user's message) ended, not in it. The engine's own re-link rule is the opposite for an
+  end imposed from outside ("stop, destroy, cancel ... is
+  `restart_interrupted`" and the child stays seated, `fork_relink.rs`
+  module docs); the live supervisor decides first.
+  The roster no longer lists the fork; it is never rebuilt, so no
+  customizer call and nothing for the follower to follow (that is why the
+  second daemon logged nothing of it). Pinned by
+  `forks::a_fork_stopped_in_its_first_run_is_retired_and_its_parent_told`
+  (the fork's model call held, the stop sent, the next start's roster and
+  the parent's notice read; it also asserts that the call's result names
+  the outcome's words before the outcome came). Upstream report drafted,
+  not filed (`.handover/upstream-fork-retire-interrupted.md`):
+  `ForkOffCompletionStatus` has `RestartInterrupted` and
+  `SupervisorStopped` for this, which keep the child.
+- **The engine's rule for a fork's life after its outcome** (unchanged by
+  this, and what the personas say): a completed first run leaves the
+  child seated until someone retires it (`ForkOffCompletionStatus::Completed`,
+  "the child stays seated for further work"; `retires_child` is
+  `MaxRunElapsed | Failed`; the tool's description: "a finished child
+  stays seated until you retire it"). Only a failed first run, a
+  `max_run_secs` that elapsed, or a call dropped before its handoff
+  (`retire_child_if_abandoned`, the blocking route only) retires it; the
+  detached completion custodian records and delivers the outcome and
+  retires nothing. A completed fork survives a daemon restart (the passing
+  rounds of the restored-fork test).
+- Loaded rounds of `forks::` (`taskset -c 0,1` beside two busy loops in
+  the build slice, 20 rounds each): `a_restored_fork_is_wired_and_a_retired_one_is_not`
+  failed 5 of 20 before (each with the pattern above) and 0 of 20 after;
+  `a_fork_stopped_in_its_first_run_is_retired_and_its_parent_told` 0 of
+  20 (a first version that looked for the parent's notice at the start,
+  or right as the user's run ended, failed 13 and 10 of 20: the notice's
+  timing above); the other three fork tests 0 of 20 before and after.

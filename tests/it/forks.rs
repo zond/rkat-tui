@@ -202,7 +202,7 @@ async fn a_fork_and_its_parent_talk_both_ways_and_its_later_runs_are_told() {
         note.contains("FORK-LATER") && !note.contains("Its last message:\\n\\nFORK-FIRST"),
         "{note}"
     );
-    assert!(heard(&llm, false, "Background fork_off job"));
+    assert!(outcome_heard(&llm));
     assert_eq!(registry.endings().told(), 1);
     // The parent's message to its own fork is a peer message: not reviewed.
     let reviewed = classifier.seen();
@@ -265,15 +265,33 @@ async fn a_fork_wired_before_it_is_seated_is_wired_once_it_is() {
         .map(|r| last(&r.messages))
         .unwrap();
     assert!(first.contains(&format!("tui/main/{agent}")), "{first}");
-    common::until(|| heard(&llm, false, "Background fork_off job")).await;
+    common::until(|| outcome_heard(&llm)).await;
     daemon.idle(&agent).await;
     drop(connection);
     daemon.stop().await;
 }
 
-/// Whether the last message is the engine's outcome of a fork's first run.
+/// Whether the last message is the engine's outcome of a fork's first run
+/// (not the `fork_off` call's own result, whose note names the same words).
 fn tail_is_outcome(messages: &[Message]) -> bool {
-    last(messages).contains("Background fork_off job")
+    !matches!(messages.last(), Some(Message::ToolResults { .. }))
+        && last(messages).contains("Background fork_off job")
+}
+
+/// Whether the parent's model was given a fork's outcome: the fork's first
+/// run ended (and the engine delivered its end). Any message of the
+/// request but the `fork_off` call's result counts: the outcome may come
+/// in one run with a message of the fork.
+fn outcome_heard(llm: &ScriptedLlmClient) -> bool {
+    llm.recorded()
+        .iter()
+        .filter(|r| !r.user().contains("FORK-TASK"))
+        .any(|r| {
+            r.messages.iter().any(|m| {
+                !matches!(m, Message::ToolResults { .. })
+                    && format!("{m:?}").contains("Background fork_off job")
+            })
+        })
 }
 
 /// A helper's fork (helpers may nest: `helpers.max_depth = 2`) is seated
@@ -343,6 +361,79 @@ async fn a_helper_s_fork_is_wired_to_the_helper() {
     daemon.stop().await;
 }
 
+/// A fork still in its first run when the daemon stops does not outlive
+/// the stop: the engine's fork supervisor takes the run the stop cancelled
+/// for a failed one and retires the fork (`meerkat-mob` 0.9.15
+/// `fork_member_then_run_detached`, `retire_failed_fork_child`); the
+/// shutdown interrupts that retirement and the next start finishes it.
+/// The roster then no longer lists the fork, and the parent is told that
+/// the job failed in a run of its own: at that start, or (most often)
+/// only right after its next run. Before the stop, the
+/// `fork_off` call's own result already names "Background fork_off job"
+/// (how it will be told), so only the outcome notice itself says the
+/// first run ended ([`outcome_heard`]).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_stopped_in_its_first_run_is_retired_and_its_parent_told() {
+    let ws = Workspace::new();
+    let first = ScriptedLlmClient::new(vec![
+        Step::Dynamic(Arc::new(|messages: &[Message]| {
+            if common::user_texts(messages).concat().contains("FORK-TASK") {
+                return Step::Hang;
+            }
+            if matches!(messages.last(), Some(Message::ToolResults { .. })) {
+                return Step::Text("PARENT-WAITS");
+            }
+            fork("FORK-TASK: wait")
+        }));
+        12
+    ]);
+    let daemon = Running::start(&ws.root, &first).await;
+    daemon.reveal(&daemon.session, &["fork_off"]).await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "go").await;
+    let agent = daemon.agent.clone();
+    common::until_async(async || wired_to(&connection, "kid").await.contains(&agent)).await;
+    // The fork's model call is held: its first run is under way.
+    common::until(|| heard(&first, true, "FORK-TASK")).await;
+    daemon.idle(&agent).await;
+    assert!(heard(&first, false, "Background fork_off job"));
+    assert!(!outcome_heard(&first), "the fork's first run has not ended");
+    drop(connection);
+    daemon.stop().await;
+
+    let second = ScriptedLlmClient::new(vec![Step::Text("NOTED"); 12]);
+    let daemon = Running::start(&ws.root, &second).await;
+    let connection = daemon.connect_bound().await;
+    // Its retirement is finished by this start: the roster lets it go.
+    common::until_async(async || {
+        let members = connection
+            .call("mob/members", json!({"mob_id": "tui"}))
+            .await
+            .unwrap();
+        !members["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["agent_identity"] == "kid")
+    })
+    .await;
+    // The parent is told in a run of its own: at the start when the engine
+    // wakes it, else (most often) right after its next run, here the
+    // user's message.
+    daemon.prompt(&connection, "hello").await;
+    common::until(|| outcome_heard(&second)).await;
+    let told = second
+        .recorded()
+        .iter()
+        .map(|r| last(&r.messages))
+        .find(|tail| tail.contains("Background fork_off job"))
+        .unwrap();
+    assert!(told.contains("finished (failed)"), "{told}");
+    daemon.idle(&agent).await;
+    drop(connection);
+    daemon.stop().await;
+}
+
 /// The edge's life: a fork restored by the next start is wired to its
 /// parent again (the roster names the edge, and the parent's message
 /// reaches the fork's model); a fork retired leaves its parent's edges.
@@ -351,11 +442,10 @@ async fn a_restored_fork_is_wired_and_a_retired_one_is_not() {
     let ws = Workspace::new();
     let first = ScriptedLlmClient::new(vec![
         Step::Dynamic(Arc::new(|messages: &[Message]| {
-            let tail = last(messages);
             if common::user_texts(messages).concat().contains("FORK-TASK") {
                 return Step::Text("FORK-FIRST");
             }
-            if tail.contains("Background fork_off job") {
+            if tail_is_outcome(messages) {
                 return Step::Text("OUTCOME-NOTED");
             }
             if matches!(messages.last(), Some(Message::ToolResults { .. })) {
@@ -371,8 +461,10 @@ async fn a_restored_fork_is_wired_and_a_retired_one_is_not() {
     daemon.prompt(&connection, "go").await;
     let agent = daemon.agent.clone();
     common::until_async(async || wired_to(&connection, "kid").await.contains(&agent)).await;
-    // The outcome's run ends before the stop (lukacf/meerkat#2374).
-    common::until(|| heard(&first, false, "Background fork_off job")).await;
+    // The fork's first run ended (a fork still in it does not outlive the
+    // stop: `a_fork_stopped_in_its_first_run_is_retired_and_its_parent_told`),
+    // and the outcome's run ends before the stop (lukacf/meerkat#2374).
+    common::until(|| outcome_heard(&first)).await;
     daemon.idle(&agent).await;
     drop(connection);
     daemon.stop().await;
