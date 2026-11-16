@@ -170,6 +170,11 @@ async fn an_agent_s_request_carries_every_tool_definition() {
 /// Every schema node of `value` without a `type` (by path), the form
 /// Vertex AI's function declarations refuse; a `$ref` or `$defs` counts too.
 fn untyped(value: &serde_json::Value, path: &str, out: &mut Vec<String>) {
+    // A boolean where a schema stands (`true`: any value): valid JSON
+    // Schema, but LiteLLM's converter for Gemini fails the request on it.
+    if value.is_boolean() {
+        out.push(format!("{path}: boolean schema"));
+    }
     let serde_json::Value::Object(obj) = value else {
         return;
     };
@@ -205,7 +210,8 @@ fn untyped(value: &serde_json::Value, path: &str, out: &mut Vec<String>) {
 /// Every tool definition an agent's request carries, with the hidden
 /// families revealed, and a `delegate` helper's, has a `type` on every
 /// constrained schema node (a union's on its members; a node that admits
-/// any value has none) and no `$ref` or `oneOf`: a Gemini model behind an OpenAI-compatible
+/// any value has none), no boolean standing for a schema, and no `$ref` or
+/// `oneOf`: a Gemini model behind an OpenAI-compatible
 /// proxy (LiteLLM to Vertex AI) refused `task_list`'s `status` (an optional
 /// enum the engine's schema left without a type) and no request ran.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

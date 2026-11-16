@@ -131,6 +131,7 @@ fn lower(value: &mut Value) {
     let Value::Object(obj) = value else {
         return;
     };
+    boolean_schemas_as_objects(obj);
     for key in ["anyOf", "oneOf"] {
         fold_nullable(obj, key);
     }
@@ -154,6 +155,56 @@ fn lower(value: &mut Value) {
         }
     }
     infer_type(obj);
+}
+
+/// The boolean schemas among a node's children in their object form:
+/// `true` ("any value") as `{}`, `false` ("no value") as `{"not": {}}`.
+/// `schemars` writes `true` for a free-form JSON field and puts it in the
+/// `anyOf` of an enum with a free-form variant; both are valid JSON Schema,
+/// but a converter that expects every sub-schema to be an object (LiteLLM's
+/// for Gemini: "argument of type 'bool' is not iterable") fails the whole
+/// request on them. A union with a member that admits anything admits
+/// anything, so it is dropped; an `allOf` loses such members.
+/// `additionalProperties` keeps its boolean: that keyword's own form.
+fn boolean_schemas_as_objects(obj: &mut Map<String, Value>) {
+    fn as_object(schema: &mut Value) {
+        match schema {
+            Value::Bool(true) => *schema = Value::Object(Map::new()),
+            Value::Bool(false) => {
+                let mut never = Map::new();
+                never.insert("not".to_string(), Value::Object(Map::new()));
+                *schema = Value::Object(never);
+            }
+            _ => {}
+        }
+    }
+    let anything = |schema: &Value| matches!(schema, Value::Object(map) if map.is_empty());
+    if let Some(Value::Object(properties)) = obj.get_mut("properties") {
+        properties.values_mut().for_each(as_object);
+    }
+    for key in ["items", "not"] {
+        if let Some(child) = obj.get_mut(key) {
+            as_object(child);
+        }
+    }
+    for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
+        if let Some(Value::Array(members)) = obj.get_mut(key) {
+            members.iter_mut().for_each(as_object);
+        }
+    }
+    for key in ["anyOf", "oneOf"] {
+        if let Some(Value::Array(members)) = obj.get(key)
+            && members.iter().any(anything)
+        {
+            obj.remove(key);
+        }
+    }
+    if let Some(Value::Array(members)) = obj.get_mut("allOf") {
+        members.retain(|member| !anything(member));
+        if members.is_empty() {
+            obj.remove("allOf");
+        }
+    }
 }
 
 /// `anyOf`/`oneOf` without its `null` members; one member left is merged
@@ -679,6 +730,73 @@ mod tests {
 
     /// `/context` measures definitions normalized again: that changes
     /// nothing.
+    /// `schemars` writes a free-form JSON field as the boolean schema
+    /// `true`, alone or in an enum's `anyOf`; a converter that expects
+    /// objects fails the request on it. They become objects, and a union
+    /// that admits anything is dropped; `additionalProperties` keeps its
+    /// boolean.
+    #[test]
+    fn boolean_schemas_become_objects() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "free": true,
+                "never": false,
+                "either": {"description": "a name or anything", "anyOf": [{"type": "string"}, true]},
+                "list": {"type": "array", "items": true},
+                "both": {"allOf": [{"type": "integer"}, true]},
+                "deep": {"type": "object", "properties": {"x": {"oneOf": [true, {"type": "null"}]}}}
+            }
+        });
+        let out = normalize(&schema);
+        assert!(!contains_boolean_schema(&out), "{out:#}");
+        assert_eq!(out["additionalProperties"], json!(false));
+        assert_eq!(out["properties"]["free"], json!({}));
+        assert_eq!(out["properties"]["never"], json!({"not": {}}));
+        assert_eq!(
+            out["properties"]["either"],
+            json!({"description": "a name or anything"})
+        );
+        assert_eq!(
+            out["properties"]["list"],
+            json!({"type": "array", "items": {}})
+        );
+        assert_eq!(
+            out["properties"]["both"]["allOf"],
+            json!([{"type": "integer"}])
+        );
+        assert_eq!(out["properties"]["deep"]["properties"]["x"], json!({}));
+        assert_eq!(normalize(&out), out);
+    }
+
+    /// Whether a boolean stands where a sub-schema does.
+    fn contains_boolean_schema(value: &Value) -> bool {
+        let Value::Object(obj) = value else {
+            return false;
+        };
+        let children = |key: &str| -> Vec<&Value> {
+            match obj.get(key) {
+                Some(Value::Object(map)) if key == "properties" => map.values().collect(),
+                Some(Value::Array(members)) => members.iter().collect(),
+                Some(other) => vec![other],
+                None => Vec::new(),
+            }
+        };
+        [
+            "properties",
+            "items",
+            "not",
+            "anyOf",
+            "oneOf",
+            "allOf",
+            "prefixItems",
+        ]
+        .into_iter()
+        .flat_map(children)
+        .any(|child| child.is_boolean() || contains_boolean_schema(child))
+    }
+
     #[test]
     fn normalizing_twice_is_normalizing_once() {
         for schema in [

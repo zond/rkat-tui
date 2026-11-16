@@ -10585,3 +10585,33 @@ the held note keeps travelling in the user's next message (not
 re-probed). The teardown stall seen once in
 `helper_models::a_fork_runs_on_its_parent_s_current_model` was not seen
 in this move's gate runs; it stays in the flaky list.
+
+## Boolean schemas in tool definitions fail LiteLLM's Gemini converter (2026-11-16)
+
+- Dogfood report: switching to a Gemini model behind LiteLLM gave
+  `litellm.APIConnectionError: argument of type 'bool' is not iterable` on
+  every request, though another Gemini model had worked earlier in the day
+  through the same proxy. Reproduced on the user's side with one function
+  tool whose parameters hold `{"anyOf": [{"type": "string"}, true]}`; a bare
+  `true` as a property or as `items` fails too (`'bool' object has no
+  attribute 'get'`). GPT and Claude models through the same proxy accept
+  it. It appears once the mob tools are in the request (revealed by the
+  agent's tool search), which is why an earlier conversation worked.
+- Cause: `schemars` 1.x writes the boolean schema `true` for a free-form
+  JSON field and puts it in the `anyOf` of an enum with a free-form
+  variant. Two engine tools carry it (found by the catalog test below):
+  `council` (`merge|1.json_schema`) and `mob_wire`
+  (`peer|1.external_binding.identity`). The engine's own Gemini adapter
+  lowers these (`meerkat-gemini` `lower_boolean_child_schemas`); its OpenAI
+  dialect, which a proxy is spoken to in, does not (same gap as
+  lukacf/meerkat#2234).
+- Fix: `daemon::schema_compat::normalize` writes a boolean sub-schema in
+  its object form (`true` as `{}`, `false` as `{"not": {}}`), drops a union
+  with a member that admits anything, and takes such members out of an
+  `allOf`; `additionalProperties` keeps its boolean. Goes with the wrapper
+  when #2234 ships.
+- Tests: `daemon::schema_compat::tests::boolean_schemas_become_objects`;
+  `tool_costs::every_requested_tool_schema_has_a_type_everywhere` now flags
+  a boolean standing for a schema (it skipped them before) and fails
+  without the fix, naming the two tools.
+- Not verified: no request was sent to a real LiteLLM proxy from here.
