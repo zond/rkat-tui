@@ -173,6 +173,10 @@ repository). Open upstream issues this code waits on:
 - #2232: a `fork_off` child wired to its parent; #2233: an agent wiring its
   own children, and `auto_wire_parent` across mobs. The instructions'
   "a fork reaches no one" and "helpers talk through the parent" go then.
+  Probed 2026-11-16: the host's own `mob_wire_members_batch` after the
+  fork is seated is accepted and usable from the fork's next step, both
+  ways (`docs/evidence.md`); wiring every fork that way is planned, which
+  ends our dependence on #2232.
 - #2234: the OpenAI dialect lowering nested tool schemas. The client
   wrapper `src/daemon/schema_compat.rs` goes when it ships.
 - #2235: a peer message that waits for an idle receiver's next run. The

@@ -10845,4 +10845,39 @@ a_member_is_told_of_each_idle_run_unless_it_just_messaged_its_parent}`,
 Confirmed failing without the rule: the first (the unread-message probe
 removed: times out at the wait for `HELLO-HELPER`) and the third (the
 last-call check removed: one note told). `mob_destroy`'s script now takes
-the idle note of its `mob_spawn_member` member before the destroy.
+the idle note of its `mob_spawn_member` member before the destroy, and
+`councils`' script keys the agent's steps on its conversation's first
+message (a member's idle note may join the convening run).
+
+## A `fork_off` child wired to its parent by the host, after its spawn (probe, 2026-11-16)
+
+Never tried before (#2232 records that nothing can be set at a fork's
+spawn): wiring the child after it is seated, with the host's own call, as
+the daemon wires its agents (`MobMcpState::mob_wire_members_batch`). Probe
+on the rig (scripted model; the test is kept in
+`.handover/fork-wire-probe.rs`, not in the suite): the agent calls
+`fork_off` (`member_id: kid`); the child is seated in the workspace's mob
+`tui` beside its parent; once the roster lists it, and while the child's
+first model call is held, the host wires `(main-…, kid)`.
+
+- Accepted: `MobWireMembersBatchReport { wired: [kid ↔ main-…] }`.
+- Usable from the child's next step, inside the run already started: its
+  `peers` (the step after the held call) lists `tui/main/main-…`.
+- Duplex: the child's `send_message` to that peer id is read by the
+  parent's model (a `Comms` notice that wakes it); the parent's `peers`
+  lists `tui/main/kid`, and its `send_message` back is read by the child's
+  model. The child had ended its first run meanwhile (`FORK-WAITS`); the
+  parent's message started another run of it, which read it.
+- The engine's outcome delivery is unchanged: one `Background fork_off job
+  … finished (completed)` notice reached the parent. It carries the first
+  run's end; a later run the child makes (for a message) is told by
+  nothing.
+- After the outcome the roster still listed `kid` when it was read.
+
+Not probed: whether the edge survives a daemon restart with a restored
+child, and whether it goes with the member or must be unwired. Decision
+(the owner's, through the coordinator): host wiring works, so `fork_off`
+stays and every fork child is to be wired to its parent; the product
+change (wiring at the child's seat, the gate's parent-child peer rule for
+forks, the personas, a note for a fork's runs after its outcome) is not
+built yet.
