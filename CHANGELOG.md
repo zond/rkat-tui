@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- A table in which any row wraps over several lines has a thin rule
+  between its rows, so you can tell where one row ends and the next
+  begins. A table whose rows each fit on one line looks as before.
+
 ## [0.0.10] - 2026-11-16
 
 ### Changed

@@ -522,23 +522,41 @@ impl Renderer {
             self.emit_stacked_table(&rows, t.header_rows);
             return;
         };
-        for (i, row) in rows.iter().enumerate() {
+        let wrapped_rows: Vec<Vec<Vec<String>>> = rows
+            .iter()
+            .map(|row| {
+                widths
+                    .iter()
+                    .enumerate()
+                    .map(|(c, w)| wrap_text(row.get(c).map_or("", String::as_str), *w))
+                    .collect()
+            })
+            .collect();
+        let height_of =
+            |wrapped: &Vec<Vec<String>>| wrapped.iter().map(Vec::len).max().unwrap_or(1);
+        // A table with a wrapped row gets a rule between every two rows:
+        // without it nothing says where one row's lines end and the next
+        // row's begin. A table of one-line rows stays compact.
+        let ruled = wrapped_rows.iter().any(|wrapped| height_of(wrapped) > 1);
+        let rule = || {
+            let sep = widths
+                .iter()
+                .map(|w| "─".repeat(*w))
+                .collect::<Vec<_>>()
+                .join("─┼─");
+            vec![Span::styled(sep, style::TABLE_SEPARATOR)]
+        };
+        for (i, wrapped) in wrapped_rows.iter().enumerate() {
             let header = i < t.header_rows;
             let st = if header {
                 style::TABLE_HEADER
             } else {
                 style::TEXT
             };
-            let wrapped: Vec<Vec<String>> = widths
-                .iter()
-                .enumerate()
-                .map(|(c, w)| wrap_text(row.get(c).map_or("", String::as_str), *w))
-                .collect();
-            let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
-            for line in 0..height {
+            for line in 0..height_of(wrapped) {
                 let text = widths
                     .iter()
-                    .zip(&wrapped)
+                    .zip(wrapped)
                     .map(|(w, cell)| {
                         let part = cell.get(line).map_or("", String::as_str);
                         let pad = w.saturating_sub(display_width(part));
@@ -548,13 +566,10 @@ impl Renderer {
                     .join(TABLE_SEP);
                 self.emit_line(vec![Span::styled(text.trim_end().to_string(), st)]);
             }
-            if header && i + 1 == t.header_rows {
-                let sep = widths
-                    .iter()
-                    .map(|w| "─".repeat(*w))
-                    .collect::<Vec<_>>()
-                    .join("─┼─");
-                self.emit_line(vec![Span::styled(sep, style::TABLE_SEPARATOR)]);
+            let last = i + 1 == wrapped_rows.len();
+            let after_header = header && i + 1 == t.header_rows;
+            if after_header || (ruled && !header && !last) {
+                self.emit_line(rule());
             }
         }
     }
@@ -1196,6 +1211,40 @@ mod tests {
         assert!(body[0].ends_with("│ ok"), "{out:#?}");
         assert_eq!(span_style(&lines, "note"), style::TABLE_HEADER);
         assert_eq!(span_style(&lines, "─┼─"), style::TABLE_SEPARATOR);
+    }
+
+    /// A table with a wrapped row has a rule between every two body rows
+    /// (and none after the last), so each row's lines are told apart; a
+    /// table whose rows all fit on one line stays compact.
+    #[test]
+    fn a_table_with_a_wrapped_row_rules_its_rows_apart() {
+        let long = "the quick brown fox jumps over the lazy dog again and again";
+        let src = format!("| id | text |\n|---|---|\n| 1 | {long} |\n| 2 | short |\n| 3 | last |");
+        let out = md(&src, 30);
+        let rules: Vec<usize> = out
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.contains("─┼─"))
+            .map(|(i, _)| i)
+            .collect();
+        // Under the header, after row 1 and after row 2; not after row 3.
+        assert_eq!(rules.len(), 3, "{out:#?}");
+        assert_eq!(rules[0], 1, "{out:#?}");
+        let row2 = out
+            .iter()
+            .position(|l| l.starts_with("2  │ short"))
+            .unwrap();
+        assert_eq!(rules[1] + 1, row2, "{out:#?}");
+        assert_eq!(rules[2], row2 + 1, "{out:#?}");
+        assert!(out.last().unwrap().starts_with("3  │ last"), "{out:#?}");
+        assert!(out.iter().all(|l| display_width(l) <= 30), "{out:#?}");
+        // One-line rows: only the header's rule.
+        let compact = md("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |", 30);
+        assert_eq!(
+            compact.iter().filter(|l| l.contains("─┼─")).count(),
+            1,
+            "{compact:#?}"
+        );
     }
 
     #[test]
