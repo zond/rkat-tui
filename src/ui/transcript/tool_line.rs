@@ -256,6 +256,11 @@ const RULES: &[Rule] = &[
         outcome: no_outcome,
     },
     Rule {
+        tools: &[crate::tools::ASSIGN],
+        head: |_, args, _| member_task_head("assign", args),
+        outcome: no_outcome,
+    },
+    Rule {
         tools: &["spawn_member", "mob_spawn_member"],
         head: |_, args, _| member_task_head("spawn", args),
         outcome: no_outcome,
@@ -443,6 +448,7 @@ fn str_arg<'a>(args: &'a Value, key: &str) -> &'a str {
 fn member(args: &Value) -> String {
     args.get("member_id")
         .or_else(|| args.get("member"))
+        .or_else(|| args.get("name"))
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
@@ -1038,6 +1044,10 @@ mod tests {
                 json!({"member_id": "scout", "task": "find\n the bug"})
             ),
             "delegate to scout: find the bug"
+        );
+        assert_eq!(
+            line("assign", json!({"name": "scout", "task": "find\n the bug"})),
+            "assign scout: find the bug"
         );
         assert_eq!(
             line("fork_off", json!({"member_id": "kid", "task": "try it"})),

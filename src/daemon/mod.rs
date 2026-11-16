@@ -29,6 +29,7 @@
 pub mod activity;
 pub mod agents;
 pub mod approvals;
+pub mod assign;
 pub mod audit;
 pub mod context;
 pub mod conversations;
@@ -585,11 +586,14 @@ impl Daemon {
                 composed.runtime.schedule_service(),
                 Arc::clone(&composed.ledger),
             )),
-            activity: idle_activity(
-                &conversations,
-                composed.runtime.runtime_adapter(),
-                &composed.decisions,
-            ),
+            activity: {
+                probe_helper_inputs(&composed.root.registry, composed.runtime.runtime_adapter());
+                idle_activity(
+                    &conversations,
+                    composed.runtime.runtime_adapter(),
+                    &composed.decisions,
+                )
+            },
             conversations,
             audit,
             prepare: Arc::clone(&composed.prepare),
@@ -1078,6 +1082,33 @@ async fn settle_leftovers(decisions: &decisions::Decisions, local: &local::Local
     if let Some(warning) = local.announce_plan_mode().await {
         tracing::warn!(%warning, "plan mode");
     }
+}
+
+/// When a helper whose run ended is idle ([`crate::mobs::endings`]): the
+/// runtime is asked for its session's unfinished inputs (one that cannot be
+/// read counts; a helper whose session is not known yet has none to ask
+/// about).
+fn probe_helper_inputs(
+    registry: &Arc<crate::mobs::HelperRegistry>,
+    machine: Arc<meerkat_runtime::MeerkatMachine>,
+) {
+    let bindings = Arc::downgrade(registry);
+    registry
+        .endings()
+        .probe_with(Arc::new(move |key: crate::mobs::HelperKey| {
+            let bindings = std::sync::Weak::clone(&bindings);
+            let machine = Arc::clone(&machine);
+            Box::pin(async move {
+                use meerkat_runtime::SessionServiceRuntimeExt as _;
+                let session = bindings.upgrade()?.member_session(&key)?;
+                Some(
+                    machine
+                        .list_active_inputs(&session)
+                        .await
+                        .map_or(1, |inputs| inputs.len()),
+                )
+            })
+        }));
 }
 
 /// When the agents are idle ([`activity`]): the runtime is asked for a

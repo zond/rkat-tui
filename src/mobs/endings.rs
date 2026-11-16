@@ -18,10 +18,29 @@
 //! - the user stopping it ([`HelperEndings::stop`]) and the daemon finding
 //!   it ended by its last stop ([`HelperEndings::lost`]).
 //!
-//! A long-lived member (`spawn_member` and the like) does not end when a
-//! run of it ends: it ends when it is retired, which only the user's stop
-//! tells here (an agent that retires one with a tool is told by that
-//! tool's result).
+//! An `assign` helper ([`super::HelperKind::Assigned`]) ends when it
+//! finishes its task: a run of it ended, completed or failed, and the
+//! runtime holds no unfinished input of it ([`HelperEndings::run_ended`]
+//! asks until none is left or a later run starts, at most
+//! [`SETTLE_WAIT`]). Its parent is then told (`Done`, with its answer, or
+//! `Failed`) and it is retired. A message its parent sent that it has not
+//! read when its run ends is unfinished input: the helper goes on and is
+//! not retired. A message sent after that look reaches a helper that is
+//! being retired, and its sender's `send_message` fails as any message to a
+//! peer that left (the engine names `peers`); the window is the retire's
+//! own few milliseconds.
+//!
+//! A long-lived member ([`super::HelperKind::Member`]: `spawn_member`,
+//! `mob_spawn_member`) does not end when a run of it ends: it ends when it
+//! is retired, which only the user's stop tells here (an agent that
+//! retires one with a tool is told by that tool's result). Each run of it
+//! that leaves it idle the same way is told to its parent once (`WentIdle`,
+//! with its last message), unless the run's last call was a message to the
+//! parent ([`HelperEndings::called`]: the parent has its last word). No
+//! note says that a member started (its spawn's result does) or became
+//! active (its parent or a peer made it so, by a message the sender knows
+//! of): each note costs its parent a model call, and one for every
+//! activation would let two agents wake each other forever.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, OnceLock, Weak};
@@ -47,6 +66,20 @@ pub enum How {
         /// Its final answer.
         answer: String,
     },
+    /// An `assign` helper finished its task (its run ended and nothing is
+    /// queued for it): `answer` is its final text, and it is retired.
+    Done {
+        /// Its final answer.
+        answer: String,
+    },
+    /// A long-lived member's run ended and it is idle, still seated: not
+    /// an ending. `answer` is its final text, or why its run failed.
+    WentIdle {
+        /// Its final text.
+        answer: String,
+        /// Why its run failed, when it did.
+        failed: Option<String>,
+    },
     /// Its run failed.
     Failed {
         /// Why, in the words the engine gave.
@@ -65,7 +98,12 @@ impl How {
     #[must_use]
     pub fn text(&self) -> String {
         match self {
-            Self::Finished { .. } => "finished".to_string(),
+            Self::Finished { .. } | Self::Done { .. } => "finished".to_string(),
+            Self::WentIdle { failed: None, .. } => "idle".to_string(),
+            Self::WentIdle {
+                failed: Some(reason),
+                ..
+            } => format!("idle after a failed run: {}", plain_reason(reason)),
             Self::Failed { reason } => format!("failed: {}", plain_reason(reason)),
             Self::StoppedByUser => "stopped by you".to_string(),
             Self::TimedOut => "timed out".to_string(),
@@ -134,7 +172,28 @@ struct Tracked {
     tag: Option<HelperTag>,
     call: Option<CallEnded>,
     terminal: Option<Terminal>,
+    /// How many runs of it started (a run's end is told only while no
+    /// later one started).
+    runs: u64,
+    /// The last tool call of its current run was a message to its parent.
+    messaged_parent: bool,
 }
+
+/// How many inputs the runtime holds for a helper that are not finished
+/// (`None`: it cannot be told; then its run's end is taken as it is).
+pub type InputsProbe = Arc<
+    dyn Fn(HelperKey) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<usize>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// The longest a run's end waits for the runtime to hold no unfinished
+/// input of the helper before it is taken as the helper's going idle.
+pub const SETTLE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+/// The first wait before asking the runtime again; each next one doubles.
+const RECHECK_FIRST: std::time::Duration = std::time::Duration::from_millis(50);
+/// The longest wait between two questions.
+const RECHECK_MAX: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What [`decide`] makes of a helper.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +265,20 @@ pub struct HelperEndings {
     told: std::sync::atomic::AtomicUsize,
     /// How many retires these endings started.
     retires: std::sync::atomic::AtomicUsize,
+    /// Asks the runtime what a helper still holds ([`InputsProbe`]).
+    probe: OnceLock<Probe>,
+    /// How many runs' ends were decided as a helper's going idle (told or
+    /// not).
+    idle_decided: std::sync::atomic::AtomicUsize,
+}
+
+/// [`InputsProbe`], held.
+struct Probe(InputsProbe);
+
+impl std::fmt::Debug for Probe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Probe")
+    }
 }
 
 impl HelperEndings {
@@ -240,9 +313,147 @@ impl HelperEndings {
         self.update(key, |tracked| tracked.call = Some(how));
     }
 
-    /// A run of the helper `key` ended `terminal`.
-    pub fn run_ended(&self, key: &HelperKey, terminal: Terminal) {
-        self.update(key, |tracked| tracked.terminal = Some(terminal));
+    /// Ask the runtime what a helper still holds through `probe` (once).
+    pub fn probe_with(&self, probe: InputsProbe) {
+        let _ = self.probe.set(Probe(probe));
+    }
+
+    /// A run of the helper `key` started.
+    pub fn run_started(&self, key: &HelperKey) {
+        if let Some(tracked) = self.tracked.lock().get_mut(key) {
+            tracked.runs += 1;
+            tracked.messaged_parent = false;
+        }
+    }
+
+    /// The helper `key` called a tool; `to_parent`: a message to its
+    /// parent.
+    pub fn called(&self, key: &HelperKey, to_parent: bool) {
+        if let Some(tracked) = self.tracked.lock().get_mut(key) {
+            tracked.messaged_parent = to_parent;
+        }
+    }
+
+    /// A run of the helper `key` ended `terminal`. An `assign` helper or
+    /// a long-lived member whose run completed or failed goes idle once the
+    /// runtime holds nothing more for it ([`Self::settle_idle`]).
+    pub fn run_ended(self: &Arc<Self>, key: &HelperKey, terminal: Terminal) {
+        if is_delegate(key) {
+            self.update(key, |tracked| tracked.terminal = Some(terminal));
+            return;
+        }
+        if terminal == Terminal::Cancelled {
+            return;
+        }
+        let runs = {
+            let tracked = self.tracked.lock();
+            match tracked.get(key) {
+                Some(Tracked {
+                    tag: Some(tag),
+                    runs,
+                    ..
+                }) if tag.kind != super::HelperKind::Other => *runs,
+                _ => return,
+            }
+        };
+        let probe = self.probe.get().map(|probe| Arc::clone(&probe.0));
+        match (probe, tokio::runtime::Handle::try_current()) {
+            (Some(probe), Ok(runtime)) => {
+                let endings = Arc::clone(self);
+                let key = key.clone();
+                runtime.spawn(async move {
+                    endings.settle_idle(&key, runs, &probe).await;
+                    endings.went_idle(&key, runs, terminal);
+                });
+            }
+            _ => self.went_idle(key, runs, terminal),
+        }
+    }
+
+    /// Wait until the runtime holds no unfinished input of `key` (its run's
+    /// own input is finished a moment after its terminal event; a message
+    /// that came meanwhile is unfinished until a run takes it) or a later
+    /// run started, at most [`SETTLE_WAIT`].
+    async fn settle_idle(&self, key: &HelperKey, runs: u64, probe: &InputsProbe) {
+        let deadline = tokio::time::Instant::now() + SETTLE_WAIT;
+        let mut wait = RECHECK_FIRST;
+        loop {
+            if self.runs_of(key) != Some(runs) {
+                return;
+            }
+            match probe(key.clone()).await {
+                Some(0) | None => return,
+                Some(_) => {}
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                tracing::info!(helper = %key, "the runtime still holds input of an idle helper; taken as idle");
+                return;
+            }
+            tokio::time::sleep(wait.min(deadline - now)).await;
+            wait = (wait * 2).min(RECHECK_MAX);
+        }
+    }
+
+    /// How many runs of `key` started (`None`: not followed).
+    fn runs_of(&self, key: &HelperKey) -> Option<u64> {
+        self.tracked.lock().get(key).map(|tracked| tracked.runs)
+    }
+
+    /// The run `runs` of `key` ended `terminal` and nothing is queued for
+    /// it: unless a later run started, an `assign` helper is done (its
+    /// parent is told, and it is retired) and a long-lived member went idle
+    /// (its parent is told, unless the run's last call was a message to it).
+    fn went_idle(&self, key: &HelperKey, runs: u64, terminal: Terminal) {
+        let (tag, messaged_parent) = {
+            let tracked = self.tracked.lock();
+            match tracked.get(key) {
+                Some(tracked) if tracked.runs == runs => {
+                    (tracked.tag.clone(), tracked.messaged_parent)
+                }
+                _ => return,
+            }
+        };
+        let Some(tag) = tag else { return };
+        self.idle_decided
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match tag.kind {
+            super::HelperKind::Assigned => {
+                let how = match terminal {
+                    Terminal::Completed(answer) => How::Done { answer },
+                    Terminal::Failed(reason) => How::Failed { reason },
+                    Terminal::Cancelled => return,
+                };
+                if let Some(tag) = self.settle(key) {
+                    self.tell(Ended {
+                        key: key.clone(),
+                        tag,
+                        how,
+                    });
+                }
+                self.retire(key, true);
+            }
+            super::HelperKind::Member => {
+                let how = match terminal {
+                    Terminal::Completed(_) if messaged_parent => return,
+                    Terminal::Completed(answer) => How::WentIdle {
+                        answer,
+                        failed: None,
+                    },
+                    Terminal::Failed(reason) => How::WentIdle {
+                        answer: String::new(),
+                        failed: Some(reason),
+                    },
+                    Terminal::Cancelled => return,
+                };
+                self.tell(Ended {
+                    key: key.clone(),
+                    tag,
+                    how,
+                });
+            }
+            super::HelperKind::Other => {}
+        }
     }
 
     fn update(&self, key: &HelperKey, change: impl FnOnce(&mut Tracked)) {
@@ -412,6 +623,13 @@ impl HelperEndings {
         self.is_settled(key)
     }
 
+    /// Tests: how many runs' ends were decided as a helper's going idle.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn idle_decided(&self) -> usize {
+        self.idle_decided.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Tests: how many endings were told so far.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
@@ -439,11 +657,12 @@ mod tests {
             owner: SessionId::new(),
             path: vec![label.to_string()],
             model: "m".into(),
+            kind: crate::mobs::HelperKind::Other,
         }
     }
 
-    fn endings() -> (HelperEndings, mpsc::UnboundedReceiver<Ended>) {
-        let endings = HelperEndings::default();
+    fn endings() -> (Arc<HelperEndings>, mpsc::UnboundedReceiver<Ended>) {
+        let endings = Arc::new(HelperEndings::default());
         let (tx, rx) = mpsc::unbounded_channel();
         endings.deliver_to(tx);
         (endings, rx)
@@ -557,6 +776,88 @@ mod tests {
         endings.call_ended(&key, CallEnded::Failed);
         assert_eq!(rx.try_recv().unwrap().how, How::StoppedByUser);
         assert!(rx.try_recv().is_err());
+    }
+
+    fn tagged(label: &str, kind: crate::mobs::HelperKind) -> HelperTag {
+        HelperTag { kind, ..tag(label) }
+    }
+
+    /// An `assign` helper whose run completed is done: told with its
+    /// answer, settled, and retired; one whose run failed is told so and
+    /// retired too; a cancelled run (the user's stop tells that) is
+    /// nothing here.
+    #[test]
+    fn an_assigned_helper_is_done_when_its_run_ends() {
+        use crate::mobs::HelperKind;
+        let (endings, mut rx) = endings();
+        let key = HelperKey::new(MobId::from("tui"), AgentIdentity::from("scout"));
+        endings.spawned(&key, &tagged("scout", HelperKind::Assigned));
+        endings.run_started(&key);
+        endings.run_ended(&key, Terminal::Cancelled);
+        assert!(rx.try_recv().is_err());
+        endings.run_ended(&key, Terminal::Completed("the answer".into()));
+        assert_eq!(
+            rx.try_recv().unwrap().how,
+            How::Done {
+                answer: "the answer".into()
+            }
+        );
+        assert!(endings.settled(&key));
+        assert_eq!(endings.retires(), 1);
+        let failed = HelperKey::new(MobId::from("tui"), AgentIdentity::from("broken"));
+        endings.spawned(&failed, &tagged("broken", HelperKind::Assigned));
+        endings.run_ended(&failed, Terminal::Failed("a 500".into()));
+        assert_eq!(
+            rx.try_recv().unwrap().how,
+            How::Failed {
+                reason: "a 500".into()
+            }
+        );
+        assert_eq!(endings.retires(), 2);
+    }
+
+    /// A long-lived member is told of each run that leaves it idle, never
+    /// retired, and not told of a run whose last call messaged its parent;
+    /// a member of any other kind (a fork, a council's) is not told of.
+    #[test]
+    fn a_member_is_told_of_each_idle_run_unless_it_just_messaged_its_parent() {
+        use crate::mobs::HelperKind;
+        let (endings, mut rx) = endings();
+        let key = HelperKey::new(MobId::from("tui"), AgentIdentity::from("w1"));
+        endings.spawned(&key, &tagged("w1", HelperKind::Member));
+        for answer in ["one", "two"] {
+            endings.run_started(&key);
+            endings.called(&key, false);
+            endings.run_ended(&key, Terminal::Completed(answer.into()));
+            assert_eq!(
+                rx.try_recv().unwrap().how,
+                How::WentIdle {
+                    answer: answer.into(),
+                    failed: None
+                }
+            );
+        }
+        endings.run_started(&key);
+        endings.called(&key, true);
+        endings.run_ended(&key, Terminal::Completed("bye".into()));
+        assert!(rx.try_recv().is_err(), "its parent has its last message");
+        endings.run_started(&key);
+        endings.run_ended(&key, Terminal::Failed("a 400".into()));
+        assert!(matches!(
+            rx.try_recv().unwrap().how,
+            How::WentIdle {
+                failed: Some(_),
+                ..
+            }
+        ));
+        assert!(endings.is_tracked(&key) && !endings.settled(&key));
+        assert_eq!(endings.retires(), 0);
+        assert_eq!(endings.idle_decided(), 4);
+        let fork = HelperKey::new(MobId::from("tui"), AgentIdentity::from("kid"));
+        endings.spawned(&fork, &tag("kid"));
+        endings.run_ended(&fork, Terminal::Completed("forked".into()));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(endings.idle_decided(), 4);
     }
 
     #[test]

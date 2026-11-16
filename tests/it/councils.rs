@@ -68,7 +68,9 @@ async fn a_two_member_council_completes_with_its_participants_as_helpers() {
                 Step::Text("my view")
             };
         }
-        if user != "convene" {
+        // The agent's conversation opens with "convene"; the members' notes
+        // that they went idle may join it, and the steps go on by count.
+        if common::user_texts(messages).first().map(String::as_str) != Some("convene") {
             return Step::Text("ready");
         }
         match results {

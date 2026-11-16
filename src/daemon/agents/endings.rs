@@ -52,31 +52,54 @@ pub struct NoteItem {
     pub rest: Option<PathBuf>,
 }
 
+/// `answer` as a note carries it: at most [`MAX_ANSWER`] characters,
+/// trimmed, then where the rest is when it was cut (`rest`: the file it was
+/// written to).
+fn bounded(answer: &str, rest: Option<&Path>) -> String {
+    let (shown, cut) = match answer.char_indices().nth(MAX_ANSWER) {
+        Some((byte, _)) => (&answer[..byte], true),
+        None => (answer, false),
+    };
+    let rest = match (rest, cut) {
+        (_, false) => String::new(),
+        (Some(path), true) => format!(
+            "\n\n(The answer is cut at {MAX_ANSWER} characters; the whole of it is in {}.)",
+            path.display()
+        ),
+        (None, true) => format!(
+            "\n\n(The answer is cut at {MAX_ANSWER} characters; the user can read the whole of it in the helper's view.)"
+        ),
+    };
+    format!("{}{rest}", shown.trim())
+}
+
 /// What a parent is told of one ending (no leading list mark).
 fn item_text(item: &NoteItem) -> String {
     const NOT_CONTINUED: &str = "Its file changes stay on disk; its conversation is not continued.";
     let label = &item.label;
     match &item.how {
-        How::Finished { answer } => {
-            let (shown, cut) = match answer.char_indices().nth(MAX_ANSWER) {
-                Some((byte, _)) => (&answer[..byte], true),
-                None => (answer.as_str(), false),
-            };
-            let rest = match (&item.rest, cut) {
-                (_, false) => String::new(),
-                (Some(path), true) => format!(
-                    "\n\n(The answer is cut at {MAX_ANSWER} characters; the whole of it is in {}.)",
-                    path.display()
-                ),
-                (None, true) => format!(
-                    "\n\n(The answer is cut at {MAX_ANSWER} characters; the user can read the whole of it in the helper's view.)"
-                ),
-            };
-            format!(
-                "Your helper `{label}` finished. Its `delegate` call had been cut off by an interrupt, so its answer comes in this note instead:\n\n{}{rest}\n\nIt is retired.",
-                shown.trim()
-            )
-        }
+        How::Finished { answer } => format!(
+            "Your helper `{label}` finished. Its `delegate` call had been cut off by an interrupt, so its answer comes in this note instead:\n\n{}\n\nIt is retired.",
+            bounded(answer, item.rest.as_deref())
+        ),
+        How::Done { answer } => format!(
+            "Your helper `{label}` finished its task. Its answer:\n\n{}\n\nIt is retired: it takes no more messages (start another with `assign` for more work).",
+            bounded(answer, item.rest.as_deref())
+        ),
+        How::WentIdle {
+            answer,
+            failed: None,
+        } => format!(
+            "Your helper `{label}` went idle. Its last message:\n\n{}\n\nIt is still seated: message it with `send_message` for more work, or retire it with `retire_member` when you are done with it.",
+            bounded(answer, item.rest.as_deref())
+        ),
+        How::WentIdle {
+            failed: Some(reason),
+            ..
+        } => format!(
+            "Your helper `{label}` went idle after its run failed: {}. It is still seated: message it with `send_message` to try again, or retire it with `retire_member`.",
+            crate::mobs::endings::plain_reason(reason)
+        ),
         How::Failed { reason } => format!(
             "Your helper `{label}` failed: {}. {NOT_CONTINUED}",
             crate::mobs::endings::plain_reason(reason)
@@ -104,7 +127,7 @@ pub fn note_text(items: &[NoteItem]) -> String {
                 .map(|item| format!("- {}", item_text(item).replace('\n', "\n  ")))
                 .collect::<Vec<_>>()
                 .join("\n");
-            format!("{} of your helpers ended:\n{list}", many.len())
+            format!("{} notes about your helpers:\n{list}", many.len())
         }
     }
 }
@@ -334,6 +357,14 @@ impl Agents {
                 return Some(Recipient::Helper { key, tag });
             }
         }
+        // A member seated in a mob no session created (the workspace's
+        // own, where `assign` and `spawn_member` seat helpers): the helper
+        // above it on its path, which seated it, while it runs.
+        if !tag.parent_path().is_empty()
+            && let Some((key, tag)) = registry.live_by_path(&tag.owner, tag.parent_path())
+        {
+            return Some(Recipient::Helper { key, tag });
+        }
         agent_of(&tag.owner)
     }
 
@@ -392,7 +423,9 @@ impl Agents {
     /// full to its agent's scratch directory (`None`: not cut, or there is
     /// no directory, or it could not be written).
     fn write_rest(&self, ended: &Ended) -> Option<PathBuf> {
-        let How::Finished { answer } = &ended.how else {
+        let (How::Finished { answer } | How::Done { answer } | How::WentIdle { answer, .. }) =
+            &ended.how
+        else {
             return None;
         };
         answer.char_indices().nth(MAX_ANSWER)?;
@@ -427,6 +460,10 @@ impl Agents {
     /// Tell the clients that `ended`'s helper ended and how its parent
     /// heard of it (`told`).
     fn announce_ended(&self, ended: &Ended, told: Option<String>) {
+        // An idle member did not end: its view shows its run's end itself.
+        if matches!(ended.how, How::WentIdle { .. }) {
+            return;
+        }
         let Some(agent) = self.agent_running_as(&ended.tag.owner) else {
             return;
         };
@@ -502,6 +539,39 @@ mod tests {
                 && finished.contains("\n\nthe bug is in parse()\n\n"),
             "{finished}"
         );
+        let done = note_text(&[item(
+            "scout",
+            How::Done {
+                answer: "  the bug is in parse()\n".into(),
+            },
+        )]);
+        assert_eq!(
+            done,
+            "Your helper `scout` finished its task. Its answer:\n\nthe bug is in parse()\n\nIt is retired: it takes no more messages (start another with `assign` for more work)."
+        );
+        let idle = note_text(&[item(
+            "w1",
+            How::WentIdle {
+                answer: "waiting for more".into(),
+                failed: None,
+            },
+        )]);
+        assert_eq!(
+            idle,
+            "Your helper `w1` went idle. Its last message:\n\nwaiting for more\n\nIt is still seated: message it with `send_message` for more work, or retire it with `retire_member` when you are done with it."
+        );
+        let idle_failed = note_text(&[item(
+            "w1",
+            How::WentIdle {
+                answer: String::new(),
+                failed: Some("a 400".into()),
+            },
+        )]);
+        assert!(
+            idle_failed.starts_with("Your helper `w1` went idle after its run failed: a 400.")
+                && idle_failed.contains("`retire_member`"),
+            "{idle_failed}"
+        );
         let stopped = note_text(&[item("scout", How::StoppedByUser)]);
         assert_eq!(
             stopped,
@@ -558,7 +628,9 @@ mod tests {
                 },
             ),
         ]);
-        assert!(text.starts_with("2 of your helpers ended:\n- The user stopped your helper `a`."));
+        assert!(
+            text.starts_with("2 notes about your helpers:\n- The user stopped your helper `a`.")
+        );
         assert!(text.contains("\n- Your helper `b` finished."), "{text}");
         assert!(text.contains("\n  line one\n  line two"), "{text}");
     }

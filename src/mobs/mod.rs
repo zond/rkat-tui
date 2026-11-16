@@ -67,9 +67,14 @@ use std::sync::Arc;
 use meerkat_core::SessionId;
 
 pub use registry::{HelperKey, HelperRegistry};
-pub use registry::{HelperStatus, HelperTag};
+pub use registry::{HelperKind, HelperStatus, HelperTag};
 
 use meerkat_mob_mcp::MobMcpState;
+
+/// The member label an `assign` helper is seated with
+/// (`crate::daemon::assign`): the mob keeps it with the member, so a
+/// helper the engine restores after a restart is still known as one.
+pub const ASSIGN_LABEL: &str = "rkat-tui.assign";
 
 /// Stop every running helper `registry` lists for `owner` in `state`'s mobs:
 /// force-cancel its run, then retire it. Failures are logged. The daemon

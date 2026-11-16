@@ -120,6 +120,7 @@ impl ToolOrigin {
                 if provenance.source_id.as_str() == FILE_TOOLS_SOURCE
                     || provenance.source_id.as_str() == WATCH_TOOLS_SOURCE
                     || provenance.source_id.as_str() == crate::tools::COMPACT_TOOLS_SOURCE
+                    || provenance.source_id.as_str() == crate::tools::ASSIGN_TOOLS_SOURCE
                     || provenance.source_id.as_str() == SKILL_TOOLS_SOURCE
                     || provenance.source_id.as_str() == TOOL_SEARCH_SOURCE =>
             {

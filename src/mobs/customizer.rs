@@ -28,7 +28,13 @@ use crate::bootstrap::HELPER_PERSONA;
 /// deeper. `fork_off` ([`DENIED_SPAWN_TOOLS`]) is denied unless the fork is gated;
 /// the daemon's members keep it
 /// ([`HelperCustomizer::with_gated_fork_off`]) except at the depth limit.
-pub const NESTING_TOOLS: [&str; 4] = ["delegate", "mob_create", "mob_spawn_member", "council"];
+pub const NESTING_TOOLS: [&str; 5] = [
+    "delegate",
+    crate::tools::ASSIGN,
+    "mob_create",
+    "mob_spawn_member",
+    "council",
+];
 
 /// Mob tools denied unless the member's fork is gated
 /// ([`HelperCustomizer::with_gated_fork_off`]): a fork child inherits the
@@ -888,7 +894,9 @@ fn give_scratch(spec: &mut SpawnMemberSpec, dir: &std::path::Path, instruct: boo
 }
 
 impl HelperCustomizer {
-    /// Shape `spec` for `owner`, bind it as `key` and have it followed.
+    /// Shape `spec` for `owner`, bind it as `key` and have it followed. A
+    /// fresh spawn that was `asked` for names its kind; any other keeps
+    /// the kind it was bound with.
     fn admit(
         &self,
         key: HelperKey,
@@ -896,14 +904,21 @@ impl HelperCustomizer {
         spec: &mut SpawnMemberSpec,
         session: Option<&SessionId>,
         fresh: bool,
-        asked: Option<(Asked, Seat)>,
+        asked: Option<(Asked, Seat, super::HelperKind)>,
     ) -> Result<(), MobError> {
         let label = spec.identity.to_string();
+        let kind = match &asked {
+            Some((_, _, kind)) if fresh => *kind,
+            _ => self
+                .registry
+                .owner_for_resume(&key)
+                .map_or(super::HelperKind::Other, |tag| tag.kind),
+        };
         // A rebuilt or respawned member keeps the model its spawn chose
         // (the engine gives its spec the persisted override or profile
         // back).
         let chosen = match asked.filter(|_| fresh) {
-            Some((asked, seat)) => {
+            Some((asked, seat, _)) => {
                 let models = self.models.read().clone();
                 let chosen = choose_model(owner, spec, &self.endpoints, &models, asked, seat)
                     .map_err(refuse)?;
@@ -928,6 +943,7 @@ impl HelperCustomizer {
             owner: owner.session.clone(),
             path,
             model: model.clone(),
+            kind,
         };
         let depth = Depth::admit(&label, tag.path.len(), self.max_depth, fresh)?;
         if spec.auth_binding.is_none() {
@@ -1051,7 +1067,7 @@ impl SpawnMemberCustomizer for HelperCustomizer {
         }
         let asked = Asked::of(ctx)
             .filter(|_| fresh)
-            .map(|asked| (asked, self.seat(ctx, spec)));
+            .map(|asked| (asked, self.seat(ctx, spec), kind_of(ctx, spec)));
         self.admit(key, &owner, spec, None, fresh, asked)
     }
 
@@ -1104,6 +1120,30 @@ impl SpawnMemberCustomizer for HelperCustomizer {
         }
         let owner = self.persisted_owner(&key)?;
         self.admit(key, &owner, spec, Some(&durable.session_id), false, None)
+    }
+}
+
+/// What a fresh spawn starts, as far as its parent's notes go: an `assign`
+/// helper carries [`super::ASSIGN_LABEL`]; a member an agent or helper
+/// seats in a mob of its own (`spawn_member`, `mob_spawn_member`, a batch)
+/// is kept until retired; a `delegate` helper, a `fork_off` child and a
+/// council's participant are told of by their own tools.
+fn kind_of(ctx: &SpawnCustomizationContext, spec: &SpawnMemberSpec) -> super::HelperKind {
+    use super::HelperKind;
+    if spec
+        .labels
+        .as_ref()
+        .is_some_and(|labels| labels.contains_key(super::ASSIGN_LABEL))
+    {
+        return HelperKind::Assigned;
+    }
+    let mob = ctx.mob_id.as_str();
+    match ctx.spawn_source {
+        SpawnSource::Fork | SpawnSource::HelperSpawn | SpawnSource::AttachedForkedParticipant => {
+            HelperKind::Other
+        }
+        _ if mob.starts_with("implicit-") || mob.starts_with("council") => HelperKind::Other,
+        _ => HelperKind::Member,
     }
 }
 

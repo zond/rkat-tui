@@ -26,6 +26,14 @@ fn script() -> Arc<ScriptedLlmClient> {
             .iter()
             .filter(|m| matches!(m, Message::ToolResults { .. }))
             .count();
+        // The note that the member went idle after its first turn (it
+        // stays seated): taken in, nothing done.
+        if common::user_texts(messages)
+            .last()
+            .is_some_and(|last| last.contains("went idle"))
+        {
+            return Step::Text("noted");
+        }
         if user.ends_with("destroy") {
             return match done {
                 // A make in the same conversation came first.
@@ -67,6 +75,19 @@ async fn reveal(rig: &Attached) {
         .await;
 }
 
+/// The member's first turn ended and the agent read the note that it went
+/// idle, and is idle again: nothing of the make is left to land in the
+/// destroy's turn.
+async fn made_and_told(rig: &Attached, llm: &ScriptedLlmClient) {
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .any(|r| !r.user().ends_with("hello") && r.user().contains("went idle"))
+    })
+    .await;
+    rig.daemon.idle(&rig.daemon.agent).await;
+}
+
 /// The mob `team`'s database.
 fn database(ws: &Workspace) -> PathBuf {
     rkat_tui::bootstrap::resolve_scope(&common::args_with(&ws.root, &[]))
@@ -101,8 +122,10 @@ async fn the_agent_destroys_a_mob_it_made_and_its_database_goes() {
     let mut rig = Attached::start(&ws.root, &llm).await;
     reveal(&rig).await;
     rig.send(Effect::StartTurn("make".into()));
-    assert_eq!(rig.turn_finished().await.unwrap().text, "made");
+    // Its text is `noted` when the member's idle note reached the run.
+    assert!(rig.turn_finished().await.is_ok());
     assert!(database(&ws).exists());
+    made_and_told(&rig, &llm).await;
     rig.send(Effect::StartTurn("destroy".into()));
     assert_eq!(rig.turn_finished().await.unwrap().text, "gone");
     let answer = destroyed(&llm);
@@ -118,9 +141,9 @@ async fn a_mob_restored_by_a_later_daemon_is_destroyed_with_its_database() {
     let mut rig = Attached::start(&ws.root, &llm).await;
     reveal(&rig).await;
     rig.send(Effect::StartTurn("make".into()));
-    assert_eq!(rig.turn_finished().await.unwrap().text, "made");
+    assert!(rig.turn_finished().await.is_ok());
     // The member's first turn ended before the daemon stops.
-    common::until(|| llm.recorded().iter().any(|r| r.user().contains("hello"))).await;
+    made_and_told(&rig, &llm).await;
     rig.quit().await;
     assert!(database(&ws).exists());
 

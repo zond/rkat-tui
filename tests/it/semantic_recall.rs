@@ -107,6 +107,7 @@ async fn every_offered_builtin_is_classified_and_memory_search_is_tier_one() {
             || name == rkat_tui::daemon::deferral::reveal::TOOL_SEARCH
             || name == rkat_tui::tools::SKILL_READ
             || name == rkat_tui::tools::COMPACT_READY
+            || name == rkat_tui::tools::ASSIGN
             // Mutating mob tools (the read-only ones are listed).
             || name.starts_with("mob_");
         if !known {

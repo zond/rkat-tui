@@ -407,6 +407,7 @@ impl Followers {
                     .model
                     .clone()
                     .unwrap_or_else(|| default_model.clone()),
+                kind: crate::mobs::HelperKind::Other,
             };
             actions.push(Action::Ui(Msg::Scoped(tag.scope(envelope.payload))));
         }

@@ -450,6 +450,7 @@ mod tests {
             owner: owner.clone(),
             path: vec![label.to_string()],
             model: "m".into(),
+            kind: crate::mobs::HelperKind::Other,
         }
     }
 

@@ -19,6 +19,7 @@ mod approval_policy;
 mod approval_service;
 mod approvals;
 mod approve;
+mod assign;
 mod classifier_check;
 mod classifier_llm;
 mod client;

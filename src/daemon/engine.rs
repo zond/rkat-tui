@@ -246,7 +246,14 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             crate::config::helper_models::HelperModels::of(&layers).unwrap_or_default(),
         ));
     let daemon_endpoints = endpoints.clone();
+    // `assign` for every agent and helper; it seats through the mob state
+    // made below.
+    let assigner = Arc::new(super::assign::Assigner::new(Arc::clone(&registry)));
+    let assign_tools = Arc::new(crate::tools::AssignToolDispatcher::new(
+        Arc::clone(&assigner) as Arc<dyn crate::tools::AssignHost>,
+    ));
     let host = Arc::new(AgentHost {
+        assign: Arc::clone(&assign_tools),
         scope: scope.clone(),
         notes: Arc::clone(&notes),
         skills: Arc::clone(&skill_tools),
@@ -286,7 +293,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     let helper_tools: HelperTools = Arc::new(move || {
         let files =
             FileToolDispatcher::new(project_root.clone(), None).with_search_limits(search_limits);
-        helper_external_tools(files, &helper_skills)
+        helper_external_tools(files, &helper_skills, &assign_tools)
     });
     // The daemon follows its helpers: the
     // registry's running set (and how each ends), and each helper's
@@ -327,6 +334,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         &registry,
     )?;
     prepare.bind(&state);
+    assigner.bind(&state);
     // The agent-facing mob tools (`delegate`, `mob_*`, …) reach a session
     // build through the builder's mob-tools slot. `MethodRouter::new` fills
     // it on the first connection, which is after the agent's spawn:
@@ -736,6 +744,8 @@ fn note_tools(scope: &RuntimeScope) -> NoteToolDispatcher {
 /// What the daemon supplies for its agents on every spawn and rebuild
 /// ([`crate::mobs::customizer::RootHost`]).
 struct AgentHost {
+    /// `assign` (one for every agent: the caller is the call's session).
+    assign: Arc<crate::tools::AssignToolDispatcher>,
     scope: RuntimeScope,
     notes: Arc<NoteToolDispatcher>,
     skills: Arc<crate::tools::SkillToolDispatcher>,
@@ -784,7 +794,12 @@ impl crate::mobs::customizer::RootHost for AgentHost {
             identity.to_string(),
             Arc::clone(&self.prepare) as Arc<dyn crate::tools::CompactHost>,
         ));
-        match agent_tools(files, &self.notes, &self.skills, Some((watch, compact))) {
+        match agent_tools(
+            files,
+            &self.notes,
+            &self.skills,
+            Some((watch, compact, Arc::clone(&self.assign))),
+        ) {
             Ok(tools) => tools,
             Err(err) => {
                 // The same composition succeeded at start for the catalog;
@@ -845,11 +860,13 @@ impl crate::mobs::customizer::RootHost for AgentHost {
 fn helper_external_tools(
     files: FileToolDispatcher,
     skills: &Arc<crate::tools::SkillToolDispatcher>,
+    assign: &Arc<crate::tools::AssignToolDispatcher>,
 ) -> Arc<dyn AgentToolDispatcher> {
     let files = Arc::new(files);
     match ToolGatewayBuilder::new()
         .add_dispatcher(Arc::clone(&files) as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(Arc::clone(skills) as Arc<dyn AgentToolDispatcher>)
+        .add_dispatcher(Arc::clone(assign) as Arc<dyn AgentToolDispatcher>)
         .build()
     {
         Ok(gateway) => Arc::new(gateway),
@@ -860,10 +877,11 @@ fn helper_external_tools(
     }
 }
 
-/// One agent's own watch tools and `compact_ready`.
+/// One agent's own watch tools and `compact_ready`, and `assign`.
 type AgentOwn = (
     Arc<crate::tools::WatchToolDispatcher>,
     Arc<crate::tools::CompactToolDispatcher>,
+    Arc<crate::tools::AssignToolDispatcher>,
 );
 
 /// One agent's external tools: its own file tools (`files`, reporting
@@ -878,7 +896,7 @@ fn agent_tools(
     own: Option<AgentOwn>,
 ) -> Result<Arc<dyn AgentToolDispatcher>, DaemonError> {
     let files = Arc::new(files);
-    let (watch, compact) = own.unwrap_or_else(|| {
+    let (watch, compact, assign) = own.unwrap_or_else(|| {
         (
             Arc::new(crate::tools::WatchToolDispatcher::new(
                 "",
@@ -888,6 +906,9 @@ fn agent_tools(
                 "",
                 Arc::new(crate::tools::NoCompactions) as Arc<dyn crate::tools::CompactHost>,
             )),
+            Arc::new(crate::tools::AssignToolDispatcher::new(
+                Arc::new(crate::tools::NoAssignments) as Arc<dyn crate::tools::AssignHost>,
+            )),
         )
     });
     let gateway = ToolGatewayBuilder::new()
@@ -896,6 +917,7 @@ fn agent_tools(
         .add_dispatcher(Arc::clone(skills) as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(watch as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(compact as Arc<dyn AgentToolDispatcher>)
+        .add_dispatcher(assign as Arc<dyn AgentToolDispatcher>)
         .build()
         .map_err(TuiError::ToolGateway)?;
     Ok(Arc::new(gateway))

@@ -71,11 +71,18 @@ impl Agents {
             }
         };
         if from_helper {
+            // A note of one member's going idle (the daemon's own words,
+            // `super::endings`) is no ending.
+            let label = if prompt.starts_with("Your helper `") && prompt.contains("` went idle") {
+                "a helper went idle"
+            } else {
+                "a helper ended"
+            };
             self.announce(
                 name,
                 session,
                 run,
-                "a helper ended".to_string(),
+                label.to_string(),
                 prompt,
                 "a helper's ending",
             );

@@ -423,6 +423,9 @@ impl<'a> Action<'a> {
             (ToolFamily::Files, crate::tools::COMPACT_READY) if !declared_mutating => {
                 ActionKind::ReadOnlyBuiltin
             }
+            // Starting a helper does nothing by itself: every call it makes
+            // passes the caller's gate (`crate::daemon::assign`).
+            (ToolFamily::Files, crate::tools::ASSIGN) => ActionKind::Delegation,
             // Reading a skill of the agent's own inventory, through the
             // engine's skill runtime: no path, nothing written.
             (ToolFamily::Files, crate::tools::SKILL_READ) if !declared_mutating => {

@@ -36,6 +36,34 @@ pub struct HelperTag {
     pub path: Vec<String>,
     /// The model the helper runs on.
     pub model: String,
+    /// How it was started, which decides what its parent is told of it
+    /// ([`super::endings`]). Absent in the bindings an earlier build wrote:
+    /// [`HelperKind::Other`].
+    #[serde(default, skip_serializing_if = "HelperKind::is_other")]
+    pub kind: HelperKind,
+}
+
+/// How a helper was started, as far as its parent's notes go
+/// ([`super::endings`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HelperKind {
+    /// `assign`: a single-use helper, retired when it finishes its task
+    /// (`crate::daemon::assign`).
+    Assigned,
+    /// A member kept until retired (`spawn_member`, `mob_spawn_member`):
+    /// its parent is told each time it goes idle.
+    Member,
+    /// Anything else (a `delegate` helper, a `fork_off` child, a council's
+    /// participant, a member an earlier build bound).
+    #[default]
+    Other,
+}
+
+impl HelperKind {
+    fn is_other(&self) -> bool {
+        *self == Self::Other
+    }
 }
 
 impl HelperTag {
@@ -182,7 +210,7 @@ pub struct HelperRegistry {
     /// ([`crate::approval::scratch`]): an agent's helpers share its own.
     scratch: crate::approval::scratch::ScratchDirs,
     /// How each helper ends, and when its parent is told.
-    endings: super::endings::HelperEndings,
+    endings: std::sync::Arc<super::endings::HelperEndings>,
 }
 
 impl HelperRegistry {
@@ -211,13 +239,13 @@ impl HelperRegistry {
             live: Mutex::new(IndexMap::new()),
             destroyed: tokio::sync::broadcast::channel(DESTROYED_QUEUE).0,
             scratch: crate::approval::scratch::ScratchDirs::off(),
-            endings: super::endings::HelperEndings::default(),
+            endings: std::sync::Arc::default(),
         }
     }
 
     /// How each helper ends ([`super::endings`]).
     #[must_use]
-    pub fn endings(&self) -> &super::endings::HelperEndings {
+    pub fn endings(&self) -> &std::sync::Arc<super::endings::HelperEndings> {
         &self.endings
     }
 
@@ -254,6 +282,20 @@ impl HelperRegistry {
             .iter()
             .find(|(_, tag)| &tag.owner == owner && tag.path == path)
             .map(|(key, tag)| (key.clone(), tag.clone()))
+    }
+
+    /// The session the helper `key` runs as, once known.
+    #[must_use]
+    pub fn member_session(&self, key: &HelperKey) -> Option<SessionId> {
+        self.bindings
+            .member(key)
+            .and_then(|binding| binding.session)
+    }
+
+    /// The helper bound as running as `session`, live or not.
+    #[must_use]
+    pub fn member_key_of_session(&self, session: &SessionId) -> Option<HelperKey> {
+        self.bindings.member_by_session(session).map(|(key, _)| key)
     }
 
     /// The tag of the running helper `key`.
@@ -707,6 +749,7 @@ mod tests {
             owner: a.clone(),
             path: vec!["scout".into()],
             model: "m-a".into(),
+            kind: HelperKind::Other,
         };
         let key = HelperKey::new(implicit_a.clone(), AgentIdentity::from("scout"));
         registry.spawning(key.clone(), tag.clone()).unwrap();
@@ -750,6 +793,7 @@ mod tests {
             owner: a.clone(),
             path: vec!["scout".into()],
             model: "m".into(),
+            kind: HelperKind::Other,
         };
         let key = HelperKey::new(team.clone(), AgentIdentity::from("scout"));
         registry.spawning(key, tag).unwrap();
@@ -770,6 +814,7 @@ mod tests {
             owner: SessionId::new(),
             path: vec!["outer".into(), "inner".into()],
             model: "m".into(),
+            kind: HelperKind::Other,
         };
         assert_eq!(tag.label(), "inner");
         assert_eq!(tag.depth(), 2);

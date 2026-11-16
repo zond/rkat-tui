@@ -1172,6 +1172,30 @@ A `delegate` helper is a member of the mob `implicit-<session id>` of the
 agent that started it, not of the workspace's mob (`tui`, where the agents
 are); the agent is told so.
 
+**`assign`.** The agent (and a helper that may start helpers) starts a
+single-use helper with `assign` (`name`, `task`, optionally `model`): the
+call returns at once (`Helper scout is running …`) and the agent goes on,
+hearing you and answering while the helper works. The helper starts from a
+fresh context (the task is all it knows), is seated in the agent's own mob
+beside it and wired to it both ways: each sees the other in `peers`, and
+either can `send_message` the other at any time (a message to an idle one
+starts a run for it). When its run ends and nothing is queued for it, its
+parent is told at once with its answer (`Your helper scout finished its
+task. …`, cut at 4 000 characters as above) and it is retired. A message
+from its parent that it has not read yet when its run ends makes it go on
+instead. The transcript shows the call as one line, `assign scout: <task>`.
+A name is 1 to 32 lowercase letters, digits and `-`, not an agent's name
+and not one in use in the mob; anything else is refused with what to do.
+
+**When a kept helper goes idle.** A helper started with `spawn_member` or
+`mob_spawn_member` stays seated after its task. Each time a run of it ends
+and nothing is queued for it, its parent is told once, with its last
+message (`Your helper w1 went idle. …`), delivered as the endings are; it is
+not retired. No note comes when it starts (the spawn's result says so) or
+when it becomes active (its parent or a peer made it so), and none when the
+run's last call was a message to its parent (the parent has its last word).
+A run an idle note starts for the agent is labelled `a helper went idle`.
+
 **Interrupts and helpers.** Esc, Ctrl-C, Ctrl+Enter and Ctrl-X Ctrl-S stop
 the agent's **own** run only: its helpers (delegate helpers, spawned
 members, forks, at any depth) keep working, their tool calls are still

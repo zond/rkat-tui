@@ -377,6 +377,7 @@ fn helper_msg(label: &str, event: AgentEvent) -> Msg {
             owner: meerkat_core::SessionId::new(),
             path: vec![label.to_string()],
             model: "m".into(),
+            kind: crate::mobs::HelperKind::Other,
         }
         .scope(event),
     )

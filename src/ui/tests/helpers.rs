@@ -40,6 +40,7 @@ fn a_nested_helper_is_listed_under_its_parent() {
             owner: meerkat_core::SessionId::new(),
             path: vec!["scout".into(), "inner".into()],
             model: "m".into(),
+            kind: crate::mobs::HelperKind::Other,
         }
         .scope(AgentEvent::ToolCallRequested {
             id: "b".into(),
@@ -213,6 +214,7 @@ fn the_helper_picker_stops_a_running_helper_after_a_confirmation() {
             owner: meerkat_core::SessionId::new(),
             path: vec!["scout".into(), "inner".into()],
             model: "m".into(),
+            kind: crate::mobs::HelperKind::Other,
         }
         .scope(AgentEvent::ToolCallRequested {
             id: "b".into(),
@@ -469,6 +471,7 @@ fn the_helper_picker_folds_and_opens_a_helper() {
             owner: meerkat_core::SessionId::new(),
             path: vec!["scout".into(), "inner".into()],
             model: "m".into(),
+            kind: crate::mobs::HelperKind::Other,
         }
         .scope(AgentEvent::ToolCallRequested {
             id: "b".into(),
@@ -689,6 +692,7 @@ fn the_view_title_names_a_member_idle_and_a_nested_task_s_giver() {
             owner: meerkat_core::SessionId::new(),
             path: vec!["w1".into(), "inner".into()],
             model: "m".into(),
+            kind: crate::mobs::HelperKind::Other,
         }
         .scope(run_started("nested work")),
     );

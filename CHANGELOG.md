@@ -4,6 +4,12 @@
 
 ### Added
 
+- `assign`: the agent starts a single-use helper on a self-contained
+  task and goes on at once, so it still hears you and answers while the
+  helper works. The helper starts from a fresh context, is wired to its
+  parent both ways (each can message the other at any time), and when it
+  finishes its parent is told with its answer and it is retired. The call
+  shows as `assign <name>: <task>`.
 - A call approved once from `/approve` stays on the list, marked
   "approved once · waiting for the agent to run it again", until the
   agent runs it (then it goes); it no longer vanishes as if it had never
@@ -12,6 +18,10 @@
 
 ### Changed
 
+- A helper kept with `spawn_member` or `mob_spawn_member` tells its parent
+  each time it goes idle, with its last message (`Your helper w1 went
+  idle. …`); it stays seated. No note comes for its start or when it
+  becomes active, nor when its last act was a message to its parent.
 - Approving from `/approve` (once, for this session, always, or a kind of
   effect) tells the agent at once and lets it go on: a running turn reads
   the note at its next step and repeats the call instead of ending with a

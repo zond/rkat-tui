@@ -10749,3 +10749,100 @@ with `src/` of the previous commit, all eight time out), the changed
 and `ui::tests::dispatch::{the_approve_picker_marks_a_waiting_approval_and_withdraws_it,
 an_approval_s_run_is_headed_by_why_it_started}`. Engine ask: a way for
 the host to steer a message into a running `delegate` helper's run.
+
+## `assign`: a single-use helper beside its parent; idle notes (owner decision, 2026-11-16)
+
+The owner's complaint about `delegate`: while it runs the orchestrator
+neither hears the user nor says anything, and the call has a deadline;
+`spawn_member` does not block, but its parent is not told when the
+helper is done and the helper stays seated. Decision: an asynchronous
+single-use helper (`assign`), parents told when their helpers change
+state in the ways that matter, duplex messages between helper and parent.
+
+**Where the helper is seated, and the wiring (engine sources).**
+`spawn_member` is the operator dispatcher's
+(`meerkat-mob-0.9.15/src/runtime/tools.rs`, `TOOL_SPAWN_MEMBER` in
+`dispatch_for_owner`): it builds a `SpawnMemberSpec`, records the
+creation source (`MobHandle::capture_member_creation_source` of the
+dispatching session, `CreationSourceCapture::into_admitted_witness`) and
+calls `MobHandle::spawn_spec_receipt_with_generated_owner_context(spec,
+<calling session>)`. The mob actor resolves the spawner from that session
+(`actor.rs`, `spawner_for_bridge_session`: the member bound to it), hands
+it to the spawn customizer as `spawner_identity`, and wires the new member
+to it when `auto_wire_parent` is set (our customizer sets it for every
+fresh child: `customize_spawn`). `assign` (`src/daemon/assign.rs`) makes
+the very same call with the very same spec (the caller's own role as the
+profile, the task as `initial_message`, `auto_wire_parent`, the label
+`rkat-tui.assign`, `model_override` from `model`), so the helper goes
+through the one customizer path (gate, tools, persona, scratch, model
+rule, bookkeeping) and is seated in the caller's own mob (an agent's:
+`tui`), not in the implicit `delegate` mob, whose members the daemon
+cannot address (`mob member is not externally addressable`, the entry
+above). Its peer name is `MemberCommsName` `<mob>/<role>/<name>`
+(`tui/main/scout`), which the call's result names.
+
+**Probes on the rig (scripted model), all in
+`assign::an_assigned_helper_runs_beside_its_parent_talks_both_ways_and_retires_when_done`.**
+The parent's next model call (after the `assign` result) is recorded
+while the helper's first call is held behind a gate: the call returns at
+once. The helper's `peers` lists the parent (`tui/main/main-…`), its
+`send_message` to that peer id is read by the parent's model, which wakes
+for it; the parent's `peers` lists `tui/main/scout`, its `send_message`
+back is read by the helper's model. Wired both ways, as `spawn_member`'s
+helpers are (`agents::a_member_seated_with_auto_wire_parent_is_wired_to_the_agent`).
+
+**What ends a member's run, and "finished".** A run's terminal event
+(`RunCompleted`, `RunFailed`) comes from the helper's own stream; at that
+instant the run's own input can still read as active, and a message that
+arrived during the run is an active input until a run takes it
+(`MeerkatMachine::list_active_inputs`, as the agents' idle decision,
+`daemon/activity.rs`). So "finished" is: a run ended (completed or
+failed) and, asked until none is left (50 ms doubling to 1 s, at most
+10 s), the runtime holds no unfinished input of the helper, and no later
+run started meanwhile (`RunStarted` counts the runs,
+`mobs::endings::HelperEndings::{run_ended, settle_idle, went_idle}`).
+Same-instant rule: a message from the parent that is unread when the run
+ends keeps the helper (the probe sees it; the test releases the helper's
+first run only after the parent's `send_message` returned, and the helper
+answers it in a run after `FIRST-PART`, then is told and retired with
+`HELPER-ANSWER`). With the probe removed the test times out (the helper
+was retired with the message unread). A message sent after the look
+reaches a member being retired: its `send_message` fails as any message
+to a peer that left. That window is the retire's own.
+
+**Retired.** `went_idle` settles the helper, tells the parent (`Done`) and
+retires it through the mob host (force-cancel, then retire, off the
+caller's task); the roster no longer lists it (the same test).
+
+**Idle notes for kept members.** `HelperTag` now carries the helper's
+kind (`HelperKind`: `Assigned`, `Member`, `Other`; persisted in
+`tui_helpers.json` with serde default `Other`, so the bindings an earlier
+build wrote still open and mean what they meant), chosen by the customizer
+on a fresh spawn (`kind_of`: the label, else the spawn source: a fork, a
+`delegate` helper, a council's participant are `Other`; anything seated
+otherwise, `spawn_member` and `mob_spawn_member`, is `Member`) and kept
+from the binding on a rebuild. A `Member` run that ends idle is told once
+(`WentIdle`, its last message, the endings' delivery: steered, a run for
+an idle parent labelled `a helper went idle`, held after an interrupt),
+not retired. Not told: a run whose last tool call was a `send_message` to
+its parent (the follower compares the call's `peer_id` with the parent's
+`member_peer_endpoint`; the parent is the helper above it on its path,
+else its owner session's agent). No note on a start (the spawn's result
+says so) nor on becoming active (its parent or a peer caused it; a note
+there costs a model call and lets two agents wake each other forever).
+The note's recipient for a member of a mob no session created (`tui`) is
+now the helper above it on its path while it runs, else the agent.
+
+Pinned by `assign::{an_assigned_helper_runs_beside_its_parent_talks_both_ways_and_retires_when_done,
+a_spawned_member_s_parent_is_told_when_it_goes_idle_and_it_stays,
+a_member_that_just_messaged_its_parent_goes_idle_untold,
+assign_refuses_a_bad_or_taken_name_saying_what_is_allowed}`,
+`mobs::endings::tests::{an_assigned_helper_is_done_when_its_run_ends,
+a_member_is_told_of_each_idle_run_unless_it_just_messaged_its_parent}`,
+`daemon::agents::endings::tests::each_ending_is_told_in_plain_words`,
+`daemon::assign::tests::a_name_is_short_lowercase_and_no_agent_s`,
+`tools::assign::tests::the_tool_is_one_short_definition_that_asks_the_host`.
+Confirmed failing without the rule: the first (the unread-message probe
+removed: times out at the wait for `HELLO-HELPER`) and the third (the
+last-call check removed: one note told). `mob_destroy`'s script now takes
+the idle note of its `mob_spawn_member` member before the destroy.

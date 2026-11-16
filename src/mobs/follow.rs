@@ -113,6 +113,10 @@ async fn follow(
             // The helper's own `delegate` calls: one that ends without its
             // result leaves the helper's helper seated.
             let mut delegates = super::delegates::DelegateCalls::default();
+            // Its parent's peer id, once a message of it needs it: a run
+            // whose last call messaged the parent tells the parent nothing
+            // more when it goes idle.
+            let mut parent_peer: Option<String> = None;
             loop {
                 tokio::select! {
                     envelope = stream.next() => {
@@ -123,6 +127,26 @@ async fn follow(
                         }
                         for (helper, how) in delegates.observe(runs_as.as_ref(), &envelope.payload) {
                             registry.endings().call_ended(&helper, how);
+                        }
+                        match &envelope.payload {
+                            AgentEvent::RunStarted { .. } => registry.endings().run_started(&key),
+                            AgentEvent::ToolCallRequested { name, args, .. } => {
+                                let to_parent = if name == "send_message" {
+                                    if parent_peer.is_none() {
+                                        parent_peer = peer_of_parent(&state, &registry, &tag).await;
+                                    }
+                                    let peer = args
+                                        .as_value()
+                                        .get("peer_id")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(str::to_string);
+                                    peer.is_some() && peer == parent_peer
+                                } else {
+                                    false
+                                };
+                                registry.endings().called(&key, to_parent);
+                            }
+                            _ => {}
                         }
                         if let Some(terminal) = super::endings::Terminal::of(&envelope.payload) {
                             registry.endings().run_ended(&key, terminal);
@@ -173,6 +197,24 @@ async fn follow(
     } else {
         registry.finished(&key);
     }
+}
+
+/// The comms peer id of the member that started the helper `tag`: the
+/// helper above it on its path, else the agent its owner session runs as
+/// (`None`: neither is seated, or its endpoint cannot be read).
+async fn peer_of_parent(
+    state: &Weak<MobMcpState>,
+    registry: &HelperRegistry,
+    tag: &HelperTag,
+) -> Option<String> {
+    let parent = if tag.parent_path().is_empty() {
+        registry.root_of_session(&tag.owner)?
+    } else {
+        registry.live_by_path(&tag.owner, tag.parent_path())?.0
+    };
+    let handle = state.upgrade()?.handle_for(&parent.mob).await.ok()?;
+    let endpoint = handle.member_peer_endpoint(&parent.member).await.ok()??;
+    Some(endpoint.descriptor.peer_id.to_string())
 }
 
 /// The next structural event of a mob (`None`: they ended, or none are

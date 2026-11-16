@@ -18,6 +18,7 @@
 //! true, .. })`; malformed arguments and internal failures become
 //! `Err(ToolError)`.
 
+mod assign;
 mod compact;
 mod diff;
 mod edit;
@@ -31,6 +32,9 @@ mod skill;
 mod watch;
 mod write;
 
+pub use assign::{
+    ASSIGN, ASSIGN_TOOLS_SOURCE, AssignArgs, AssignHost, AssignToolDispatcher, NoAssignments,
+};
 pub use compact::{
     COMPACT_READY, COMPACT_TOOLS_SOURCE, CompactHost, CompactToolDispatcher, NoCompactions,
 };
