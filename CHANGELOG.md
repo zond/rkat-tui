@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-11-17
+
 ### Added
 
 - Checkpoints of long runs: when one run of an agent or a helper reaches
