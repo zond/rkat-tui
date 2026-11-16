@@ -531,6 +531,7 @@ fn run_started(input: &str) -> AgentEvent {
             content: ContentInput::Text(input.into()),
         },
         request_reasoning: None,
+        reasoning_effort: None,
     }
 }
 

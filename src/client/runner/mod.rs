@@ -2504,6 +2504,7 @@ mod tests {
                     content: ContentInput::Text("x".into()),
                 },
                 request_reasoning: None,
+                reasoning_effort: None,
             })
         }
 
@@ -2530,6 +2531,7 @@ mod tests {
                 run_id: run.clone(),
                 round: 1,
                 resume_point: meerkat_core::event::RunResumePointKind::ToolsPending,
+                reasoning_effort: None,
             })
         }
 

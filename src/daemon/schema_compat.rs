@@ -357,6 +357,14 @@ impl AgentLlmClient for SchemaCompat {
         self.inner.prepare_controller_credential().await
     }
 
+    fn reasoning_route(&self) -> Option<meerkat_core::ReasoningRouteObservation> {
+        self.inner.reasoning_route()
+    }
+
+    fn default_provider_tag(&self) -> Option<meerkat_core::lifecycle::run_primitive::ProviderTag> {
+        self.inner.default_provider_tag()
+    }
+
     fn pin_controller(self: Arc<Self>) -> Option<meerkat_core::ControllerModelClient> {
         Arc::clone(&self.inner).pin_controller()
     }

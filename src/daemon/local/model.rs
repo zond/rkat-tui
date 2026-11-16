@@ -62,6 +62,10 @@ impl Local {
             provider: engine_provider,
             self_hosted_server_id,
             provider_params,
+            // rkat-tui sets no provider-neutral level (its `[thinking]` is
+            // the provider's own parameters above), so there is none to
+            // keep or clear.
+            reasoning_effort: None,
             auth_binding: Some(match auth_binding {
                 Some(binding) => TurnMetadataOverride::Set(binding),
                 None => TurnMetadataOverride::Clear,

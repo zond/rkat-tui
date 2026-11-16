@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The engine is Meerkat 0.9.15 (from 0.9.14). What it brings that you can
+  notice: a provider's error text no longer carries your API key; the
+  realm's `config.toml` and `config_state.json` are readable by you only
+  from their next write; a configuration write that fails is an error
+  instead of an empty file; a helper's start no longer stalls the
+  workspace's mob for up to 30 s when its parent is being woken.
+
 ## [0.0.9] - 2026-11-16
 
 ### Changed

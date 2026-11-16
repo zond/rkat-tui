@@ -154,17 +154,36 @@ async fn a_two_member_council_completes_with_its_participants_as_helpers() {
     rig.quit().await;
 }
 
-/// A council mob the gate never admitted keeps the engine's owner session,
-/// which no session here has: its participants are refused, as any member
-/// of a mob made for a foreign session is.
+/// A mob no session here convened keeps the owner session it was created
+/// for, which no session here has: its participants are refused, as any
+/// member of a mob made for a foreign session is. A council's own id form
+/// (`council--…`) is the engine's alone since Meerkat 0.9.15: a host's
+/// create under it is refused, so no ordinary mob passes for a council.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_council_mob_nobody_convened_here_gets_no_participant() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("never")]);
     let daemon = rig::Running::start(&ws.root, &llm).await;
     let foreign = meerkat_core::SessionId::new();
+    let mut reserved = meerkat_mob::MobDefinition::implicit("unused", common::MODEL);
+    reserved.id = meerkat_mob::MobId::from("council--agent-0123456789abcdef");
+    let refused = within(
+        daemon
+            .state()
+            .mob_create_definition_with_owner_bridge_session(
+                reserved,
+                foreign.clone(),
+                false,
+                false,
+            ),
+    )
+    .await;
+    let Err(err) = refused else {
+        panic!("a host's create under a council's id is refused");
+    };
+    assert!(err.to_string().contains("reserved"), "{err}");
     let mut definition = meerkat_mob::MobDefinition::implicit("unused", common::MODEL);
-    definition.id = meerkat_mob::MobId::from("council--agent-0123456789abcdef");
+    definition.id = meerkat_mob::MobId::from("foreign-0123456789abcdef");
     let mob = within(
         daemon
             .state()

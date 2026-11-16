@@ -10446,3 +10446,62 @@ complete; the registration is detached ... Unregister teardown is still in
 progress" for the agent's session, and the runtime's shutdown then waited
 its own 10 s for "a runtime registration under way". Nothing on our side
 was found holding it; open, in the flaky list.
+
+## The engine moves to crates.io 0.9.15 (2026-11-16)
+
+Every `meerkat-*` line names `version = "0.9.15"`; `cargo update -p
+meerkat` moved the 38 engine crates of the lock together and nothing
+else (no new dependency; `rmcp` stays 1.8, so the RUSTSEC-2026-0462
+ignore in `deny.toml` stays, its reason reworded).
+
+API drift, all additions the compiler named:
+- `meerkat_runtime::SessionLlmReconfigureRequest` gains `reasoning_effort`
+  (the provider-neutral level, decided beside `provider_params`).
+  `rkat/set_model` passes `None` (keep): rkat-tui sets no such level; its
+  `[thinking]` stays the provider's own parameters.
+- `AgentEvent::RunStarted` and `RunResumed` gain `reasoning_effort`
+  (absent when the session sets no level); only test constructors build
+  them. The new `AgentEvent::RequestReasoningEffortResolved` is emitted
+  only for a session with a level, so never here.
+- `AgentLlmClient` gains `reasoning_route` and `default_provider_tag`,
+  both "a wrapper reports the one of the client it delegates to".
+  `layout::forwarding_wrappers_override_every_method_of_their_engine_trait`
+  failed for `SchemaCompat` as designed; it forwards both now.
+
+Behaviour changes the release names that reach this project:
+- A mob id of the form `council--…` is reserved for a council's own mob
+  (#2305): a host's create under it is refused (`ReservedSystemIdentifier`).
+  `councils::a_council_mob_nobody_convened_here_gets_no_participant` built
+  its foreign council mob that way; it now asserts the refusal and makes
+  its foreign mob under an ordinary id (the participant refusal it pins is
+  unchanged).
+- A stop of a mob after a force cancel is refused while a flow run of the
+  mob is active (#2302). rkat-tui sends no mob stop (`mob/lifecycle` is not
+  served; the daemon's stop is `MobHandle::shutdown`, its own machine
+  command), and the client's Esc sends `mob/stop_member_run`, then
+  `mob/force_cancel`, then `mob/hard_cancel_member`, never a stop after a
+  force cancel. Nothing to change.
+- `ask_user` (#2308) is host-mounted (`AskUserHost`,
+  `SessionBuildOptions::host_tools`); no build has it unless its host
+  mounts it, and rkat-tui mounts none, so no session offers it (the exact
+  catalog pins pass unchanged). Offering it needs a dialog to answer the
+  questions; a follow-up.
+
+Stored state: no store's schema or record version changed
+(`meerkat-sqlite` is identical, `meerkat-runtime`'s store module is
+identical, the mob store's version constants are equal; the temporary
+council record gains two optional fields read as absent). The state
+guard (`state_fixtures::*`) passes. A realm a 0.0.9 build wrote was not
+opened by a run; the verdict that it opens is read from these sources.
+
+The open upstream items: 0.9.15 ships the atomic recall of #2182 (#2299),
+the council's convener of #2183 (#2305) and the stored definition update
+of #2184; what this project does with them is recorded after this entry.
+#2180 (exact catalogs for the members' dispatchers) is not in it
+(#2311 is open; `DEFERRED_CATALOG_SCHEMA_VOLUME_THRESHOLD` is still 160),
+so `tool_costs::an_agent_s_request_carries_every_tool_definition` still
+passes and `src/daemon/deferral/` stays. `delegation.rs` is identical
+(#2206, #2207, #2208, #2224, #2225), as are `meerkat-tools` (#2235,
+#2300) and the OpenAI tool-schema lowering (#2234); fork seats are not
+wired to their parent (#2232, #2233); no host call compacts an idle
+session (#2231) or rewinds a member in place (#2126).
