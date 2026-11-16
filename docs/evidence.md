@@ -10505,3 +10505,83 @@ passes and `src/daemon/deferral/` stays. `delegation.rs` is identical
 #2300) and the OpenAI tool-schema lowering (#2234); fork seats are not
 wired to their parent (#2232, #2233); no host call compacts an idle
 session (#2231) or rewinds a member in place (#2126).
+
+## Meerkat 0.9.15's fixes for our asks (2026-11-16)
+
+**Recall (lukacf/meerkat#2182, shipped as #2299): adopted.**
+`MeerkatMachine::recall_queued_input(session, input)` withdraws an input
+only if no run has taken it, in one machine transition guarded on the
+input being `Queued` (the fact a run reads when it takes the input,
+under the same driver lock), and never interrupts a run. It answers
+`Abandoned` (terminal `Abandoned { Cancelled }`), `NotQueued` (a run
+holds it; untouched), `AlreadyTerminal` (untouched) or `Ok(None)` (not
+this session's). `Local::take_back` now makes that one call per input:
+`Abandoned` is `recalled`, the other two `reached`, `None` `foreign`.
+The read-then-`cancel_input_if_present` and its window (a steer staged
+between the two was cancelled while it ran, as a dogfood log showed on
+2026-11-13) are gone, and so is rkat-tui's own
+abandon reason (the engine records "input recalled before it started";
+`rkat/inputs` words it "it was cancelled" as before). Pinned by
+`client_turns::recalling_a_message_typed_during_a_slow_tool_leaves_the_run_alone`,
+`client_turns::recalling_a_steer_that_already_joined_the_run_leaves_it_delivered`,
+`client_turns::interrupt_then_recall_then_resend_during_a_stall_delivers_once`
+and `agents::an_agent_cannot_recall_another_agents_input`, which pass on
+the engine's call. The window itself has no deterministic test (it is a
+race inside the engine); the engine's own rows are
+`meerkat_machine/queued_input_recall_tests.rs`.
+
+**The council's convener (#2183, shipped as #2305): adopted.** A
+council's mob is created for a session of the council's own, as before,
+and its `MobCreateRequest` now carries `council:
+Some(MobCreateCouncilOrigin { council_id, convener_session_id })`: the
+session the `council` tool's surface is bound to, `None` for a council a
+host runs directly. The create hook (`mobs::install_mob_hooks`) records
+the mob for the convener when there is one, else for the request's owner
+session as before. Gone with it: `mobs::council::Convening` (the
+admission wrapped around every agent's and helper's gate that derived
+the mob id of each admitted `council` call and expected it, and dropped
+the expectation when the call failed), `HelperRegistry::{expect_council,
+council_failed}` and its `councils` map. What stays: `council_mob` and
+the copied `AGENT_COUNCIL_NAMESPACE`, which the client uses to follow a
+council's participants from the agent's `council` call
+(`client::helpers::Followers::convening`): the client never sees the
+create request, and the daemon pushes no such fact. The engine also
+reserves `council--…` ids for a council's own mob now (a host create
+under one is refused, `ReservedSystemIdentifier`), so no ordinary mob
+passes for a council. Pinned by
+`councils::a_two_member_council_completes_with_its_participants_as_helpers`
+(the participants' reviewed call is judged against the convening agent's
+transcript and the client follows them; without the convener the
+participants are refused as helpers of a foreign session) and
+`councils::a_council_mob_nobody_convened_here_gets_no_participant`;
+unit: `mobs::registry::tests::a_council_works_for_the_session_it_is_recorded_for_and_no_other`.
+The registry test of the expectation's first-come rule went with the
+rule.
+
+**Updating a stored mob definition (#2184, shipped): not adopted.**
+`MobMcpState::mob_stored_definition` and `mob_update_stored_definition`
+read and compare-and-set a cold mob's stored definition, before the
+state's first mob verb (a mob already restored is refused `Managed`).
+Updating the `tui` mob's `main` at each start would make the stored
+profile current, but it does not reach the agents seated so far: each
+member's roster row keeps the override profile it was seated with
+(`RosterEntry::effective_profile_override`, put back on every resume
+spec by `fork_build.rs` `member_resume_spec`), and every agent was
+seated with `main_profile` as its override. Dropping the override would
+need the customizer to clear `override_profile` on every rebuild, which
+is the same special case in another form, plus a start-time update path
+of its own. So `main_profile` and `RootMember::current_profile` stay
+(`compact::a_changed_compaction_policy_reaches_an_existing_realms_agent`
+and `helper_models::a_helper_of_the_stored_main_profile_runs_on_the_agent_s_model`
+keep pinning them); the question whether a rebuild may drop a stored
+override for good is drafted for upstream.
+
+**Not in 0.9.15:** #2180 (#2311 is open), #2206, #2207, #2208, #2224,
+#2225, #2231, #2232, #2233, #2234, #2235, #2300; #2126 has no host call
+(the 0.9.15 member-rewind code is the fork-shaped one already there).
+`meerkat-core`'s `session_store.rs`, which words the refusal of a
+system-context append right after an interrupted run, is identical, so
+the held note keeps travelling in the user's next message (not
+re-probed). The teardown stall seen once in
+`helper_models::a_fork_runs_on_its_parent_s_current_model` was not seen
+in this move's gate runs; it stays in the flaky list.

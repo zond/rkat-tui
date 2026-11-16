@@ -114,9 +114,19 @@ pub(crate) fn install_mob_hooks(state: &Arc<MobMcpState>, registry: &Arc<HelperR
         move |request: meerkat_mob_mcp::MobCreateRequest| -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
         > {
-            // A host-made mob has no creator session: nothing to record, and
-            // its spawns are refused unless a helper spawns them.
-            let recorded = match (created.upgrade(), request.owner_bridge_session_id.as_ref()) {
+            // A council's mob is created for a session of the council's own:
+            // its participants work for the session that convened it, which
+            // the engine names. A council nobody convened (a host ran it)
+            // keeps the council's session, which no session here has, so
+            // its participants are refused. A host-made mob has no creator
+            // session: nothing to record, and its spawns are refused unless
+            // a helper spawns them.
+            let creator = request
+                .council
+                .as_ref()
+                .and_then(|council| council.convener_session_id.as_ref())
+                .or(request.owner_bridge_session_id.as_ref());
+            let recorded = match (created.upgrade(), creator) {
                 (Some(registry), Some(owner)) => registry
                     .record_mob(&request.mob_id, owner)
                     .map_err(|err| format!("rkat-tui cannot record the mob's owner: {err}")),

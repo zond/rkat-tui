@@ -174,10 +174,6 @@ pub struct HelperRegistry {
     bindings: HelperBindings,
     /// Running helpers, in spawn order.
     live: Mutex<IndexMap<HelperKey, HelperTag>>,
-    /// The councils the gate admitted and the session that convened each,
-    /// by the temporary mob the engine creates for it
-    /// ([`super::council`]).
-    councils: Mutex<HashMap<MobId, SessionId>>,
     /// Each destroyed mob, as the host's after-destroy hook reports it
     /// (again before each retry of its storage cleanup): what still
     /// observes the mob lets go ([`Self::destroyed_mobs`]).
@@ -213,7 +209,6 @@ impl HelperRegistry {
             roots: RwLock::new(HashMap::new()),
             bindings,
             live: Mutex::new(IndexMap::new()),
-            councils: Mutex::new(HashMap::new()),
             destroyed: tokio::sync::broadcast::channel(DESTROYED_QUEUE).0,
             scratch: crate::approval::scratch::ScratchDirs::off(),
             endings: super::endings::HelperEndings::default(),
@@ -387,41 +382,15 @@ impl HelperRegistry {
         self.bindings.forget_owner(session);
     }
 
-    /// `mob` was created for the bridge session `owner`; a council's
-    /// temporary mob ([`Self::expect_council`]) is recorded for the session
-    /// that convened it instead.
+    /// `mob`'s helpers work for the session `owner` (the bridge session it
+    /// was created for, or the one that convened its council,
+    /// [`super::install_mob_hooks`]).
     ///
     /// # Errors
     ///
     /// [`BindingsError`] when the binding cannot be persisted.
     pub fn record_mob(&self, mob: &MobId, owner: &SessionId) -> Result<(), BindingsError> {
-        let convener = self.councils.lock().get(mob).cloned();
-        self.bindings
-            .set_mob_owner(mob, convener.as_ref().unwrap_or(owner))
-    }
-
-    /// The gate admitted a council that `session` convened, for which the
-    /// engine creates `mob`: its participants work for `session`.
-    /// A council already expected for `mob` keeps its convener: a second
-    /// call naming the same id is not recorded (its participants are then
-    /// refused), so it cannot take the first one's participants.
-    pub fn expect_council(&self, mob: MobId, session: SessionId) {
-        self.councils.lock().entry(mob).or_insert(session);
-    }
-
-    /// The council call for `mob` that `session` convened failed: no mob
-    /// comes of it, and its entry goes (a later council may use the id).
-    pub fn council_failed(&self, mob: &MobId, session: &SessionId) {
-        let mut councils = self.councils.lock();
-        if councils.get(mob) == Some(session) {
-            councils.remove(mob);
-        }
-    }
-
-    /// The session expected to convene `mob`, when one is (tests).
-    #[cfg(test)]
-    fn convener(&self, mob: &MobId) -> Option<SessionId> {
-        self.councils.lock().get(mob).cloned()
+        self.bindings.set_mob_owner(mob, owner)
     }
 
     /// Whom a helper spawned into `mob` works for: the owner of
@@ -558,7 +527,6 @@ impl HelperRegistry {
     /// `mob` was destroyed: drop its helpers everywhere. Idempotent.
     pub fn mob_destroyed(&self, mob: &MobId) {
         self.live.lock().retain(|key, _| &key.mob != mob);
-        self.councils.lock().remove(mob);
         let _ = self.destroyed.send(mob.clone());
         if let Err(err) = self.bindings.remove_mob(mob) {
             tracing::warn!(mob = %mob, error = %err, "cannot drop the mob's bindings");
@@ -660,22 +628,23 @@ mod tests {
         );
     }
 
+    /// A council's mob is recorded for the session that convened it (the
+    /// engine names it in the create request, `super::install_mob_hooks`);
+    /// one recorded for a session not open here gets no participant, and a
+    /// destroyed one's record goes.
     #[test]
-    fn a_council_works_for_the_session_that_convened_it_and_no_other() {
+    fn a_council_works_for_the_session_it_is_recorded_for_and_no_other() {
         use meerkat_mob::MobId;
 
         let registry = HelperRegistry::in_memory();
         let agent = SessionId::new();
         registry.register_session(&agent, "m", None);
-        // The engine creates a council's mob for a fresh session of its own.
         let convened = MobId::from("council--agent-1");
-        registry.expect_council(convened.clone(), agent.clone());
-        registry.record_mob(&convened, &SessionId::new()).unwrap();
+        registry.record_mob(&convened, &agent).unwrap();
         assert_eq!(
             registry.owner_for_spawn(&convened, None).unwrap().session,
             agent
         );
-        // One the gate never admitted keeps that foreign session.
         let foreign = MobId::from("council--agent-2");
         let stranger = SessionId::new();
         registry.record_mob(&foreign, &stranger).unwrap();
@@ -683,13 +652,10 @@ mod tests {
             registry.owner_for_spawn(&foreign, None),
             Err(OwnerError::UnknownSession(stranger))
         );
-        // Destroyed, the expectation goes with it.
         registry.mob_destroyed(&convened);
-        let again = SessionId::new();
-        registry.record_mob(&convened, &again).unwrap();
         assert_eq!(
             registry.owner_for_spawn(&convened, None),
-            Err(OwnerError::UnknownSession(again))
+            Err(OwnerError::UnknownMob(convened))
         );
     }
 
@@ -767,23 +733,6 @@ mod tests {
         registry.retired(&key);
         assert!(registry.owner_for_resume(&key).is_err());
         assert!(registry.owner_for_spawn(&nested_mob, None).is_err());
-    }
-
-    /// A council expected for a mob keeps its convener against a second
-    /// call naming the same id, and its entry goes when its call failed
-    /// (only the convener's failure removes it).
-    #[test]
-    fn a_council_entry_is_not_taken_over_and_goes_when_its_call_failed() {
-        let registry = HelperRegistry::in_memory();
-        let (first, second) = (SessionId::new(), SessionId::new());
-        let mob = MobId::from("council-x");
-        registry.expect_council(mob.clone(), first.clone());
-        registry.expect_council(mob.clone(), second.clone());
-        assert_eq!(registry.convener(&mob), Some(first.clone()));
-        registry.council_failed(&mob, &second);
-        assert_eq!(registry.convener(&mob), Some(first.clone()));
-        registry.council_failed(&mob, &first);
-        assert_eq!(registry.convener(&mob), None);
     }
 
     #[test]

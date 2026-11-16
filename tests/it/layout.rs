@@ -181,11 +181,6 @@ fn forwarding_wrappers_override_every_method_of_their_engine_trait() {
         ),
         (
             "pub trait ToolDispatchAdmission",
-            "src/mobs/council.rs",
-            "impl ToolDispatchAdmission for Convening",
-        ),
-        (
-            "pub trait ToolDispatchAdmission",
             "src/daemon/approvals.rs",
             "impl ToolDispatchAdmission for RootGate",
         ),

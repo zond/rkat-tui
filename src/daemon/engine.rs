@@ -812,18 +812,12 @@ impl crate::mobs::customizer::RootHost for AgentHost {
     }
 
     /// The daemon's gate (`RootGate`: the tiers, rules, classifier and
-    /// modes, consent through the approval store); a council the agent
-    /// convenes works for it.
+    /// modes, consent through the approval store).
     fn admission(&self, key: &HelperKey) -> Option<Arc<dyn meerkat_core::ToolDispatchAdmission>> {
-        let gate = Arc::new(RootGate::new(
+        Some(Arc::new(RootGate::new(
             Arc::clone(&self.engine),
             Arc::clone(&self.registry),
             key.clone(),
-        ));
-        Some(Arc::new(crate::mobs::council::Convening::new(
-            gate,
-            &self.registry,
-            None,
         )))
     }
 

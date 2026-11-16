@@ -85,7 +85,7 @@ shell (`src/user_shell.rs`) and the client's start-on-demand of the
 | `src/ui/` | Elm-style UI: `App::update(Msg) -> Vec<Effect>` (`mod.rs`), split by concern (`turns.rs`, commands held for a turn's end `deferred.rs`, `keys.rs`, peer messages `peer.rs`, `mouse.rs`, `dispatch.rs`, `delivery.rs`, `escalations.rs`, `helpers.rs`, `shell.rs`), rendering (`render.rs`), the input editor, the command table (`commands.rs`), completion, modals, the list pickers of `/schedules` and the like (`picker.rs`), the checklist; `ui/tests/` holds its unit tests split the same way |
 | `src/ui/transcript/` | The transcript model: blocks, the event-to-block mapping, helper folds (`helpers.rs`), notices (`notices.rs`), a stored conversation as blocks (`restore.rs`), a tool call as one plain line (`tool_line.rs`), a detached job's outcome (`outcome.rs`) |
 | `src/tools/` | The file tools the agent gets (the shell is the engine's), their search budget and cancellation (`scan.rs`), the watch tools (`watch.rs`), the agents' `compact_ready` (`compact.rs`), and `skill_read` over the engine's skill runtime (`skill.rs`) |
-| `src/mobs/` | Helpers (delegate) as mob members: the customizer with the members' tool policy, follower, registry, the councils the gate records (`council.rs`), the helpers of `delegate` calls that ended without their result (`delegates.rs`) |
+| `src/mobs/` | Helpers (delegate) as mob members: the customizer with the members' tool policy, follower, registry, the council mob a `council` call creates (`council.rs`), the helpers of `delegate` calls that ended without their result (`delegates.rs`) |
 | `src/memory/` | Notes at user and workspace scope, memory tools |
 | `src/endpoints/` | LLM endpoints: the types and `Endpoint`'s kinds (`mod.rs`: built-in, gateway, self-hosted), `endpoint:model` references (`refs.rs`), which endpoints this process has (`discover.rs`), their projection into the realm document (`project.rs`), the start-up plan (`startup.rs`) |
 | `src/models.rs`, `src/pricing.rs`, `src/cost.rs`, `src/thinking.rs` | Model listing, price table, token totals by model and their price (the daemon counts them, `daemon/usage.rs`), the per-model `[thinking]` setting |
@@ -145,12 +145,11 @@ repository). Open upstream issues this code waits on:
   dispatchers. rkat-tui's own search and reveal
   (`src/daemon/deferral/reveal.rs`) goes when it ships; `tests/it/tool_costs.rs`
   fails on purpose that day.
-- #2182: an atomic "cancel if still queued" for `rkat/recall`
-  (`Local::recall`'s lookup-then-cancel leaves a window in which the
-  cancel interrupts a run that just started).
-- #2183: a council's convener named by the engine (`src/mobs/council.rs`).
 - #2184: updating a stored mob definition (the agents' override profile,
-  `src/daemon/mob.rs` `main_profile`).
+  `src/daemon/mob.rs` `main_profile`). 0.9.15 ships the update, but each
+  member's roster row keeps the override profile it was seated with, so
+  the override stays until a rebuild can drop it (`docs/evidence.md`,
+  "Meerkat 0.9.15's fixes for our asks").
 - #2126: rewinding a session in place under the same identity; `/rewind`
   returns then.
 - #2206: a `delegate` call that times out leaves its helper seated.

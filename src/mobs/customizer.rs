@@ -739,12 +739,7 @@ fn shape(
     )
     .after(spec.tool_dispatch_admission.take())
     .stopping_with(on_stop);
-    // A council it convenes works for its owner, through it.
-    spec.tool_dispatch_admission = Some(Arc::new(super::council::Convening::new(
-        Arc::new(gate),
-        registry,
-        None,
-    )));
+    spec.tool_dispatch_admission = Some(Arc::new(gate));
     if spec.external_tools.is_none() {
         spec.external_tools = Some(tools());
     }

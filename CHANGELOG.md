@@ -11,6 +11,13 @@
   instead of an empty file; a helper's start no longer stalls the
   workspace's mob for up to 30 s when its parent is being woken.
 
+### Fixed
+
+- Taking back a message you typed while the agent was busy could, in a
+  short window, interrupt the run that had just picked it up. The engine
+  now decides in one step: a message still waiting is taken back, one the
+  agent already has is left alone, and no run is ever interrupted.
+
 ## [0.0.9] - 2026-11-16
 
 ### Changed

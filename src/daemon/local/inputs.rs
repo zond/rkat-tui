@@ -3,9 +3,6 @@
 
 use super::*;
 
-/// The reason recorded on an input `rkat/recall` abandons.
-const RECALL_REASON: &str = "rkat-tui: recalled by the user";
-
 impl Local {
     /// `rkat/recall` for `caller` ([`Self::take_back`]); what was taken
     /// back may leave the agent idle.
@@ -22,15 +19,11 @@ impl Local {
     }
 
     /// The queued `inputs` of `caller`'s agent, taken back: only its own
-    /// agent's current
-    /// conversation is searched, so another agent's input is never
-    /// touched. A queued input is abandoned (`cancel_input_if_present`);
-    /// any other state means the agent has it, and nothing is cancelled
-    /// (that call would interrupt the input's run). A steer staged between
-    /// the read and the cancel is the remaining window: an input that starts
-    /// its run in between is cancelled while it runs, interrupting it. An
-    /// atomic "abandon if still queued" is lukacf/meerkat#2182; this
-    /// lookup-then-cancel goes when it ships.
+    /// agent's current conversation is searched, so another agent's input
+    /// is never touched. The engine decides each in one step
+    /// (`MeerkatMachine::recall_queued_input`): an input still queued is
+    /// abandoned; one a run has taken, or one that ended, is left as it is
+    /// (the agent has it), and no run is ever interrupted.
     ///
     /// # Errors
     ///
@@ -41,25 +34,16 @@ impl Local {
         caller: &Caller,
         inputs: &[meerkat_core::lifecycle::InputId],
     ) -> Result<protocol::Recalled, Refusal> {
-        use meerkat_runtime::SessionServiceRuntimeExt as _;
-        use meerkat_runtime::input_state::InputLifecycleState;
-
         let session = self.caller_session(caller, "rkat/recall takes back")?;
         let mut answer = protocol::Recalled::default();
         for input in inputs {
-            match self.parts.machine.input_state(&session, input).await {
-                Ok(Some(stored)) if stored.seed.phase == InputLifecycleState::Queued => {
-                    match self
-                        .parts
-                        .machine
-                        .cancel_input_if_present(&session, input, RECALL_REASON)
-                        .await
-                    {
-                        Ok(true) => answer.recalled.push(input.clone()),
-                        Ok(false) => answer.reached.push(input.clone()),
-                        Err(err) => answer.errors.push(format!("input {input}: {err}")),
-                    }
-                }
+            match self
+                .parts
+                .machine
+                .recall_queued_input(&session, input)
+                .await
+            {
+                Ok(Some(recall)) if recall.abandoned() => answer.recalled.push(input.clone()),
                 Ok(Some(_)) => answer.reached.push(input.clone()),
                 Ok(None) => answer.foreign.push(input.clone()),
                 Err(err) => answer.errors.push(format!("input {input}: {err}")),
