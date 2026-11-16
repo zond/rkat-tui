@@ -7,7 +7,8 @@
 //! approves one of them:
 //!
 //! - **once** ([`GrantScope::Once`]): the next identical call of the
-//!   session passes, as the escalation dialog's allow once does;
+//!   session passes, as the escalation dialog's allow once does (the call
+//!   stays listed as waiting until then, [`BlockedCall::approved_once`]);
 //! - **for this session** ([`GrantScope::Session`]): a grant that lives in
 //!   the daemon for the session and its helpers, applied live;
 //! - **always** ([`GrantScope::Always`]): the same grant written through
@@ -148,6 +149,12 @@ pub struct BlockedCall {
     /// The grant "for this session" and "always" would make, if one fits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant: Option<GrantTarget>,
+    /// The user approved it once and the agent has not run it again yet:
+    /// it stays listed until the identical call uses the approval up
+    /// (`/approve` shows it as waiting; withdrawing makes it a blocked
+    /// call again).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approved_once: bool,
 }
 
 /// A grant in force, as `/permissions` lists it.

@@ -411,6 +411,7 @@ impl Local {
             method::Blocked, Empty {} => self.blocked(&caller);
             method::Approve, protocol::ApproveParams { id, scope, effect } => self.approve(&caller, id, scope, effect.as_deref());
             method::RemoveGrant, protocol::GrantParams { id } => self.remove_grant(&caller, id);
+            method::WithdrawApproval, protocol::GrantParams { id } => self.withdraw_approval(&caller, id);
             method::RemoveStatement, protocol::GrantParams { id } => self.remove_statement(&caller, id);
             method::Conversations, Empty {} => Ok(self.conversation_list(&caller).await);
             method::New, Empty {} => self.switch(&self.agent_of(&caller)?, Target::Fresh).await;

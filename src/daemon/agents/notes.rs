@@ -1,10 +1,15 @@
 //! What the daemon tells an agent about the others: the roster and
-//! membership notes (pure text), and how every note reaches an agent
-//! ([`append_note`], [`Agents::send_notes`]).
+//! membership notes (pure text), and how every note reaches an agent:
+//! appended to its system context, read at its next turn and waking
+//! nobody ([`append_note`], [`Agents::send_notes`]), or steered into its
+//! run, which starts one when it is idle ([`steer_member`],
+//! [`Agents::steer`]): a helper's ending and an approval from `/approve`
+//! ([`Agents::approved`]).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use meerkat_core::SessionId;
 use meerkat_mob::{AgentIdentity, MobId};
 use meerkat_mob_mcp::MobMcpState;
 
@@ -170,6 +175,167 @@ pub(crate) async fn note_compacted(state: Arc<MobMcpState>, agent: String, note:
     .await
     {
         tracing::warn!(%agent, error = %err, "the agent could not be told about its compaction");
+    }
+}
+
+/// Steer `text` into member `member` of `mob`: into its open run, which
+/// reads it at its next step, or as the input of a run that starts for
+/// it when it is idle. Every message the daemon sends a member to act on
+/// now goes through here (a helper's ending, an approval, a plan-mode
+/// change, a watch's batch, the smart compaction's request). It returns
+/// once the engine took the input, not when a run ends.
+///
+/// # Errors
+///
+/// The engine's refusal of the send.
+pub(crate) async fn steer_member(
+    state: &MobMcpState,
+    mob: &MobId,
+    member: AgentIdentity,
+    text: String,
+) -> Result<(), meerkat_mob::MobError> {
+    state
+        .mob_member_send(
+            mob,
+            member,
+            meerkat_core::types::ContentInput::from(text),
+            meerkat_core::types::HandlingMode::Steer,
+            None,
+        )
+        .await
+        .map(drop)
+}
+
+/// Why the daemon steers a message into one of its agents
+/// ([`Agents::steer`]): who a run it starts belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Wake {
+    /// A helper of it ended ([`super::endings`]): a run it starts is no
+    /// user's, attributed as "a helper ended".
+    HelperEnded,
+    /// The user approved a blocked call of it (`/approve`): a run it
+    /// starts is the user's (attended, [`crate::approval::attendance`]).
+    Approved,
+}
+
+/// The line a client shows over the note of an approval from `/approve`
+/// (the run it starts, or the running turn it went into).
+pub const APPROVED_LABEL: &str = "approved: the agent is told and goes on";
+
+impl Agents {
+    /// Steer `text` into `name`'s run, or start a run with it when it is
+    /// idle ([`steer_member`]), recorded as `wake`'s so the run it starts
+    /// is attributed: a helper's ending's is no user's; an approval's is
+    /// the user's, marked so before the send when the agent is idle (the
+    /// next run that starts takes it, [`ApprovalEngine::human_input`]) and
+    /// again when it starts with this text (the agent's run ended between
+    /// the look and the send, [`ApprovalEngine::user_started`]).
+    ///
+    /// [`ApprovalEngine::human_input`]: crate::approval::ApprovalEngine::human_input
+    /// [`ApprovalEngine::user_started`]: crate::approval::ApprovalEngine::user_started
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal of the send, in words.
+    pub(crate) async fn steer(&self, name: &str, text: String, wake: Wake) -> Result<(), String> {
+        let sent = match wake {
+            Wake::HelperEnded => &self.helper_sent,
+            Wake::Approved => &self.approval_sent,
+        };
+        sent.lock().insert(name.to_string(), text.clone());
+        if wake == Wake::Approved
+            && !self.core.activity.running(name)
+            && let Some(session) = self.core.conversations.current(name)
+        {
+            self.core.engine.human_input(&session);
+        }
+        let _sending = self.core.activity.sending(name);
+        let steered = steer_member(
+            &self.core.state,
+            &MobId::from(MOB_ID),
+            AgentIdentity::from(name),
+            text,
+        )
+        .await;
+        steered.map_err(|err| {
+            sent.lock().remove(name);
+            err.to_string()
+        })
+    }
+
+    /// A run of `name` started with input `prompt`: whether it is the run
+    /// an approval's note started ([`Wake::Approved`]); it is then the
+    /// user's run (in `session`, marked as such).
+    pub(crate) fn approval_run(
+        &self,
+        name: &str,
+        session: &SessionId,
+        run: &meerkat_core::RunId,
+        prompt: &str,
+    ) -> bool {
+        let mut sent = self.approval_sent.lock();
+        if sent
+            .get(name)
+            .is_none_or(|text| !prompt.contains(text.as_str()))
+        {
+            return false;
+        }
+        sent.remove(name);
+        drop(sent);
+        self.core.engine.user_started(session, run);
+        true
+    }
+
+    /// The user approved a blocked call of `session` from `/approve`:
+    /// tell the agent that runs `session` at once, so it goes on.
+    ///
+    /// - **Who.** The agent, for its own calls and its helpers' alike (a
+    ///   helper's is named as that helper's in the note). The engine admits
+    ///   no message from the daemon into a `delegate` helper's run (its
+    ///   member send is refused "not externally addressable", and the
+    ///   host's keyed send is a continuation its run does not read before
+    ///   it ends: both probed, `docs/evidence.md`); the approval holds for
+    ///   the agent and its helpers, so the agent makes the call again
+    ///   itself or through a helper.
+    /// - **How.** Steered ([`Self::steer`]): into the agent's running
+    ///   turn (it reads it at its next step: after its `delegate` returns,
+    ///   when a helper's call was blocked), or as a run of its own when it
+    ///   is idle. That run is the user's (the user's `/approve` is the
+    ///   user's act): attended, and its clients show it under
+    ///   [`APPROVED_LABEL`].
+    /// - **Not held after an interrupt.** A helper's ending to an agent
+    ///   whose run the user just interrupted waits for the user's next
+    ///   message ([`super::endings`]); an approval does not: the user is
+    ///   acting on this agent right now, so the run starts. (The engine
+    ///   refuses an append to the system context right after an
+    ///   interrupted run, not a message.)
+    ///
+    /// A failure is a warning to the agent's clients.
+    pub async fn approved(&self, session: &SessionId, approved: crate::approval::Approved) {
+        let Some(name) = self.agent_running_as(session) else {
+            tracing::info!("the approval's conversation is no agent's now: nobody is told");
+            return;
+        };
+        let text = approved.note;
+        match self.steer(&name, text.clone(), Wake::Approved).await {
+            Ok(()) => {
+                self.audit_run(&name, None, "approval_told", text.clone());
+                self.tell_triggered(&name, session, APPROVED_LABEL.to_string(), text);
+            }
+            Err(err) => {
+                tracing::warn!(agent = %name, error = %err, "the agent was not told of the approval");
+                self.core.decisions.broadcast(
+                    crate::daemon::protocol::AGENT_NOTICE,
+                    &crate::daemon::protocol::AgentNotice {
+                        agent: name,
+                        warn: true,
+                        text: format!(
+                            "the agent was not told of the approval (it runs the call when it tries it again): {err}"
+                        ),
+                    },
+                );
+            }
+        }
     }
 }
 

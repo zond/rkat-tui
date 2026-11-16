@@ -928,6 +928,13 @@ impl Watcher {
         if new {
             agents.helpers_run_started(&self.name);
         }
+        // A run an approval's note started is the user's (its clients were
+        // told of it when it was sent).
+        if let (Some(run), Some(prompt)) = (run, prompt.as_deref())
+            && agents.approval_run(&self.name, session, run, prompt)
+        {
+            return;
+        }
         if let (Some(run), Some(prompt)) = (run, prompt)
             && !engine.human_run(session, run)
         {

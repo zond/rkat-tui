@@ -70,7 +70,9 @@ pub use modal::{
 pub use picker::Does;
 #[cfg(any(test, feature = "test-support"))]
 pub use picker::PickerLine;
-pub use picker::{AgentEntry, Field, FieldFor, ListPicker, PickAct, PickKey, PickRow, PickerKind};
+pub use picker::{
+    AgentEntry, Field, FieldFor, ListPicker, PickAct, PickKey, PickRow, PickerKind, approve_picker,
+};
 
 /// A picker's lines as text, `width` wide (tests of pickers built
 /// elsewhere).
@@ -763,6 +765,9 @@ pub enum Effect {
     /// scope (with a statement: allow that kind of action instead), then
     /// the picker's list again.
     PickedApproval(u64, crate::approval::grants::GrantScope, Option<String>),
+    /// The `/approve` picker's `w`: withdraw the approval once of call
+    /// `id`, then the picker's list again.
+    PickedWithdrawal(u64),
     /// `/trust`: record every project input's digest
     /// in the host trust record; their servers and hooks run from the next
     /// session.

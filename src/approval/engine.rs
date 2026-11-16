@@ -244,7 +244,9 @@ struct SessionState {
 }
 
 /// What an approval or a grant tells the user (`notice`) and the agent
-/// (`note`, a system note: what is now allowed).
+/// (`note`: what is now allowed; for an approval from `/approve`, to run
+/// the call again and go on, worded as its helper's when a helper made
+/// it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Approved {
     /// For the user.
@@ -780,6 +782,23 @@ impl ApprovalEngine {
             .is_some_and(|state| state.runs.human.contains(run))
     }
 
+    /// `run` of `session_id`, which started already, is one the user
+    /// started: the run the daemon started with the note of an `/approve`
+    /// (`crate::daemon::agents::Agents::steer`), when the agent's previous
+    /// run ended between the daemon's look and its send, so no client's
+    /// input was marked waiting for it ([`Self::human_input`]).
+    pub fn user_started(&self, session_id: &SessionId, run: &RunId) {
+        let mut state = self.session(session_id);
+        let human = &mut state.runs.human;
+        if human.contains(run) {
+            return;
+        }
+        if human.len() == super::attendance::RUNS_REMEMBERED {
+            human.pop_front();
+        }
+        human.push_back(run.clone());
+    }
+
     /// The human stopped `session_id`'s current run (an interrupt or a Stop
     /// answer to one of its own calls): every call of that session's own
     /// agent that needs review is denied, without asking anyone, until a new
@@ -1064,6 +1083,7 @@ impl ApprovalEngine {
             effect: evaluated.blocked_effect.clone(),
             reason: reason.to_string(),
             at,
+            approved_once: false,
         };
         let key = CacheKey::approval(&facts.action);
         self.blocks.remember(session_id, Blocked { call, key });
@@ -4702,14 +4722,20 @@ mod tests {
             approved.notice
         );
         assert!(
-            approved.note.starts_with("The user now allows: \"pushing"),
+            approved.note.starts_with(
+                "The user approved your blocked call `shell git push origin main` by allowing \"pushing"
+            ),
             "{}",
             approved.note
         );
         assert!(rig.engine.blocks().list(&rig.session).is_empty());
-        assert!(drain(&mut rig.events).iter().any(
-            |e| matches!(e, ApprovalEvent::Granted { note, .. } if note.contains("now allows"))
-        ));
+        // The note is the caller's to deliver (`/approve` tells the agent
+        // and lets it go on), not an event.
+        assert!(
+            !drain(&mut rig.events)
+                .iter()
+                .any(|e| matches!(e, ApprovalEvent::Granted { .. }))
+        );
         assert!(decide(&rig, "p2", &push).await.is_allowed());
         let prompt = rig.classifier.prompts.lock().last().cloned().unwrap();
         assert!(
@@ -4922,7 +4948,12 @@ mod tests {
             .approve(&rig.session, listed[0].id, GrantScope::Once)
             .unwrap();
         assert!(approved.note.contains("once"), "{}", approved.note);
-        assert!(rig.engine.blocks().list(&rig.session).is_empty());
+        // It waits on the list, marked, until the call uses it.
+        let waiting = rig.engine.blocks().list(&rig.session);
+        assert!(
+            waiting.len() == 1 && waiting[0].approved_once,
+            "{waiting:?}"
+        );
         let calls = rig.classifier.calls();
         assert!(matches!(
             decide(&rig, "b2", &info).await,
@@ -4932,6 +4963,7 @@ mod tests {
             }
         ));
         assert_eq!(rig.classifier.calls(), calls);
+        assert!(rig.engine.blocks().list(&rig.session).is_empty());
         // A write into a store the classifier named: its directory.
         let write = json!({"path": store.join("x").display().to_string(), "content": "x"});
         assert!(!call(&rig, "b3", "write_file", &write).await.is_allowed());
@@ -5006,13 +5038,77 @@ mod tests {
             .into_iter()
             .filter(|e| matches!(e, ApprovalEvent::Granted { .. }))
             .count();
-        assert_eq!(notes, 4, "the agent is told each approval and grant");
+        assert_eq!(
+            notes, 2,
+            "the agent is told each grant made directly; an approval's note is the caller's to deliver"
+        );
         // Nothing to approve: said so.
         assert!(
             rig.engine
                 .approve(&rig.session, 4242, GrantScope::Once)
                 .is_err()
         );
+    }
+
+    /// An approval once stays listed, marked, until the identical call
+    /// uses it up; it is not approved twice; withdrawn, it is a blocked
+    /// call again, which the next identical call meets as before.
+    #[tokio::test]
+    async fn an_approval_once_waits_on_the_list_until_used_or_withdrawn() {
+        let blocked = || {
+            Ok(ClassifierVerdict::Block {
+                rule: Some("T3".into()),
+                reason: "it reaches outside the project".into(),
+                annotation: None,
+                path: None,
+                effect: None,
+            })
+        };
+        let rig = rig(vec![blocked(), blocked()], DEFAULT_ESCALATION_TIMEOUT);
+        let info = json!({"command": "cargo info serde"});
+        assert!(!decide(&rig, "b1", &info).await.is_allowed());
+        let id = rig.engine.blocks().list(&rig.session)[0].id;
+        let approved = rig
+            .engine
+            .approve(&rig.session, id, GrantScope::Once)
+            .unwrap();
+        assert_eq!(
+            approved.notice,
+            "approved once: `shell cargo info serde`; the agent is told to run it again"
+        );
+        let listed = rig.engine.blocks().list(&rig.session);
+        assert!(listed.len() == 1 && listed[0].approved_once, "{listed:?}");
+        // Not approved twice, in no way.
+        for scope in [GrantScope::Once, GrantScope::Session] {
+            let refused = rig.engine.approve(&rig.session, id, scope).unwrap_err();
+            assert!(refused.contains("approved once already"), "{refused}");
+        }
+        assert!(
+            rig.engine
+                .approve_effect(
+                    &rig.session,
+                    id,
+                    "reading crate metadata",
+                    GrantScope::Session
+                )
+                .unwrap_err()
+                .contains("approved once already")
+        );
+        // Withdrawn: a blocked call again, and the call is blocked again.
+        let withdrawn = rig.engine.withdraw_approval(&rig.session, id).unwrap();
+        assert!(withdrawn.contains("blocked again"), "{withdrawn}");
+        assert!(!rig.engine.blocks().list(&rig.session)[0].approved_once);
+        assert!(rig.engine.withdraw_approval(&rig.session, id).is_err());
+        assert!(!decide(&rig, "b2", &info).await.is_allowed());
+        // Listed once: the new block in place of the old one.
+        let listed = rig.engine.blocks().list(&rig.session);
+        assert!(listed.len() == 1 && listed[0].id != id, "{listed:?}");
+        // Approved again and used: its entry goes.
+        rig.engine
+            .approve(&rig.session, listed[0].id, GrantScope::Once)
+            .unwrap();
+        assert!(decide(&rig, "b3", &info).await.is_allowed());
+        assert!(rig.engine.blocks().list(&rig.session).is_empty());
     }
 
     /// The session's scratch directory is its own: a file-tool write there

@@ -596,8 +596,9 @@ async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
     client
         .wait_for(|msg| matches!(msg, Msg::PickerDone { kind: rkat_tui::ui::PickerKind::Approve, text } if text.starts_with("granted for this session: writes under")))
         .await;
+    // The idle agent is told and goes on by itself: a run of the note, in
+    // which it writes again, now without review.
     let reviews = setup.classifier.tools.lock().len();
-    client.send(Effect::StartTurn("try again".into()));
     assert_eq!(client.turn_finished().await.unwrap().text, "written");
     assert_eq!(
         setup.classifier.tools.lock().len(),
@@ -605,8 +606,12 @@ async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
         "no classifier call"
     );
     assert!(std::path::Path::new(&target).exists());
-    let system = llm.recorded().last().unwrap().system();
-    assert!(system.contains("The user granted writes under"), "{system}");
+    let told = llm.recorded()[2].user();
+    assert!(
+        told.contains("The user approved your blocked call `write_file")
+            && told.contains("by granting writes under"),
+        "{told}"
+    );
     // `/permissions` lists it as the session's and removes it.
     let rows = daemon.engine().grants().rows(Some(&daemon.session));
     let grant = rows

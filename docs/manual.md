@@ -502,7 +502,13 @@ approval would make. On a row:
 
 - Enter or `o` approves it **once**: the next identical call of the agent
   (or a helper) runs without review, once; any other call is reviewed as
-  usual.
+  usual. Until that call comes the row stays on the list, marked
+  "approved once · waiting for the agent to run it again"; when the
+  agent runs it, the approval is used up and the row goes. On a waiting
+  row `w` **withdraws** the approval: the row is a blocked call again
+  (approve it another way, or leave it), and the agent's next try is
+  reviewed as before. The keys that approve say it is approved already.
+  `/approve` with only a waiting approval shows that row.
 - `s`, then `y`, grants it **for this session**: when a path outside the
   project and your allowed directories was why (the file tool's target or
   the classifier's `PATH:`), the path's own directory, or its parent when
@@ -529,7 +535,8 @@ approval would make. On a row:
 
 The footer spells the choices: "Enter approve once · s grant this
 session · a grant always here · A always in every workspace · e allow
-this kind of effect · Esc close". `s`
+this kind of effect · Esc close" (with "w withdraw a waiting approval"
+before Esc while one waits). `s`
 and `a` ask first, on a line of their own that names what will happen
 ("Grant writes under `/data/store` for this session? y yes · n or Esc
 no"). While that question is up only `y` (grants), `n` and Esc (cancel the
@@ -540,17 +547,36 @@ never approve the row once. The `e` field is a text field and keeps Enter
 as its confirm, as its line says. Whatever was done is stated under the
 list ("approved once: …", "granted for this session: writes under …",
 "granted always: …") as well as in the transcript, and the row leaves the
-list.
+list (an approval once stays, waiting, as above).
 
 The list says of each choice whether it is exact (Enter/`o`: this call
 once; `s`/`a`: its directory or its literal command) or judged by the
-classifier (`e`: a statement). The agent is told in a system note what is
-now allowed, so it stops avoiding it. `/permissions` lists the grants in
+classifier (`e`: a statement).
+
+**Approving tells the agent at once, and it goes on.** Whichever way you
+approve, the agent gets a note naming the call and how you approved it,
+telling it to run the call again and carry on. While its turn runs, the
+note goes into that turn: the agent reads it at its next step, so a turn
+that was about to end asking you to approve repeats the call instead. An
+idle agent gets a turn of its own for the note, with no prompt from you:
+the transcript shows it under "✓ approved: the agent is told and goes
+on", and it counts as your turn (attended: it may ask you questions).
+This holds right after you interrupted the agent too: approving is acting
+on it now. A call a helper made is told to the agent, named as that
+helper's call ("that your helper `scout` made"): the approval holds for
+the agent and its helpers, so it makes the call again itself or through
+a helper (rkat-tui cannot put a message into a `delegate` helper's own
+run). Removing a grant or a statement tells the agent nothing and starts
+no turn. `/permissions` lists the grants in
 force after the rules, each with where it comes from (`default`, `flag`,
 `config`, `always`, `session`), then the statements; `d` then `y` removes
 a session grant or a statement. Every approval, grant and removal is in
-the audit log (`approved_once`, `grant_added`, `grant_removed`,
-`statement_added`, `statement_removed`).
+the audit log (`approved_once`, `approval_withdrawn`, `approval_told`,
+`grant_added`, `grant_removed`, `statement_added`, `statement_removed`).
+A waiting approval lives in the daemon only and belongs to the
+conversation, like the list: a daemon restart ends it, ten newer blocks
+push it off the list (it lapses then), and after `/new` or `/resume` the
+list is the other conversation's.
 
 ### Allowing a kind of effect
 

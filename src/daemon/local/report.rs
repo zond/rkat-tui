@@ -400,7 +400,10 @@ impl Local {
     }
 
     /// `rkat/approve`: the user approves blocked call `id`, or allows its
-    /// kind of action in their words `effect`.
+    /// kind of action in their words `effect`. Whoever made the call is
+    /// told at once, off this answer's task (an idle agent gets a run of
+    /// its own, [`crate::daemon::agents::Agents::approved`]); the answer
+    /// waits for no run.
     pub(super) fn approve(
         &self,
         caller: &Caller,
@@ -415,14 +418,33 @@ impl Local {
         };
         self.after_permission_command();
         Ok(match done {
-            Ok(approved) => RuleOutcome {
-                ok: true,
-                text: approved.notice,
-            },
+            Ok(approved) => {
+                let notice = approved.notice.clone();
+                let agents = Arc::clone(&self.agents);
+                tokio::spawn(async move { agents.approved(&session, approved).await });
+                RuleOutcome {
+                    ok: true,
+                    text: notice,
+                }
+            }
             Err(why) => RuleOutcome {
                 ok: false,
                 text: why,
             },
+        })
+    }
+
+    /// `rkat/withdraw_approval`: withdraw the approval once of call `id`
+    /// of `caller`'s agent; it is a blocked call again.
+    pub(super) fn withdraw_approval(
+        &self,
+        caller: &Caller,
+        id: u64,
+    ) -> Result<RuleOutcome, Refusal> {
+        let session = self.session_of_caller(caller)?;
+        Ok(match self.core.engine.withdraw_approval(&session, id) {
+            Ok(text) => RuleOutcome { ok: true, text },
+            Err(text) => RuleOutcome { ok: false, text },
         })
     }
 

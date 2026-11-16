@@ -1268,7 +1268,10 @@ impl Runner {
             }
             Effect::ClassifierCheck(selection) => self.classifier_check(selection),
             Effect::PickedApproval(id, scope, effect) => {
-                self.approve_picker(Some((id, scope, effect)));
+                self.approve_picker(Some(commands::Picked::Approve(id, scope, effect)));
+            }
+            Effect::PickedWithdrawal(id) => {
+                self.approve_picker(Some(commands::Picked::Withdraw(id)));
             }
             Effect::ListRules => {
                 self.outcome_command::<protocol::method::Rules>(RuleCommand::List, "/permissions");
@@ -1333,11 +1336,11 @@ async fn sleep_until(deadline: Option<Instant>) {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::commands::{
-        agent_entries, approve_picker, others_notice, report_lines, rule_picker, schedule_picker,
-        settings_picker,
+        agent_entries, others_notice, report_lines, rule_picker, schedule_picker, settings_picker,
     };
     use super::turn::model_switch;
     use super::*;
+    use crate::ui::approve_picker;
 
     /// Attached on `link`.
     fn up(link: Link) -> Conn {
@@ -1731,6 +1734,7 @@ mod tests {
             at: 100,
             effect: (id == 2).then(|| "pushing to the default branch".to_string()),
             grant,
+            approved_once: false,
         };
         let mut picker = approve_picker(
             &[
@@ -1816,6 +1820,7 @@ mod tests {
             at: 100,
             effect: effect.map(str::to_string),
             grant: None,
+            approved_once: false,
         };
         let mut picker = approve_picker(
             &[

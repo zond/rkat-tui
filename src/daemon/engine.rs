@@ -958,20 +958,29 @@ fn forward_approval_notes(
             return;
         };
         while let Some(event) = events.recv().await {
-            if let crate::approval::ApprovalEvent::Granted { session_id, note } = &event {
-                // The agent the grant is for is told what is now allowed,
-                // so it stops avoiding it.
+            if let crate::approval::ApprovalEvent::Granted { session_id, note } = event {
+                // The agent the grant is for (a dialog's "for this
+                // session") is told what is now allowed, so it stops
+                // avoiding it. The append lands when the agent's turn ends,
+                // so it is its own task: this loop waits for no turn, and
+                // the decisions, pauses and mode changes after it reach
+                // the clients at once.
                 if let Some((state, registry)) = granted.as_ref()
-                    && let Some(key) = registry.root_of_session(session_id)
-                    && let Err(err) = super::agents::append_note(
-                        state,
-                        key.member.as_str(),
-                        super::local::SYSTEM_CONTEXT_SOURCE,
-                        note.clone(),
-                    )
-                    .await
+                    && let Some(key) = registry.root_of_session(&session_id)
                 {
-                    tracing::warn!(error = %err, "the agent could not be told about a grant");
+                    let state = Arc::clone(state);
+                    tokio::spawn(async move {
+                        if let Err(err) = super::agents::append_note(
+                            &state,
+                            key.member.as_str(),
+                            super::local::SYSTEM_CONTEXT_SOURCE,
+                            note,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %err, "the agent could not be told about a grant");
+                        }
+                    });
                 }
                 continue;
             }

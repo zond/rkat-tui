@@ -9,7 +9,7 @@ use meerkat_mob::{AgentIdentity, MobId};
 
 use super::super::MOB_ID;
 use super::Agents;
-use super::notes::note_agent;
+use super::notes::{note_agent, steer_member};
 
 /// What an agent is told when it makes a profile read-only with comms.
 pub const READ_ONLY_COMMS_NOTE: &str = "A mob profile you just wrote has `read_only: true` and `comms: true`: its members can read messages, but they cannot send any (`read_only` blocks every mutating tool, `send_message` and the other comms sends included). Drop `read_only` (and narrow the tools another way) if they must answer.";
@@ -118,7 +118,7 @@ impl Agents {
 
     /// The audit log's `event` line for `name` (of its `session`'s `run`,
     /// when there is one).
-    fn audit_run(
+    pub(super) fn audit_run(
         &self,
         name: &str,
         run: Option<(&SessionId, &meerkat_core::RunId)>,
@@ -137,7 +137,13 @@ impl Agents {
 
     /// Tell the clients a run of `name` that no client started began
     /// ([`crate::daemon::protocol::TRIGGERED`]).
-    fn tell_triggered(&self, name: &str, session: &SessionId, label: String, prompt: String) {
+    pub(super) fn tell_triggered(
+        &self,
+        name: &str,
+        session: &SessionId,
+        label: String,
+        prompt: String,
+    ) {
         self.core.decisions.broadcast(
             crate::daemon::protocol::TRIGGERED,
             &crate::daemon::protocol::TriggeredNote {
@@ -184,17 +190,13 @@ impl Agents {
         let text = batch.text();
         self.watch_sent.lock().insert(name.clone(), text.clone());
         let _sending = self.core.activity.sending(&name);
-        let sent = self
-            .core
-            .state
-            .mob_member_send(
-                &MobId::from(MOB_ID),
-                AgentIdentity::from(name.as_str()),
-                meerkat_core::types::ContentInput::from(text.clone()),
-                meerkat_core::types::HandlingMode::Steer,
-                None,
-            )
-            .await;
+        let sent = steer_member(
+            &self.core.state,
+            &MobId::from(MOB_ID),
+            AgentIdentity::from(name.as_str()),
+            text.clone(),
+        )
+        .await;
         if let Err(err) = sent {
             tracing::warn!(agent = %name, error = %err, "a watch event did not reach the agent");
             self.watch_sent.lock().remove(&name);
@@ -221,19 +223,15 @@ impl Agents {
         let name = name.to_string();
         tokio::spawn(async move {
             let _sending = agents.core.activity.sending(&name);
-            let sent = agents
-                .core
-                .state
-                .mob_member_send(
-                    &MobId::from(MOB_ID),
-                    AgentIdentity::from(name.as_str()),
-                    meerkat_core::types::ContentInput::from(text.clone()),
-                    meerkat_core::types::HandlingMode::Steer,
-                    None,
-                )
-                .await;
+            let sent = steer_member(
+                &agents.core.state,
+                &MobId::from(MOB_ID),
+                AgentIdentity::from(name.as_str()),
+                text.clone(),
+            )
+            .await;
             let notice = match sent {
-                Ok(_) => {
+                Ok(()) => {
                     agents.audit_run(&name, None, "compact_prepare", text);
                     crate::daemon::protocol::AgentNotice {
                         agent: name.clone(),

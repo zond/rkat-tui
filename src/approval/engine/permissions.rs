@@ -124,51 +124,83 @@ impl ApprovalEngine {
     }
 
     /// The user approves blocked call `id` of `session_id` for `scope`: once
-    /// (the next identical call passes), for this session (its grant joins
-    /// the session's, live) or always (its grant is written through the
-    /// realm's trusted writer as well). Returns what the user and the agent
-    /// are told.
+    /// (the call stays listed, marked, until the next identical call passes
+    /// and uses the approval up), for this session (its grant joins the
+    /// session's, live) or always (its grant is written through the
+    /// realm's trusted writer as well). Returns what the user is told and
+    /// the note for whoever made the call (the agent, or its helper),
+    /// which the caller delivers: no [`ApprovalEvent::Granted`] is
+    /// emitted (`crate::daemon::agents::Agents::approved` tells it and
+    /// lets it go on).
     ///
     /// # Errors
     ///
-    /// Why nothing was granted (no such call, no grant fits, the realm file
-    /// could not be written), in words for the user.
+    /// Why nothing was granted (no such call, one approved once already, no
+    /// grant fits, the realm file could not be written), in words for the
+    /// user.
     pub fn approve(
         &self,
         session_id: &SessionId,
         id: u64,
         scope: GrantScope,
     ) -> Result<Approved, String> {
-        let blocked = self.blocks.take(session_id, id, scope)?;
+        let blocked = self.blocks.approve(session_id, id, scope)?;
         self.stats
             .add(Some(session_id), |stats| stats.approvals += 1);
-        let what = format!("`{} {}`", blocked.call.tool, blocked.call.summary);
-        let target = match scope {
+        let call = &blocked.call;
+        let what = format!("`{} {}`", call.tool, call.summary);
+        let (notice, how, detail) = match scope {
             GrantScope::Once => {
-                self.blocks.approve_once(session_id, blocked.key);
                 self.audit_event("approved_once", what.clone());
-                let approved = Approved {
-                    notice: format!("approved once: {what} runs when the agent tries it again"),
-                    note: format!(
-                        "The user approved your blocked call {what} once: run it again exactly as before (any other call is reviewed as usual)."
-                    ),
-                };
-                self.emit(ApprovalEvent::Granted {
-                    session_id: session_id.clone(),
-                    note: approved.note.clone(),
-                });
-                return Ok(approved);
+                (
+                    format!("approved once: {what}; the agent is told to run it again"),
+                    "once".to_string(),
+                    String::new(),
+                )
             }
-            GrantScope::Session | GrantScope::Always | GrantScope::AlwaysUser => blocked.call.grant,
+            GrantScope::Session | GrantScope::Always | GrantScope::AlwaysUser => {
+                let Some(target) = call.grant.clone() else {
+                    return Err(format!("no grant fits blocked call #{id}"));
+                };
+                let words = target.describe();
+                let made = self.grant_as(session_id, target, scope, false)?;
+                (
+                    made.notice,
+                    format!("by granting {words} {}", scope.words()),
+                    " Such calls are no longer blocked for that reason.".to_string(),
+                )
+            }
         };
-        let Some(target) = target else {
-            return Err(format!("no grant fits blocked call #{id}"));
-        };
-        self.grant(session_id, target, scope)
+        Ok(approval(
+            notice,
+            &what,
+            call.helper.as_deref(),
+            &how,
+            &detail,
+            scope == GrantScope::Once,
+        ))
+    }
+
+    /// The user withdraws the approval once of call `id` of `session_id`
+    /// (`/approve`'s `w`): the call is a blocked call again, listed, which
+    /// an identical call meets as before and the user may approve
+    /// otherwise. The agent is not told (its next try is reviewed again).
+    ///
+    /// # Errors
+    ///
+    /// No such call, or one not approved once.
+    pub fn withdraw_approval(&self, session_id: &SessionId, id: u64) -> Result<String, String> {
+        let call = self.blocks.withdraw(session_id, id)?;
+        let what = format!("`{} {}`", call.tool, call.summary);
+        self.audit_event("approval_withdrawn", what.clone());
+        Ok(format!(
+            "withdrew the approval of {what}: it is blocked again, and listed to approve otherwise"
+        ))
     }
 
     /// Make `target` a grant of `session_id` for `scope` (session or
-    /// always), live; an "always" grant is written to the realm too.
+    /// always), live; an "always" grant is written to the realm too. The
+    /// agent is told in a system note ([`ApprovalEvent::Granted`]).
     ///
     /// # Errors
     ///
@@ -178,6 +210,18 @@ impl ApprovalEngine {
         session_id: &SessionId,
         target: GrantTarget,
         scope: GrantScope,
+    ) -> Result<Approved, String> {
+        self.grant_as(session_id, target, scope, true)
+    }
+
+    /// [`Self::grant`]; `tell`: emit [`ApprovalEvent::Granted`] (an
+    /// approval from `/approve` words and delivers its own note).
+    fn grant_as(
+        &self,
+        session_id: &SessionId,
+        target: GrantTarget,
+        scope: GrantScope,
+        tell: bool,
     ) -> Result<Approved, String> {
         if let GrantTarget::Dir { path } = &target
             && let Some(held) = self.settings_dir_in(path)
@@ -231,10 +275,12 @@ impl ApprovalEngine {
                 scope.words()
             ),
         };
-        self.emit(ApprovalEvent::Granted {
-            session_id: session_id.clone(),
-            note: approved.note.clone(),
-        });
+        if tell {
+            self.emit(ApprovalEvent::Granted {
+                session_id: session_id.clone(),
+                note: approved.note.clone(),
+            });
+        }
         Ok(approved)
     }
 
@@ -278,12 +324,26 @@ impl ApprovalEngine {
     /// Why it was not added, for the user: refused by
     /// [`super::super::statements::normalize`], [`MAX_STATEMENTS`] active, the same
     /// one active, "once" asked, or the realm file not written.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn allow_statement(
         &self,
         session_id: &SessionId,
         raw: &str,
         scope: GrantScope,
     ) -> Result<Approved, String> {
+        self.allow_statement_as(session_id, raw, scope, true)
+            .map(|(approved, _)| approved)
+    }
+
+    /// [`Self::allow_statement`]; `tell`: emit [`ApprovalEvent::Granted`].
+    /// Also returns the statement as it was added (normalized).
+    fn allow_statement_as(
+        &self,
+        session_id: &SessionId,
+        raw: &str,
+        scope: GrantScope,
+        tell: bool,
+    ) -> Result<(Approved, String), String> {
         let text = super::super::statements::normalize(raw).map_err(|why| why.to_string())?;
         let active = self.statements_for(session_id);
         if active.iter().any(|known| known.eq_ignore_ascii_case(&text)) {
@@ -326,25 +386,29 @@ impl ApprovalEngine {
                 scope.words()
             ),
             note: format!(
-                "The user now allows: \"{text}\" ({}). The safety review reads it narrowly: actions of that kind are no longer blocked for that reason; other actions are reviewed as before.",
+                "The user now allows: \"{text}\" ({}).{NARROWLY}",
                 scope.words()
             ),
         };
-        self.emit(ApprovalEvent::Granted {
-            session_id: session_id.clone(),
-            note: approved.note.clone(),
-        });
-        Ok(approved)
+        if tell {
+            self.emit(ApprovalEvent::Granted {
+                session_id: session_id.clone(),
+                note: approved.note.clone(),
+            });
+        }
+        Ok((approved, text))
     }
 
     /// The user allows the kind of action of blocked call `id` in their
     /// words `text` (its `EFFECT:` sentence, edited) for `scope`: the call
     /// leaves the `/approve` list and the statement is added
-    /// ([`Self::allow_statement`]).
+    /// ([`Self::allow_statement`]). As [`Self::approve`], the note for
+    /// whoever made the call is returned, not emitted.
     ///
     /// # Errors
     ///
-    /// No such call, or why the statement was not added.
+    /// No such call, one approved once already, or why the statement was
+    /// not added.
     pub fn approve_effect(
         &self,
         session_id: &SessionId,
@@ -352,14 +416,20 @@ impl ApprovalEngine {
         text: &str,
         scope: GrantScope,
     ) -> Result<Approved, String> {
-        if !self.blocks.contains(session_id, id) {
-            return Err(format!("no blocked call #{id} (`/approve` lists them)"));
-        }
-        let approved = self.allow_statement(session_id, text, scope)?;
+        let call = self.blocks.blocked(session_id, id)?;
+        let (made, text) = self.allow_statement_as(session_id, text, scope, false)?;
         self.blocks.drop_call(session_id, id);
         self.stats
             .add(Some(session_id), |stats| stats.approvals += 1);
-        Ok(approved)
+        let what = format!("`{} {}`", call.tool, call.summary);
+        Ok(approval(
+            made.notice,
+            &what,
+            call.helper.as_deref(),
+            &format!("by allowing \"{text}\" ({})", scope.words()),
+            NARROWLY,
+            false,
+        ))
     }
 
     /// Remove statement `id`: a session's, or one added always (it leaves
@@ -550,6 +620,47 @@ impl ApprovalEngine {
     }
 }
 
+/// How a statement's note says the classifier reads it.
+const NARROWLY: &str = " The safety review reads it narrowly: actions of that kind are no longer blocked for that reason; other actions are reviewed as before.";
+
+/// What an approval from `/approve` of the blocked call `what` tells the
+/// user (`notice`) and the agent (`note`): its own call, or the call its
+/// helper `helper` made (the agent is told either way: the engine admits
+/// no message from the daemon into a `delegate` helper's run, and an
+/// approval holds for the agent and its helpers alike). `how` is how the
+/// user approved it ("once", "by granting …"), `detail` what that means
+/// for other calls; `once`: the very call must be repeated as it was.
+fn approval(
+    notice: String,
+    what: &str,
+    helper: Option<&str>,
+    how: &str,
+    detail: &str,
+    once: bool,
+) -> Approved {
+    let note = match helper {
+        None => {
+            let again = if once {
+                " Run it again exactly as before (any other call is reviewed as usual)."
+            } else {
+                " Run it again and go on."
+            };
+            format!("The user approved your blocked call {what} {how}.{detail}{again}")
+        }
+        Some(helper) => {
+            let exactly = if once {
+                " exactly as before (any other call is reviewed as usual)"
+            } else {
+                ""
+            };
+            format!(
+                "The user approved the blocked call {what} that your helper `{helper}` made, {how}.{detail} The approval holds for you and your helpers: if the call is still needed, make it again{exactly}, yourself or through a helper, and go on."
+            )
+        }
+    };
+    Approved { notice, note }
+}
+
 /// Push `rule` into `rules`, then write it to `level`'s file (the caller
 /// holds the files still: [`PermissionFiles::writing`]); `between` runs
 /// between the two steps.
@@ -590,4 +701,60 @@ fn write_rule(
         file.remove_rule(list, &entry)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An approval's note tells the agent to run its call again (as it
+    /// was, once) and go on; a helper's call is named as that helper's,
+    /// and the agent is told the approval holds for it and its helpers.
+    #[test]
+    fn an_approval_tells_the_agent_to_go_on_and_names_a_helper_s_call() {
+        let once = approval("n".into(), "`shell cargo fetch`", None, "once", "", true);
+        assert_eq!(
+            once.note,
+            "The user approved your blocked call `shell cargo fetch` once. Run it again exactly as before (any other call is reviewed as usual)."
+        );
+        let granted = approval(
+            "n".into(),
+            "`shell cargo fetch`",
+            None,
+            "by granting `shell cargo fetch` for this session",
+            " Such calls are no longer blocked for that reason.",
+            false,
+        );
+        assert_eq!(
+            granted.note,
+            "The user approved your blocked call `shell cargo fetch` by granting `shell cargo fetch` for this session. Such calls are no longer blocked for that reason. Run it again and go on."
+        );
+        let helper_once = approval(
+            "n".into(),
+            "`shell cargo fetch`",
+            Some("scout"),
+            "once",
+            "",
+            true,
+        );
+        assert_eq!(
+            helper_once.note,
+            "The user approved the blocked call `shell cargo fetch` that your helper `scout` made, once. The approval holds for you and your helpers: if the call is still needed, make it again exactly as before (any other call is reviewed as usual), yourself or through a helper, and go on."
+        );
+        let helper_granted = approval(
+            "n".into(),
+            "`shell cargo fetch`",
+            Some("scout"),
+            "by granting `shell cargo fetch` for this session",
+            " Such calls are no longer blocked for that reason.",
+            false,
+        );
+        assert!(
+            helper_granted.note.ends_with(
+                "for this session. Such calls are no longer blocked for that reason. The approval holds for you and your helpers: if the call is still needed, make it again, yourself or through a helper, and go on."
+            ),
+            "{}",
+            helper_granted.note
+        );
+    }
 }

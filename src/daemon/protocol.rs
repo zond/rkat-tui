@@ -269,6 +269,9 @@ methods! {
     /// `effect`, allow that kind of action (a statement the classifier
     /// reads) for this session or always instead.
     Approve = "rkat/approve" (ApproveParams) -> crate::approval::desk::RuleOutcome;
+    /// Withdraw an approval once that waits for the agent (`/approve`'s
+    /// `w`): the call is a blocked call again.
+    WithdrawApproval = "rkat/withdraw_approval" (GrantParams) -> crate::approval::desk::RuleOutcome;
     /// Remove a statement of this client's agent's session, or one added
     /// always (`/permissions`).
     RemoveStatement = "rkat/remove_statement" (GrantParams) -> crate::approval::desk::RuleOutcome;

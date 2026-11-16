@@ -324,25 +324,48 @@ impl Local {
         (!warnings.is_empty()).then(|| warnings.join("\n"))
     }
 
+    /// Tell `agent` plan mode is on (`plan`) or off. An agent with a run
+    /// open gets the note steered into that run (it reads it at its next
+    /// step): an append to its system context would land only when the
+    /// turn ends, and the mode change (`rkat/set_mode`) would answer only
+    /// then. An idle agent gets it appended, which the engine applies at
+    /// once and which starts no run: a mode change wakes nobody. (An agent
+    /// whose run ends between the look and the steer gets a run of the
+    /// note: the engine has no "steer only into an open run".) A prompt to
+    /// an idle agent sent after the change waits for this note
+    /// ([`Local::routing_local`]); one to a running agent is a steer and
+    /// follows the note's steer into the same run.
     async fn append_plan_note(&self, agent: &str, plan: bool) -> Option<String> {
         let note = if plan {
             crate::approval::mode::PLAN_ON_NOTE
         } else {
             crate::approval::mode::PLAN_OFF_NOTE
         };
-        match crate::daemon::agents::append_note(
-            &self.core.state,
-            agent,
-            SYSTEM_CONTEXT_SOURCE,
-            note.to_string(),
-        )
-        .await
-        {
-            Ok(()) => None,
-            Err(err) => Some(format!(
+        let told = if self.core.activity.running(agent) {
+            let _sending = self.core.activity.sending(agent);
+            crate::daemon::agents::steer_member(
+                &self.core.state,
+                &meerkat_mob::MobId::from(crate::daemon::MOB_ID),
+                meerkat_mob::AgentIdentity::from(agent),
+                note.to_string(),
+            )
+            .await
+            .map_err(|err| err.to_string())
+        } else {
+            crate::daemon::agents::append_note(
+                &self.core.state,
+                agent,
+                SYSTEM_CONTEXT_SOURCE,
+                note.to_string(),
+            )
+            .await
+            .map_err(|err| err.to_string())
+        };
+        told.err().map(|err| {
+            format!(
                 "agent {agent} could not be told about plan mode now (the tool errors say it): {err}"
-            )),
-        }
+            )
+        })
     }
 
     /// A connection was just bound to `agent`: when plan mode is on and the

@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Added
+
+- A call approved once from `/approve` stays on the list, marked
+  "approved once · waiting for the agent to run it again", until the
+  agent runs it (then it goes); it no longer vanishes as if it had never
+  been blocked. `w` on it withdraws the approval: it is a blocked call
+  again, to approve another way or leave.
+
+### Changed
+
+- Approving from `/approve` (once, for this session, always, or a kind of
+  effect) tells the agent at once and lets it go on: a running turn reads
+  the note at its next step and repeats the call instead of ending with a
+  request to approve; an idle agent gets a turn of its own for it, shown
+  under "✓ approved: the agent is told and goes on" and counted as yours.
+  This also holds right after an interrupt. A helper's call is told to its
+  agent, named as that helper's.
+
+### Fixed
+
+- An `/approve` made while the agent was working held back every later
+  notice of the approval gate (decisions, "classifying", pauses, mode
+  changes) until the agent's turn ended.
+- Switching into or out of plan mode while the agent was working answered
+  only when its turn ended; it answers at once now, and the running turn
+  is told at its next step.
+
 ## [0.0.13] - 2026-11-16
 
 ### Added

@@ -623,7 +623,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "approve a call the gate blocked: once, for this session or always",
         help: &[(
             "/approve",
-            "open a list of the calls the classifier recently blocked (the\nnewest 10): Enter or o runs one once, s allows its directory or\ncall for this session, a always for this workspace (the realm's\ntui.toml), A always in every workspace (your own tui.toml)",
+            "open a list of the calls the classifier recently blocked (the\nnewest 10): Enter or o runs one once, s allows its directory or\ncall for this session, a always for this workspace (the realm's\ntui.toml), A always in every workspace (your own tui.toml); the\nagent is told at once and goes on; a call approved once waits on\nthe list until the agent runs it, w withdraws that approval",
         )],
         parse: |rest| arg_free(rest, Command::Approve),
     },
@@ -1170,6 +1170,7 @@ Lists (/schedules, /permissions, /approve, /helpers, /mode, /memory, /wire, /unw
   s, then y (/approve)           grant its directory or call for this session (exact)
   a, then y (/approve)           grant it always (the realm's tui.toml; exact)
   e (/approve)                   allow its kind of effect: edit the sentence, Tab session/always, Enter (judged by the classifier)
+  w (/approve)                   withdraw an approval once that waits for the agent (the call is blocked again)
   Enter (/helpers)               open the helper's full view
   f (/helpers)                   fold or expand the helper's block in the transcript
   s, then y (/helpers)           stop the running helper (its run ends and it is retired; the

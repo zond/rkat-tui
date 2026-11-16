@@ -1255,6 +1255,8 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
             let style = Style::default().fg(Color::Cyan);
             let icon = if label.starts_with("files changed") {
                 "◉"
+            } else if label.starts_with("approved") {
+                "✓"
             } else {
                 "⏰"
             };

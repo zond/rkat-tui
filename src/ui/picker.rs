@@ -93,6 +93,9 @@ pub enum PickAct {
     RemoveStatement(u64),
     /// Approve blocked call `id` for the scope, then the list again.
     Approve(u64, GrantScope),
+    /// Withdraw the approval once of call `id` (it is a blocked call
+    /// again), then the list again.
+    Withdraw(u64),
     /// Allow the kind of action `text` describes, as blocked call `id`'s
     /// approval, for the scope, then the list again.
     AllowEffect {
@@ -162,6 +165,7 @@ impl PickAct {
                 | Self::RemoveGrant(_)
                 | Self::RemoveStatement(_)
                 | Self::Approve(..)
+                | Self::Withdraw(_)
                 | Self::AllowEffect { .. }
                 | Self::FoldHelper(_)
                 | Self::Wire { .. }
@@ -708,6 +712,156 @@ fn capped(mut lines: Vec<String>, full: bool, width: usize) -> Vec<String> {
     lines
 }
 
+/// The footer of the `/approve` picker, before its Esc.
+const APPROVE_FOOTER: &str = "Enter approve once · s grant this session · a grant always here · A always in every workspace · e allow this kind of effect";
+
+/// What the `/approve` picker's footer adds when a call waits for the agent.
+const WITHDRAW_FOOTER: &str = " · w withdraw a waiting approval";
+
+/// What a key other than `w` says on a call approved once.
+const WAITING_REFUSAL: &str = "approved once already: it waits for the agent to run it again; w withdraws the approval, to approve it otherwise";
+
+/// The `/approve` picker: the calls the gate recently blocked and the calls
+/// approved once that wait for the agent to run them again, newest first.
+/// On a blocked call Enter or `o` approves it once, `s` for this session,
+/// `a` always for this workspace, `A` always in every workspace (the
+/// user's own `tui.toml`; a call no grant fits says so): each exact, the
+/// call itself or its directory or literal command. `e` opens a one-line
+/// field with the kind of effect the classifier objected to (empty when it
+/// named none), to edit and allow for this session or always: a statement
+/// the classifier judges. A call approved once is marked so; `w`
+/// withdraws its approval (it is a blocked call again), and every other
+/// key says so.
+#[must_use]
+pub fn approve_picker(calls: &[crate::approval::grants::BlockedCall], now: u64) -> ListPicker {
+    let rows = calls
+        .iter()
+        .rev()
+        .map(|call| {
+            let who = call
+                .helper
+                .as_ref()
+                .map_or_else(String::new, |helper| format!(" (helper {helper})"));
+            let rule = call
+                .rule
+                .as_ref()
+                .map_or_else(String::new, |rule| format!(" [{rule}]"));
+            let ago = crate::text::span(now.saturating_sub(call.at), 1);
+            if call.approved_once {
+                return waiting_row(call, &who, &rule, &ago);
+            }
+            let once = PickAct::Approve(call.id, GrantScope::Once);
+            let mut keys = vec![
+                PickKey::now(KeyCode::Enter, once.clone()),
+                PickKey::now(KeyCode::Char('o'), once),
+                PickKey::refused(KeyCode::Char('w'), "this call is not approved once; there is nothing to withdraw"),
+            ];
+            match &call.grant {
+                Some(grant) => {
+                    let what = grant.describe();
+                    keys.push(PickKey::confirmed(
+                        KeyCode::Char('s'),
+                        PickAct::Approve(call.id, GrantScope::Session),
+                        format!("Grant {what} for this session?"),
+                    ));
+                    keys.push(PickKey::confirmed(
+                        KeyCode::Char('a'),
+                        PickAct::Approve(call.id, GrantScope::Always),
+                        format!("Grant {what} always (written to the realm's tui.toml)?"),
+                    ));
+                    keys.push(PickKey::confirmed(
+                        KeyCode::Char('A'),
+                        PickAct::Approve(call.id, GrantScope::AlwaysUser),
+                        format!(
+                            "Grant {what} always, in every workspace (written to your own tui.toml)?"
+                        ),
+                    ));
+                }
+                None => {
+                    for code in ['s', 'a', 'A'] {
+                        keys.push(PickKey::refused(
+                            KeyCode::Char(code),
+                            "no grant fits this call; Enter approves it once",
+                        ));
+                    }
+                }
+            }
+            keys.push(PickKey::field(
+                KeyCode::Char('e'),
+                Field {
+                    what: FieldFor::Effect {
+                        id: call.id,
+                        scope: GrantScope::Session,
+                    },
+                    text: call.effect.clone().unwrap_or_default(),
+                },
+            ));
+            let grant = call.grant.as_ref().map_or_else(String::new, |grant| {
+                format!(" · s/a exact: {}", grant.describe())
+            });
+            let effect = call.effect.as_ref().map_or_else(
+                || " · e judged: a kind of effect you type".to_string(),
+                |effect| format!(" · e judged: \"{effect}\""),
+            );
+            PickRow::new(
+                format!(
+                    "#{} {}{who}: {}{rule} · {ago} ago",
+                    call.id, call.tool, call.summary
+                ),
+                keys,
+            )
+            .noted(format!("{}{grant}{effect}", call.reason))
+        })
+        .collect();
+    let withdraw = if calls.iter().any(|call| call.approved_once) {
+        WITHDRAW_FOOTER
+    } else {
+        ""
+    };
+    let footer = format!("{APPROVE_FOOTER}{withdraw} · Esc close");
+    ListPicker::new(
+        PickerKind::Approve,
+        rows,
+        "nothing was blocked recently",
+        footer,
+    )
+}
+
+/// The `/approve` row of `call`, approved once and waiting for the agent:
+/// `w` withdraws the approval; the keys that approve say it is approved
+/// already.
+fn waiting_row(
+    call: &crate::approval::grants::BlockedCall,
+    who: &str,
+    rule: &str,
+    ago: &str,
+) -> PickRow {
+    let mut keys = vec![PickKey::now(KeyCode::Char('w'), PickAct::Withdraw(call.id))];
+    keys.extend(
+        [
+            KeyCode::Enter,
+            KeyCode::Char('o'),
+            KeyCode::Char('s'),
+            KeyCode::Char('a'),
+            KeyCode::Char('A'),
+            KeyCode::Char('e'),
+        ]
+        .into_iter()
+        .map(|code| PickKey::refused(code, WAITING_REFUSAL)),
+    );
+    PickRow::new(
+        format!(
+            "#{} {}{who}: {}{rule} · approved once · waiting for the agent to run it again",
+            call.id, call.tool, call.summary
+        ),
+        keys,
+    )
+    .noted(format!(
+        "blocked {ago} ago: {} · w withdraws the approval (the call is blocked again)",
+        call.reason
+    ))
+}
+
 /// One line on what each mode asks and allows (the `/mode` picker's).
 fn mode_explained(mode: PermissionMode) -> &'static str {
     match mode {
@@ -941,6 +1095,7 @@ impl App {
             PickAct::RemoveGrant(id) => fx.push(Effect::PickedGrantRemoval(id)),
             PickAct::RemoveStatement(id) => fx.push(Effect::PickedStatementRemoval(id)),
             PickAct::Approve(id, scope) => fx.push(Effect::PickedApproval(id, scope, None)),
+            PickAct::Withdraw(id) => fx.push(Effect::PickedWithdrawal(id)),
             PickAct::AllowEffect { id, scope, text } => {
                 fx.push(Effect::PickedApproval(id, scope, Some(text)));
             }

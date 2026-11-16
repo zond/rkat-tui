@@ -1573,3 +1573,94 @@ fn detaching_drops_held_commands_with_a_notice() {
     );
     assert!(last_notice(&app).is_some_and(|(_, text)| text.contains("/model opus")));
 }
+
+/// A blocked call for the `/approve` picker's tests (`approved_once`:
+/// approved once and waiting for the agent).
+fn blocked_call(id: u64, approved_once: bool) -> crate::approval::grants::BlockedCall {
+    crate::approval::grants::BlockedCall {
+        id,
+        tool: "shell".into(),
+        helper: None,
+        summary: format!("cmd {id}"),
+        rule: Some("T3".into()),
+        path: None,
+        effect: None,
+        reason: "blocked by the classifier".into(),
+        at: 100,
+        grant: None,
+        approved_once,
+    }
+}
+
+/// `/approve` shows a call approved once as waiting for the agent, drawn
+/// on its row and named in the footer; `w` there withdraws the approval
+/// (the list comes again), the keys that approve say it is approved
+/// already, and `w` on a blocked call says there is nothing to withdraw.
+#[test]
+fn the_approve_picker_marks_a_waiting_approval_and_withdraws_it() {
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowPicker {
+        picker: approve_picker(&[blocked_call(1, false), blocked_call(2, true)], 160),
+        refresh: false,
+    });
+    let rows = screen(&mut app, 30).join("\n");
+    assert!(
+        rows.contains("#2 shell: cmd 2 [T3] · approved once · waiting for the agent")
+            && rows.contains("#1 shell: cmd 1 [T3] · 1m ago"),
+        "{rows}"
+    );
+    assert!(rows.contains("· w withdraw a waiting"), "{rows}");
+    // The waiting call is the newest, highlighted first.
+    for code in [KeyCode::Enter, KeyCode::Char('s'), KeyCode::Char('e')] {
+        assert!(app.update(key(code)).is_empty());
+        assert!(
+            matches!(&app.modal, Some(Modal::List(p))
+                if matches!(&p.line, Some(PickerLine::Refused(why)) if why.contains("approved once already"))),
+            "{code:?}"
+        );
+    }
+    assert_eq!(
+        app.update(key(KeyCode::Char('w'))),
+        vec![Effect::PickedWithdrawal(2)]
+    );
+    assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Approve));
+    app.update(key(KeyCode::Down));
+    assert!(app.update(key(KeyCode::Char('w'))).is_empty());
+    assert!(matches!(&app.modal, Some(Modal::List(p))
+        if matches!(&p.line, Some(PickerLine::Refused(why)) if why.contains("nothing to withdraw"))));
+    // With only a waiting approval the list shows it, not "nothing was
+    // blocked"; with none waiting the footer has no `w`.
+    let only = approve_picker(&[blocked_call(3, true)], 160);
+    assert_eq!(only.rows.len(), 1);
+    let plain = approve_picker(&[blocked_call(1, false)], 160);
+    assert!(!plain.footer.contains("withdraw"), "{}", plain.footer);
+}
+
+/// The run an approval started (or the running turn its note went into)
+/// is headed by why, not shown as a prompt the user typed: the daemon's
+/// announcement comes first, and the run's own prompt adds nothing.
+#[test]
+fn an_approval_s_run_is_headed_by_why_it_started() {
+    let mut app = App::new(StatusInfo::default());
+    let note = "The user approved your blocked call `shell cmd` once. Run it again exactly as before (any other call is reviewed as usual).";
+    app.update(Msg::Triggered {
+        label: "approved: the agent is told and goes on".into(),
+        prompt: note.into(),
+    });
+    app.update(Msg::RemoteTurn {
+        prompt: Some(note.into()),
+    });
+    assert!(
+        !app.transcript
+            .blocks()
+            .iter()
+            .any(|block| matches!(block, Block::User { .. })),
+        "{:?}",
+        app.transcript.blocks()
+    );
+    let rows = screen(&mut app, 20).join("\n");
+    assert!(
+        rows.contains("✓ approved: the agent is told and goes on"),
+        "{rows}"
+    );
+}

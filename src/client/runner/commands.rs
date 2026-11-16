@@ -435,30 +435,41 @@ impl Runner {
         });
     }
 
-    /// `/approve`: the picker over the calls the gate recently blocked;
-    /// after the picker's approval `approve` (its notice shown), a refresh
-    /// of the one open.
-    pub(super) fn approve_picker(
-        &self,
-        approve: Option<(u64, crate::approval::grants::GrantScope, Option<String>)>,
-    ) {
+    /// `/approve`: the picker over the calls the gate recently blocked and
+    /// the approvals once that wait; after the picker's act `picked` (its
+    /// notice shown), a refresh of the one open.
+    pub(super) fn approve_picker(&self, picked: Option<Picked>) {
         let Some(connection) = self.link_or_say("/approve needs it") else {
             return;
         };
         let say = self.say();
         tokio::spawn(async move {
-            let refresh = approve.is_some();
+            let refresh = picked.is_some();
             let mut refused = None;
             let mut granted = None;
-            if let Some((id, scope, effect)) = approve {
-                let done = bounded(
-                    CALL_TIMEOUT,
-                    remote::call::<protocol::method::Approve>(
-                        &connection,
-                        &protocol::ApproveParams { id, scope, effect },
-                    ),
-                )
-                .await;
+            if let Some(picked) = picked {
+                let done = match picked {
+                    Picked::Approve(id, scope, effect) => {
+                        bounded(
+                            CALL_TIMEOUT,
+                            remote::call::<protocol::method::Approve>(
+                                &connection,
+                                &protocol::ApproveParams { id, scope, effect },
+                            ),
+                        )
+                        .await
+                    }
+                    Picked::Withdraw(id) => {
+                        bounded(
+                            CALL_TIMEOUT,
+                            remote::call::<protocol::method::WithdrawApproval>(
+                                &connection,
+                                &protocol::GrantParams { id },
+                            ),
+                        )
+                        .await
+                    }
+                };
                 let ok = matches!(&done, Ok(outcome) if outcome.ok);
                 let (level, text) = outcome_notice(done, "/approve");
                 if ok {
@@ -475,7 +486,7 @@ impl Runner {
             .await
             {
                 Ok(list) => {
-                    let picker = approve_picker(&list.calls, crate::pricing::unix_now());
+                    let picker = crate::ui::approve_picker(&list.calls, crate::pricing::unix_now());
                     let _ = say.ui_tx.send(Msg::ShowPicker { picker, refresh });
                     // A refusal (a statement that says only "anything")
                     // shows on the refreshed picker too.
@@ -1257,102 +1268,14 @@ pub(super) fn settings_picker(
     )
 }
 
-/// The `/approve` picker: the calls the gate recently blocked, newest
-/// first; Enter or `o` approves one once, `s` for this session, `a`
-/// always for this workspace, `A` always in every workspace (the user's own
-/// `tui.toml`; a call no grant fits says so): each exact, the call itself or
-/// its directory or literal command. `e` opens a one-line field with the
-/// kind of effect the classifier objected to (empty when it named none),
-/// to edit and allow for this session or always: a statement the
-/// classifier judges.
-pub(super) fn approve_picker(
-    calls: &[crate::approval::grants::BlockedCall],
-    now: u64,
-) -> crate::ui::ListPicker {
-    use crate::approval::grants::GrantScope;
-    use crate::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
-    use ratatui::crossterm::event::KeyCode;
-    let rows = calls
-        .iter()
-        .rev()
-        .map(|call| {
-            let once = PickAct::Approve(call.id, GrantScope::Once);
-            let mut keys = vec![
-                PickKey::now(KeyCode::Enter, once.clone()),
-                PickKey::now(KeyCode::Char('o'), once),
-            ];
-            match &call.grant {
-                Some(grant) => {
-                    let what = grant.describe();
-                    keys.push(PickKey::confirmed(
-                        KeyCode::Char('s'),
-                        PickAct::Approve(call.id, GrantScope::Session),
-                        format!("Grant {what} for this session?"),
-                    ));
-                    keys.push(PickKey::confirmed(
-                        KeyCode::Char('a'),
-                        PickAct::Approve(call.id, GrantScope::Always),
-                        format!("Grant {what} always (written to the realm's tui.toml)?"),
-                    ));
-                    keys.push(PickKey::confirmed(
-                        KeyCode::Char('A'),
-                        PickAct::Approve(call.id, GrantScope::AlwaysUser),
-                        format!(
-                            "Grant {what} always, in every workspace (written to your own tui.toml)?"
-                        ),
-                    ));
-                }
-                None => {
-                    for code in ['s', 'a', 'A'] {
-                        keys.push(PickKey::refused(
-                            KeyCode::Char(code),
-                            "no grant fits this call; Enter approves it once",
-                        ));
-                    }
-                }
-            }
-            let who = call
-                .helper
-                .as_ref()
-                .map_or_else(String::new, |helper| format!(" (helper {helper})"));
-            let rule = call
-                .rule
-                .as_ref()
-                .map_or_else(String::new, |rule| format!(" [{rule}]"));
-            let ago = crate::text::span(now.saturating_sub(call.at), 1);
-            keys.push(PickKey::field(
-                KeyCode::Char('e'),
-                crate::ui::Field {
-                    what: crate::ui::FieldFor::Effect {
-                        id: call.id,
-                        scope: crate::approval::grants::GrantScope::Session,
-                    },
-                    text: call.effect.clone().unwrap_or_default(),
-                },
-            ));
-            let grant = call.grant.as_ref().map_or_else(String::new, |grant| {
-                format!(" · s/a exact: {}", grant.describe())
-            });
-            let effect = call.effect.as_ref().map_or_else(
-                || " · e judged: a kind of effect you type".to_string(),
-                |effect| format!(" · e judged: \"{effect}\""),
-            );
-            PickRow::new(
-                format!(
-                    "#{} {}{who}: {}{rule} · {ago} ago",
-                    call.id, call.tool, call.summary
-                ),
-                keys,
-            )
-            .noted(format!("{}{grant}{effect}", call.reason))
-        })
-        .collect();
-    ListPicker::new(
-        PickerKind::Approve,
-        rows,
-        "nothing was blocked recently",
-        "Enter approve once · s grant this session · a grant always here · A always in every workspace · e allow this kind of effect · Esc close",
-    )
+/// What the `/approve` picker's act asks of the daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Picked {
+    /// Approve blocked call `id` for the scope (with a statement: allow
+    /// that kind of action instead).
+    Approve(u64, crate::approval::grants::GrantScope, Option<String>),
+    /// Withdraw the approval once of call `id`.
+    Withdraw(u64),
 }
 
 /// What a daemon command's answer says, as a notice.

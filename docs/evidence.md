@@ -10672,3 +10672,80 @@ in this move's gate runs; it stays in the flaky list.
   Watches, helper endings, the compaction steer and peer messages are
   `mob/member_send` steers or comms inputs admitted with a wake, which
   start a run on an idle agent by design.
+
+## `/approve` tells the agent at once; approvals once wait on the list (owner decision, 2026-11-16)
+
+From real use: the user approved a blocked call once while the agent was
+still writing its reply; the agent ended its turn asking for approval,
+nothing made it retry, and `/approve` no longer listed the call (an
+approved call was taken off), so the block looked unrecorded. The
+approval's note was a system-context append (`ApprovalEvent::Granted` →
+`forward_approval_notes` → `append_note`), which the engine applies only
+when a running turn ends and which starts no run.
+
+What was built:
+
+- `ApprovalEngine::approve` / `approve_effect` no longer emit `Granted`;
+  they return the note (`permissions::approval`), which `Local::approve`
+  hands to `Agents::approved` off the answer's task. It goes through one
+  delivery, `Agents::steer` (`daemon/agents/notes.rs`, over
+  `steer_member`, the one `mob_member_send` with `Steer` that the
+  helper endings, watches, the compaction request and the plan-mode note
+  now share): into a running turn (read at its next step; the rig shows
+  the same turn going on), else a run of its own. An approval's run is
+  the user's: `human_input` is marked before the send when the agent is
+  idle, and `ApprovalEngine::user_started` marks the run when it starts
+  with the note anyway (`Agents::approval_run`, for an agent whose run
+  ended between the look and the send). Clients get `rkat/triggered`
+  with the label "approved: the agent is told and goes on" when the steer
+  is taken. The helper endings' hold after an interrupt does not apply:
+  `mob_member_send` is accepted right after an interrupted run (only the
+  system-context append is refused there), and the user is acting on the
+  agent. Grants made in the escalation dialog still emit `Granted`; the
+  events loop now spawns that append instead of awaiting it, so no later
+  decision, pause or mode push waits behind a turn.
+- A helper's call: probed on the rig, the engine takes no message from
+  the daemon into a running `delegate` helper. `mob_member_send` is
+  refused `mob member is not externally addressable: scout`;
+  `mob_member_send_keyed_as_host` (the host door, `Steer`) is accepted but
+  is a continuation the helper's run did not read before its last model
+  call answered: the run ended, `delegate` returned, the helper retired,
+  and the note was never read. So the rule is the simplest one that works:
+  the agent is always told, the note naming the helper's call; an
+  approval holds for the session and its helpers alike, so the agent makes
+  the call again itself or through a helper. A steer into an agent inside
+  its `delegate` call is read when the call returns.
+- `Blocks` keeps an approval once as an entry of the list
+  (`BlockedCall::approved_once`) until the identical call takes it
+  (`take_approved` removes the entry), `withdraw` makes it a blocked call
+  again (`rkat/withdraw_approval`, `/approve`'s `w`), and a block of the
+  identical call replaces an earlier blocked (not approved) entry, so a
+  call blocked again after a withdrawal is listed once. The cap counts
+  every entry. Not persisted, as before.
+- `Local::switch_mode` steered the plan-mode note into a running agent
+  instead of appending it: `rkat/set_mode` answered only when the turn
+  ended. An idle agent still gets the append (applied at once, no run).
+  The prompt-after-mode-change wait is unchanged: a prompt to an idle
+  agent waits for the change to end, which now includes only appends to
+  idle agents; a prompt to a running agent is a steer and follows the
+  note's steer. Window: an agent whose run ends between the look and the
+  steer gets a run of the note (the engine has no "steer only into an
+  open run").
+
+Pinned by `approve::{an_idle_agent_runs_its_call_again_once_approved,
+an_approval_during_the_turn_is_steered_into_it,
+grants_from_approve_wake_the_agent_once_and_removing_one_does_not,
+an_approval_once_waits_on_the_list_until_used_and_can_be_withdrawn,
+an_approval_right_after_an_interrupt_starts_the_run,
+a_helper_s_approved_call_is_told_to_its_running_agent,
+an_ended_helper_s_approved_call_goes_to_its_agent,
+a_decision_after_an_approval_reaches_the_client_during_the_turn,
+a_mode_change_during_a_turn_answers_before_the_turn_ends}` (each but the
+withdrawal test, which needs the new method, fails on the old code: run
+with `src/` of the previous commit, all eight time out), the changed
+`approvals::a_blocked_write_is_approved_for_the_session_through_the_daemon`,
+`approval::engine::tests::an_approval_once_waits_on_the_list_until_used_or_withdrawn`,
+`approval::engine::permissions::tests::an_approval_tells_the_agent_to_go_on_and_names_a_helper_s_call`,
+and `ui::tests::dispatch::{the_approve_picker_marks_a_waiting_approval_and_withdraws_it,
+an_approval_s_run_is_headed_by_why_it_started}`. Engine ask: a way for
+the host to steer a message into a running `delegate` helper's run.

@@ -25,11 +25,9 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use meerkat_core::SessionId;
-use meerkat_mob::{AgentIdentity, MobId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use super::super::MOB_ID;
 use super::Agents;
 use crate::mobs::endings::{Ended, How};
 use crate::mobs::{HelperKey, HelperTag};
@@ -361,19 +359,15 @@ impl Agents {
                 }
             }
             Recipient::Helper { key, tag } => {
-                let sent = self
-                    .core
-                    .state
-                    .mob_member_send(
-                        &key.mob,
-                        key.member.clone(),
-                        meerkat_core::types::ContentInput::from(text),
-                        meerkat_core::types::HandlingMode::Steer,
-                        None,
-                    )
-                    .await;
+                let sent = super::notes::steer_member(
+                    &self.core.state,
+                    &key.mob,
+                    key.member.clone(),
+                    text,
+                )
+                .await;
                 match sent {
-                    Ok(_) => format!("its parent helper {} was told", tag.label()),
+                    Ok(()) => format!("its parent helper {} was told", tag.label()),
                     Err(err) => {
                         tracing::warn!(helper = %key, error = %err, "a helper was not told of its own helper's ending");
                         format!("its parent helper {} could not be told: {err}", tag.label())
@@ -386,24 +380,11 @@ impl Agents {
     /// Steer `text` into `name`'s run, or start a run with it when it is
     /// idle (a run no user started, attributed as a helper's ending).
     async fn steer_note(&self, name: &str, text: String) {
-        self.helper_sent
-            .lock()
-            .insert(name.to_string(), text.clone());
-        let _sending = self.core.activity.sending(name);
-        let sent = self
-            .core
-            .state
-            .mob_member_send(
-                &MobId::from(MOB_ID),
-                AgentIdentity::from(name),
-                meerkat_core::types::ContentInput::from(text),
-                meerkat_core::types::HandlingMode::Steer,
-                None,
-            )
-            .await;
-        if let Err(err) = sent {
+        if let Err(err) = self
+            .steer(name, text, super::notes::Wake::HelperEnded)
+            .await
+        {
             tracing::warn!(agent = %name, error = %err, "a helper's ending did not reach the agent");
-            self.helper_sent.lock().remove(name);
         }
     }
 

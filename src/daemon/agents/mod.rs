@@ -31,7 +31,7 @@ mod triggers;
 pub use names::is_agent;
 use names::new_name;
 pub use notes::Leave;
-pub(crate) use notes::{append_note, note_compacted};
+pub(crate) use notes::{append_note, note_compacted, steer_member};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -127,6 +127,9 @@ pub struct Agents {
     /// The last note of a helper's ending sent to each agent: a run it
     /// starts is that ending's.
     helper_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
+    /// The last note of an `/approve` sent to each agent: a run it starts
+    /// is the user's ([`notes`]).
+    approval_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
     /// The agents whose last run the user interrupted ([`endings`]).
     interrupted: endings::Interrupted,
     /// The notes of helpers' endings held for them ([`endings`]).
@@ -158,6 +161,7 @@ impl Agents {
             core,
             watch_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
             helper_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            approval_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
             interrupted: endings::Interrupted::default(),
             held,
             table: parking_lot::Mutex::new(BTreeMap::new()),
@@ -807,6 +811,7 @@ impl Agents {
         self.core.watches.forget(name);
         self.watch_sent.lock().remove(name);
         self.helper_sent.lock().remove(name);
+        self.approval_sent.lock().remove(name);
         self.core.wires.forget(name);
         if let Some(session) = session {
             self.core.engine.forget_session(session);
