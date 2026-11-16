@@ -1,10 +1,10 @@
 //! Which models helpers run on: the model a spawn names, else
 //! `helpers.model`, else the agent's own, never a stored mob profile's;
 //! `helpers.allow_models` / `deny_models` judge it. Applied by the spawn
-//! customizer to `delegate` helpers and to members seated by a profile's
+//! customizer to `assign` helpers and to members seated by a profile's
 //! name, on the real daemon with the scripted LLM. The script is keyed on
 //! the messages, never on the order of the calls (the agent and its helper
-//! both call the model).
+//! both call the model, at the same time with `assign`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -24,45 +24,48 @@ const OPUS: &str = "claude-opus-4-8";
 /// What every helper's task says, so its model calls are told apart.
 const TASK: &str = "HELPER-TASK: look around";
 
-/// The agent delegates (with `tooling`, when given) when its last message
-/// is the user's, and ends with "agent done" once it has the result; the
-/// helper answers "helper done", once `gate` (when given) is notified.
+/// The agent assigns [`TASK`] to a helper (on `model`, when given) when
+/// its last message is the user's; it ends with "agent done" when the
+/// call was refused or when the note that the helper finished comes, and
+/// with "waiting" after a call that started one. The helper answers
+/// "helper done", once `gate` (when given) is notified.
 fn script(
-    tooling: Option<Value>,
+    model: Option<&'static str>,
     gate: Option<Arc<tokio::sync::Notify>>,
 ) -> Arc<ScriptedLlmClient> {
     let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
-        if common::user_texts(messages).concat().contains(TASK) {
+        if common::is_helper(messages, TASK) {
             let done = Step::Text("helper done");
             return match &gate {
                 Some(gate) => Step::Gated(Arc::clone(gate), Box::new(done)),
                 None => done,
             };
         }
-        let answered = messages
+        if common::told_finished(messages) {
+            return Step::Text("agent done");
+        }
+        let last = messages
             .iter()
             .rev()
-            .find(|m| !matches!(m, Message::System(_)))
-            .is_some_and(|m| matches!(m, Message::ToolResults { .. }));
-        if answered {
-            return Step::Text("agent done");
+            .find(|m| !matches!(m, Message::System(_)));
+        if let Some(Message::ToolResults { results, .. }) = last {
+            return if results.iter().any(|r| r.is_error) {
+                Step::Text("agent done")
+            } else {
+                Step::Text("waiting")
+            };
         }
         let turn = messages
             .iter()
             .filter(|m| matches!(m, Message::User(_)))
             .count();
-        let mut args = json!({
-            "member_id": format!("scout{turn}"),
-            "task": TASK,
-            "result_label": "result",
-            "max_text_bytes": 4000,
-        });
-        if let Some(tooling) = &tooling {
-            args["tooling"] = tooling.clone();
+        let mut args = json!({"name": format!("scout{turn}"), "task": TASK});
+        if let Some(model) = model {
+            args["model"] = json!(model);
         }
         Step::Tool {
-            id: common::leak(format!("d{turn}")),
-            name: "delegate",
+            id: common::leak(format!("a{turn}")),
+            name: "assign",
             args,
         }
     }));
@@ -78,27 +81,35 @@ fn inline(model: &str) -> Value {
 fn helper_models(llm: &ScriptedLlmClient) -> Vec<String> {
     llm.recorded()
         .into_iter()
-        .filter(|request| request.user().contains(TASK))
+        .filter(|request| common::is_helper(&request.messages, TASK))
         .map(|request| request.model)
         .collect()
 }
 
-/// The text of the agent's last `delegate` result.
-fn delegate_result(llm: &ScriptedLlmClient, id: &str) -> String {
+/// The text of the agent's result of its call `id`.
+fn result_of(llm: &ScriptedLlmClient, id: &str) -> String {
     let last = llm
         .recorded()
         .into_iter()
-        .rfind(|request| !request.user().contains(TASK))
+        .rfind(|request| !common::is_helper(&request.messages, TASK))
         .unwrap();
     common::tool_text(&last.messages, id)
 }
 
-async fn one_turn(rig: &mut Attached) {
-    rig.send(Effect::StartTurn("USER-ASK delegate it".into()));
-    assert_eq!(rig.turn_finished().await.unwrap().text, "agent done");
+/// The agent said "agent done" (in its turn, or in the run its helper's
+/// note started) and is idle again.
+async fn agent_done(rig: &mut Attached) {
+    rig.wait_for(|m| matches!(m, Msg::Agent(env) if matches!(&env.payload, meerkat_core::AgentEvent::TextComplete { content, .. } if content == "agent done")))
+        .await;
+    rig.daemon.idle(&rig.daemon.agent).await;
 }
 
-/// A `delegate` helper that names no model runs on `helpers.model`, and
+async fn one_turn(rig: &mut Attached) {
+    rig.send(Effect::StartTurn("USER-ASK start a helper".into()));
+    agent_done(rig).await;
+}
+
+/// An `assign` helper that names no model runs on `helpers.model`, and
 /// the client's helper view shows it; the agent's instructions name it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helper_naming_no_model_runs_on_helpers_model() {
@@ -107,11 +118,11 @@ async fn a_helper_naming_no_model_runs_on_helpers_model() {
     let llm = script(None, Some(Arc::clone(&gate)));
     let setup = Setup::args(&["--set", &format!("helpers.model={HAIKU}")]);
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
-    rig.send(Effect::StartTurn("USER-ASK delegate it".into()));
+    rig.send(Effect::StartTurn("USER-ASK start a helper".into()));
     rig.saw(|m| matches!(m, Msg::Status(StatusUpdate::Helpers(h)) if h.len() == 1 && h[0].model == HAIKU))
         .await;
     gate.notify_one();
-    assert_eq!(rig.turn_finished().await.unwrap().text, "agent done");
+    agent_done(&mut rig).await;
     assert_eq!(helper_models(&llm), [HAIKU]);
     let first = &llm.recorded()[0];
     assert_eq!(first.model, MODEL, "the agent keeps its own");
@@ -148,7 +159,7 @@ async fn without_the_settings_the_agent_is_told_one_sentence() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_allow_list_refuses_a_named_model_outside_it() {
     let ws = Workspace::new();
-    let llm = script(Some(inline(OPUS)), None);
+    let llm = script(Some(OPUS), None);
     let setup = Setup::args(&[
         "--set",
         &format!(r#"helpers.allow_models=["claude-haiku-*", "{MODEL}"]"#),
@@ -156,7 +167,7 @@ async fn an_allow_list_refuses_a_named_model_outside_it() {
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
     one_turn(&mut rig).await;
     assert!(helper_models(&llm).is_empty(), "no helper ran");
-    let result = delegate_result(&llm, "d1");
+    let result = result_of(&llm, "a1");
     assert!(
         result.contains(&format!(
             "the model `{OPUS}` is not permitted for helpers by the user's helpers.allow_models = [claude-haiku-*, {MODEL}]; name one of: claude-haiku-*, {MODEL}"
@@ -170,12 +181,12 @@ async fn an_allow_list_refuses_a_named_model_outside_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_deny_list_refuses_a_listed_model() {
     let ws = Workspace::new();
-    let llm = script(Some(inline(OPUS)), None);
+    let llm = script(Some(OPUS), None);
     let setup = Setup::args(&["--set", r#"helpers.deny_models=["claude-opus-*"]"#]);
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
     one_turn(&mut rig).await;
     assert!(helper_models(&llm).is_empty(), "no helper ran");
-    let result = delegate_result(&llm, "d1");
+    let result = result_of(&llm, "a1");
     assert!(
         result.contains(&format!("the model `{OPUS}` is not permitted"))
             && result.contains("name a model other than claude-opus-*"),
@@ -184,12 +195,11 @@ async fn a_deny_list_refuses_a_listed_model() {
     rig.quit().await;
 }
 
-/// The same deny list lets an inline profile's model it does not list
-/// run (the profile's model is the helper's).
+/// The same deny list lets a named model it does not list run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_deny_list_lets_another_named_model_run() {
     let ws = Workspace::new();
-    let llm = script(Some(inline(HAIKU)), None);
+    let llm = script(Some(HAIKU), None);
     let setup = Setup::args(&["--set", r#"helpers.deny_models=["claude-opus-*"]"#]);
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
     one_turn(&mut rig).await;
@@ -208,7 +218,7 @@ async fn an_unnamed_spawn_on_a_refused_owner_model_must_name_one() {
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
     one_turn(&mut rig).await;
     assert!(helper_models(&llm).is_empty(), "no helper ran");
-    let result = delegate_result(&llm, "d1");
+    let result = result_of(&llm, "a1");
     assert!(
         result.contains(&format!(
             "this spawn names no model, so the helper would run on your own model `{MODEL}`"
@@ -296,7 +306,7 @@ async fn spawn_in_a_team(
         (ran.len() >= helpers).then_some(ran)
     })
     .await;
-    let result = delegate_result(llm, "s1");
+    let result = result_of(llm, "s1");
     rig.quit().await;
     (ran, result)
 }
@@ -385,7 +395,7 @@ async fn a_fork_runs_on_its_parent_s_current_model() {
         .await;
     one_turn(&mut rig).await;
     // The call's result names the child, or why there is none.
-    let forked = delegate_result(&llm, "f1");
+    let forked = result_of(&llm, "f1");
     assert!(!forked.contains("\"error\""), "{forked}");
     let ran = common::poll(async || {
         let ran = helper_models(&llm);
@@ -466,7 +476,7 @@ async fn a_member_spawned_in_the_same_batch_as_its_mob_s_create_is_seated_on_the
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
     rig.daemon.reveal(&rig.daemon.session, &MOB_TOOLS).await;
     one_turn(&mut rig).await;
-    let result = delegate_result(&llm, "s1");
+    let result = result_of(&llm, "s1");
     assert!(!result.contains("not known"), "{result}");
     if result.contains("mob not found: team") {
         // The engine's answer to a spawn that came first (seen on every

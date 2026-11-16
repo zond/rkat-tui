@@ -290,16 +290,13 @@ impl Agents {
     /// tell the agent that runs `session` at once, so it goes on.
     ///
     /// - **Who.** The agent, for its own calls and its helpers' alike (a
-    ///   helper's is named as that helper's in the note). The engine admits
-    ///   no message from the daemon into a `delegate` helper's run (its
-    ///   member send is refused "not externally addressable", and the
-    ///   host's keyed send is a continuation its run does not read before
-    ///   it ends: both probed, `docs/evidence.md`); the approval holds for
-    ///   the agent and its helpers, so the agent makes the call again
-    ///   itself or through a helper.
+    ///   helper's is named as that helper's in the note). The engine
+    ///   admitted no message from the daemon into a helper of its
+    ///   withdrawn `delegate` (probed, `docs/evidence.md`), and the approval
+    ///   holds for the agent and its helpers, so the agent makes the call
+    ///   again itself or through a helper.
     /// - **How.** Steered ([`Self::steer`]): into the agent's running
-    ///   turn (it reads it at its next step: after its `delegate` returns,
-    ///   when a helper's call was blocked), or as a run of its own when it
+    ///   turn (it reads it at its next step), or as a run of its own when it
     ///   is idle. That run is the user's (the user's `/approve` is the
     ///   user's act): attended, and its clients show it under
     ///   [`APPROVED_LABEL`].

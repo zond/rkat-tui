@@ -537,31 +537,31 @@ async fn a_note_appended_while_a_turn_runs_starts_no_run_after_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_cannot_cancel_another_agents_helper() {
     let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "d1",
-            name: "delegate",
-            args: json!({
-                "member_id": "slow",
-                "task": "wait forever",
-                "result_label": "result",
-                "max_text_bytes": 4000,
-            }),
-        },
-        Step::Hang,
-        Step::Text("after"),
-    ]);
+    let step = Step::Dynamic(Arc::new(|messages: &[meerkat_core::Message]| {
+        if common::is_helper(messages, "wait forever") {
+            return Step::Hang;
+        }
+        if common::after(messages, "a1") {
+            return Step::Text("after");
+        }
+        common::assign("a1", "slow", "wait forever")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut a = connect(&daemon).await;
     let mut b = Client::attach_to(&daemon.endpoint(), Some(json!({"choice": "new"}))).await;
     a.ok(
         "mob/member_send",
-        json!({"mob_id": MOB_ID, "agent_identity": a.agent, "content": "delegate"}),
+        json!({"mob_id": MOB_ID, "agent_identity": a.agent, "content": "start one"}),
     )
     .await;
-    llm.wait_call(1).await;
-    let helper =
-        json!({"mob_id": format!("implicit-{}", daemon.session), "agent_identity": "slow"});
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .any(|r| common::is_helper(&r.messages, "wait forever"))
+    })
+    .await;
+    let helper = json!({"mob_id": MOB_ID, "agent_identity": "slow"});
     let refused = b.call("mob/force_cancel", helper.clone()).await;
     assert_eq!(
         error_code(&refused),

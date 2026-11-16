@@ -10998,3 +10998,75 @@ Not fixed here: no product change; the test stays as it is (no retry
 added). Open: pin the engine holder and file it upstream, or word the
 agent's next step on `mob_destroy_incomplete` (the result is the engine's;
 the gate cannot rewrite it).
+
+## `delegate` withdrawn (owner decision, 2026-11-16)
+
+`assign` replaces the engine's `delegate`: while a `delegate` ran, its
+caller heard no one and could not answer. What was done:
+
+- **Withdrawn.** `delegate` is in every member's tool access policy's deny
+  list (`approval::policy::WITHDRAWN_TOOLS`, merged by
+  `mobs::customizer::tool_access_policy`, agents included), and never
+  deferrable (`daemon::deferral::DIRECT_MOB_TOOLS` is the withdrawn list:
+  a search must not offer it). Shown positively: a real agent's request
+  carries `assign` and no `delegate`, its helper's no `delegate`
+  (`assign::delegate_is_withdrawn_from_agents_and_helpers`,
+  `tool_costs::an_agent_s_request_carries_every_tool_definition`,
+  `deferral::a_search_reveals_its_matches_and_the_schedule_fires`).
+- **Who refuses a call of it.** Probed in that test: the engine refuses the
+  call before any dispatch, the gate's included, in its own words: the
+  agent's `{"error":"access_denied","message":"Tool 'delegate' is not
+  allowed by policy"}`, a helper without mob tools
+  `{"error":"tool_not_found",…}`. Neither text says what to use; the
+  engine's `ToolError::AccessDenied` carries no host reason (an ask, not
+  filed). The gate's own refusal, `Tier::Unavailable` with
+  `DELEGATE_UNAVAILABLE` ("start a helper with `assign` … or `fork_off`
+  …"), modelled on the shell jobs', is for a call that reaches it anyway:
+  `ActionKind::Withdrawn` for the engine's tool, also when the session
+  offers none of the name; an MCP server's `delegate` is reviewed as any
+  foreign tool (`approval::policy`'s
+  `a_withdrawn_tool_is_unavailable_with_what_to_use_instead`,
+  `approval_policy::an_mcp_tool_named_like_a_builtin_is_not_trusted_like_one`).
+- **Removed** with it: `DelegateCalls` (the agent's and each helper's
+  `delegate` calls followed from their events), `CallEnded`, the orphan
+  retirement of a timed-out call's helper, `How::TimedOut` and its note,
+  `open_delegates` with the retire of open calls' helpers at the daemon's
+  stop, `default_delegate_wait` (#2207) and the persona's
+  `implicit-<your session id>` line (#2208, #2225).
+- **Kept** for a realm an earlier build wrote: its `delegate` helpers are
+  members of `implicit-<session>` under the `delegate` profile, bound in
+  `tui_helpers.json`. `settle_left_helpers` at the start marks one still
+  seated `left_over` (was `CallEnded::CutOff`) and tells one gone as
+  `DaemonStopped`; `HelperEndings` tells a left-over one when its run ends
+  (`How::Finished`, its note reworded: "The `delegate` call that started it
+  ended before it did …") and retires it through
+  `delegates::retire_left_helper` (was `retire_orphan`: only a member still
+  listed under the `delegate` profile). The customizer's `delegate`
+  profile seat, the client's implicit-mob following and the `delegate`
+  tool line and helper kind of a stored transcript stay as they are.
+  Shown by `helper_endings::a_delegate_helper_an_earlier_build_left_finishes_and_answers_its_agent`:
+  the state is made as that build's `delegate` made it, through the mob
+  host (a durable member of `MobDefinition::implicit`'s `delegate`
+  profile, its owner the agent's session); the next daemon's engine
+  restores and runs it, its answer is held for the agent, it is retired,
+  and the user's next message carries the answer. The first run of that
+  test failed until `open_delegates` went: the old stop retired the
+  helper as an open call's. The binding file of the first release
+  (`tests/fixtures/state-0.0.1/realm/tui_helpers.json`, a `delegate`
+  helper in an implicit mob) still opens (`state_fixtures::the_daemon_files_open`).
+- **Found while porting**: a client of one agent could `mob/force_cancel`
+  another agent's helper seated in the workspace's mob (an `assign` or
+  `spawn_member` helper): `Local::admit` judged members of `tui` only as
+  agents. It now judges a non-agent member of `tui` by whom it works for,
+  as any helper (`daemon::a_client_cannot_cancel_another_agents_helper`,
+  failing before the change with `{"cancelled":true}`).
+- **The tests**: every test that used `delegate` gets its helper with
+  `assign` now; the scripts key on the messages (`common::is_helper`,
+  `told_finished`, `after`), since the agent and its helper call the model
+  at once, and a test that needed the agent running while its helper ran
+  holds the agent in a gated or unanswered model call. The interrupt
+  tests pin that Esc stops the agent's held run and nothing of its
+  helper's (there is no cut-off call any more). The resumed-run tests stop
+  the daemon while the agent is held in a model call beside its helper:
+  the engine resumes the run, which makes that call again, and restores
+  the helper, which runs anew.

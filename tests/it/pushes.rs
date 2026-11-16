@@ -14,7 +14,6 @@ use common::{ScriptedLlmClient, Step, Workspace};
 use meerkat_core::{AgentEvent, StreamScopeFrame};
 use rig::{Attached, Client, Running};
 use rkat_tui::ui::{Effect, Msg};
-use serde_json::json;
 
 /// Longer than the poll intervals the client used to have (a member status
 /// every second, a mob listing every 250 ms): a poll would be counted.
@@ -55,33 +54,35 @@ async fn another_clients_new_is_shown_without_polling() {
     daemon.stop().await;
 }
 
-/// A `delegate` helper's events are shown from its first one (the
-/// daemon pushes its implicit mob, the client backfills what came before
-/// its stream opened), and its start makes the client list no mobs.
+/// An `assign` helper's events are shown from its first one (a member
+/// that joins the mob's open stream later is subscribed from its live
+/// events on: the client backfills what came before), and its start makes
+/// the client list no mobs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_delegate_helper_is_followed_from_its_first_event_without_listing_mobs() {
+async fn an_assigned_helper_is_followed_from_its_first_event_without_listing_mobs() {
     const LIST: &str = "mob/list";
     let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "d1",
-            name: "delegate",
-            args: json!({
-                "member_id": "h1",
-                "task": "say hi",
-                "result_label": "result",
-                "max_text_bytes": 4000,
-            }),
+    let step = Step::Dynamic(std::sync::Arc::new(
+        |messages: &[meerkat_core::Message]| {
+            if common::is_helper(messages, "say hi") {
+                return Step::Text("helper done");
+            }
+            if common::told_finished(messages) {
+                return Step::Text("noted");
+            }
+            if common::after(messages, "a1") {
+                return Step::Text("ok");
+            }
+            common::assign("a1", "h1", "say hi")
         },
-        Step::Text("helper done"),
-        Step::Text("ok"),
-    ]);
+    ));
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
     let mut rig = Attached::start(&ws.root, &llm).await;
     // The attach lists the mobs once.
     common::until(|| rig.daemon.forwarded(LIST) > 0).await;
     let listed = rig.daemon.forwarded(LIST);
     assert_eq!(listed, 1);
-    rig.send(Effect::StartTurn("delegate it".into()));
+    rig.send(Effect::StartTurn("start one".into()));
     assert_eq!(rig.turn_finished().await.unwrap().text, "ok");
     /// The event of the helper `h1` that `m` shows, if any.
     fn of_helper(m: &Msg) -> Option<&AgentEvent> {
@@ -103,5 +104,7 @@ async fn a_delegate_helper_is_followed_from_its_first_event_without_listing_mobs
     })
     .await;
     assert_eq!(rig.daemon.forwarded(LIST), listed, "no mob listing");
+    common::until(|| common::parent_told(&llm, "say hi", "h1")).await;
+    rig.daemon.idle(&rig.daemon.agent).await;
     rig.quit().await;
 }

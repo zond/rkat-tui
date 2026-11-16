@@ -1030,26 +1030,35 @@ async fn a_new_agent_attaches_while_another_agents_helper_runs() {
     use rkat_tui::ui::Effect;
     let ws = Workspace::new();
     let gate = Arc::new(tokio::sync::Notify::new());
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "d1",
-            name: "delegate",
-            args: json!({
-                "member_id": "scout",
-                "task": "HELPER-TASK: look around",
-                "result_label": "result",
-                "max_text_bytes": 4000,
-            }),
-        },
-        Step::Gated(Arc::clone(&gate), Box::new(Step::Text("HELPER-DONE"))),
-        Step::Text("parent done"),
-        Step::Text("next"),
-    ]);
+    let step = {
+        let gate = Arc::clone(&gate);
+        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+            if common::is_helper(messages, "HELPER-TASK") {
+                return Step::Gated(Arc::clone(&gate), Box::new(Step::Text("HELPER-DONE")));
+            }
+            if common::user_texts(messages).concat().contains("again") {
+                return Step::Text("next");
+            }
+            if common::told_finished(messages) {
+                return Step::Text("parent done");
+            }
+            if common::after(messages, "a1") {
+                return Step::Text("waiting");
+            }
+            common::assign("a1", "scout", "HELPER-TASK: look around")
+        }))
+    };
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut a = rig::Client::attach(&ws.root).await;
-    a.send(Effect::StartTurn("delegate it".into()));
+    a.send(Effect::StartTurn("start a helper".into()));
     // The helper's model call waits on the gate: the helper is running.
-    llm.wait_call(1).await;
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .any(|r| common::is_helper(&r.messages, "HELPER-TASK"))
+    })
+    .await;
     let started = std::time::Instant::now();
     let b = tokio::time::timeout(
         std::time::Duration::from_secs(30),
@@ -1062,10 +1071,12 @@ async fn a_new_agent_attaches_while_another_agents_helper_runs() {
     let mut b = b.unwrap_or_else(|_| panic!("the attach waited on the helper ({waited:?})"));
     let b_name = b.agent().await;
     assert_ne!(a.agent().await, b_name);
-    assert_eq!(a.turn_finished().await.unwrap().text, "parent done");
+    common::until(|| common::parent_told(&llm, "HELPER-TASK", "scout")).await;
+    daemon.idle(&a.agent().await).await;
     // The note that B joined landed after A's turn: A's next turn reads it.
     a.send(Effect::StartTurn("again".into()));
-    assert_eq!(a.turn_finished().await.unwrap().text, "next");
+    a.wait_for(|m| matches!(m, rkat_tui::ui::Msg::Agent(env) if matches!(&env.payload, meerkat_core::AgentEvent::TextComplete { content, .. } if content == "next")))
+        .await;
     let last = llm.recorded().pop().unwrap();
     assert!(
         format!("{:?}", last.messages).contains(&format!("Agent `{b_name}` joined this workspace")),
@@ -1294,15 +1305,10 @@ async fn child_peers(route: &'static str) -> (String, String) {
             return Step::Text("parent done");
         }
         match route {
-            "delegate" => Step::Tool {
+            "assign" => Step::Tool {
                 id: "r1",
-                name: "delegate",
-                args: json!({
-                    "member_id": "kid",
-                    "task": "HELPER-TASK list your peers",
-                    "result_label": "result",
-                    "max_text_bytes": 4000,
-                }),
+                name: "assign",
+                args: json!({"name": "kid", "task": "HELPER-TASK list your peers"}),
             },
             "spawn_member" => Step::Tool {
                 id: "r1",
@@ -1351,7 +1357,7 @@ async fn child_peers(route: &'static str) -> (String, String) {
 /// seated, and its first call waits for that edge (`forks` has the rest).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn children_are_wired_to_their_parent() {
-    for route in ["delegate", "spawn_member", "fork_off"] {
+    for route in ["assign", "spawn_member", "fork_off"] {
         let (peers, agent) = child_peers(route).await;
         assert!(peers.contains(&agent), "{route}: {peers}");
     }

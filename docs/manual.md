@@ -224,7 +224,7 @@ resumed sessions and helpers carry it too. First match wins:
 | Tier | What | Review |
 |---|---|---|
 | 0 | A user **deny** rule matches, or `write_file` / `edit_file` / the engine's `blob_save_file` (or any target of a patch) is a **sealed** path: the project's `.rkat/` (its `tui.toml`, `mcp.toml`, hooks), every `.rkat` and every `.git` inside it, and, wherever they lie, the git directories governing the project (an enclosing repository's `.git` when the workspace is a subdirectory, a worktree's git dir and the common dir its `commondir` names, with the hooks), the realm directory (the workspace's state directory: `config.toml`, approvals, `tui.toml`, sessions, the audit log) and the user config directory (`~/.rkat/tui`: global rules, trust records). On a file system that resolves names ignoring case (macOS's default), every spelling counts: `.RKAT/` is the real `.rkat/` there and is sealed as well; on a case-sensitive one it is an ordinary directory. Neither the classifier nor an allow rule opens a sealed path, and reading one is not sealed (except the daemon's endpoint directories, below); a shell command that writes there is still judged by the classifier. The engine's own file tools refuse the same state again by themselves (Meerkat 0.9.12): any `.rkat` in the workspace, and the realm, the config directory, the user config document and the credential store when the command line puts them inside the workspace. The directories that hold the daemon's endpoint file and its attach token (`$XDG_STATE_HOME/rkat-tui/`, else `~/.local/state/rkat-tui/`, and `$XDG_RUNTIME_DIR/rkat-tui/`) are sealed for reads and searches too: `read_file`, `grep` and `glob` never open them, and a search above them skips them; so is the realm directory | denied |
-| 1 | Read-only tools (`read_file`, `glob`, `grep` inside the project, the agent's [scratch directory](#the-scratch-directory), or a directory you named with `--confinement-write`/`--confinement-read`, task tools, `memory_search`, `note_list`/`note_read`, `blob_inspect`, skill browsing, read-only `mob_*` queries, `delegate`, `fork`), read-only shell commands (`cat`, `ls`, `rg`, `git status/diff/log`, `cargo check/test` when builds are trusted, …; their output redirected into the scratch directory, and a leading `TMPDIR=<scratch directory>`), narrow user **allow** rules | allowed |
+| 1 | Read-only tools (`read_file`, `glob`, `grep` inside the project, the agent's [scratch directory](#the-scratch-directory), or a directory you named with `--confinement-write`/`--confinement-read`, task tools, `memory_search`, `note_list`/`note_read`, `blob_inspect`, skill browsing, read-only `mob_*` queries, `assign`, `fork_off`), read-only shell commands (`cat`, `ls`, `rg`, `git status/diff/log`, `cargo check/test` when builds are trusted, …; their output redirected into the scratch directory, and a leading `TMPDIR=<scratch directory>`), narrow user **allow** rules | allowed |
 | 2 | `write_file` / `edit_file` / `blob_save_file` where every target is inside the project, the agent's scratch directory, or a directory you named with `--confinement-write` or `[confinement] extra_write`, and not protected (`.rkat/`, `.git/` and any `.git` file, `.env*`, …, matched inside a named directory as inside the project); workspace notes | allowed (manual mode asks you) |
 | ask | `write_file` / `edit_file` / `blob_save_file` (or any target of a patch) is a **protected** path in the project (or in a directory you granted). Two kinds. What **runs later or widens access**: `.envrc`, `.cargo/`, `rust-toolchain*`, `.claude/`, `.cursor/`, `.codex/`, `.gemini/`, `.mcp.json`, `.gitmodules`, `.gitattributes`, `tui.toml`, `.vscode/`, `.idea/`, shell profiles (`.bashrc`, `.zshrc`, `.profile`, …): never the classifier, the dialog names each path and what it is (`protected path: .envrc (secrets); the policy always asks for these`). What is protected for its **content**: `.env*`, `build.rs`, `AGENTS.md`, `CLAUDE.md`: in auto mode the classifier reviews it (rule S6, instruction poisoning, and the credential rules) and you are asked when it blocks; the other modes ask. A user allow rule for the path (what the dialog's "allow and add a rule" adds) allows it, a deny rule denies it | asks you (content: the classifier in auto mode) |
 | 3 | Everything else: other shell commands, MCP tools, web search, comms sends, mutating mob tools, out-of-project paths, user-level notes | classifier (manual and accept-edits modes ask you) |
@@ -565,8 +565,7 @@ This holds right after you interrupted the agent too: approving is acting
 on it now. A call a helper made is told to the agent, named as that
 helper's call ("that your helper `scout` made"): the approval holds for
 the agent and its helpers, so it makes the call again itself or through
-a helper (rkat-tui cannot put a message into a `delegate` helper's own
-run). Removing a grant or a statement tells the agent nothing and starts
+a helper. Removing a grant or a statement tells the agent nothing and starts
 no turn. `/permissions` lists the grants in
 force after the rules, each with where it comes from (`default`, `flag`,
 `config`, `always`, `session`), then the statements; `d` then `y` removes
@@ -1147,30 +1146,43 @@ neither hang nor take a helper's whole time:
 
 ## Helpers
 
-The agent can hand self-contained subtasks to helper agents with `delegate`
-(Meerkat mobs: each helper is a mob member). A helper runs on the session's
-model and endpoint (a model only an endpoint lists included), with the
-TUI's file tools and a helper persona, does one turn and returns its final
-text. A helper the agent puts on another model still runs through the
-session's endpoint, never the model's provider default (its public URL with
-an environment key): a model the endpoint's dialect serves, or one the
-model catalog does not know, goes there; a model of another provider is
-refused, naming the configured endpoints that speak its dialect. Its tool calls pass the **delegating
-session's** gate (same rules and counters; escalations name the
-helper), so delegating never unlocks an action. The transcript shows each
+The agent can hand work to helper agents (Meerkat mobs: each helper is a
+mob member), and none of them blocks it: while a helper works the agent
+still hears you and answers. It starts one in one of three ways:
+
+- **`assign`** for a self-contained task: a single-use helper that starts
+  from a fresh context (the task is all it knows), runs alongside the
+  agent, and whose answer reaches the agent in a note when it finishes;
+  it is retired then.
+- **`fork_off`** when the task needs the conversation so far: a fork of
+  the agent's conversation on the task. Its outcome reaches the agent when
+  its first run ends.
+- **`spawn_member`** for a helper the agent keeps and talks to: it stays
+  seated after its task, the agent is told each time it goes idle, and the
+  agent retires it with `retire_member` when done (`mob_create` and
+  `mob_spawn_member` make teams in mobs of their own the same way).
+
+Every one is wired to the agent both ways: each sees the other in `peers`
+and either can `send_message` the other at any time. A helper runs with the
+TUI's file tools and a helper persona, on the model the rules below give it
+(**Helper models**), through the session's endpoint, never the model's
+provider default (its public URL with an environment key): a model the
+endpoint's dialect serves, or one the model catalog does not know, goes
+there; a model of another provider is refused, naming the configured
+endpoints that speak its dialect. Its tool calls pass the **delegating
+session's** gate (same rules and counters; escalations name the helper), so
+starting a helper never unlocks an action. The transcript shows each
 helper as one `[label · model]` line and the status bar counts running
-helpers. A `delegate` call waits for its helper
-three times as long as any one tool call may run: `[tools] default_timeout`
-(600 s unless the realm's `config.toml` sets it) or a longer
-`[tools.tool_timeouts]` entry, so 30 min by default; a helper's own tool
-call that runs too long times out first and the helper reports it.
-`[tools.tool_timeouts] delegate = "45m"` in the realm's `config.toml` sets
-the wait itself. A `delegate` call that times out ends without the helper's
-result, and the daemon then retires that helper; members started with
-`mob_spawn_member` stay until they are retired or their mob is destroyed.
-A `delegate` helper is a member of the mob `implicit-<session id>` of the
-agent that started it, not of the workspace's mob (`tui`, where the agents
-are); the agent is told so.
+helpers. To run a command while the agent keeps working, the agent assigns
+a helper to run it and report (long-lived processes such as servers are not
+possible yet).
+
+The engine's `delegate`, which blocked the agent until its helper was done
+(it heard no one meanwhile), is not offered: no agent or helper has it, and
+a call of it is refused. A conversation of an earlier rkat-tui that used it
+still opens and shows its `delegate` calls and helpers as they were; a
+`delegate` helper such a daemon left running is run on at the next start,
+and its answer comes to the agent as a note.
 
 **`assign`.** The agent (and a helper that may start helpers) starts a
 single-use helper with `assign` (`name`, `task`, optionally `model`): the
@@ -1197,13 +1209,12 @@ run's last call was a message to its parent (the parent has its last word).
 A run an idle note starts for the agent is labelled `a helper went idle`.
 
 **Interrupts and helpers.** Esc, Ctrl-C, Ctrl+Enter and Ctrl-X Ctrl-S stop
-the agent's **own** run only: its helpers (delegate helpers, spawned
+the agent's **own** run only: its helpers (assigned helpers, spawned
 members, forks, at any depth) keep working, their tool calls are still
 judged (the interrupt's Stop marks the agent's own calls only), and the
-approval prompts of their calls stay open for you to answer. A `delegate`
-helper whose call the interrupt cut off cannot return its answer through
-that call: when it finishes, its answer goes to its parent as a note
-instead. The daemon's stop still ends every helper.
+approval prompts of their calls stay open for you to answer. A helper that
+finishes after the interrupt is told to the agent as below (held for your
+next message). The daemon's stop still ends every helper.
 
 **Stopping one helper.** Esc in a running helper's full view asks
 `Stop helper scout? It cannot be undone: …`: `y` stops it, `n` or Esc
@@ -1215,11 +1226,9 @@ helpers it started keep running (one level, as an interrupt).
 
 **How a helper ended.** Its parent (the agent, or for a nested helper the
 helper that started it) is told once, at once, however it ends: finished
-(with its answer, when its own call could not return it; an answer longer
-than 4 000 characters is cut and written in full to the agent's scratch
-directory), failed, stopped by you, timed out, or ended when the daemon
-stopped. A `delegate` call that returns the helper's answer is the
-notification itself and nothing more is said. Into a running parent the
+(with its answer; an answer longer than 4 000 characters is cut and
+written in full to the agent's scratch directory), failed, stopped by you,
+or ended when the daemon stopped. Into a running parent the
 note goes at its next step; an idle parent starts a run with it (a run no
 user started, labelled `a helper ended`). Right after you interrupted the
 agent (no run started since) it is not woken: the note is held, the
@@ -1227,12 +1236,11 @@ transcript says so at once, and it travels with your next message to the
 agent, before your words. A held note survives detaching and the daemon's
 restart (`held-notes.json` in the realm). Endings that come within a
 quarter second go as one note. The helper's line and its full view's
-title say how it ended in plain words (`stopped by you`, `timed out`,
-`failed: …`, `ended when the daemon stopped`), and a transcript notice
-says who was told and when. A `delegate` helper the daemon's stop left
-is run on by the engine at the next start (its answer then comes as a
-note); one the engine did not keep is told as `ended when the daemon
-stopped`.
+title say how it ended in plain words (`stopped by you`, `failed: …`,
+`ended when the daemon stopped`), and a transcript notice says who was
+told and when. A helper the daemon's stop left is run on by the engine at
+the next start (its answer then comes as a note); one the engine did not
+keep is told as `ended when the daemon stopped`.
 
 **Working or waiting.** The input's prompt marker shows whether the agent
 is busy: the plain `›` while it is idle; a turning braille spinner (`⠋`,
@@ -1260,7 +1268,7 @@ first, its nested helpers under it): `[scout · model] ⠋ running · 4 tool
 calls · grep "fn resolve"` while it works (its last call, or the first line
 of its latest text), then `done · 7 tool calls · 2.1k tokens` (or `failed`,
 `cancelled`, `unmeasured`, or how it ended when the daemon says: `stopped by
-you`, `timed out`, `failed: …`, `ended when the daemon stopped`). A helper that finished stays listed until the
+you`, `failed: …`, `ended when the daemon stopped`). A helper that finished stays listed until the
 next turn starts. The panel takes at most six lines (beyond that, a window
 around the selection and `… and N more`) and is hidden when empty.
 Ctrl+↓/Ctrl+↑ move a selection in the panel (the newest first, wrapping
@@ -1268,8 +1276,9 @@ around). Enter on an **empty** input opens the selected helper's **full
 view** in place of the transcript (Enter with text in the input sends it as
 usual, and the input keeps working while the view is open). It reads as
 the main transcript reads for the agent: the title names the helper, its
-model, its kind (`delegate`, `fork`, `spawned member`, when the call that
-started it was seen) and its state (`running`, `finished`, `idle` for a
+model, its kind (`assigned`, `fork`, `spawned member`, or `delegate` in a
+conversation an earlier rkat-tui stored, when the call that started it was
+seen) and its state (`running`, `finished`, `idle` for a
 spawned member whose task is done, `failed`, `cancelled`), then, in
 order, the task it was given as a prompt (`› `) under `task from
 <agent>` (or the helper above it), every later input the same way (a
@@ -1307,20 +1316,21 @@ reports; a terminal that sends none counts as focused, so it never rings.
 `[ui] bell = false` in `tui.toml` (or `--set ui.bell=false`) turns it off.
 
 Helpers nest one level deep by default, as in Claude Code: the session may
-delegate, its helpers may not, so a chain of helpers each carrying a full
-context (and the mob and council tool schemas, about 25k tokens in every
-call) never builds up. `[helpers] max_depth = N` in `tui.toml` (or
+start helpers, its helpers may not, so a chain of helpers each carrying a
+full context (and the mob and council tool schemas, about 25k tokens in
+every call) never builds up. `[helpers] max_depth = N` in `tui.toml` (or
 `--set helpers.max_depth=N`; a project file may only lower it) allows N
-levels: a helper at the limit gets no `delegate`, `mob_create`,
+levels: a helper at the limit gets no `assign`, `mob_create`,
 `mob_spawn_member` or `council` tool (left out of its tool list and denied
 by its tool access policy), and a deeper spawn is refused.
 
 **Helper models.** A helper's model never comes from a stored profile. For
-every helper, however it is started (`delegate`, `spawn_member`,
-`mob_spawn_member` into any mob, by a profile's name, an inline profile or
-nothing), it is, in this order:
+every helper started with `assign`, `spawn_member` or `mob_spawn_member`
+(into any mob, by a profile's name, an inline profile or nothing), it is,
+in this order:
 
-1. the model the spawn names (an inline profile under `tooling`);
+1. the model the call names (`assign`'s `model`, an inline profile under
+   `tooling`);
 2. else `helpers.model`;
 3. else its owner's current model.
 
@@ -1330,8 +1340,9 @@ else it defines (tools, instructions and the rest), but its model, its
 provider and server, and its fallback chain are replaced: the workspace's
 mob keeps the `main` profile of its first start, on the model of that day,
 and a profile the agent wrote may name any model. A `fork_off` child is
-the one exception to step 2: it continues its parent's conversation, so it
-stays on its parent's current model. Whatever the
+the one exception: it continues its parent's conversation, so it stays on
+its parent's current model, and neither `helpers.model` nor the lists
+below apply to it. Whatever the
 source, the model runs through the owner's endpoint as above: on a
 self-hosted endpoint as its alias `<endpoint>:<model>`, also when an inline
 profile names it, and only a model the endpoint listed at start or that
@@ -1343,7 +1354,8 @@ refused, and so is a `helpers.model` naming one).
 
 `helpers.allow_models` or `helpers.deny_models` (at most one of the two,
 over your own and the workspace's file and the command line) limits the
-models helpers may run on. Each is a list of patterns: an exact model name
+models those helpers (`assign`, `spawn_member`, `mob_spawn_member`) may run
+on. Each is a list of patterns: an exact model name
 or a prefix ending in one `*` (`"claude-haiku-*"`); a `*` anywhere else, an
 empty entry, whitespace, an empty list or `*` alone is refused naming the
 entry. A pattern matches the model's plain name, the name the endpoint
@@ -1597,9 +1609,9 @@ it may only lower a value, its lowering applies over every layer).
 | `auto.compact_prepare`: What every agent is asked to do before an automatic compaction (empty: none here). | text (at most 2000 characters) | none | may set it (the command line wins) | at once | `/compact prepare <text>\|off\|default` |
 | `auto.compact_prepare_at`: Where the agents are asked to prepare: tokens, or a share of the window. | tokens (`300000`, `300k`, `1.2m`) or a share of the window (`"65%"`) | 70% | may set it (the command line wins) | at once | `/compact prepare at <threshold>\|default` |
 | `helpers.max_depth`: How many levels of helpers a session may have (0: none). | a whole number from 0 to 255 | 1 | may only lower it | at the next start | — |
-| `helpers.model`: The model a helper runs on when its spawn names none (through its owner's endpoint). | a model, `[endpoint:]model` | the owner's model | may not set it | at once | — |
-| `helpers.allow_models`: The only models helpers may run on (not with `deny_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: any model | may not set it | at once | — |
-| `helpers.deny_models`: Models helpers may not run on (not with `allow_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: none | may not set it | at once | — |
+| `helpers.model`: The model a helper started with `assign`, `spawn_member` or `mob_spawn_member` runs on when the call names none (through its owner's endpoint); a `fork_off` child stays on its parent's. | a model, `[endpoint:]model` | the owner's model | may not set it | at once | — |
+| `helpers.allow_models`: The only models a helper started with `assign`, `spawn_member` or `mob_spawn_member` may run on (not with `deny_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: any model | may not set it | at once | — |
+| `helpers.deny_models`: Models a helper started with `assign`, `spawn_member` or `mob_spawn_member` may not run on (not with `allow_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: none | may not set it | at once | — |
 | `shell.user_timeout_secs`: How long a `!` command may run, in seconds. | a whole number from 1 | 120 | may only lower it | at the next start | — |
 | `search.budget_secs`: How long one `glob` or `grep` may run before it answers with what it found, in seconds. | a whole number from 1 | 10 | may only lower it | at the next start | — |
 | `search.max_entries`: How many files and directories one `glob` or `grep` may examine. | a whole number from 1 | 500000 | may only lower it | at the next start | — |
@@ -1797,7 +1809,7 @@ catalogued model does not accept (an adaptive-only model with a budget, say:
 Claude Fable 5.2, `claude-fable-5-2`, takes only `"adaptive"`)
 are ignored with a start-up notice; an id outside the catalog is sent as
 set. Like `[pricing]`, only your own `tui.toml` files set it. Helpers
-(`delegate`, `fork`) keep the engine's default.
+(`assign`, `fork_off`, `spawn_member`) keep the engine's default.
 
 The status bar shows the context gauge, `ctx 42% (84k/200k)` (yellow from 70%,
 red from 90%, `~` for an estimate), and the session's cost, `$0.42`: each
@@ -2078,7 +2090,7 @@ places:
 
 1. **Yours**: `~/.rkat/tui/skills/` (`<config-dir>/skills/` with
    `--config-dir`). Keep a skill here once and every workspace's agents,
-   and their `delegate` helpers, list it. It is in the config directory,
+   and their helpers, list it. It is in the config directory,
    so neither the agent's shell nor its file tools can read or change it;
    the daemon reads it when it builds a session and when the agent opens a
    skill. A missing directory is no error.
@@ -2783,8 +2795,8 @@ modes, `/permissions`, `/trust` and `!` commands. The token
 counter shows the conversation's totals on attach and after `/new` or
 `/resume`.
 
-**Helpers.** The agent delegates with the engine's `delegate` (and seats
-team members with `spawn_member`); the helpers run in the daemon behind the
+**Helpers.** The agent starts helpers with `assign` (and seats team
+members with `spawn_member`); the helpers run in the daemon behind the
 same gate and show here: a `[helper · model]` header, its
 progress and result, the running count, its usage under `/cost`. Every
 attached TUI shows them. The agent can also fork itself with the engine's
@@ -2880,7 +2892,8 @@ and opens the picker.
   rkat-tui's own file and note tools; other tools (the shell included) are
   reviewed as foreign tools until then. A helper is judged by those and the
   engine's own tools until its first run has ended, and by its own tools
-  after that (a `delegate` helper has only the one run).
+  after that (an `assign` helper that finished in its first run has only
+  the one).
 
 ## Several agents
 
@@ -2939,19 +2952,19 @@ move, Esc or `q` closes it, and:
 **Wired.** Every agent is wired to every other one as a peer, so each has
 the engine's peer tools (`peers` lists the other agents, `send_message`
 and the request and reply tools reach them). An agent's helpers are wired
-to it, not to the workspace's other agents: a `delegate` helper (the
-engine wires it to its parent) and a member seated with `spawn_member` or
-`spawn_many_members` (rkat-tui sets `auto_wire_parent` on every helper it
-shapes) each see their parent in `peers` and can message it, and it them.
-A `fork_off` child is wired to no one: the engine seats it without a trust
-edge and gives rkat-tui no say in its spawn beyond the gate. A member of a
+to it, not to the workspace's other agents: an `assign` helper and a member
+seated with `spawn_member` or `spawn_many_members` (rkat-tui sets
+`auto_wire_parent` on every helper it shapes) and a `fork_off` child (the
+engine seats it without a trust edge; the daemon wires it to its parent
+once it is seated) each see their parent in `peers` and can message it,
+and it them. A member of a
 mob the agent created (`mob_spawn_member`) is not wired to it either (the
 engine wires a parent only within one mob), and `wire_members` is refused
 in the workspace's mob, so an agent cannot wire two of its helpers to each
 other there. The instructions say all this: the parent announces its
 helpers' file changes to the other agents, a helper is told it reaches
 only its parent, and a fork (whose prompt is its parent's) is told it
-reaches no one.
+reaches its parent alone.
 A message to another agent of the workspace, or from an agent to one of
 its own helpers, is tier 1 (it changes nothing, and what the receiver
 does about it passes its own gate); a send to any other peer is reviewed.
@@ -3218,7 +3231,7 @@ agent.
 Every tool definition an agent declares rides on every model request. So
 two families stay out of a conversation's requests until the agent asks
 for them: the eight schedule tools (38.5 KB) and the engine's agent mob
-tools other than `delegate` (`council`, `fork_off`, `mob_create`,
+tools (`council`, `fork_off`, `mob_create`,
 `mob_spawn_member`, the `mob_profile_*` tools and the rest, 18 tools,
 29 KB). Every tool stays enabled; what changes is only which ones a
 request declares. A fresh conversation's request carries about 55 KB of
@@ -3249,7 +3262,7 @@ Each agent's conversations are their own: what one agent reveals, another
 does not see. A model that calls a hidden tool by name without searching
 gets the engine's "tool not found" (the search tool's description says
 so); it searches and calls again. Helpers get neither hidden family nor
-`tool_search`: a `delegate` helper has no schedule or mob tools at all,
+`tool_search`: a helper at the depth limit has no schedule or mob tools at all,
 and a helper allowed to nest keeps the engine's mob tools as they are.
 `/context` lists what the requests carry and, separately, what is hidden,
 by family. Other families cannot be hidden this way: the comms tools

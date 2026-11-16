@@ -1,22 +1,21 @@
 //! How each helper ends, and when its parent is told.
 //!
 //! A helper's parent is the session that started it: a `delegate` helper's
-//! is the session whose implicit mob it is a member of
-//! ([`super::delegates::implicit_mob`]), any other member's the session
-//! that created its mob. The parent learns of the ending once, at once,
-//! however it ends ([`How`]); the daemon words and delivers the note
-//! (`crate::daemon::agents::endings`). [`HelperEndings`] decides when an
-//! ending is one to tell, from three sources:
+//! (one a realm of an earlier build holds, [`super::delegates`]) is the
+//! session whose implicit mob it is a member of
+//! (`implicit-<session>`), any other member's the session
+//! that seated it or created its mob. The parent learns of the ending
+//! once, at once, however it ends ([`How`]); the daemon words and delivers
+//! the note (`crate::daemon::agents::endings`). [`HelperEndings`] decides
+//! when an ending is one to tell, from three sources:
 //!
-//! - the parent's own `delegate` call, as its events show it
-//!   ([`super::delegates::CallEnded`]): a call that returned the helper's
-//!   answer is the notification itself, and nothing more is said; a call
-//!   that timed out or failed is told at once; a call cut off by the
-//!   parent's run ending (an interrupt) leaves the helper running, and it
-//!   is told when the helper's own run ends, with its answer;
 //! - the helper's own run ending ([`Terminal`], from its event stream);
 //! - the user stopping it ([`HelperEndings::stop`]) and the daemon finding
-//!   it ended by its last stop ([`HelperEndings::lost`]).
+//!   it ended by its last stop ([`HelperEndings::lost`]);
+//! - for a `delegate` helper an earlier build left, the daemon's start
+//!   finding it still seated ([`HelperEndings::left_over`]): its call ended
+//!   with that build's daemon, so it is told when its run ends, with its
+//!   answer, and retired.
 //!
 //! An `assign` helper ([`super::HelperKind::Assigned`]) ends when it
 //! finishes its task: a run of it ended, completed or failed, and the
@@ -55,7 +54,6 @@ use meerkat_mob_mcp::MobMcpState;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
-use super::delegates::CallEnded;
 use super::{HelperKey, HelperTag};
 
 /// How many settled helpers are remembered, so a late event of one (its
@@ -65,8 +63,9 @@ const SETTLED: usize = 512;
 /// How a helper ended, as its parent and the user are told.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum How {
-    /// Its run completed after nothing could return its answer any more
-    /// (its `delegate` call was cut off): `answer` is its final text.
+    /// A `delegate` helper an earlier build left completed its run: its
+    /// call ended with that build's daemon, so nothing else returns its
+    /// answer; `answer` is its final text.
     Finished {
         /// Its final answer.
         answer: String,
@@ -92,8 +91,6 @@ pub enum How {
     },
     /// The user stopped it.
     StoppedByUser,
-    /// Its `delegate` call ran into the tool timeout, and it was ended.
-    TimedOut,
     /// It did not survive the daemon's stop (told at the next start).
     DaemonStopped,
 }
@@ -111,7 +108,6 @@ impl How {
             } => format!("idle after a failed run: {}", plain_reason(reason)),
             Self::Failed { reason } => format!("failed: {}", plain_reason(reason)),
             Self::StoppedByUser => "stopped by you".to_string(),
-            Self::TimedOut => "timed out".to_string(),
             Self::DaemonStopped => "ended when the daemon stopped".to_string(),
         }
     }
@@ -175,7 +171,8 @@ impl Terminal {
 #[derive(Debug, Clone, Default)]
 struct Tracked {
     tag: Option<HelperTag>,
-    call: Option<CallEnded>,
+    /// A `delegate` helper an earlier build left ([`HelperEndings::left_over`]).
+    left_over: bool,
     terminal: Option<Terminal>,
     /// How many runs of it started (a run's end is told only while no
     /// later one started).
@@ -202,54 +199,23 @@ const RECHECK_FIRST: std::time::Duration = std::time::Duration::from_millis(50);
 /// The longest wait between two questions.
 const RECHECK_MAX: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// What [`decide`] makes of a helper.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Decision {
-    /// Not ended yet, or not known how.
-    Wait,
-    /// Ended, and the parent already knows (its call returned the answer).
-    Silent,
-    /// Ended: tell the parent `How`, and retire the helper when it is
-    /// still seated (`retire`).
-    Tell(How, bool),
-}
-
-/// The decision for a helper that is (`delegate`) or is not a `delegate`
-/// helper, from what is known of it.
-fn decide(delegate: bool, tracked: &Tracked) -> Decision {
-    if !delegate {
-        return Decision::Wait;
+/// What [`decide`] makes of a `delegate` helper an earlier build left:
+/// `None` while it has not ended (or is not known to be one), else how its
+/// parent is told; it is then retired when still seated.
+fn decide(delegate: bool, tracked: &Tracked) -> Option<How> {
+    if !delegate || !tracked.left_over {
+        return None;
     }
-    let failed = |terminal: Option<&Terminal>, otherwise: &str| match terminal {
-        Some(Terminal::Failed(reason)) => reason.clone(),
-        Some(Terminal::Cancelled) => "its run was cancelled".to_string(),
-        _ => otherwise.to_string(),
-    };
-    match tracked.call {
-        None => Decision::Wait,
-        Some(CallEnded::Returned) => Decision::Silent,
-        Some(CallEnded::TimedOut) => Decision::Tell(How::TimedOut, true),
-        Some(CallEnded::Failed) => Decision::Tell(
-            How::Failed {
-                reason: failed(tracked.terminal.as_ref(), "its `delegate` call failed"),
-            },
-            true,
-        ),
-        Some(CallEnded::CutOff) => match &tracked.terminal {
-            None => Decision::Wait,
-            Some(Terminal::Completed(answer)) => Decision::Tell(
-                How::Finished {
-                    answer: answer.clone(),
-                },
-                true,
-            ),
-            Some(other) => Decision::Tell(
-                How::Failed {
-                    reason: failed(Some(other), ""),
-                },
-                true,
-            ),
-        },
+    match tracked.terminal.as_ref()? {
+        Terminal::Completed(answer) => Some(How::Finished {
+            answer: answer.clone(),
+        }),
+        Terminal::Failed(reason) => Some(How::Failed {
+            reason: reason.clone(),
+        }),
+        Terminal::Cancelled => Some(How::Failed {
+            reason: "its run was cancelled".to_string(),
+        }),
     }
 }
 
@@ -330,9 +296,12 @@ impl HelperEndings {
         }
     }
 
-    /// The parent's `delegate` call that started `key` ended `how`.
-    pub fn call_ended(&self, key: &HelperKey, how: CallEnded) {
-        self.update(key, |tracked| tracked.call = Some(how));
+    /// `key` is a `delegate` helper an earlier build left, still seated:
+    /// its call ended with that build's daemon, so its parent is told when
+    /// its run ends (also when that came first), with its answer, and it
+    /// is retired then.
+    pub fn left_over(&self, key: &HelperKey) {
+        self.update(key, |tracked| tracked.left_over = true);
     }
 
     /// Ask the runtime what a helper still holds through `probe` (once).
@@ -493,23 +462,15 @@ impl HelperEndings {
             change(entry);
             decide(is_delegate(key), entry)
         };
-        match decision {
-            Decision::Wait => {}
-            Decision::Silent => {
-                self.settle(key);
+        if let Some(how) = decision {
+            if let Some(tag) = self.settle(key) {
+                self.tell(Ended {
+                    key: key.clone(),
+                    tag,
+                    how,
+                });
             }
-            Decision::Tell(how, retire) => {
-                if let Some(tag) = self.settle(key) {
-                    self.tell(Ended {
-                        key: key.clone(),
-                        tag,
-                        how,
-                    });
-                }
-                if retire {
-                    self.retire(key, false);
-                }
-            }
+            self.retire(key, false);
         }
     }
 
@@ -543,10 +504,7 @@ impl HelperEndings {
             return;
         }
         // Nothing is retired: the helper is not seated, and a member
-        // seated under its id from now on is another helper, which a
-        // resumed run's `delegate` call (dispatched again with the same
-        // `member_id`) seats as the start goes on. Retiring by the id
-        // here retired that one when the mob listed it first.
+        // seated under its id from now on is another helper.
         self.settle(key);
         self.tell(Ended {
             key: key.clone(),
@@ -589,7 +547,7 @@ impl HelperEndings {
 
     /// Retire `key` off the caller's task: a stop (`any`) force-cancels
     /// and retires whatever member it is; otherwise only a `delegate`
-    /// helper still seated is ([`super::delegates::retire_orphan`]).
+    /// helper still seated is ([`super::delegates::retire_left_helper`]).
     fn retire(&self, key: &HelperKey, any: bool) {
         self.retires
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -609,7 +567,7 @@ impl HelperEndings {
                     }
                 }
             } else {
-                super::delegates::retire_orphan(&state, &key).await;
+                super::delegates::retire_left_helper(&state, &key).await;
             }
         });
     }
@@ -662,21 +620,6 @@ impl HelperEndings {
             .rev()
             .find(|(peer, _)| peer == peer_id)
             .map(|(_, name)| name.clone())
-    }
-
-    /// The `delegate` helpers whose parent's call is still open (no end of
-    /// it seen): at the daemon's stop, the helpers of the calls a stopped
-    /// run will dispatch again when the next start resumes it.
-    #[must_use]
-    pub fn open_delegates(&self) -> Vec<HelperKey> {
-        self.tracked
-            .lock()
-            .iter()
-            .filter(|(key, tracked)| {
-                is_delegate(key) && tracked.tag.is_some() && tracked.call.is_none()
-            })
-            .map(|(key, _)| key.clone())
-            .collect()
     }
 
     /// Tests: how many retires these endings started so far.
@@ -747,9 +690,7 @@ mod tests {
 
     /// A helper the last daemon left that its mob no longer seats is told
     /// to its parent and retires nothing: a member seated under its id
-    /// later is a new helper (a resumed run's `delegate` dispatched again),
-    /// which a retire by the id took when the mob listed it first. A timed
-    /// out call's helper is still retired.
+    /// later is a new helper.
     #[test]
     fn a_lost_helper_is_told_and_nothing_is_retired_by_its_id() {
         let (endings, mut rx) = endings();
@@ -759,33 +700,18 @@ mod tests {
         assert_eq!(endings.retires(), 0);
         // The same id spawned again is a new helper, followed afresh.
         endings.spawned(&key, &tag("slow"));
-        endings.call_ended(&key, CallEnded::TimedOut);
-        assert_eq!(rx.try_recv().unwrap().how, How::TimedOut);
-        assert_eq!(endings.retires(), 1);
+        assert!(endings.is_tracked(&key) && !endings.settled(&key));
     }
 
+    /// A `delegate` helper an earlier build left is told with its answer
+    /// when its run ends, whichever of the two the daemon learns first,
+    /// and retired; one only seated, not known as left over, is not told.
     #[test]
-    fn a_delegate_whose_call_returned_its_answer_tells_nothing_more() {
-        let (endings, mut rx) = endings();
-        let key = delegate_key("a");
-        endings.spawned(&key, &tag("a"));
-        // The helper's run ends first, then the engine retires it and the
-        // call returns: nothing is told, whatever the order.
-        endings.run_ended(&key, Terminal::Completed("done".into()));
-        endings.call_ended(&key, CallEnded::Returned);
-        assert!(rx.try_recv().is_err());
-        // A late event of the settled helper tells nothing either.
-        endings.run_ended(&key, Terminal::Cancelled);
-        assert!(rx.try_recv().is_err());
-        assert!(!endings.is_tracked(&key));
-    }
-
-    #[test]
-    fn a_cut_off_delegate_is_told_with_its_answer_when_it_finishes_in_either_order() {
+    fn a_left_over_delegate_is_told_with_its_answer_when_it_finishes_in_either_order() {
         let (endings, mut rx) = endings();
         let first = delegate_key("a");
         endings.spawned(&first, &tag("a"));
-        endings.call_ended(&first, CallEnded::CutOff);
+        endings.left_over(&first);
         assert!(rx.try_recv().is_err(), "it still runs");
         endings.run_ended(&first, Terminal::Completed("the answer".into()));
         let ended = rx.try_recv().unwrap();
@@ -796,11 +722,13 @@ mod tests {
             }
         );
         assert_eq!(ended.tag.label(), "a");
-        // Its run ended just before its call was cut off.
+        assert_eq!(endings.retires(), 1);
+        // Its run ended just before the start found it.
         let second = delegate_key("b");
         endings.spawned(&second, &tag("b"));
         endings.run_ended(&second, Terminal::Failed("a 400".into()));
-        endings.call_ended(&second, CallEnded::CutOff);
+        assert!(rx.try_recv().is_err(), "not known as left over yet");
+        endings.left_over(&second);
         assert_eq!(
             rx.try_recv().unwrap().how,
             How::Failed {
@@ -808,27 +736,8 @@ mod tests {
             }
         );
         assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn timed_out_and_failed_calls_are_told_at_once() {
-        let (endings, mut rx) = endings();
-        let timed = delegate_key("t");
-        endings.spawned(&timed, &tag("t"));
-        endings.call_ended(&timed, CallEnded::TimedOut);
-        assert_eq!(rx.try_recv().unwrap().how, How::TimedOut);
-        let failed = delegate_key("f");
-        endings.spawned(&failed, &tag("f"));
-        endings.run_ended(&failed, Terminal::Failed("refused".into()));
-        endings.call_ended(&failed, CallEnded::Failed);
-        assert_eq!(
-            rx.try_recv().unwrap().how,
-            How::Failed {
-                reason: "refused".into()
-            }
-        );
-        // A call that failed before any helper was spawned tells nothing.
-        endings.call_ended(&delegate_key("never"), CallEnded::Failed);
+        // A late event of a settled one tells nothing.
+        endings.run_ended(&first, Terminal::Cancelled);
         assert!(rx.try_recv().is_err());
     }
 
@@ -845,12 +754,13 @@ mod tests {
         endings.run_ended(&member, Terminal::Cancelled);
         assert!(!endings.stop(&member, None));
         assert!(rx.try_recv().is_err());
-        // Stopping a delegate whose call is still open: its call's error
-        // that follows tells nothing more.
+        // Stopping a `delegate` helper an earlier build left: its cancelled
+        // run that follows tells nothing more.
         let key = delegate_key("d");
         endings.spawned(&key, &tag("d"));
+        endings.left_over(&key);
         assert!(endings.stop(&key, None));
-        endings.call_ended(&key, CallEnded::Failed);
+        endings.run_ended(&key, Terminal::Cancelled);
         assert_eq!(rx.try_recv().unwrap().how, How::StoppedByUser);
         assert!(rx.try_recv().is_err());
     }
@@ -972,7 +882,6 @@ mod tests {
     fn the_endings_read_in_plain_words() {
         assert_eq!(How::StoppedByUser.text(), "stopped by you");
         assert_eq!(How::DaemonStopped.text(), "ended when the daemon stopped");
-        assert_eq!(How::TimedOut.text(), "timed out");
         let recovered = How::Failed {
             reason: "run failed: InterruptedByRecovery".into(),
         };

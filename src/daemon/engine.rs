@@ -335,11 +335,11 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     )?;
     prepare.bind(&state);
     assigner.bind(&state);
-    // The agent-facing mob tools (`delegate`, `mob_*`, …) reach a session
+    // The agent-facing mob tools (`fork_off`, `mob_*`, …) reach a session
     // build through the builder's mob-tools slot. `MethodRouter::new` fills
     // it on the first connection, which is after the agent's spawn:
     // without this its build mounts only the operator family
-    // (`spawn_member`, …) and no `delegate`.
+    // (`spawn_member`, …).
     //
     // The daemon's factory: an agent's build also gets its schedule tools
     // there, and both families are hidden until its conversation reveals

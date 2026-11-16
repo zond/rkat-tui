@@ -28,8 +28,7 @@ use crate::bootstrap::HELPER_PERSONA;
 /// deeper. `fork_off` ([`DENIED_SPAWN_TOOLS`]) is denied unless the fork is gated;
 /// the daemon's members keep it
 /// ([`HelperCustomizer::with_gated_fork_off`]) except at the depth limit.
-pub const NESTING_TOOLS: [&str; 5] = [
-    "delegate",
+pub const NESTING_TOOLS: [&str; 4] = [
     crate::tools::ASSIGN,
     "mob_create",
     "mob_spawn_member",
@@ -44,14 +43,16 @@ pub const DENIED_SPAWN_TOOLS: [&str; 1] = ["fork_off"];
 
 /// The tool access policy every member's is merged with:
 /// [`crate::approval::policy::TUI_OWNED_BUILTINS`], the shell's job controls
-/// ([`crate::approval::policy::SHELL_JOB_TOOLS`]) and [`DENIED_SPAWN_TOOLS`]
-/// denied.
+/// ([`crate::approval::policy::SHELL_JOB_TOOLS`]), the withdrawn mob tools
+/// ([`crate::approval::policy::WITHDRAWN_TOOLS`]: `delegate`) and
+/// [`DENIED_SPAWN_TOOLS`] denied.
 #[must_use]
 pub fn tool_access_policy() -> meerkat_core::ops::ToolAccessPolicy {
     meerkat_core::ops::ToolAccessPolicy::DenyList(
         crate::approval::policy::TUI_OWNED_BUILTINS
             .into_iter()
             .chain(crate::approval::policy::SHELL_JOB_TOOLS)
+            .chain(crate::approval::policy::WITHDRAWN_TOOLS)
             .chain(DENIED_SPAWN_TOOLS)
             .collect::<meerkat_core::ToolNameSet>(),
     )
@@ -512,8 +513,10 @@ enum Asked {
     Fork,
 }
 
-/// The profile the engine seats a `delegate` helper with, in its owner's
-/// implicit mob (`implicit-<session id>`). The engine keeps that profile on
+/// The profile the engine seated a `delegate` helper with, in its owner's
+/// implicit mob (`implicit-<session id>`); `delegate` is withdrawn
+/// ([`crate::approval::policy::WITHDRAWN_TOOLS`]), and such a helper is one
+/// a realm of an earlier build holds. The engine keeps that profile on
 /// the owner's current model, provider and binding
 /// (`MobMcpState::ensure_implicit_mob_for_model`), so it is the one stored
 /// profile left as it is.
@@ -1218,6 +1221,13 @@ mod tests {
             assert!(names.0.iter().any(|n| n.as_str() == name), "{name}");
         }
         assert!(names.0.iter().any(|n| n.as_str() == "fork_off"));
+        // `delegate` is withdrawn from every member, agents included: the
+        // agents' policy keeps `fork_off` (gated), not `delegate`.
+        assert!(names.0.iter().any(|n| n.as_str() == "delegate"));
+        let ToolAccessPolicy::DenyList(agents) = agent_tool_access_policy() else {
+            unreachable!("a deny list");
+        };
+        assert!(agents.contains("delegate") && !agents.contains("fork_off"));
     }
 
     /// E2 of the security review: a helper on another model than its

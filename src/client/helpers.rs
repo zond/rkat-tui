@@ -2,10 +2,11 @@
 //! (`[helper · model]` headers, their progress and result, the running
 //! count, per-helper cost) from the mobs' own event streams.
 //!
-//! The daemon hosts every helper the agent starts: `delegate`
-//! helpers in the agent session's implicit mob
-//! (`implicit-<session>`), `spawn_member` members in the agent's own
-//! mob, and the helpers of helpers in theirs. A mob-wide `mob/stream_open
+//! The daemon hosts every helper the agent starts: `assign`, `fork_off`
+//! and `spawn_member` helpers in the agent's own mob, the helpers of
+//! helpers in theirs, a council's in its mob, and the `delegate` helpers
+//! an earlier build left in the agent session's implicit mob
+//! (`implicit-<session>`). A mob-wide `mob/stream_open
 //! {mob_id}` (no `agent_identity`) carries every member's events, each
 //! attributed to its member ([`AttributedEvent`]); [`Followers`] turns them
 //! into the [`Msg::Scoped`] events and [`StatusUpdate::Helpers`] updates
@@ -15,8 +16,8 @@
 //!
 //! - A mob-wide stream subscribes a member that joins later from the
 //!   member's live events on, so a helper's first events (its run start)
-//!   can come before the stream has it; and an implicit mob exists only
-//!   once the first `delegate` creates it. The runner lists the mobs once
+//!   can come before the stream has it; and a council's mob exists only
+//!   once its call creates it. The runner lists the mobs once
 //!   per attach, the daemon pushes each mob that hosts a helper it follows
 //!   (`rkat/mob`), the runner opens a stream on each of this agent's, and
 //!   the first time a helper is seen its session's durable
@@ -25,7 +26,8 @@
 //!   once (a high-water mark per helper session, as for the agent).
 //! - The model a helper runs on is read from its session
 //!   (`events/snapshot`, [`Action::Snapshot`]); until then the header
-//!   names the agent's model, which a `delegate` helper inherits.
+//!   names the agent's model, which a helper that names none runs on
+//!   unless `helpers.model` is set.
 //! - The engine attributes a helper of a helper to its own mob
 //!   (`implicit-<parent session>`): the path of the helper whose session
 //!   that is nests it.

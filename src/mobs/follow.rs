@@ -3,9 +3,8 @@
 //! event, so a fast helper's whole run is seen), its session is bound in
 //! the registry (for nesting), what the daemon needs of its events is
 //! handed to a [`HelperWatch`] (each model call's usage, each run's end)
-//! until it leaves its mob, and its run ends and the ends of its own
-//! `delegate` calls go to [`super::endings`] (which retires a helper of its
-//! whose call timed out or failed). The mob's own structural events drive the
+//! until it leaves its mob, and its runs' starts and ends and its calls go
+//! to [`super::endings`]. The mob's own structural events drive the
 //! rest (`MobHandle::events().subscribe()`, taken before the member's stream): a
 //! helper that is not a member yet is subscribed once its `MemberSpawned`
 //! arrives, and its `MemberRetired` (or the mob's destroy, reset or
@@ -118,10 +117,6 @@ async fn follow(
                 registry.bind_session(&key, &tag, session);
             }
             let mut retired = None;
-            let mut runs_as = session;
-            // The helper's own `delegate` calls: one that ends without its
-            // result leaves the helper's helper seated.
-            let mut delegates = super::delegates::DelegateCalls::default();
             // Its parent's peer id, once a message of it needs it: a run
             // whose last call messaged the parent tells the parent nothing
             // more when it goes idle.
@@ -132,10 +127,6 @@ async fn follow(
                         let Some(envelope) = envelope else { break };
                         if let EventSourceIdentity::Session { session_id } = &envelope.source {
                             registry.bind_session(&key, &tag, session_id);
-                            runs_as = Some(session_id.clone());
-                        }
-                        for (helper, how) in delegates.observe(runs_as.as_ref(), &envelope.payload) {
-                            registry.endings().call_ended(&helper, how);
                         }
                         match &envelope.payload {
                             AgentEvent::RunStarted { .. } => registry.endings().run_started(&key),

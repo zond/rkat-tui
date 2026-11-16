@@ -10,6 +10,7 @@ use crate::common;
 use crate::rig;
 
 use common::{ScriptedLlmClient, Step, Workspace};
+use meerkat_core::Message;
 use rig::Attached;
 use rkat_tui::approval::policy::{BACKGROUND_SHELL_UNAVAILABLE, SHELL_JOB_TOOLS};
 use rkat_tui::ui::Effect;
@@ -71,34 +72,43 @@ async fn a_background_shell_is_refused_and_the_job_tools_are_withheld() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helpers_background_shell_is_refused_by_the_gate() {
     let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "d1",
-            name: "delegate",
-            args: json!({
-                "member_id": "builder",
-                "task": "build it in the background",
-                "result_label": "result",
-                "max_text_bytes": 4000,
-            }),
-        },
-        Step::Tool {
-            id: "bg",
-            name: "shell",
-            args: json!({"command": "touch background.ran", "background": true}),
-        },
-        Step::Text("could not"),
-        Step::Text("done"),
-    ]);
+    const TASK: &str = "build it in the background";
+    let step = Step::Dynamic(std::sync::Arc::new(|messages: &[Message]| {
+        if common::is_helper(messages, TASK) {
+            return if common::after(messages, "bg") {
+                Step::Text("could not")
+            } else {
+                Step::Tool {
+                    id: "bg",
+                    name: "shell",
+                    args: json!({"command": "touch background.ran", "background": true}),
+                }
+            };
+        }
+        if common::told_finished(messages) {
+            return Step::Text("done");
+        }
+        if common::after(messages, "a1") {
+            return Step::Text("waiting");
+        }
+        common::assign("a1", "builder", TASK)
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
     let mut rig = Attached::start(&ws.root, &llm).await;
-    rig.send(Effect::StartTurn("delegate a build".into()));
-    assert_eq!(rig.turn_finished().await.unwrap().text, "done");
+    rig.send(Effect::StartTurn("start a build".into()));
+    rig.turn_finished().await.unwrap();
+    common::until(|| common::parent_told(&llm, TASK, "builder")).await;
+    rig.daemon.idle(&rig.daemon.agent).await;
     let seen = llm.recorded();
+    let helper: Vec<_> = seen
+        .iter()
+        .filter(|r| common::is_helper(&r.messages, TASK))
+        .collect();
     for tool in SHELL_JOB_TOOLS {
-        assert!(!seen[1].tools.iter().any(|t| t == tool), "{tool} offered");
+        assert!(!helper[0].tools.iter().any(|t| t == tool), "{tool} offered");
     }
     let refused: serde_json::Value =
-        serde_json::from_str(&common::tool_text(&seen[2].messages, "bg")).unwrap();
+        serde_json::from_str(&common::tool_text(&helper[1].messages, "bg")).unwrap();
     assert_eq!(refused["error"], "policy_denied", "{refused}");
     assert_eq!(
         refused["data"]["message"],

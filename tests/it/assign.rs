@@ -278,6 +278,84 @@ async fn a_message_to_a_finished_helper_says_it_was_retired() {
     daemon.stop().await;
 }
 
+/// `delegate` is withdrawn, shown positively on both sides: the agent's
+/// request carries `assign` and no `delegate`, its helper's no
+/// `delegate`, and a `delegate` call either of them makes all the same is
+/// refused, nothing run and no helper seated for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delegate_is_withdrawn_from_agents_and_helpers() {
+    let ws = Workspace::new();
+    let delegate = |id: &'static str| Step::Tool {
+        id,
+        name: "delegate",
+        args: json!({"member_id": "old", "task": "x", "result_label": "r", "max_text_bytes": 100}),
+    };
+    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        if common::is_helper(messages, "HELPER-TASK") {
+            return if common::after(messages, "hd") {
+                Step::Text("HELPER-REFUSED")
+            } else {
+                delegate("hd")
+            };
+        }
+        if common::told_finished(messages) {
+            return Step::Text("NOTED");
+        }
+        if common::after(messages, "a1") {
+            return Step::Text("waiting");
+        }
+        if common::after(messages, "ad") {
+            return assign("scout", "HELPER-TASK: try delegate");
+        }
+        delegate("ad")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "go").await;
+    common::until(|| common::parent_told(&llm, "HELPER-TASK", "scout")).await;
+    daemon.idle(&daemon.agent).await;
+    let recorded = llm.recorded();
+    let helper = recorded
+        .iter()
+        .find(|r| common::is_helper(&r.messages, "HELPER-TASK"))
+        .unwrap();
+    // The agent has `assign`; its helper, at the default depth limit,
+    // starts no helper at all.
+    assert!(recorded[0].tools.iter().any(|t| t == "assign"));
+    for request in [&recorded[0], helper] {
+        assert!(
+            !request.tools.iter().any(|t| t == "delegate"),
+            "{:?}",
+            request.tools
+        );
+    }
+    let refused = |id: &str| {
+        recorded
+            .iter()
+            .find(|r| common::after(&r.messages, id))
+            .map(|r| common::tool_text(&r.messages, id))
+            .unwrap()
+    };
+    // The engine refuses the call before any dispatch, the gate's
+    // included, in its own words: the agent's policy withholds the tool,
+    // and the helper (no mob tools at the depth limit) has none of the
+    // name. The gate's own refusal, with what to use instead, is for a call
+    // that reaches it anyway (`approval::policy`'s
+    // `a_withdrawn_tool_is_unavailable_with_what_to_use_instead`).
+    let agent = refused("ad");
+    assert!(
+        agent.contains("Tool 'delegate' is not allowed by policy"),
+        "{agent}"
+    );
+    let helper = refused("hd");
+    assert!(helper.contains("Tool not found: delegate"), "{helper}");
+    let seated = members(&connection).await;
+    assert!(!seated.iter().any(|m| m == "old"), "{seated:?}");
+    drop(connection);
+    daemon.stop().await;
+}
+
 fn spawn_member(member: &str, kickoff: &str) -> Step {
     Step::Tool {
         id: "s1",

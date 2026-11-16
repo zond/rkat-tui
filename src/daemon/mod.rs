@@ -796,7 +796,7 @@ impl Daemon {
         // The usage counted since the last run end, off the loop.
         let ledger = Arc::clone(&self.local.core().ledger);
         let _ = tokio::task::spawn_blocking(move || ledger.flush()).await;
-        stop_mobs(&self.state, self.local.core().registry.endings()).await;
+        stop_mobs(&self.state).await;
         let shutdown = self.runtime.try_shutdown().await;
         connections.abort_all();
         while connections.join_next().await.is_some() {}
@@ -1026,9 +1026,11 @@ async fn start_agents(
     }
     // Records of schedules deleted while the daemon was down go.
     agents.core().schedules.reconcile().await;
-    // The `delegate` helpers the last daemon left: their parents are told
-    // how they ended with the user's next message (the stop ended the
-    // agents' runs as an interrupt does; no agent is woken by a start).
+    // The helpers the last daemon left: their parents are told how they
+    // ended with the user's next message (the stop ended the agents' runs
+    // as an interrupt does; no agent is woken by a start). A `delegate`
+    // helper an earlier build left is settled here
+    // (`crate::mobs::delegates`).
     for name in agents.names() {
         agents.interrupted(&name);
     }
@@ -1036,8 +1038,8 @@ async fn start_agents(
     // Their tool catalogs. An idle agent's is read at once, before the
     // daemon serves; but the engine's read waits behind a running turn
     // (`live_visible_tool_defs`, up to `CATALOG_READ`), and a run the
-    // restore resumed may already be in one (a `delegate` dispatched
-    // again, waiting for its helper). Awaited in full, that held the
+    // restore resumed may already be in one (a tool call dispatched
+    // again, waiting for its end). Awaited in full, that held the
     // start, and so every client, for 30 s; such a read goes on in the
     // background.
     #[cfg(any(test, feature = "test-support"))]
@@ -1277,7 +1279,7 @@ const CATALOG_AT_START: std::time::Duration = std::time::Duration::from_secs(3);
 /// mob in a snapshot down. Their members are not retired, so the next
 /// start restores them; until a mob is shut down its comms names stay
 /// taken in this process.
-async fn stop_mobs(state: &Arc<MobMcpState>, endings: &crate::mobs::endings::HelperEndings) {
+async fn stop_mobs(state: &Arc<MobMcpState>) {
     let deadline = std::time::Instant::now() + MOB_SHUTDOWN;
     if let meerkat_mob_mcp::MobStateStandDown::Unsettled { reasons } =
         state.close_admission(deadline).await
@@ -1291,37 +1293,13 @@ async fn stop_mobs(state: &Arc<MobMcpState>, endings: &crate::mobs::endings::Hel
             return;
         }
     };
-    // The agents' mob first: an agent's run stopped inside a `delegate` is
-    // suspended there and resumes at the next start. Its helper's mob shut
-    // down first suspended the helper's turn, which ended the `delegate`
-    // with an error; the agent's run read it and went on during the
-    // shutdown, so the next start had nothing to resume, or resumed past
-    // the call.
+    // The agents' mob first: an agent's run stopped inside a tool call is
+    // suspended there and resumes at the next start. A helper's mob shut
+    // down first ended the helper's turn while the agent's run still went
+    // on, and the agent read that end during the shutdown (so the next
+    // start had nothing to resume, or resumed past the call: seen with
+    // `delegate`, which waited for its helper).
     handles.sort_by_key(|(mob, _)| mob.as_str() != MOB_ID);
-    let mut handles = handles.into_iter();
-    if let Some((mob, handle)) = handles.next() {
-        match tokio::time::timeout(MOB_SHUTDOWN, handle.shutdown()).await {
-            Ok(Ok(())) => tracing::info!(%mob, "mob shut down"),
-            Ok(Err(err)) => tracing::warn!(%mob, error = %err, "mob shutdown failed"),
-            Err(_) => tracing::warn!(%mob, "mob did not shut down in time"),
-        }
-    }
-    // The helpers of the `delegate` calls the stopped runs had open: the
-    // next start resumes each run, which dispatches its call again under
-    // the same `member_id` and seats a new helper for the task from its
-    // start. The old one, restored, would take the name (the engine refuses
-    // the spawn `MemberAlreadyExists`), so it is retired now, while its mob
-    // still runs.
-    let open = endings.open_delegates();
-    if !open.is_empty() {
-        let retired = futures::future::join_all(
-            open.iter()
-                .map(|key| crate::mobs::delegates::retire_orphan(state, key)),
-        );
-        if tokio::time::timeout(MOB_SHUTDOWN, retired).await.is_err() {
-            tracing::warn!(helpers = ?open, "the open delegate calls' helpers did not retire in time");
-        }
-    }
     for (mob, handle) in handles {
         match tokio::time::timeout(MOB_SHUTDOWN, handle.shutdown()).await {
             Ok(Ok(())) => tracing::info!(%mob, "mob shut down"),

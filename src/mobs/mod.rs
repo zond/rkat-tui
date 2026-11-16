@@ -1,8 +1,13 @@
 //! Helpers (sub-agents) as Meerkat mob members.
 //!
-//! The agent delegates with upstream's mob tools (`delegate`: an ephemeral
-//! helper in the session's implicit mob, which runs one turn and returns
-//! its bounded result; the `mob_*` tools for longer-lived teams). The
+//! The agent starts helpers three ways: rkat-tui's `assign` (a single-use
+//! helper beside it, in its own mob, whose answer reaches it as a note:
+//! `crate::tools::assign`, `crate::daemon::assign`), the engine's
+//! `fork_off` (a fork of its conversation) and `spawn_member` (a helper it
+//! keeps), with the `mob_*` tools for teams of their own. The engine's
+//! `delegate`, which blocked its caller until its helper was done, is
+//! withdrawn ([`crate::approval::policy::WITHDRAWN_TOOLS`]); a realm of an
+//! earlier build may still hold its helpers ([`delegates`]). The
 //! daemon hosts them in its [`MobMcpState`] (mob state durable under the
 //! realm, see `crate::daemon::engine`) and adds what upstream leaves to the
 //! host:
@@ -17,12 +22,11 @@
 //!   Stop: an interrupt stops the agent's own calls only), and the
 //!   escalation dialog names the helper; Stop on that dialog stops the
 //!   helper.
-//! - **The model.** A `delegate` helper runs on its delegator's model (the
-//!   implicit mob's profile); the customizer adds the owner's auth binding,
-//!   so a helper of a configured endpoint's session reaches the same
-//!   endpoint. The engine names the provider route the session's build
-//!   resolved for its model in the implicit mob's profile, so a model only
-//!   an endpoint lists (a self-hosted alias) delegates too.
+//! - **The model.** The customizer chooses a fresh helper's model (the
+//!   one its spawn names, else `helpers.model`, else its owner's; a fork
+//!   its owner's) and adds the owner's auth binding, so a helper of a
+//!   configured endpoint's session reaches the same endpoint, on a
+//!   self-hosted one as its alias.
 //! - **Tools and instructions.** rkat-tui's file tools and
 //!   [`crate::bootstrap::HELPER_PERSONA`].
 //! - **Observation.** [`follow`] subscribes to each helper once and hands
@@ -45,11 +49,9 @@
 //!   helpers keep running (the owner's decision of 2026-11-15). Leaving a
 //!   conversation ([`cancel_helpers`]) and the daemon's stop still end them;
 //!   the user stops one helper on its own ([`endings::HelperEndings::stop`]).
-//! - **Endings.** A `delegate` call that timed out or failed leaves no
-//!   helper seated ([`delegates`] names it from the caller's events and
-//!   retires it); one cut off by an interrupt leaves its helper running,
-//!   and its answer goes to the parent as a note when it finishes. Every
-//!   ending its parent's own call did not return is told to the parent
+//! - **Endings.** An `assign` helper's answer goes to its parent as a note
+//!   when it finishes, and it is retired; a kept member's parent is told
+//!   each time it goes idle; every ending is told to the parent once
 //!   ([`endings`]).
 
 pub mod registry;

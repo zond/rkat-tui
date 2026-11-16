@@ -421,64 +421,83 @@ async fn an_approval_right_after_an_interrupt_starts_the_run() {
     rig.quit().await;
 }
 
-/// The agent's side of the helper tests: a prompt delegates to `scout`;
-/// told that its helper's call was approved, it makes the call itself;
-/// otherwise a tool result ends its turn.
-fn agent_delegating(messages: &[Message], path: &Path) -> Step {
+/// The agent's side of the helper tests: a prompt assigns `scout` its
+/// task; told that its helper's call was approved, it makes the call
+/// itself; after the `assign` it ends its run ("waiting"), or, with `hold`,
+/// is held in one more call (a `glob`) until `hold` is notified; the
+/// note that its helper finished, or the end of that call, ends its turn.
+fn agent_assigning(messages: &[Message], path: &Path, hold: Option<&Arc<Notify>>) -> Step {
     let told = common::user_texts(messages)
         .concat()
         .contains("that your helper `scout` made");
-    let repeated = has_result(messages, "a2");
-    match last_user(messages) {
-        Some(_) if !told => Step::Tool {
-            id: "d1",
-            name: "delegate",
-            args: json!({
-                "member_id": "scout",
-                "task": "HELPER-TASK: touch the marker",
-                "result_label": "result",
-                "max_text_bytes": 4000,
-            }),
-        },
-        _ if told && !repeated => touch("a2", path),
-        _ => Step::Text("agent done"),
+    if told {
+        return if has_result(messages, "a2") {
+            Step::Text("agent done")
+        } else {
+            touch("a2", path)
+        };
     }
+    if common::after(messages, "a1") {
+        return match hold {
+            Some(gate) => Step::Gated(
+                Arc::clone(gate),
+                Box::new(Step::Tool {
+                    id: "g1",
+                    name: "glob",
+                    args: json!({"pattern": "*.nothing"}),
+                }),
+            ),
+            None => Step::Text("waiting"),
+        };
+    }
+    if results(messages) > 0 {
+        return Step::Text("agent done");
+    }
+    common::assign("a1", "scout", "HELPER-TASK: touch the marker")
 }
 
-/// The rule for a helper's call: the agent is told (the engine takes no
-/// message from the daemon into a `delegate` helper's run). With the helper
-/// still running (its model call after the block held), the note goes
-/// into the agent's running turn, named as the helper's call; when the
-/// `delegate` returns, the agent makes the call itself, which the
-/// approval lets run. The helper never reads the note.
+/// The rule for a helper's call: the agent is told (the daemon does not
+/// message a helper about its own call). With the helper still running
+/// (its model call after the block held) and the agent's run held in a
+/// call, the note goes into the agent's running turn, named as the
+/// helper's call; the agent makes the call itself, which the approval lets
+/// run. The helper never reads the note.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helper_s_approved_call_is_told_to_its_running_agent() {
     let ws = Workspace::new();
     let path = marker(&ws, "helper");
     let gate = Arc::new(Notify::new());
+    let hold = Arc::new(Notify::new());
     let step = {
-        let (gate, path) = (Arc::clone(&gate), path.clone());
+        let (gate, hold, path) = (Arc::clone(&gate), Arc::clone(&hold), path.clone());
         Step::Dynamic(Arc::new(move |messages: &[Message]| {
-            let user = common::user_texts(messages).concat();
-            if user.contains("HELPER-TASK") {
+            if common::is_helper(messages, "HELPER-TASK") {
                 return match results(messages) {
                     0 => touch("h1", &path),
                     _ => Step::Gated(Arc::clone(&gate), Box::new(Step::Text("helper could not"))),
                 };
             }
-            agent_delegating(messages, &path)
+            agent_assigning(messages, &path, Some(&hold))
         }))
     };
     let llm = ScriptedLlmClient::new(vec![step; 20]);
     let mut rig = Attached::start_with(&ws.root, &llm, setup()).await;
     let session = rig.daemon.session.clone();
-    rig.send(Effect::StartTurn("delegate it".into()));
-    common::until(|| llm.recorded().len() == 3).await;
+    rig.send(Effect::StartTurn("start a helper".into()));
+    common::until(|| !rig.daemon.engine().blocks().list(&session).is_empty()).await;
+    // The agent's run is held in its call after the `assign`.
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .any(|r| common::after(&r.messages, "a1"))
+    })
+    .await;
     let call = rig.daemon.engine().blocks().list(&session)[0].clone();
     assert_eq!(call.helper.as_deref(), Some("scout"));
     rig.send(Effect::PickedApproval(call.id, GrantScope::Once, None));
     rig.saw(|m| matches!(m, Msg::Triggered { label, prompt } if label == APPROVED && prompt.contains("that your helper `scout` made")))
         .await;
+    hold.notify_one();
     gate.notify_one();
     // The agent made the call itself, and read its result.
     common::until(|| {
@@ -491,10 +510,12 @@ async fn a_helper_s_approved_call_is_told_to_its_running_agent() {
     let helper_told = llm
         .recorded()
         .iter()
-        .filter(|r| r.user().contains("HELPER-TASK"))
+        .filter(|r| common::is_helper(&r.messages, "HELPER-TASK"))
         .any(|r| r.user().contains("The user approved"));
     assert!(!helper_told, "the helper was not told");
     assert!(rig.daemon.engine().blocks().list(&session).is_empty());
+    common::until(|| common::parent_told(&llm, "HELPER-TASK", "scout")).await;
+    rig.daemon.idle(&rig.daemon.agent).await;
     rig.quit().await;
 }
 
@@ -508,28 +529,34 @@ async fn an_ended_helper_s_approved_call_goes_to_its_agent() {
     let step = {
         let path = path.clone();
         Step::Dynamic(Arc::new(move |messages: &[Message]| {
-            let user = common::user_texts(messages).concat();
-            if user.contains("HELPER-TASK") {
+            if common::is_helper(messages, "HELPER-TASK") {
                 return match results(messages) {
                     0 => touch("h1", &path),
                     _ => Step::Text("helper could not"),
                 };
             }
-            agent_delegating(messages, &path)
+            agent_assigning(messages, &path, None)
         }))
     };
     let llm = ScriptedLlmClient::new(vec![step; 20]);
     let mut rig = Attached::start_with(&ws.root, &llm, setup()).await;
     let session = rig.daemon.session.clone();
-    rig.send(Effect::StartTurn("delegate it".into()));
-    assert_eq!(rig.turn_finished().await.unwrap().text, "agent done");
+    rig.send(Effect::StartTurn("start a helper".into()));
+    // The helper ended, its agent was told, and the agent is idle.
+    common::until(|| common::parent_told(&llm, "HELPER-TASK", "scout")).await;
     common::until(|| rig.daemon.registry().live_for(&session).is_empty()).await;
+    rig.daemon.idle(&rig.daemon.agent).await;
     let call = rig.daemon.engine().blocks().list(&session)[0].clone();
     assert_eq!(call.helper.as_deref(), Some("scout"));
     rig.send(Effect::PickedApproval(call.id, GrantScope::Once, None));
     rig.saw(|m| matches!(m, Msg::Triggered { label, .. } if label == APPROVED))
         .await;
-    assert_eq!(rig.turn_finished().await.unwrap().text, "agent done");
+    common::until(|| {
+        llm.requests()
+            .iter()
+            .any(|messages| has_result(messages, "a2"))
+    })
+    .await;
     assert!(path.exists(), "the agent made the call itself");
     let told = llm
         .recorded()

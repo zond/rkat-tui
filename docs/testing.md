@@ -189,8 +189,11 @@ output now says why; report it rather than retrying silently:
   by `the_write_mark_comes_before_the_file_changes`) and a change is judged
   by when it was seen (`an_own_write_flushed_late_is_still_the_agent_s`).
   No bound was raised.
-- `a_timed_out_delegate_leaves_no_helper_seated` (`tests/it/helpers.rs`):
-  its script assumed the helper's model call came second; when the helper
+- `a_timed_out_delegate_leaves_no_helper_seated` (`tests/it/helpers.rs`;
+  gone with `delegate` on 2026-11-16, as are the `delegate` names below:
+  the resumed-run tests are `a_run_stopped_with_a_helper_resumes_…` and
+  `a_client_attaching_inside_a_resumed_run_…` now, their agent held in a
+  model call beside an `assign` helper): its script assumed the helper's model call came second; when the helper
   was not seated within the 3 s timeout, the agent's next call took the
   helper's hang and the turn never ended. The script is now keyed on the
   messages, and the test no longer waits for the helper to show.

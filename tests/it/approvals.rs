@@ -882,25 +882,27 @@ async fn the_local_methods_answer_before_the_engine() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helpers_shell_is_judged_as_the_native_shell() {
     let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "d1",
-            name: "delegate",
-            args: json!({
-                "member_id": "scout",
-                "task": "HELPER-TASK run it",
-                "result_label": "result",
-                "max_text_bytes": 4000,
-            }),
-        },
-        Step::Tool {
-            id: "sh",
-            name: "shell",
-            args: json!({"command": "echo HELPER-SHELL-RAN"}),
-        },
-        Step::Text("HELPER-DONE"),
-        Step::Text("parent done"),
-    ]);
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if common::is_helper(messages, "HELPER-TASK") {
+            return if common::after(messages, "sh") {
+                Step::Text("HELPER-DONE")
+            } else {
+                Step::Tool {
+                    id: "sh",
+                    name: "shell",
+                    args: json!({"command": "echo HELPER-SHELL-RAN"}),
+                }
+            };
+        }
+        if common::told_finished(messages) {
+            return Step::Text("parent done");
+        }
+        if common::after(messages, "a1") {
+            return Step::Text("waiting");
+        }
+        common::assign("a1", "scout", "HELPER-TASK run it")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
     let setup = Setup::default();
     let daemon = start(&ws.root, &llm, &setup).await;
     let connection = daemon.connect_bound().await;
@@ -912,7 +914,9 @@ async fn a_helpers_shell_is_judged_as_the_native_shell() {
         .await
         .unwrap();
     assert_eq!(added["text"], "rule added", "{added}");
-    daemon.prompt(&connection, "delegate it").await;
+    daemon.prompt(&connection, "start a helper").await;
+    common::until(|| common::parent_told(&llm, "HELPER-TASK", "scout")).await;
+    daemon.idle(&daemon.agent).await;
     let recorded = llm.recorded();
     let helper_after_shell = recorded
         .iter()

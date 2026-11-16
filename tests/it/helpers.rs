@@ -1,8 +1,7 @@
-//! Helpers: the daemon's agent delegates with
-//! the engine's `delegate`, and the attached TUI shows the helper
-//! (`[helper · model]`, its events nested, its
+//! Helpers: the daemon's agent starts one with `assign`, and the attached
+//! TUI shows the helper (`[helper · model]`, its events nested, its
 //! result, the running count, its usage in `/cost`), from the mobs' own
-//! event streams. Esc stops the agent's run and its helpers.
+//! event streams. Esc stops the agent's run only.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -21,18 +20,7 @@ use rkat_tui::client::transport::Connection;
 use rkat_tui::ui::{App, Effect, Msg, StatusInfo, StatusUpdate, TurnFailure};
 use serde_json::json;
 
-fn delegate(id: &'static str, member: &str, task: &str) -> Step {
-    Step::Tool {
-        id,
-        name: "delegate",
-        args: json!({
-            "member_id": member,
-            "task": task,
-            "result_label": "result",
-            "max_text_bytes": 4000,
-        }),
-    }
-}
+use common::{after, assign, is_helper, told_finished};
 
 fn no_helpers(msg: &Msg) -> bool {
     matches!(msg, Msg::Status(StatusUpdate::Helpers(h)) if h.is_empty())
@@ -77,33 +65,63 @@ fn draw(app: &mut App) -> Vec<String> {
         .collect()
 }
 
+/// The agent's side of the plain helper tests: it assigns `HELPER-TASK` to
+/// `scout`, ends its run with "waiting", and answers the note that the
+/// helper finished with "parent done". The helper's step is `helper`.
+fn assigning(helper: Step) -> Arc<ScriptedLlmClient> {
+    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        if is_helper(messages, "HELPER-TASK") {
+            return helper.clone();
+        }
+        if told_finished(messages) {
+            return Step::Text("parent done");
+        }
+        if after(messages, "a1") {
+            return Step::Text("waiting");
+        }
+        assign("a1", "scout", "HELPER-TASK: look around")
+    }));
+    ScriptedLlmClient::new(vec![step; 12])
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_delegated_helper_is_followed_with_its_result_and_cost() {
+async fn an_assigned_helper_is_followed_with_its_result_and_cost() {
     let ws = Workspace::new();
     let gate = Arc::new(tokio::sync::Notify::new());
-    let llm = ScriptedLlmClient::new(vec![
-        delegate("d1", "scout", "HELPER-TASK: look around"),
-        Step::Gated(Arc::clone(&gate), Box::new(Step::Text("HELPER-DONE"))),
-        Step::Text("parent done"),
-    ]);
+    let llm = assigning(Step::Gated(
+        Arc::clone(&gate),
+        Box::new(Step::Text("HELPER-DONE")),
+    ));
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
-    client.send(Effect::StartTurn("USER-ASK delegate it".into()));
+    client.send(Effect::StartTurn("USER-ASK start a helper".into()));
     // The helper runs (its model call waits on the gate): the TUI lists it.
-    llm.wait_call(1).await;
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .any(|r| is_helper(&r.messages, "HELPER-TASK"))
+    })
+    .await;
     client.saw(one_helper("scout")).await;
     gate.notify_one();
-    let outcome = client.turn_finished().await;
-    assert_eq!(outcome.unwrap().text, "parent done");
-    client.saw(no_helpers).await;
+    // Its answer reaches the agent as a note, which starts a run of it.
     client
         .saw(|m| matches!(m, Msg::Scoped(ev) if matches!(&ev.event, AgentEvent::TextComplete { content, .. } if content == "HELPER-DONE")))
         .await;
+    client.saw(no_helpers).await;
+    common::until(|| common::parent_told(&llm, "HELPER-TASK", "scout")).await;
+    daemon.idle(&daemon.agent).await;
+    client
+        .saw(|m| matches!(m, Msg::Agent(env) if matches!(&env.payload, AgentEvent::TextComplete { content, .. } if content == "parent done")))
+        .await;
 
     let recorded = llm.recorded();
-    assert!(recorded[0].tools.iter().any(|t| t == "delegate"));
-    assert!(recorded[1].user().contains("HELPER-TASK"));
-    assert_eq!(recorded[1].model, MODEL);
+    assert!(recorded[0].tools.iter().any(|t| t == "assign"));
+    let helper = recorded
+        .iter()
+        .find(|r| is_helper(&r.messages, "HELPER-TASK"))
+        .unwrap();
+    assert_eq!(helper.model, MODEL);
     // Its events reached the UI once each, nested one level and named.
     let scoped: Vec<_> = client.seen.iter().filter_map(helper_of).collect();
     assert!(!scoped.is_empty());
@@ -145,8 +163,8 @@ async fn a_delegated_helper_is_followed_with_its_result_and_cost() {
     assert_eq!(helper.input, 10, "one helper call");
     assert_eq!(
         app.status.cost().per_model[MODEL].input,
-        30,
-        "two calls of the agent and one of the helper"
+        40,
+        "three calls of the agent (the note's run is the third) and one of the helper"
     );
     // Its full view reads as the main transcript: the task the agent gave
     // it (from its run's own start), then its answer.
@@ -176,14 +194,15 @@ fn results(messages: &[Message]) -> usize {
         .count()
 }
 
-/// A script where the agent delegates `HELPER-TASK` to `slow` on "go":
-/// the helper's first model call waits on `gate`, then calls `glob`, then
-/// answers `HELPER-ANSWER`; the agent answers "after" to anything else.
-fn interrupted_delegate(gate: &Arc<tokio::sync::Notify>) -> Arc<ScriptedLlmClient> {
+/// A script where the agent assigns `HELPER-TASK` to `slow` on "go" and
+/// is then held in a model call that never answers (its run stays open
+/// for the user's interrupt): the helper's first model call waits on
+/// `gate`, then calls `glob`, then answers `HELPER-ANSWER`; the agent
+/// answers "after" to a message that says "again".
+fn interrupted_assign(gate: &Arc<tokio::sync::Notify>) -> Arc<ScriptedLlmClient> {
     let gate = Arc::clone(gate);
     let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
-        let user = common::user_texts(messages).concat();
-        if user.contains("HELPER-TASK") {
+        if is_helper(messages, "HELPER-TASK") {
             return match results(messages) {
                 0 => Step::Gated(
                     Arc::clone(&gate),
@@ -196,28 +215,38 @@ fn interrupted_delegate(gate: &Arc<tokio::sync::Notify>) -> Arc<ScriptedLlmClien
                 _ => Step::Text("HELPER-ANSWER"),
             };
         }
-        if user.contains("go") && results(messages) == 0 && !user.contains("again") {
-            return delegate("d1", "slow", "HELPER-TASK: look around");
+        if common::user_texts(messages).concat().contains("again") {
+            return Step::Text("after");
         }
-        Step::Text("after")
+        if results(messages) == 0 {
+            return assign("a1", "slow", "HELPER-TASK: look around");
+        }
+        Step::Hang
     }));
     ScriptedLlmClient::new(vec![step; 20])
 }
 
+/// The agent's model calls in `llm` (not its helper's).
+fn agent_calls(llm: &ScriptedLlmClient) -> usize {
+    llm.recorded()
+        .iter()
+        .filter(|r| !is_helper(&r.messages, "HELPER-TASK"))
+        .count()
+}
+
 /// An interrupt stops the agent's run only (the owner's decision of
-/// 2026-11-15; this test pinned the opposite before: the daemon retired
-/// the helper with its parent's run). The `delegate` helper keeps running,
-/// shown by its next model call after the interrupt was confirmed; its
-/// answer cannot return through the cancelled call, so it is held for the
-/// agent its user just interrupted (no run is started for it), the client
-/// is told at once, and the user's next message carries it first. It is
-/// not retired as an orphan by the interrupt: it is retired after it
-/// finished.
+/// 2026-11-15). The agent's run is held open after its `assign` (its next
+/// model call never answers), so the interrupt has a run to stop while the
+/// helper runs. The helper keeps running, shown by its next model call
+/// after the interrupt was confirmed; its answer is held for the agent its
+/// user just interrupted (no run is started for it), the client is told at
+/// once, and the user's next message carries it first. The interrupt does
+/// not retire it: it is retired after it finished.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_interrupt_leaves_the_helper_running_and_its_answer_comes_with_the_next_message() {
     let ws = Workspace::new();
     let gate = Arc::new(tokio::sync::Notify::new());
-    let llm = interrupted_delegate(&gate);
+    let llm = interrupted_assign(&gate);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("go".into()));
@@ -225,23 +254,28 @@ async fn an_interrupt_leaves_the_helper_running_and_its_answer_comes_with_the_ne
     common::until(|| {
         llm.recorded()
             .iter()
-            .any(|r| r.user().contains("HELPER-TASK"))
+            .any(|r| is_helper(&r.messages, "HELPER-TASK"))
     })
     .await;
+    // The agent's run is in its held call, after the `assign` returned.
+    common::until(|| agent_calls(&llm) == 2).await;
     client.send(Effect::Interrupt);
     let outcome = client.turn_finished().await;
     assert_eq!(outcome, Err(TurnFailure::Interrupted), "{outcome:?}");
     // The interrupt is confirmed; the helper is still seated and goes on.
     let connection = daemon.connect().await;
-    let mob = format!("implicit-{}", daemon.session);
-    assert_eq!(members(&connection, &mob).await, vec!["slow".to_string()]);
+    assert!(
+        members(&connection, "tui")
+            .await
+            .contains(&"slow".to_string())
+    );
     let before = llm.recorded().len();
     gate.notify_one();
     common::until(|| {
         llm.recorded()
             .iter()
             .skip(before)
-            .any(|r| r.user().contains("HELPER-TASK") && results(&r.messages) == 1)
+            .any(|r| is_helper(&r.messages, "HELPER-TASK") && results(&r.messages) == 1)
     })
     .await;
     // It finished: the client is told how, and that the agent hears of it
@@ -258,14 +292,13 @@ async fn an_interrupt_leaves_the_helper_running_and_its_answer_comes_with_the_ne
             .is_some_and(|t| t.contains("told with your next message")),
         "{told:?}"
     );
-    until_empty(&connection, &mob).await;
-    let agent_calls = |llm: &ScriptedLlmClient| {
-        llm.recorded()
-            .iter()
-            .filter(|r| !r.user().contains("HELPER-TASK"))
-            .count()
-    };
-    assert_eq!(agent_calls(&llm), 1, "no run was started for the agent");
+    common::until_async(async || {
+        !members(&connection, "tui")
+            .await
+            .contains(&"slow".to_string())
+    })
+    .await;
+    assert_eq!(agent_calls(&llm), 2, "no run was started for the agent");
     // The next message carries the answer, before the message itself.
     client.send(Effect::StartTurn("again".into()));
     assert_eq!(client.turn_finished().await.unwrap().text, "after");
@@ -284,7 +317,7 @@ async fn an_interrupt_leaves_the_helper_running_and_its_answer_comes_with_the_ne
         })
         .unwrap();
     let note = message
-        .find("Your helper `slow` finished")
+        .find("Your helper `slow` finished its task")
         .unwrap_or_else(|| panic!("the helper's ending travels with the message: {message}"));
     assert!(message[note..].contains("HELPER-ANSWER"), "{message}");
     assert!(
@@ -302,19 +335,33 @@ async fn an_interrupt_leaves_the_helper_running_and_its_answer_comes_with_the_ne
 }
 
 /// The adoption test of the lukacf/meerkat#2102 fix on the daemon: after a
-/// `/model` switch the agent's `delegate` seats its helper on the
-/// switched model (the helper inherits the session's identity as it is
-/// now, not the one the agent was spawned with).
+/// `/model` switch the agent's `assign` seats its helper on the switched
+/// model (the helper is given the session's model as it is now, not the
+/// one the agent was spawned with).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_helper_delegated_after_a_model_switch_runs_on_the_new_model() {
+async fn a_helper_assigned_after_a_model_switch_runs_on_the_new_model() {
     const SWITCHED: &str = "claude-opus-4-8";
     let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Text("one"),
-        delegate("d1", "scout", "say hi"),
-        Step::Text("hi"),
-        Step::Text("done"),
-    ]);
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let step = {
+        let gate = Arc::clone(&gate);
+        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+            if is_helper(messages, "say hi") {
+                return Step::Gated(Arc::clone(&gate), Box::new(Step::Text("hi")));
+            }
+            if told_finished(messages) {
+                return Step::Text("done");
+            }
+            if after(messages, "a1") {
+                return Step::Text("waiting");
+            }
+            if common::user_texts(messages).concat().contains("start one") {
+                return assign("a1", "scout", "say hi");
+            }
+            Step::Text("one")
+        }))
+    };
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("first".into()));
@@ -325,29 +372,25 @@ async fn a_helper_delegated_after_a_model_switch_runs_on_the_new_model() {
             |m| matches!(m, Msg::Status(StatusUpdate::Model { model, .. }) if model == SWITCHED),
         )
         .await;
-    client.send(Effect::StartTurn("delegate".into()));
-    assert_eq!(client.turn_finished().await.unwrap().text, "done");
+    client.send(Effect::StartTurn("start one".into()));
+    // The helper's session, while it runs (it is retired when done).
+    let registry = daemon.registry();
+    let key = rkat_tui::mobs::HelperKey::new(
+        meerkat_mob::MobId::from("tui"),
+        meerkat_mob::AgentIdentity::from("scout"),
+    );
+    let helper = common::poll(async || registry.member_session(&key)).await;
+    gate.notify_one();
+    common::until(|| common::parent_told(&llm, "say hi", "scout")).await;
+    daemon.idle(&daemon.agent).await;
     let recorded = llm.recorded();
     assert_eq!(recorded[0].model, MODEL);
     assert_eq!(recorded[1].model, SWITCHED);
-    assert_eq!(
-        recorded[2].model, SWITCHED,
-        "the helper runs on the new model"
-    );
-    // The helper's own session records it.
-    let result = recorded[3]
-        .messages
+    let on = recorded
         .iter()
-        .find_map(|m| match m {
-            meerkat_core::Message::ToolResults { results, .. } => {
-                results.iter().find(|r| r.tool_use_id == "d1").cloned()
-            }
-            _ => None,
-        })
-        .expect("the delegate result");
-    let value: serde_json::Value = serde_json::from_str(&result.text_content())
-        .unwrap_or_else(|_| panic!("delegate failed: {}", result.text_content()));
-    let helper = meerkat_core::SessionId::parse(value["session_id"].as_str().unwrap()).unwrap();
+        .find(|r| is_helper(&r.messages, "say hi"))
+        .unwrap();
+    assert_eq!(on.model, SWITCHED, "the helper runs on the new model");
     client.quit().await;
     daemon.stop().await;
     let meta = rig::stored_session(&ws.root, &helper)
@@ -371,265 +414,48 @@ async fn members(connection: &Connection, mob: &str) -> Vec<String> {
         .collect()
 }
 
-/// Wait until `mob` lists no member.
-async fn until_empty(connection: &Connection, mob: &str) {
-    common::until_async(async || members(connection, mob).await.is_empty()).await;
-}
-
-/// The realm config of `ws` with `delegate`'s tool timeout at 3 s.
-fn delegate_times_out(ws: &Workspace) {
-    let config = common::realm_of(&ws.root).join("config.toml");
-    std::fs::write(&config, "[tools.tool_timeouts]\ndelegate = \"3s\"\n").unwrap();
-}
-
-/// A `delegate` call that times out (the engine's tool timeout, here 3 s
-/// from the realm's `[tools.tool_timeouts] delegate`) leaves no helper
-/// seated: the engine drops the call without retiring its helper, and the
-/// daemon retires it when the agent's stream says the call ended with an
-/// error (`rkat_tui::mobs::delegates`).
-///
-/// The script is keyed on the messages, not on the order of the calls: on
-/// a slow machine the helper may not be seated (nor make its call) within
-/// the 3 s, and the agent's next call must still be the one that answers.
-/// So the test does not wait for the helper to show; it asserts what holds
-/// either way: the call timed out, the turn went on, nothing stays seated.
+/// A helper whose own run fails is told to its agent as failed, with the
+/// reason, and retired; nothing stays seated.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_timed_out_delegate_leaves_no_helper_seated() {
-    let ws = Workspace::new();
-    delegate_times_out(&ws);
-    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
-        if common::user_texts(messages)
-            .concat()
-            .contains("never finishes")
-        {
-            // The helper's model call.
-            return Step::Hang;
-        }
-        match messages
-            .iter()
-            .filter(|m| matches!(m, Message::ToolResults { .. }))
-            .count()
-        {
-            0 => delegate("d1", "stuck", "never finishes"),
-            _ => Step::Text("after the timeout"),
-        }
-    }));
-    let llm = ScriptedLlmClient::new(vec![step; 10]);
-    let daemon = Running::start(&ws.root, &llm).await;
-    let mut client = Client::attach(&ws.root).await;
-    client.send(Effect::StartTurn("go".into()));
-    // The call times out; the agent goes on with the error.
-    let outcome = client.turn_finished().await;
-    assert_eq!(outcome.unwrap().text, "after the timeout");
-    assert!(client.events().iter().any(|event| matches!(
-        event,
-        AgentEvent::ToolExecutionTimedOut { name, .. } if name == "delegate"
-    )));
-    let connection = daemon.connect().await;
-    until_empty(&connection, &format!("implicit-{}", daemon.session)).await;
-    client.saw(no_helpers).await;
-    client.quit().await;
-    daemon.stop().await;
-}
-
-/// A helper whose own turn fails ends its `delegate` call with an error,
-/// and the engine retires it then; nothing stays seated.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_delegate_whose_helper_fails_leaves_no_helper_seated() {
+async fn an_assigned_helper_whose_run_fails_is_told_and_leaves_no_helper_seated() {
     let ws = Workspace::new();
     let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
-        if common::user_texts(messages)
-            .concat()
-            .contains("fail please")
-        {
+        if is_helper(messages, "fail please") {
             // The helper's model call: a 400, which is not retried.
             return Step::RejectTools;
         }
-        match messages
-            .iter()
-            .filter(|m| matches!(m, Message::ToolResults { .. }))
-            .count()
+        if common::user_texts(messages)
+            .concat()
+            .contains("Your helper `doomed` failed")
         {
-            0 => delegate("d1", "doomed", "fail please"),
-            _ => Step::Text("after the failure"),
+            return Step::Text("after the failure");
         }
+        if after(messages, "a1") {
+            return Step::Text("waiting");
+        }
+        assign("a1", "doomed", "fail please")
     }));
     let llm = ScriptedLlmClient::new(vec![step; 10]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("go".into()));
-    let outcome = client.turn_finished().await;
-    assert_eq!(outcome.unwrap().text, "after the failure");
-    assert!(client.events().iter().any(|event| matches!(
-        event,
-        AgentEvent::ToolExecutionCompleted { name, is_error: true, .. } if name == "delegate"
-    )));
-    let connection = daemon.connect().await;
-    until_empty(&connection, &format!("implicit-{}", daemon.session)).await;
-    client.quit().await;
-    daemon.stop().await;
-}
-
-/// The retire is the timed-out call's helper's only: a `spawn_member`
-/// member that is meant to stay (here with the same member id, in its own
-/// mob) is still seated after a `delegate` of the same run timed out.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_timed_out_delegate_leaves_a_long_lived_member_seated() {
-    let ws = Workspace::new();
-    delegate_times_out(&ws);
-    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
-        let user = common::user_texts(messages).concat();
-        if user.contains("hello") {
-            // The team member's own turn.
-            return Step::Text("ready");
-        }
-        if user.contains("never finishes") {
-            // The helper's model call.
-            return Step::Hang;
-        }
-        match messages
-            .iter()
-            .filter(|m| matches!(m, Message::ToolResults { .. }))
-            .count()
-        {
-            0 => Step::Tool {
-                id: "m1",
-                name: "mob_create",
-                args: json!({"definition": {"id": "team", "profiles": {"worker": {"model": MODEL, "tools": {"comms": true}}}}}),
-            },
-            1 => Step::Tool {
-                id: "s1",
-                name: "mob_spawn_member",
-                args: json!({"mob_id": "team", "profile": "worker", "member_id": "w1", "initial_message": "hello"}),
-            },
-            2 => delegate("d1", "w1", "never finishes"),
-            _ => Step::Text("after the timeout"),
-        }
-    }));
-    let llm = ScriptedLlmClient::new(vec![step; 20]);
-    let daemon = Running::start(&ws.root, &llm).await;
-    daemon
-        .reveal(&daemon.session, &["mob_create", "mob_spawn_member"])
+    client
+        .saw(|m| matches!(m, Msg::Agent(env) if matches!(&env.payload, AgentEvent::TextComplete { content, .. } if content == "after the failure")))
         .await;
-    let mut client = Client::attach(&ws.root).await;
-    client.send(Effect::StartTurn("go".into()));
-    let outcome = client.turn_finished().await;
-    assert_eq!(outcome.unwrap().text, "after the timeout");
-    assert!(client.events().iter().any(|event| matches!(
-        event,
-        AgentEvent::ToolExecutionTimedOut { name, .. } if name == "delegate"
-    )));
-    let connection = daemon.connect().await;
-    until_empty(&connection, &format!("implicit-{}", daemon.session)).await;
-    assert_eq!(members(&connection, "team").await, vec!["w1".to_string()]);
-    client.quit().await;
-    daemon.stop().await;
-}
-
-/// A helper's tool call is cut by the realm's tool deadline well before
-/// the `delegate` that waits for the helper: with `[tools] default_timeout
-/// = "10s"` and no `delegate` entry, the helper's `sleep` times out at
-/// 10 s, the helper reports it, and the `delegate` call (waiting three
-/// times as long, so 20 s are left for the helper's spawn and model calls
-/// on a slow runner) completes with the helper's result.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_helper_s_tool_times_out_before_its_delegate_does() {
-    let ws = Workspace::new();
-    let config = common::realm_of(&ws.root).join("config.toml");
-    std::fs::write(&config, "[tools]\ndefault_timeout = \"10s\"\n").unwrap();
-    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
-        let results = messages
-            .iter()
-            .filter(|m| matches!(m, Message::ToolResults { .. }))
-            .count();
-        if common::user_texts(messages).concat().contains("sleep long") {
-            // The helper: one long command, then its report.
-            return match results {
-                0 => Step::Tool {
-                    id: "s1",
-                    name: "shell",
-                    args: json!({"command": "sleep 300", "timeout_secs": 600}),
-                },
-                _ => Step::Text("the command timed out"),
-            };
-        }
-        match results {
-            0 => delegate("d1", "sleeper", "sleep long"),
-            _ => Step::Text("the helper reported"),
-        }
-    }));
-    let llm = ScriptedLlmClient::new(vec![step; 10]);
-    let daemon = Running::start(&ws.root, &llm).await;
-    let mut client = Client::attach(&ws.root).await;
-    client.send(Effect::StartTurn("go".into()));
-    let outcome = client.turn_finished().await;
-    assert_eq!(outcome.unwrap().text, "the helper reported");
-    let events = client.events();
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AgentEvent::ToolExecutionCompleted { name, is_error: false, .. } if name == "delegate"
-        )),
-        "{events:?}"
-    );
-    assert!(!events.iter().any(|event| matches!(
-        event,
-        AgentEvent::ToolExecutionTimedOut { name, .. } if name == "delegate"
-    )));
-    // The helper's own request saw its shell call time out.
-    let helper_saw_timeout = llm.recorded().iter().any(|request| {
-        request.user().contains("sleep long")
-            && request.messages.iter().any(|m| match m {
-                Message::ToolResults { results, .. } => results
-                    .iter()
-                    .any(|r| r.tool_use_id == "s1" && r.text_content().contains("timed out")),
-                _ => false,
-            })
-    });
-    assert!(helper_saw_timeout, "{:?}", llm.recorded());
-    client.quit().await;
-    daemon.stop().await;
-}
-
-/// What the persona says of a helper's mob holds: after a `delegate`,
-/// the agent's `mob_list` names `implicit-<its session id>`, where the
-/// helper was a member.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mob_list_shows_the_mob_of_the_agent_s_helpers() {
-    let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        delegate("d1", "scout", "say hi"),
-        Step::Text("hi"),
-        Step::Tool {
-            id: "l1",
-            name: "mob_list",
-            args: json!({}),
-        },
-        Step::Text("listed"),
-    ]);
-    let daemon = Running::start(&ws.root, &llm).await;
-    daemon.reveal(&daemon.session, &["mob_list"]).await;
-    let mut client = Client::attach(&ws.root).await;
-    client.send(Effect::StartTurn("go".into()));
-    assert_eq!(client.turn_finished().await.unwrap().text, "listed");
-    let listed = llm
+    let note = llm
         .recorded()
-        .pop()
-        .unwrap()
-        .messages
         .iter()
-        .find_map(|m| match m {
-            Message::ToolResults { results, .. } => results
-                .iter()
-                .find(|r| r.tool_use_id == "l1")
-                .map(|r| r.text_content()),
-            _ => None,
-        })
+        .flat_map(|r| common::user_texts(&r.messages))
+        .find(|text| text.contains("Your helper `doomed` failed"))
         .unwrap();
-    assert!(
-        listed.contains(&format!("implicit-{}", daemon.session)),
-        "{listed}"
-    );
+    assert!(note.contains("tools are not supported"), "{note}");
+    let connection = daemon.connect().await;
+    common::until_async(async || {
+        !members(&connection, "tui")
+            .await
+            .contains(&"doomed".to_string())
+    })
+    .await;
     client.quit().await;
     daemon.stop().await;
 }

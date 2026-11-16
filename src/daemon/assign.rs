@@ -9,8 +9,8 @@
 //!   as every helper (gate, tools, persona, scratch directory, model rule,
 //!   bookkeeping) and wires it to its spawner both ways
 //!   (`auto_wire_parent`), exactly as a `spawn_member` the caller made
-//!   itself. Not the implicit mob of `delegate`: the daemon cannot address
-//!   a member there (`docs/evidence.md`).
+//!   itself. Not an implicit mob, as the engine's withdrawn `delegate`
+//!   used: the daemon cannot address a member there (`docs/evidence.md`).
 //! - **When it ends.** Its parent is told when it finishes (its run ended
 //!   and the runtime holds no unfinished input of it), with its answer,
 //!   and it is retired then ([`crate::mobs::endings`]). A message from its

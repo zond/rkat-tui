@@ -79,7 +79,7 @@ fn item_text(item: &NoteItem) -> String {
     let label = &item.label;
     match &item.how {
         How::Finished { answer } => format!(
-            "Your helper `{label}` finished. Its `delegate` call had been cut off by an interrupt, so its answer comes in this note instead:\n\n{}\n\nIt is retired.",
+            "Your helper `{label}` finished. The `delegate` call that started it ended before it did (when rkat-tui's daemon stopped), so its answer comes in this note instead:\n\n{}\n\nIt is retired.",
             bounded(answer, item.rest.as_deref())
         ),
         How::Done { answer } => format!(
@@ -107,9 +107,6 @@ fn item_text(item: &NoteItem) -> String {
         How::StoppedByUser => {
             format!("The user stopped your helper `{label}`. {NOT_CONTINUED}")
         }
-        How::TimedOut => format!(
-            "Your helper `{label}` was ended because its `delegate` call timed out. {NOT_CONTINUED}"
-        ),
         How::DaemonStopped => format!(
             "Your helper `{label}` ended when the rkat-tui daemon stopped, before it finished. {NOT_CONTINUED}"
         ),
@@ -479,12 +476,12 @@ impl Agents {
         );
     }
 
-    /// The `delegate` helpers the last daemon left: their calls ended with
-    /// it. One its mob still seats was restored by the engine, which
-    /// resumes its run: it is a helper whose call was cut off, and its
-    /// answer comes to its parent when it finishes. One its mob no longer
-    /// seats is gone: its parent is told so
-    /// ([`crate::mobs::endings::HelperEndings::lost`]).
+    /// The `delegate` helpers the last daemon left (`delegate` is withdrawn
+    /// since: they are a realm of an earlier build's, `crate::mobs::delegates`):
+    /// their calls ended with it. One its mob still seats was restored by
+    /// the engine, which resumes its run, and its answer comes to its
+    /// parent when it finishes. One its mob no longer seats is gone: its
+    /// parent is told so ([`crate::mobs::endings::HelperEndings::lost`]).
     pub(crate) async fn settle_left_helpers(&self) {
         let registry = &self.core.registry;
         for (key, tag) in registry.bound_members() {
@@ -502,9 +499,7 @@ impl Agents {
             if seated {
                 tracing::info!(helper = %key, "a delegate helper the last daemon left runs on; its answer goes to its parent");
                 registry.endings().spawned(&key, &tag);
-                registry
-                    .endings()
-                    .call_ended(&key, crate::mobs::delegates::CallEnded::CutOff);
+                registry.endings().left_over(&key);
             } else {
                 registry.endings().lost(&key, tag);
             }
@@ -535,7 +530,7 @@ mod tests {
         )]);
         assert!(
             finished.starts_with("Your helper `scout` finished.")
-                && finished.contains("cut off by an interrupt")
+                && finished.contains("ended before it did")
                 && finished.contains("\n\nthe bug is in parse()\n\n"),
             "{finished}"
         );
@@ -582,8 +577,6 @@ mod tests {
             lost.contains("ended when the rkat-tui daemon stopped"),
             "{lost}"
         );
-        let timed = note_text(&[item("scout", How::TimedOut)]);
-        assert!(timed.contains("its `delegate` call timed out"), "{timed}");
         let failed = note_text(&[item(
             "scout",
             How::Failed {

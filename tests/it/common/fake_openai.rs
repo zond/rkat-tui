@@ -26,7 +26,7 @@ pub struct FakeModel {
 }
 
 /// One scripted answer.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Reply {
     /// A text answer.
     Text(&'static str),
@@ -34,6 +34,29 @@ pub enum Reply {
     Reasoning(&'static str, &'static str),
     /// One tool call.
     Tool { name: &'static str, args: Value },
+    /// The answer this function makes of the request's body (where two
+    /// actors call the model and their order is not known). Every model
+    /// call takes it, and it is never used up.
+    Dynamic(Arc<dyn Fn(&Value) -> Reply + Send + Sync>),
+}
+
+impl std::fmt::Debug for Reply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text(text) => f.debug_tuple("Text").field(text).finish(),
+            Self::Reasoning(thought, text) => f
+                .debug_tuple("Reasoning")
+                .field(thought)
+                .field(text)
+                .finish(),
+            Self::Tool { name, args } => f
+                .debug_struct("Tool")
+                .field("name", name)
+                .field("args", args)
+                .finish(),
+            Self::Dynamic(_) => f.write_str("Dynamic"),
+        }
+    }
 }
 
 /// A recorded request.
@@ -215,24 +238,23 @@ fn respond(request: &Recorded, shared: &Shared) -> (&'static str, String) {
             })).collect::<Vec<_>>(),
         })),
         ("POST", path) if path.ends_with("/responses") => {
-            let reply = next_reply(shared);
+            let reply = next_reply(shared, &request.body);
             ("text/event-stream", responses_sse(&reply))
         }
         ("POST", path) if path.ends_with("/chat/completions") => {
-            let reply = next_reply(shared);
+            let reply = next_reply(shared, &request.body);
             ("text/event-stream", chat_sse(&reply))
         }
         _ => json_body(json!({})),
     }
 }
 
-fn next_reply(shared: &Shared) -> Reply {
-    shared
-        .replies
-        .lock()
-        .unwrap()
-        .pop_front()
-        .unwrap_or(Reply::Text("ok"))
+fn next_reply(shared: &Shared, body: &Value) -> Reply {
+    let mut replies = shared.replies.lock().unwrap();
+    match replies.front() {
+        Some(Reply::Dynamic(make)) => make(body),
+        _ => replies.pop_front().unwrap_or(Reply::Text("ok")),
+    }
 }
 
 fn sse(events: &[Value]) -> String {
@@ -255,6 +277,8 @@ fn responses_sse(reply: &Reply) -> String {
     };
     match reply {
         Reply::Text(answer) => text(&mut events, answer),
+        // Resolved by `next_reply`; one that makes another is "ok".
+        Reply::Dynamic(_) => text(&mut events, "ok"),
         Reply::Reasoning(thought, answer) => {
             events.push(json!({"type": "response.reasoning_summary_text.delta", "delta": thought}));
             text(&mut events, answer);
@@ -297,6 +321,11 @@ fn chat_sse(reply: &Reply) -> String {
     let finish = match reply {
         Reply::Text(answer) => {
             events.push(chunk(json!({"role": "assistant", "content": answer}), None));
+            "stop"
+        }
+        // Resolved by `next_reply`; one that makes another is "ok".
+        Reply::Dynamic(_) => {
+            events.push(chunk(json!({"role": "assistant", "content": "ok"}), None));
             "stop"
         }
         Reply::Reasoning(thought, answer) => {

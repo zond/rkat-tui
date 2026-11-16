@@ -33,7 +33,7 @@ fn results(messages: &[Message]) -> usize {
 fn agent_heard(llm: &ScriptedLlmClient, text: &str) -> bool {
     llm.recorded()
         .iter()
-        .filter(|r| !r.user().contains("HELPER-TASK"))
+        .filter(|r| !common::is_helper(&r.messages, "HELPER-TASK"))
         .any(|r| common::user_texts(&r.messages).iter().any(|t| t == text))
 }
 
@@ -59,10 +59,10 @@ fn script(call: Step) -> Arc<ScriptedLlmClient> {
 /// [`script`], its `went on` held until `gate` is notified.
 fn script_gated(call: Step, gate: Option<Arc<tokio::sync::Notify>>) -> Arc<ScriptedLlmClient> {
     let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
-        let user = common::user_texts(messages);
-        if user.concat().contains("HELPER-TASK") {
+        if common::is_helper(messages, "HELPER-TASK") {
             return Step::Hang;
         }
+        let user = common::user_texts(messages);
         if user.last().is_some_and(|last| last == "after the stop") {
             return Step::Text("answered after the stop");
         }
@@ -78,50 +78,82 @@ fn script_gated(call: Step, gate: Option<Arc<tokio::sync::Notify>>) -> Arc<Scrip
     ScriptedLlmClient::new(vec![step; 20])
 }
 
-fn delegate() -> Step {
-    Step::Tool {
-        id: "d1",
-        name: "delegate",
-        args: json!({
-            "member_id": "slow",
-            "task": "HELPER-TASK: runs on",
-            "result_label": "result",
-            "max_text_bytes": 4000,
-        }),
-    }
+/// The script of the tests of a run with a helper: the agent assigns
+/// `HELPER-TASK` to `slow` (whose model calls hang), then its run is held
+/// in its next model call until `hold` is notified, which answers "went
+/// on"; the later messages are answered as in [`script`].
+fn assigning(hold: &Arc<tokio::sync::Notify>) -> Arc<ScriptedLlmClient> {
+    let hold = Arc::clone(hold);
+    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        if common::is_helper(messages, "HELPER-TASK") {
+            return Step::Hang;
+        }
+        let user = common::user_texts(messages);
+        if user.last().is_some_and(|last| last == "after the stop") {
+            return Step::Text("answered after the stop");
+        }
+        if user.last().is_some_and(|last| last == "typed meanwhile") {
+            return Step::Text("read the message");
+        }
+        if results(messages) == 0 {
+            return common::assign("a1", "slow", "HELPER-TASK: runs on");
+        }
+        if common::after(messages, "a1") {
+            return Step::Gated(Arc::clone(&hold), Box::new(Step::Text("went on")));
+        }
+        Step::Text("went on")
+    }));
+    ScriptedLlmClient::new(vec![step; 20])
 }
 
 /// How many model calls the helper (whose task names `HELPER-TASK`) made.
 fn helper_calls(llm: &ScriptedLlmClient) -> usize {
     llm.recorded()
         .iter()
-        .filter(|r| r.user().contains("HELPER-TASK"))
+        .filter(|r| common::is_helper(&r.messages, "HELPER-TASK"))
         .count()
 }
 
-/// Wait until the resumed run's `delegate`, dispatched again, seated its
-/// new helper and that helper called (the second helper call). A run that
-/// went on without it (the agent's next model call read the call's result)
-/// fails at once, with that result.
+/// How many times the agent made its held model call (the one after its
+/// `assign`).
+fn held_calls(llm: &ScriptedLlmClient) -> usize {
+    llm.recorded()
+        .iter()
+        .filter(|r| {
+            !common::is_helper(&r.messages, "HELPER-TASK") && common::after(&r.messages, "a1")
+        })
+        .count()
+}
+
+/// The agent's run, held in its model call after the `assign` while its
+/// helper runs: the daemon's stop catches both there.
+fn inside_the_held_call(llm: &ScriptedLlmClient) -> bool {
+    held_calls(llm) == 1 && helper_calls(llm) == 1
+}
+
+/// Wait until the resumed run made its held model call again and the
+/// restored helper called again. A run that went on past that call (the
+/// agent's model call read a later result) fails at once, with it.
 #[track_caller]
 fn redispatched(llm: &ScriptedLlmClient) -> impl Future<Output = ()> + '_ {
     common::until(move || {
         if let Some(results) = went_on(llm) {
             panic!(
-                "the resumed run went on without seating the helper again: {results}\nthe daemon's last log lines:\n{}",
+                "the resumed run went on past its held call: {results}\nthe daemon's last log lines:\n{}",
                 common::log_tail(150)
             );
         }
-        helper_calls(llm) == 2
+        held_calls(llm) == 2 && helper_calls(llm) == 2
     })
 }
 
-/// The tool results of the agent's first model call that read one (its run
-/// went on past the call it was stopped in), if it made one.
+/// The tool results of the agent's first model call that read more than
+/// its `assign`'s (its run went on past the call it was stopped in), if it
+/// made one.
 fn went_on(llm: &ScriptedLlmClient) -> Option<String> {
     llm.recorded()
         .iter()
-        .find(|r| !r.user().contains("HELPER-TASK") && results(&r.messages) > 0)
+        .find(|r| !common::is_helper(&r.messages, "HELPER-TASK") && results(&r.messages) > 1)
         .map(|r| {
             r.messages
                 .iter()
@@ -225,30 +257,30 @@ async fn interrupt_and_go_on(daemon: &Running, client: &mut Client, llm: &Script
     daemon.idle(&daemon.agent).await;
 }
 
-/// The daemon's stop catches the agent inside its `delegate` call while
-/// the helper works. The next daemon resumes the run and dispatches the
-/// call again: the helper starts its task over and the agent shows as
-/// running, truly. Esc stops the run at once; before, the client knew no
-/// run id for a resumed run, force-cancelled the member (which waits for a
-/// boundary the `delegate` holds off) and the run ended only when the hard
-/// cancel took it after the interrupt's 10 s deadline.
+/// The daemon's stop catches the agent inside a model call while its
+/// `assign` helper works. The next daemon resumes the run, which makes
+/// that call again, and restores the helper, which runs anew: the agent
+/// shows as running, truly. Esc stops the run at once; before, the client
+/// knew no run id for a resumed run, force-cancelled the member (which
+/// waits for a boundary) and the run ended only when the hard cancel took
+/// it after the interrupt's 10 s deadline.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_run_stopped_inside_a_delegate_resumes_and_esc_stops_it_at_once() {
+async fn a_run_stopped_with_a_helper_resumes_and_esc_stops_it_at_once() {
     let ws = Workspace::new();
-    let llm = script(delegate());
-    let helper_calls = || {
-        llm.recorded()
-            .iter()
-            .filter(|r| r.user().contains("HELPER-TASK"))
-            .count()
-    };
-    let name = stop_inside(&ws, &llm, || helper_calls() == 1).await;
+    let hold = Arc::new(tokio::sync::Notify::new());
+    let llm = assigning(&hold);
+    let name = stop_inside(&ws, &llm, || inside_the_held_call(&llm)).await;
     let (daemon, mut client) = resumed(&ws, &llm, name).await;
-    // The call was dispatched again: its helper is seated and runs anew.
+    // The run made its call again, and its helper runs anew.
     redispatched(&llm).await;
     let connection = daemon.connect().await;
-    let mob = format!("implicit-{}", daemon.session);
-    common::until_async(async || members(&connection, &mob).await == ["slow"]).await;
+    common::until_async(async || {
+        members(&connection, "tui")
+            .await
+            .iter()
+            .any(|m| m == "slow")
+    })
+    .await;
     let row = daemon.status().await.agents.remove(0);
     assert_eq!(row.running, Some(true));
     interrupt_and_go_on(&daemon, &mut client, &llm).await;
@@ -257,23 +289,18 @@ async fn a_run_stopped_inside_a_delegate_resumes_and_esc_stops_it_at_once() {
 }
 
 /// The order the sibling above may meet only on a slow host, every time:
-/// the client attaches after the next daemon resumed the run and the
-/// helper of its `delegate` made its call, so it sees neither the run's
-/// `run_resumed` nor any other event of it. The daemon tells it the open
-/// run as it attaches: it joins the turn, the message typed meanwhile
-/// waits, and Esc stops the run by its id at once. Before, it showed no
-/// turn at all.
+/// the client attaches after the next daemon resumed the run, which made
+/// its call again, and the restored helper made its call, so it sees
+/// neither the run's `run_resumed` nor any other event of it. The daemon
+/// tells it the open run as it attaches: it joins the turn, the message
+/// typed meanwhile waits, and Esc stops the run by its id at once. Before,
+/// it showed no turn at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_client_attaching_inside_a_resumed_delegate_stops_the_run_by_its_id() {
+async fn a_client_attaching_inside_a_resumed_run_stops_the_run_by_its_id() {
     let ws = Workspace::new();
-    let llm = script(delegate());
-    let helper_calls = || {
-        llm.recorded()
-            .iter()
-            .filter(|r| r.user().contains("HELPER-TASK"))
-            .count()
-    };
-    let name = stop_inside(&ws, &llm, || helper_calls() == 1).await;
+    let hold = Arc::new(tokio::sync::Notify::new());
+    let llm = assigning(&hold);
+    let name = stop_inside(&ws, &llm, || inside_the_held_call(&llm)).await;
     let daemon = Running::start(&ws.root, &llm).await;
     redispatched(&llm).await;
     let mut client = join(&daemon, &ws.root, name, Some(&llm)).await;
@@ -323,14 +350,9 @@ async fn a_client_reattaching_inside_a_slow_shell_call_stops_the_run_by_its_id()
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stopping_the_helper_of_a_resumed_run_tells_the_agent_in_that_run() {
     let ws = Workspace::new();
-    let llm = script(delegate());
-    let helper_calls = || {
-        llm.recorded()
-            .iter()
-            .filter(|r| r.user().contains("HELPER-TASK"))
-            .count()
-    };
-    let name = stop_inside(&ws, &llm, || helper_calls() == 1).await;
+    let hold = Arc::new(tokio::sync::Notify::new());
+    let llm = assigning(&hold);
+    let name = stop_inside(&ws, &llm, || inside_the_held_call(&llm)).await;
     let (daemon, mut client) = resumed(&ws, &llm, name).await;
     redispatched(&llm).await;
     client.send(Effect::StopHelper(vec!["slow".into()]));
@@ -348,7 +370,14 @@ async fn stopping_the_helper_of_a_resumed_run_tells_the_agent_in_that_run() {
         told.as_deref().is_some_and(|t| t.ends_with("was told")),
         "{told:?}"
     );
+    hold.notify_one();
     assert_eq!(client.turn_finished().await.unwrap().text, "went on");
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .any(|r| format!("{:?}", r.messages).contains("The user stopped your helper `slow`."))
+    })
+    .await;
     assert!(
         llm.recorded()
             .iter()
@@ -416,25 +445,17 @@ const LEFT_ENDED: &str = "ended when the daemon stopped";
 /// failing on a slow runner (`within` of the second daemon's start ran out):
 /// the start read each agent's tool catalog, and the engine's read waits
 /// behind a running turn, up to 30 s; on a slow host the restore had
-/// already resumed the agent's run, inside its `delegate` call waiting for
-/// its hanging helper, so the start (and every client) waited the 30 s.
-/// Here the start is held until the resumed run's helper made its call, so
-/// the catalog read meets a running turn every time; the daemon must still
-/// serve at once.
+/// already resumed the agent's run (then inside a `delegate` call waiting
+/// for its hanging helper), so the start (and every client) waited the
+/// 30 s. Here the start is held until the resumed run made its call again,
+/// so the catalog read meets a running turn every time; the daemon must
+/// still serve at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_start_does_not_wait_behind_a_resumed_run_s_turn() {
     let ws = Workspace::new();
-    let llm = script(delegate());
-    let helper_calls = {
-        let llm = Arc::clone(&llm);
-        move || {
-            llm.recorded()
-                .iter()
-                .filter(|r| r.user().contains("HELPER-TASK"))
-                .count()
-        }
-    };
-    let name = stop_inside(&ws, &llm, || helper_calls() == 1).await;
+    let hold = Arc::new(tokio::sync::Notify::new());
+    let llm = assigning(&hold);
+    let name = stop_inside(&ws, &llm, || inside_the_held_call(&llm)).await;
     let gate = Arc::new(tokio::sync::Notify::new());
     let setup = rig::Setup::default();
     let args = setup.command_line(&ws.root);
@@ -442,7 +463,7 @@ async fn the_start_does_not_wait_behind_a_resumed_run_s_turn() {
         .options(&ws.root, &llm)
         .with_before_catalogs(Arc::clone(&gate));
     let start = tokio::spawn(async move { Running::try_start_with(&args, options).await });
-    // The resumed run is in its `delegate` call: its new helper called.
+    // The resumed run is in its held call, and its helper called again.
     redispatched(&llm).await;
     gate.notify_one();
     let started = std::time::Instant::now();
@@ -462,6 +483,7 @@ async fn the_start_does_not_wait_behind_a_resumed_run_s_turn() {
         _ => unreachable!(),
     };
     assert_eq!(how, "stopped by you");
+    hold.notify_one();
     assert_eq!(client.turn_finished().await.unwrap().text, "went on");
     client.quit().await;
     daemon.stop().await;

@@ -193,7 +193,7 @@ impl App {
         ListPicker::new(
             PickerKind::Helpers,
             rows,
-            "no helpers in this conversation yet (the agent starts them with delegate)",
+            "no helpers in this conversation yet (the agent starts them with assign, fork_off or spawn_member)",
             "↑/↓ move · Enter full view · f fold/expand in the transcript · s stop · Esc close",
         )
     }

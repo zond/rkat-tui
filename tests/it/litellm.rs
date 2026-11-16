@@ -368,37 +368,92 @@ provider_default = true
     rig.quit().await;
 }
 
-/// Probe (c): a `delegate` helper of an agent on an alias inherits it,
+/// The text of the first user message of a model call's `body` (chat
+/// completions' `messages` or the responses API's `input`): a helper's is
+/// its task.
+fn first_user_text(body: &serde_json::Value) -> String {
+    ["messages", "input"]
+        .iter()
+        .filter_map(|key| body[*key].as_array())
+        .flatten()
+        .find(|item| item["role"] == "user")
+        .map(|item| item["content"].to_string())
+        .unwrap_or_default()
+}
+
+/// Whether the last item of a model call's `body` is a tool result.
+fn after_a_tool(body: &serde_json::Value) -> bool {
+    ["messages", "input"]
+        .iter()
+        .filter_map(|key| body[*key].as_array())
+        .filter_map(|items| items.last())
+        .any(|item| item["role"] == "tool" || item["type"] == "function_call_output")
+}
+
+/// The endpoint's answers when the agent starts a helper with `call` (a
+/// tool call) and the helper's task is `task`: the helper answers
+/// `helper`; the agent answers "done" to the note that its helper
+/// finished or went idle and to a call that failed, and "waiting" after a
+/// call that started one.
+fn starting(call: Reply, task: &'static str, helper: &'static str) -> Vec<Reply> {
+    vec![Reply::Dynamic(Arc::new(move |body: &serde_json::Value| {
+        if first_user_text(body).contains(task) {
+            return Reply::Text(helper);
+        }
+        let text = body.to_string();
+        if text.contains("finished its task") || text.contains("went idle") {
+            return Reply::Text("done");
+        }
+        if after_a_tool(body) {
+            return if text.contains("was not started") || text.contains("\"error\"") {
+                Reply::Text("done")
+            } else {
+                Reply::Text("waiting")
+            };
+        }
+        call.clone()
+    }))]
+}
+
+/// Wait until the agent read the note `note` (its model call carried it)
+/// and is idle again.
+async fn until_told(rig: &Attached, fake: &FakeEndpoint, note: &str) {
+    common::until(|| {
+        fake.turns()
+            .iter()
+            .any(|turn| turn.body.to_string().contains(note))
+    })
+    .await;
+    rig.daemon.idle(&rig.daemon.agent).await;
+}
+
+/// Probe (c): an `assign` helper of an agent on an alias inherits it,
 /// through the owner's endpoint: its request names the endpoint's model and
-/// carries the endpoint's key, and its session is on the alias with the
-/// owner's binding.
+/// carries the endpoint's key, as every request of its agent does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helper_inherits_the_alias_through_the_owner_s_endpoint() {
-    let fake = FakeEndpoint::start(
-        models(),
-        vec![
-            Reply::Tool {
-                name: "delegate",
-                args: json!({
-                    "member_id": "scout",
-                    "task": "say hi",
-                    "result_label": "result",
-                    "max_text_bytes": 4000,
-                }),
-            },
-            Reply::Text("hi from the helper"),
-            Reply::Text("done"),
-        ],
-    )
-    .await;
+    let assign = Reply::Tool {
+        name: "assign",
+        args: json!({"name": "scout", "task": "say hi"}),
+    };
+    let fake =
+        FakeEndpoint::start(models(), starting(assign, "say hi", "hi from the helper")).await;
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(Vec::new());
     let mut rig = Attached::start_with(&ws.root, &llm, setup(&fake, CLAUDE, &[])).await;
-    rig.send(Effect::StartTurn("delegate".into()));
-    let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.unwrap().text, "done");
+    rig.send(Effect::StartTurn("start one".into()));
+    assert_eq!(rig.turn_finished().await.unwrap().text, "waiting");
+    until_told(&rig, &fake, "hi from the helper").await;
     let turns = fake.turns();
-    assert_eq!(turns.len(), 3, "{turns:#?}");
+    // The agent's call, the helper's, the agent's after the call, and the
+    // one that read the note.
+    assert_eq!(turns.len(), 4, "{turns:#?}");
+    assert!(
+        turns
+            .iter()
+            .any(|turn| first_user_text(&turn.body).contains("say hi")),
+        "{turns:#?}"
+    );
     for turn in &turns {
         assert_eq!(turn.body["model"], CLAUDE);
         assert_eq!(
@@ -414,41 +469,108 @@ async fn a_helper_inherits_the_alias_through_the_owner_s_endpoint() {
 /// on the endpoint's alias of it. Before the fix the profile kept the
 /// plain catalog name, the engine took it for the model's public provider,
 /// and the build was refused against the self-hosted binding
-/// (`LlmIdentityUnresolvable … expected provider …`).
+/// (`LlmIdentityUnresolvable … expected provider …`). The helper is a
+/// `mob_spawn_member`'s into a mob the agent made (the inline profile is
+/// its `tooling`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helper_naming_its_model_in_an_inline_profile_runs_on_the_alias() {
-    let fake = FakeEndpoint::start(
-        models(),
-        vec![
-            Reply::Tool {
-                name: "delegate",
+    let reply = Reply::Dynamic(Arc::new(|body: &serde_json::Value| {
+        if first_user_text(body).contains("say hi") {
+            return Reply::Text("hi from the helper");
+        }
+        if body.to_string().contains("went idle") {
+            return Reply::Text("done");
+        }
+        let results = ["messages", "input"]
+            .iter()
+            .filter_map(|key| body[*key].as_array())
+            .flatten()
+            .filter(|item| item["role"] == "tool" || item["type"] == "function_call_output")
+            .count();
+        match results {
+            0 => Reply::Tool {
+                name: "mob_create",
+                args: json!({"definition": {"id": "team", "profiles": {"worker": {
+                    "model": "claude-sonnet-4-6",
+                    "provider": "anthropic",
+                    "tools": {"builtins": true, "comms": true},
+                }}}}),
+            },
+            1 => Reply::Tool {
+                name: "mob_spawn_member",
                 args: json!({
+                    "mob_id": "team",
+                    "profile": "worker",
                     "member_id": "scout",
-                    "task": "say hi",
-                    "result_label": "result",
-                    "max_text_bytes": 4000,
+                    "initial_message": "say hi",
                     "tooling": {"mode": "profile", "source": {"type": "inline", "model": CLAUDE, "tools": {"builtins": true, "comms": true}}},
                 }),
             },
-            Reply::Text("hi from the helper"),
-            Reply::Text("done"),
-        ],
-    )
-    .await;
+            _ => Reply::Text("waiting"),
+        }
+    }));
+    let fake = FakeEndpoint::start(models(), vec![reply]).await;
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(Vec::new());
     let mut rig = Attached::start_with(&ws.root, &llm, setup(&fake, LOCAL, &[])).await;
-    rig.send(Effect::StartTurn("delegate".into()));
-    let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.unwrap().text, "done");
-    let models: Vec<String> = fake
+    rig.daemon
+        .reveal(&rig.daemon.session, &["mob_create", "mob_spawn_member"])
+        .await;
+    rig.send(Effect::StartTurn("start one".into()));
+    rig.turn_finished().await.unwrap();
+    until_told(&rig, &fake, "went idle").await;
+    let seen: Vec<(String, String)> = fake
         .turns()
         .iter()
-        .map(|t| t.body["model"].as_str().unwrap().to_string())
+        .map(|turn| {
+            (
+                turn.body["model"].to_string(),
+                first_user_text(&turn.body).chars().take(200).collect(),
+            )
+        })
         .collect();
-    assert_eq!(models, [LOCAL, CLAUDE, LOCAL], "{:#?}", fake.turns());
-    let delegate = fake.turns()[2].body.to_string();
-    assert!(delegate.contains("hi from the helper"), "{delegate}");
+    for (model, user) in &seen {
+        let helper = user.contains("say hi");
+        assert_eq!(
+            model,
+            &format!("\"{}\"", if helper { CLAUDE } else { LOCAL }),
+            "{seen:#?}"
+        );
+    }
+    rig.quit().await;
+}
+
+/// A helper an agent on a self-hosted endpoint starts with `assign`
+/// naming another model the endpoint lists runs on that model there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_assigned_helper_naming_its_model_runs_on_the_alias() {
+    let assign = Reply::Tool {
+        name: "assign",
+        args: json!({"name": "scout", "task": "say hi", "model": CLAUDE}),
+    };
+    let fake =
+        FakeEndpoint::start(models(), starting(assign, "say hi", "hi from the helper")).await;
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(Vec::new());
+    let mut rig = Attached::start_with(&ws.root, &llm, setup(&fake, LOCAL, &[])).await;
+    rig.send(Effect::StartTurn("start one".into()));
+    rig.turn_finished().await.unwrap();
+    until_told(&rig, &fake, "hi from the helper").await;
+    let turns = fake.turns();
+    assert!(
+        turns
+            .iter()
+            .any(|turn| first_user_text(&turn.body).contains("say hi")),
+        "{turns:#?}"
+    );
+    for turn in &turns {
+        let helper = first_user_text(&turn.body).contains("say hi");
+        assert_eq!(
+            turn.body["model"],
+            if helper { CLAUDE } else { LOCAL },
+            "{turns:#?}"
+        );
+    }
     rig.quit().await;
 }
 
@@ -522,14 +644,8 @@ async fn a_helper_on_a_model_the_endpoint_does_not_list_is_refused_with_its_mode
         models(),
         vec![
             Reply::Tool {
-                name: "delegate",
-                args: json!({
-                    "member_id": "scout",
-                    "task": "say hi",
-                    "result_label": "result",
-                    "max_text_bytes": 4000,
-                    "tooling": {"mode": "profile", "source": {"type": "inline", "model": "unlisted-model", "tools": {"builtins": true, "comms": true}}},
-                }),
+                name: "assign",
+                args: json!({"name": "scout", "task": "say hi", "model": "unlisted-model"}),
             },
             Reply::Text("done"),
         ],
@@ -538,7 +654,7 @@ async fn a_helper_on_a_model_the_endpoint_does_not_list_is_refused_with_its_mode
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(Vec::new());
     let mut rig = Attached::start_with(&ws.root, &llm, setup(&fake, LOCAL, &[])).await;
-    rig.send(Effect::StartTurn("delegate".into()));
+    rig.send(Effect::StartTurn("start one".into()));
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.unwrap().text, "done");
     let turns = fake.turns();

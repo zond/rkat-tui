@@ -300,29 +300,36 @@ async fn an_idle_agent_gets_the_instruction_at_its_next_turn() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helpers_context_does_not_fire_it() {
     let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "d1",
-            name: "delegate",
-            args: json!({
-                "member_id": "h1",
-                "task": "read a lot",
-                "result_label": "result",
-                "max_text_bytes": 4000,
-            }),
+    let step = Step::Dynamic(std::sync::Arc::new(
+        |messages: &[meerkat_core::Message]| {
+            if common::is_helper(messages, "read a lot") {
+                return Step::TextUsage("helper done", 90_000);
+            }
+            if common::told_finished(messages) {
+                return Step::Text("ok");
+            }
+            if common::after(messages, "a1") {
+                return Step::Text("waiting");
+            }
+            common::assign("a1", "h1", "read a lot")
         },
-        Step::TextUsage("helper done", 90_000),
-        Step::Text("ok"),
-    ]);
+    ));
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
     let mut rig = rig(&llm, &ws, "warn", 50_000).await;
-    rig.send(Effect::StartTurn("delegate it".into()));
-    assert_eq!(rig.turn_finished().await.unwrap().text, "ok");
+    rig.send(Effect::StartTurn("start a helper".into()));
+    rig.turn_finished().await.unwrap();
+    common::until(|| common::parent_told(&llm, "read a lot", "h1")).await;
+    rig.daemon.idle(&rig.daemon.agent).await;
     let recorded = llm.recorded();
     assert!(recorded[0].tools.iter().any(|t| t == "compact_ready"));
+    let helper = recorded
+        .iter()
+        .find(|r| common::is_helper(&r.messages, "read a lot"))
+        .unwrap();
     assert!(
-        !recorded[1].tools.iter().any(|t| t == "compact_ready"),
+        !helper.tools.iter().any(|t| t == "compact_ready"),
         "{:?}",
-        recorded[1].tools
+        helper.tools
     );
     assert_eq!(asked(&rig), 0, "{}", rig.notices());
     assert!(

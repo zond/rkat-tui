@@ -625,9 +625,8 @@ const NARROWLY: &str = " The safety review reads it narrowly: actions of that ki
 
 /// What an approval from `/approve` of the blocked call `what` tells the
 /// user (`notice`) and the agent (`note`): its own call, or the call its
-/// helper `helper` made (the agent is told either way: the engine admits
-/// no message from the daemon into a `delegate` helper's run, and an
-/// approval holds for the agent and its helpers alike). `how` is how the
+/// helper `helper` made (the agent is told either way: an approval holds
+/// for the agent and its helpers alike). `how` is how the
 /// user approved it ("once", "by granting …"), `detail` what that means
 /// for other calls; `once`: the very call must be repeated as it was.
 fn approval(

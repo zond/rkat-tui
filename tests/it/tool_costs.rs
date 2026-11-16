@@ -4,8 +4,8 @@
 //! catalog never engages for the daemon's members (Meerkat 0.9.12 and
 //! 0.9.13: the mob operator tools and `memory_search` report no exact
 //! catalog, so the session's catalog is inexact and stays inline), so
-//! rkat-tui hides the schedule tools and the agent mob tools but
-//! `delegate` itself until a `tool_search` reveals them
+//! rkat-tui hides the schedule tools and the agent mob tools (the
+//! withdrawn `delegate` is never declared) until a `tool_search` reveals them
 //! (`src/daemon/deferral`). The measurements are asserted as bounds, so a
 //! family that grows, and the engine change that would let tools be
 //! deferred natively (lukacf/meerkat#2180), both show here.
@@ -18,36 +18,25 @@ use crate::rig;
 use common::{ScriptedLlmClient, Step, Workspace};
 use rig::Attached;
 use rkat_tui::ui::Effect;
-use serde_json::json;
 
 /// A fresh conversation's request carries the direct tools and the search
 /// tool, about 56 KB (122 KB before rkat-tui's own deferral; `skill_read`
 /// added 373 bytes, `compact_ready` 197): no schedule
-/// tool and of the agent mob tools only `delegate`; what is hidden (the
-/// eight schedule tools, 18 mob tools, about 67 KB) `/context` reports as
-/// hidden. Its session's catalog is inexact, so the engine defers nothing
-/// itself and its catalog control tools are absent. A `delegate` helper's
-/// request carries neither hidden family nor the search tool.
+/// tool and none of the agent mob tools (`delegate`, the one that was
+/// declared, is withdrawn); what is hidden (the eight schedule tools, 18
+/// mob tools, about 67 KB) `/context` reports as hidden. Its session's
+/// catalog is inexact, so the engine defers nothing itself and its
+/// catalog control tools are absent. An `assign` helper's request carries
+/// neither hidden family nor the search tool.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_s_request_carries_every_tool_definition() {
     let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "d1",
-            name: "delegate",
-            args: json!({
-                "member_id": "h1",
-                "task": "say hi",
-                "result_label": "result",
-                "max_text_bytes": 4000,
-            }),
-        },
-        Step::Text("helper done"),
-        Step::Text("ok"),
-    ]);
+    let llm = ScriptedLlmClient::new(vec![assigning(); 12]);
     let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("hello".into()));
     assert_eq!(rig.turn_finished().await.unwrap().text, "ok");
+    common::until(|| common::parent_told(&llm, "say hi", "h1")).await;
+    rig.daemon.idle(&rig.daemon.agent).await;
     let recorded = llm.recorded();
     let main = &recorded[0];
     let bytes = main.tool_bytes();
@@ -70,8 +59,9 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     // The search tool, small; the engine's own control tools absent.
     assert_eq!(main.tools_of("catalog"), ["tool_search"], "{report}");
     assert!(bytes["catalog"] < 1_500, "{report}");
-    // Hidden: no schedule tool; of the agent mob tools, `delegate` (the
-    // mob operator tools stay, the engine mounts them).
+    // Hidden: no schedule tool and no agent mob tool (the mob operator
+    // tools stay, the engine mounts them); `delegate` is withdrawn, and
+    // `assign` is rkat-tui's own.
     assert!(!bytes.contains_key("schedule"), "{report}");
     let deferral = rig.daemon.deferral();
     let declared_hidden: Vec<_> = main
@@ -80,7 +70,11 @@ async fn an_agent_s_request_carries_every_tool_definition() {
         .filter(|name| deferral.deferrable.contains(name))
         .collect();
     assert!(declared_hidden.is_empty(), "{declared_hidden:?}: {report}");
-    assert!(main.tools.iter().any(|name| name == "delegate"), "{report}");
+    assert!(
+        !main.tools.iter().any(|name| name == "delegate"),
+        "{report}"
+    );
+    assert!(main.tools.iter().any(|name| name == "assign"), "{report}");
     assert!(bytes["mob"] < 12_000, "{report}");
     assert!(bytes["comms"] > 20_000, "{report}");
     // rkat-tui's own: small, and kept so. The skill tool is one short
@@ -148,7 +142,10 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     );
     // The helper: its own request, without schedule or mob tools and
     // without the search tool.
-    let helper = &recorded[1];
+    let helper = recorded
+        .iter()
+        .find(|r| common::is_helper(&r.messages, "say hi"))
+        .unwrap();
     let helper_bytes = helper.tool_bytes();
     assert!(
         !helper_bytes.contains_key("schedule")
@@ -207,8 +204,33 @@ fn untyped(value: &serde_json::Value, path: &str, out: &mut Vec<String>) {
     }
 }
 
+/// The agent's step in these tests: "one" to a first message that does
+/// not ask for a helper, an `assign` of `h1` (task "say hi") to one that
+/// does or to "hello", "ok" after it, "noted" to the note that it
+/// finished; the helper answers "helper done".
+fn assigning() -> Step {
+    Step::Dynamic(std::sync::Arc::new(
+        |messages: &[meerkat_core::Message]| {
+            if common::is_helper(messages, "say hi") {
+                return Step::Text("helper done");
+            }
+            if common::told_finished(messages) {
+                return Step::Text("noted");
+            }
+            if common::after(messages, "a1") {
+                return Step::Text("ok");
+            }
+            let users = common::user_texts(messages);
+            match users.last().map(String::as_str) {
+                Some("first") => Step::Text("one"),
+                _ => common::assign("a1", "h1", "say hi"),
+            }
+        },
+    ))
+}
+
 /// Every tool definition an agent's request carries, with the hidden
-/// families revealed, and a `delegate` helper's, has a `type` on every
+/// families revealed, and an `assign` helper's, has a `type` on every
 /// constrained schema node (a union's on its members; a node that admits
 /// any value has none), no boolean standing for a schema, and no `$ref` or
 /// `oneOf`: a Gemini model behind an OpenAI-compatible
@@ -217,23 +239,9 @@ fn untyped(value: &serde_json::Value, path: &str, out: &mut Vec<String>) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_requested_tool_schema_has_a_type_everywhere() {
     let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Text("one"),
-        Step::Tool {
-            id: "d1",
-            name: "delegate",
-            args: json!({
-                "member_id": "h1",
-                "task": "say hi",
-                "result_label": "result",
-                "max_text_bytes": 4000,
-            }),
-        },
-        Step::Text("helper done"),
-        Step::Text("ok"),
-    ]);
+    let llm = ScriptedLlmClient::new(vec![assigning(); 12]);
     let mut rig = Attached::start(&ws.root, &llm).await;
-    rig.send(Effect::StartTurn("hello".into()));
+    rig.send(Effect::StartTurn("first".into()));
     rig.turn_finished().await.unwrap();
     let deferral = rig.daemon.deferral();
     let hidden: Vec<String> = deferral
@@ -244,9 +252,17 @@ async fn every_requested_tool_schema_has_a_type_everywhere() {
         .collect();
     let hidden: Vec<&str> = hidden.iter().map(String::as_str).collect();
     rig.daemon.reveal(&rig.daemon.session, &hidden).await;
-    rig.send(Effect::StartTurn("delegate".into()));
+    rig.send(Effect::StartTurn("start a helper".into()));
     assert_eq!(rig.turn_finished().await.unwrap().text, "ok");
+    common::until(|| common::parent_told(&llm, "say hi", "h1")).await;
+    rig.daemon.idle(&rig.daemon.agent).await;
     let recorded = llm.recorded();
+    assert!(
+        recorded
+            .iter()
+            .any(|r| common::is_helper(&r.messages, "say hi")),
+        "the helper's request is checked too"
+    );
     let mut missing = Vec::new();
     for (n, request) in recorded.iter().enumerate() {
         for def in &request.defs {

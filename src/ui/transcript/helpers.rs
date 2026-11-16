@@ -34,7 +34,11 @@ pub enum HelperState {
 /// What a helper is, from the call that started it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelperKind {
-    /// A `delegate` helper: one task, its answer returned to the caller.
+    /// An `assign` helper: one task beside its parent, told when done.
+    Assigned,
+    /// A `delegate` helper (a conversation an earlier build stored: the
+    /// engine's `delegate` is withdrawn): one task, its answer returned to
+    /// the caller.
     Delegate,
     /// A `fork_off` child: a copy of its parent's conversation on a task.
     Fork,
@@ -48,6 +52,7 @@ impl HelperKind {
     #[must_use]
     pub fn text(self) -> &'static str {
         match self {
+            Self::Assigned => "assigned",
             Self::Delegate => "delegate",
             Self::Fork => "fork",
             Self::Member => "spawned member",
@@ -57,6 +62,7 @@ impl HelperKind {
     /// The kind of helper the tool `name` starts (`None`: it starts none).
     fn of_tool(name: &str) -> Option<Self> {
         match name {
+            crate::tools::ASSIGN => Some(Self::Assigned),
             "delegate" => Some(Self::Delegate),
             "fork_off" => Some(Self::Fork),
             "spawn_member" | "spawn_many_members" | "mob_spawn_member" => Some(Self::Member),
@@ -504,16 +510,17 @@ impl Transcript {
 
     /// A tool call of the agent or of a helper: one that starts helpers
     /// says what they are (by the `member_id` of its arguments, or of each
-    /// of their entries).
+    /// of their entries; an `assign`'s `name`).
     pub(super) fn note_spawn(&mut self, tool: &str, args: &Value) {
         let Some(kind) = HelperKind::of_tool(tool) else {
             return;
         };
-        let mut labels: Vec<&str> = args
-            .get("member_id")
-            .and_then(Value::as_str)
-            .into_iter()
-            .collect();
+        let id = if kind == HelperKind::Assigned {
+            "name"
+        } else {
+            "member_id"
+        };
+        let mut labels: Vec<&str> = args.get(id).and_then(Value::as_str).into_iter().collect();
         if let Some(map) = args.as_object() {
             for value in map.values().filter_map(Value::as_array) {
                 labels.extend(

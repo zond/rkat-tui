@@ -560,7 +560,7 @@ fn an_mcp_tool_named_like_a_builtin_is_not_trusted_like_one() {
         ),
         ("glob", json!({"pattern": "**/*.rs"}), Tier::AlwaysAllow),
         ("task_list", json!({}), Tier::AlwaysAllow),
-        ("delegate", json!({"task": "x"}), Tier::AlwaysAllow),
+        ("fork_off", json!({"task": "x"}), Tier::AlwaysAllow),
         ("shell", json!({"command": "ls"}), Tier::AlwaysAllow),
         (
             "note_save",
@@ -580,4 +580,18 @@ fn an_mcp_tool_named_like_a_builtin_is_not_trusted_like_one() {
             "{name} the session does not offer"
         );
     }
+    // The engine's withdrawn `delegate` is unavailable, also unoffered; an
+    // MCP server's tool of the name is reviewed as any other of its tools.
+    let args = json!({"task": "x"});
+    let native = ToolOrigin::native(ToolSourceKind::Mob);
+    for origin in [Some(&native), None] {
+        assert_eq!(
+            h.decide_from("delegate", &args, origin).tier,
+            Tier::Unavailable
+        );
+    }
+    assert_eq!(
+        h.decide_from("delegate", &args, Some(&mcp)).tier,
+        Tier::Classifier
+    );
 }

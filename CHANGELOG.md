@@ -37,8 +37,26 @@
   This also holds right after an interrupt. A helper's call is told to its
   agent, named as that helper's.
 
+### Removed
+
+- **Behaviour change:** `delegate`, the engine's helper tool, is no longer
+  offered to any agent or helper, and a call of it is refused. It blocked
+  the agent until its helper was done, so meanwhile the agent heard no one
+  and could not answer. Use `assign` for a self-contained task (the helper
+  runs alongside the agent and its answer arrives in a note), `fork_off`
+  when the task needs the conversation so far, or `spawn_member` for a
+  helper to keep and talk to. With it go its deadline default (three
+  times the longest tool deadline), the retirement of a helper whose
+  `delegate` call timed out, and the "timed out" ending. A conversation an
+  earlier rkat-tui stored still shows its `delegate` calls and helpers,
+  and a `delegate` helper such a daemon left running still finishes and
+  is told to its agent at the next start.
+
 ### Fixed
 
+- A client of one agent could cancel or stop another agent's helper
+  seated in the workspace's mob (`assign`, `spawn_member`) through the
+  engine's member methods; it is refused as for any other agent's helper.
 - A message to an `assign` helper that had finished failed with the
   engine's "peer not found"; it now says the helper finished and was
   retired, and to start another with `assign`.

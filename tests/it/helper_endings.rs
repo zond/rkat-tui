@@ -2,7 +2,9 @@
 //! 2026-11-15): an interrupt of the agent leaves its helpers running and
 //! their dialogs open; the user stops one helper on its own (the client's
 //! `/helpers` and full view, or Stop on one of its dialogs); every ending
-//! its parent's own call did not return is told to the parent once.
+//! is told to the parent once. The helpers are `assign`'s: the agent's
+//! run is held open explicitly (a gated or unanswered model call) where a
+//! test needs it running while its helper runs.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -11,7 +13,7 @@ use crate::rig;
 
 use std::sync::Arc;
 
-use common::{ScriptedLlmClient, Step, Workspace};
+use common::{ScriptedLlmClient, Step, Workspace, after, assign, is_helper};
 use meerkat_core::Message;
 use rig::{Client, Running};
 use rkat_tui::approval::mode::PermissionMode;
@@ -19,19 +21,6 @@ use rkat_tui::client::transport::Connection;
 use rkat_tui::mobs::HelperKey;
 use rkat_tui::ui::{Effect, EscalationAnswer, Msg, TurnFailure};
 use serde_json::json;
-
-fn delegate(id: &'static str, member: &str, task: &str) -> Step {
-    Step::Tool {
-        id,
-        name: "delegate",
-        args: json!({
-            "member_id": member,
-            "task": task,
-            "result_label": "result",
-            "max_text_bytes": 4000,
-        }),
-    }
-}
 
 fn results(messages: &[Message]) -> usize {
     messages
@@ -45,8 +34,39 @@ fn results(messages: &[Message]) -> usize {
 fn agent_heard(llm: &ScriptedLlmClient, text: &str) -> bool {
     llm.recorded()
         .iter()
-        .filter(|r| !r.user().contains("HELPER-TASK"))
+        .filter(|r| !is_helper(&r.messages, "HELPER-TASK"))
         .any(|r| format!("{:?}", r.messages).contains(text))
+}
+
+/// The agent's model calls so far (not its helper's).
+fn agent_calls(llm: &ScriptedLlmClient) -> usize {
+    llm.recorded()
+        .iter()
+        .filter(|r| !is_helper(&r.messages, "HELPER-TASK"))
+        .count()
+}
+
+/// Whether the helper `name` is seated in the workspace's mob.
+async fn seated(connection: &Connection, name: &str) -> bool {
+    members(connection, "tui").await.iter().any(|m| m == name)
+}
+
+/// Wait until the helper `name` left the workspace's mob.
+async fn until_gone(connection: &Connection, name: &str) {
+    common::until_async(async || !seated(connection, name).await).await;
+}
+
+/// A step that holds the agent's run until `gate` is notified, then calls
+/// a tool that reads nothing (so the run makes one more model call).
+fn held(gate: &Arc<tokio::sync::Notify>) -> Step {
+    Step::Gated(
+        Arc::clone(gate),
+        Box::new(Step::Tool {
+            id: "g1",
+            name: "glob",
+            args: json!({"pattern": "*.nothing"}),
+        }),
+    )
 }
 
 async fn members(connection: &Connection, mob: &str) -> Vec<String> {
@@ -60,10 +80,6 @@ async fn members(connection: &Connection, mob: &str) -> Vec<String> {
         .iter()
         .map(|member| member["agent_identity"].as_str().unwrap().to_string())
         .collect()
-}
-
-async fn until_empty(connection: &Connection, mob: &str) {
-    common::until_async(async || members(connection, mob).await.is_empty()).await;
 }
 
 /// The client's `HelperEnded` for `label`: how, and who was told.
@@ -88,24 +104,30 @@ fn write(id: &'static str, path: &str, content: &str) -> Step {
 
 /// The user stops a running helper on its own (`rkat/stop_helper`, from the
 /// `/helpers` picker or its full view): the helper is retired, its agent's
-/// run goes on (its `delegate` returns, and its next model call follows),
-/// and the agent is told in its run, in plain words.
+/// run (held in a model call meanwhile) goes on, and the agent is told in
+/// plain words.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stopping_a_helper_stops_it_alone_and_tells_its_running_agent() {
     let ws = Workspace::new();
-    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
-        let user = common::user_texts(messages).concat();
-        if user.contains("HELPER-TASK") {
-            return Step::Hang;
-        }
-        if format!("{messages:?}").contains("The user stopped your helper") {
-            return Step::Text("noted the stop");
-        }
-        match results(messages) {
-            0 => delegate("d1", "slow", "HELPER-TASK: never ends"),
-            _ => Step::Text("went on"),
-        }
-    }));
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let step = {
+        let gate = Arc::clone(&gate);
+        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+            if is_helper(messages, "HELPER-TASK") {
+                return Step::Hang;
+            }
+            if format!("{messages:?}").contains("The user stopped your helper") {
+                return Step::Text("noted the stop");
+            }
+            if after(messages, "a1") {
+                return held(&gate);
+            }
+            match results(messages) {
+                0 => assign("a1", "slow", "HELPER-TASK: never ends"),
+                _ => Step::Text("went on"),
+            }
+        }))
+    };
     let llm = ScriptedLlmClient::new(vec![step; 20]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
@@ -113,16 +135,23 @@ async fn stopping_a_helper_stops_it_alone_and_tells_its_running_agent() {
     common::until(|| {
         llm.recorded()
             .iter()
-            .any(|r| r.user().contains("HELPER-TASK"))
+            .any(|r| is_helper(&r.messages, "HELPER-TASK"))
     })
     .await;
+    common::until(|| agent_calls(&llm) == 2).await;
     client.send(Effect::StopHelper(vec!["slow".into()]));
     let (how, told) = ended(&mut client, "slow").await;
     assert_eq!(how, "stopped by you");
     assert!(told.is_some_and(|t| t.ends_with("was told")));
     let connection = daemon.connect().await;
-    until_empty(&connection, &format!("implicit-{}", daemon.session)).await;
-    // The agent's run went on after the stop, and the agent heard of it.
+    until_gone(&connection, "slow").await;
+    // The agent's run goes on after the stop, and the agent hears of it.
+    gate.notify_one();
+    assert_ne!(
+        client.turn_finished().await,
+        Err(TurnFailure::Interrupted),
+        "the stop did not interrupt the agent"
+    );
     common::until(|| agent_heard(&llm, "The user stopped your helper `slow`.")).await;
     assert!(agent_heard(
         &llm,
@@ -163,16 +192,16 @@ async fn stopping_a_helper_that_is_not_running_says_so() {
 async fn an_interrupt_leaves_a_helper_s_dialog_open() {
     let ws = Workspace::new();
     let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
-        let user = common::user_texts(messages).concat();
-        if user.contains("HELPER-TASK") {
+        if is_helper(messages, "HELPER-TASK") {
             return match results(messages) {
                 0 => write("w1", "helper.txt", "FROM-HELPER"),
                 _ => Step::Text("helper done"),
             };
         }
         match results(messages) {
-            0 => delegate("d1", "scout", "HELPER-TASK: write helper.txt"),
-            _ => Step::Text("after"),
+            0 => assign("a1", "scout", "HELPER-TASK: write helper.txt"),
+            // Held open for the interrupt.
+            _ => Step::Hang,
         }
     }));
     let llm = ScriptedLlmClient::new(vec![step; 20]);
@@ -186,6 +215,7 @@ async fn an_interrupt_leaves_a_helper_s_dialog_open() {
         (prompt.tool.as_str(), prompt.agent.as_deref()),
         ("write_file", Some("scout"))
     );
+    common::until(|| agent_calls(&llm) == 2).await;
     client.send(Effect::Interrupt);
     assert_eq!(client.turn_finished().await, Err(TurnFailure::Interrupted));
     // The dialog is still open: answered now, the write runs.
@@ -203,24 +233,30 @@ async fn an_interrupt_leaves_a_helper_s_dialog_open() {
 }
 
 /// Stop on the dialog of a helper's call stops that helper only: its
-/// agent's run goes on (its `delegate` returns, its next model call
-/// follows) and it is told; the helper's write never runs.
+/// agent's run (held in a model call meanwhile) goes on and it is told;
+/// the helper's write never runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stop_on_a_helper_s_dialog_stops_that_helper_only() {
     let ws = Workspace::new();
-    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
-        let user = common::user_texts(messages).concat();
-        if user.contains("HELPER-TASK") {
-            return match results(messages) {
-                0 => write("w1", "helper.txt", "FROM-HELPER"),
-                _ => Step::Text("helper done"),
-            };
-        }
-        match results(messages) {
-            0 => delegate("d1", "scout", "HELPER-TASK: write helper.txt"),
-            _ => Step::Text("the agent went on"),
-        }
-    }));
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let step = {
+        let gate = Arc::clone(&gate);
+        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+            if is_helper(messages, "HELPER-TASK") {
+                return match results(messages) {
+                    0 => write("w1", "helper.txt", "FROM-HELPER"),
+                    _ => Step::Text("helper done"),
+                };
+            }
+            if after(messages, "a1") {
+                return held(&gate);
+            }
+            match results(messages) {
+                0 => assign("a1", "scout", "HELPER-TASK: write helper.txt"),
+                _ => Step::Text("the agent went on"),
+            }
+        }))
+    };
     let llm = ScriptedLlmClient::new(vec![step; 20]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
@@ -232,47 +268,15 @@ async fn stop_on_a_helper_s_dialog_stops_that_helper_only() {
     let (how, _) = ended(&mut client, "scout").await;
     assert_eq!(how, "stopped by you");
     let connection = daemon.connect().await;
-    until_empty(&connection, &format!("implicit-{}", daemon.session)).await;
+    until_gone(&connection, "scout").await;
     // The agent was not interrupted: its turn ends with its own answer.
+    gate.notify_one();
     assert_eq!(
         client.turn_finished().await.unwrap().text,
         "the agent went on"
     );
     common::until(|| agent_heard(&llm, "The user stopped your helper `scout`.")).await;
     assert!(!ws.root.join("helper.txt").exists());
-    client.quit().await;
-    daemon.stop().await;
-}
-
-/// A `delegate` that returns its helper's answer is the notification
-/// itself: the helper's ending is settled without a note (the endings
-/// record says so, and nothing was told).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_delegate_that_returns_its_answer_sends_no_note() {
-    let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        delegate("d1", "scout", "HELPER-TASK: say hi"),
-        Step::Text("hi"),
-        Step::Text("parent done"),
-    ]);
-    let daemon = Running::start(&ws.root, &llm).await;
-    let mut client = Client::attach(&ws.root).await;
-    client.send(Effect::StartTurn("go".into()));
-    assert_eq!(client.turn_finished().await.unwrap().text, "parent done");
-    let registry = daemon.registry();
-    let key = HelperKey::new(
-        rkat_tui::mobs::delegates::implicit_mob(&daemon.session),
-        "scout".into(),
-    );
-    common::until(|| registry.endings().settled(&key)).await;
-    assert_eq!(registry.endings().told(), 0);
-    assert!(
-        !client
-            .seen
-            .iter()
-            .any(|m| matches!(m, Msg::HelperEnded { .. }))
-    );
-    assert!(!agent_heard(&llm, "Your helper `scout`"));
     client.quit().await;
     daemon.stop().await;
 }
@@ -287,17 +291,21 @@ async fn an_ending_wakes_an_idle_agent_the_user_did_not_just_interrupt() {
     let step = {
         let gate = Arc::clone(&gate);
         Step::Dynamic(Arc::new(move |messages: &[Message]| {
-            let user = common::user_texts(messages).concat();
-            if user.contains("HELPER-TASK") {
+            if is_helper(messages, "HELPER-TASK") {
                 return Step::Gated(Arc::clone(&gate), Box::new(Step::Text("LATE-ANSWER")));
             }
+            let user = common::user_texts(messages).concat();
             if user.contains("LATE-ANSWER") {
                 return Step::Text("read the late answer");
             }
             if user.contains("meanwhile") {
                 return Step::Text("idle now");
             }
-            delegate("d1", "slow", "HELPER-TASK: take time")
+            match results(messages) {
+                0 => assign("a1", "slow", "HELPER-TASK: take time"),
+                // Held open for the interrupt.
+                _ => Step::Hang,
+            }
         }))
     };
     let llm = ScriptedLlmClient::new(vec![step; 20]);
@@ -307,9 +315,10 @@ async fn an_ending_wakes_an_idle_agent_the_user_did_not_just_interrupt() {
     common::until(|| {
         llm.recorded()
             .iter()
-            .any(|r| r.user().contains("HELPER-TASK"))
+            .any(|r| is_helper(&r.messages, "HELPER-TASK"))
     })
     .await;
+    common::until(|| agent_calls(&llm) == 2).await;
     client.send(Effect::Interrupt);
     assert_eq!(client.turn_finished().await, Err(TurnFailure::Interrupted));
     client.send(Effect::StartTurn("meanwhile".into()));
@@ -352,14 +361,17 @@ async fn a_held_ending_survives_a_daemon_restart() {
     let step = {
         let gate = Arc::clone(&gate);
         Step::Dynamic(Arc::new(move |messages: &[Message]| {
-            let user = common::user_texts(messages).concat();
-            if user.contains("HELPER-TASK") {
+            if is_helper(messages, "HELPER-TASK") {
                 return Step::Gated(Arc::clone(&gate), Box::new(Step::Text("HELPER-ANSWER")));
             }
-            if user.contains("again") {
+            if common::user_texts(messages).concat().contains("again") {
                 return Step::Text("after the restart");
             }
-            delegate("d1", "slow", "HELPER-TASK: look")
+            match results(messages) {
+                0 => assign("a1", "slow", "HELPER-TASK: look"),
+                // Held open for the interrupt.
+                _ => Step::Hang,
+            }
         }))
     };
     let llm = ScriptedLlmClient::new(vec![step; 20]);
@@ -370,9 +382,10 @@ async fn a_held_ending_survives_a_daemon_restart() {
     common::until(|| {
         llm.recorded()
             .iter()
-            .any(|r| r.user().contains("HELPER-TASK"))
+            .any(|r| is_helper(&r.messages, "HELPER-TASK"))
     })
     .await;
+    common::until(|| agent_calls(&llm) == 2).await;
     client.send(Effect::Interrupt);
     assert_eq!(client.turn_finished().await, Err(TurnFailure::Interrupted));
     gate.notify_one();
@@ -397,7 +410,8 @@ async fn a_held_ending_survives_a_daemon_restart() {
     );
     let message = message_with(&llm, "again");
     assert!(
-        message.contains("Your helper `slow` finished") && message.contains("HELPER-ANSWER"),
+        message.contains("Your helper `slow` finished its task")
+            && message.contains("HELPER-ANSWER"),
         "{message}"
     );
     assert!(
@@ -409,50 +423,103 @@ async fn a_held_ending_survives_a_daemon_restart() {
     daemon.stop().await;
 }
 
-/// A `delegate` helper still running when the daemon stops (its agent was
-/// interrupted, so idle) is restored by the engine at the next start, which
-/// runs it again: its model call after the restart shows it. Its call is
-/// gone with the old daemon, so it is a cut-off helper: when it finishes,
-/// its answer is held for its agent (no run is started for the agent) and
-/// travels with the user's next message.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_helper_the_engine_restores_after_a_restart_answers_its_agent() {
+/// The script of the restart tests: a helper whose task names
+/// `HELPER-TASK` hangs before the restart (`restarted` unset) and answers
+/// `RESTORED-ANSWER` after it, counting its calls in `helper_calls`; the
+/// agent answers "again" with "after the restart", assigns `slow` on its
+/// first call (when `assigns`), and is held open otherwise.
+fn restart_script(
+    helper_calls: &Arc<std::sync::atomic::AtomicUsize>,
+    restarted: &Arc<std::sync::atomic::AtomicBool>,
+    assigns: bool,
+) -> Arc<ScriptedLlmClient> {
+    use std::sync::atomic::Ordering;
+    let helper_calls = Arc::clone(helper_calls);
+    let restarted = Arc::clone(restarted);
+    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        if is_helper(messages, "HELPER-TASK") {
+            helper_calls.fetch_add(1, Ordering::SeqCst);
+            return if restarted.load(Ordering::SeqCst) {
+                Step::Text("RESTORED-ANSWER")
+            } else {
+                Step::Hang
+            };
+        }
+        if common::user_texts(messages).concat().contains("again") {
+            return Step::Text("after the restart");
+        }
+        match results(messages) {
+            0 if assigns => assign("a1", "slow", "HELPER-TASK: runs on"),
+            _ => Step::Hang,
+        }
+    }));
+    ScriptedLlmClient::new(vec![step; 20])
+}
+
+/// After the restart: the helper runs again, finishes and leaves `mob`
+/// (`key` settled), no run is started for the agent (it made
+/// `agent_calls_before` calls), and the user's next message carries its
+/// answer after `note`.
+#[allow(clippy::too_many_arguments)]
+async fn restored_helper_answers(
+    ws: &Workspace,
+    llm: &Arc<ScriptedLlmClient>,
+    name: String,
+    helper_calls: &Arc<std::sync::atomic::AtomicUsize>,
+    before: usize,
+    agent_calls_before: usize,
+    mob: &str,
+    note: &str,
+) {
     use rkat_tui::daemon::protocol::AgentChoice;
+    use std::sync::atomic::Ordering;
+    let daemon = Running::start(&ws.root, llm).await;
+    let connection = daemon.connect().await;
+    common::until(|| helper_calls.load(Ordering::SeqCst) > before).await;
+    common::until_async(async || !members(&connection, mob).await.iter().any(|m| m == "slow"))
+        .await;
+    let registry = daemon.registry();
+    let key = HelperKey::new(mob.into(), "slow".into());
+    common::until(|| registry.endings().settled(&key)).await;
+    assert_eq!(
+        agent_calls(llm),
+        agent_calls_before,
+        "no run was started for the agent"
+    );
+    let mut client = Client::attach_agent(&ws.root, AgentChoice::Agent { name }).await;
+    client.send(Effect::StartTurn("again".into()));
+    assert_eq!(
+        client.turn_finished().await.unwrap().text,
+        "after the restart"
+    );
+    let message = message_with(llm, "again");
+    assert!(
+        message.contains(note) && message.contains("RESTORED-ANSWER"),
+        "{message}"
+    );
+    client.quit().await;
+    daemon.stop().await;
+}
+
+/// An `assign` helper still running when the daemon stops (its agent was
+/// interrupted, so idle) is restored by the engine at the next start, which
+/// runs it again: its model call after the restart shows it. When it
+/// finishes, its answer is held for its agent (no run is started for the
+/// agent) and travels with the user's next message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_assigned_helper_the_engine_restores_after_a_restart_answers_its_agent() {
     use rkat_tui::ui::Departure;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let ws = Workspace::new();
     let helper_calls = Arc::new(AtomicUsize::new(0));
-    let restarted = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let step = {
-        let helper_calls = Arc::clone(&helper_calls);
-        let restarted = Arc::clone(&restarted);
-        Step::Dynamic(Arc::new(move |messages: &[Message]| {
-            let user = common::user_texts(messages).concat();
-            if user.contains("HELPER-TASK") {
-                helper_calls.fetch_add(1, Ordering::SeqCst);
-                return if restarted.load(Ordering::SeqCst) {
-                    Step::Text("RESTORED-ANSWER")
-                } else {
-                    Step::Hang
-                };
-            }
-            if user.contains("again") {
-                return Step::Text("after the restart");
-            }
-            delegate("d1", "slow", "HELPER-TASK: runs on")
-        }))
-    };
-    let llm = ScriptedLlmClient::new(vec![step; 20]);
+    let restarted = Arc::new(AtomicBool::new(false));
+    let llm = restart_script(&helper_calls, &restarted, true);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     let name = client.agent().await;
     client.send(Effect::StartTurn("go".into()));
-    common::until(|| {
-        llm.recorded()
-            .iter()
-            .any(|r| r.user().contains("HELPER-TASK"))
-    })
-    .await;
+    common::until(|| helper_calls.load(Ordering::SeqCst) > 0).await;
+    common::until(|| agent_calls(&llm) == 2).await;
     client.send(Effect::Interrupt);
     assert_eq!(client.turn_finished().await, Err(TurnFailure::Interrupted));
     client.send(Effect::Leave(Departure::Detach));
@@ -460,83 +527,73 @@ async fn a_helper_the_engine_restores_after_a_restart_answers_its_agent() {
     daemon.stop().await;
     restarted.store(true, Ordering::SeqCst);
     let before = helper_calls.load(Ordering::SeqCst);
-    let daemon = Running::start(&ws.root, &llm).await;
-    let connection = daemon.connect().await;
-    // The helper runs again after the restart, finishes and is retired.
-    common::until(|| helper_calls.load(Ordering::SeqCst) > before).await;
-    until_empty(&connection, &format!("implicit-{}", daemon.session)).await;
-    let registry = daemon.registry();
-    let key = HelperKey::new(
-        rkat_tui::mobs::delegates::implicit_mob(&daemon.session),
-        "slow".into(),
-    );
-    common::until(|| registry.endings().settled(&key)).await;
-    let agent_calls = || {
-        llm.recorded()
-            .iter()
-            .filter(|r| !r.user().contains("HELPER-TASK"))
-            .count()
-    };
-    assert_eq!(agent_calls(), 1, "no run was started for the agent");
-    let mut client = Client::attach_agent(&ws.root, AgentChoice::Agent { name }).await;
-    client.send(Effect::StartTurn("again".into()));
-    assert_eq!(
-        client.turn_finished().await.unwrap().text,
-        "after the restart"
-    );
-    let message = message_with(&llm, "again");
-    assert!(
-        message.contains("Your helper `slow` finished") && message.contains("RESTORED-ANSWER"),
-        "{message}"
-    );
-    client.quit().await;
-    daemon.stop().await;
+    restored_helper_answers(
+        &ws,
+        &llm,
+        name,
+        &helper_calls,
+        before,
+        2,
+        "tui",
+        "Your helper `slow` finished its task",
+    )
+    .await;
 }
 
-/// A `delegate` that really timed out keeps the orphan retirement and its
-/// agent is told that the helper was ended (the helper's model call was
-/// made first, so it was seated: 8 s leave a slow runner the time).
+/// A realm an earlier build left with a `delegate` helper still running
+/// (the engine's own tool, withdrawn since): the helper is a durable
+/// member of its agent's implicit mob `implicit-<session id>`, seated by
+/// the mob's `delegate` profile and bound to the agent's session. The
+/// state is made here as that build's `delegate` made it, through the mob
+/// host, since no agent is offered the tool any more. At the next start
+/// the engine restores the helper and runs it again; its call ended with
+/// the old daemon, so when it finishes its answer is held for its agent
+/// (no run is started for it), it is retired, and the user's next message
+/// carries the answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_timed_out_delegate_is_retired_and_its_agent_told() {
+async fn a_delegate_helper_an_earlier_build_left_finishes_and_answers_its_agent() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let ws = Workspace::new();
-    let config = common::realm_of(&ws.root).join("config.toml");
-    std::fs::write(&config, "[tools.tool_timeouts]\ndelegate = \"8s\"\n").unwrap();
-    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
-        if common::user_texts(messages)
-            .concat()
-            .contains("HELPER-TASK")
-        {
-            return Step::Hang;
-        }
-        if format!("{messages:?}").contains("timed out. Its file changes") {
-            return Step::Text("told");
-        }
-        match results(messages) {
-            0 => delegate("d1", "stuck", "HELPER-TASK: never finishes"),
-            _ => Step::Text("after the timeout"),
-        }
-    }));
-    let llm = ScriptedLlmClient::new(vec![step; 20]);
+    let helper_calls = Arc::new(AtomicUsize::new(0));
+    let restarted = Arc::new(AtomicBool::new(false));
+    let llm = restart_script(&helper_calls, &restarted, false);
     let daemon = Running::start(&ws.root, &llm).await;
-    let mut client = Client::attach(&ws.root).await;
-    client.send(Effect::StartTurn("go".into()));
-    common::until(|| {
-        llm.recorded()
-            .iter()
-            .any(|r| r.user().contains("HELPER-TASK"))
-    })
-    .await;
-    let (how, _) = ended(&mut client, "stuck").await;
-    assert_eq!(how, "timed out");
-    let connection = daemon.connect().await;
-    until_empty(&connection, &format!("implicit-{}", daemon.session)).await;
-    common::until(|| {
-        agent_heard(
-            &llm,
-            "Your helper `stuck` was ended because its `delegate` call timed out.",
-        )
-    })
-    .await;
-    client.quit().await;
+    let owner = daemon.session.clone();
+    let name = daemon.agent.clone();
+    let mob = format!("implicit-{owner}");
+    let mut definition = meerkat_mob::MobDefinition::implicit(&owner.to_string(), common::MODEL);
+    for profile in definition.profiles.values_mut() {
+        if let meerkat_mob::ProfileBinding::Inline(profile) = profile {
+            profile.durable = true;
+        }
+    }
+    common::within(
+        daemon
+            .state()
+            .mob_create_definition_with_owner_bridge_session(definition, owner, false, false),
+    )
+    .await
+    .unwrap();
+    let handle = common::within(daemon.state().handle_for(&mob.as_str().into()))
+        .await
+        .unwrap();
+    let mut spec = meerkat_mob::SpawnMemberSpec::new("delegate", "slow");
+    spec.initial_message = Some("HELPER-TASK: runs on".into());
+    common::within(handle.spawn_spec(spec)).await.unwrap();
+    common::until(|| helper_calls.load(Ordering::SeqCst) > 0).await;
+    drop(handle);
     daemon.stop().await;
+    restarted.store(true, Ordering::SeqCst);
+    let before = helper_calls.load(Ordering::SeqCst);
+    restored_helper_answers(
+        &ws,
+        &llm,
+        name,
+        &helper_calls,
+        before,
+        0,
+        &mob,
+        "Your helper `slow` finished.",
+    )
+    .await;
 }

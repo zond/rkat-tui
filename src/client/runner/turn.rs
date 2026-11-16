@@ -518,7 +518,7 @@ impl Runner {
             // A run the engine resumed at a daemon's start, in place of its
             // `run_started`: the same run goes on under its id, so the
             // interrupt stops it by that id (a force-cancel waits for its
-            // next boundary, which a resumed `delegate` holds off).
+            // next boundary, which a resumed run's long call holds off).
             AgentEvent::RunResumed { run_id, .. } => {
                 self.turn.saw_run = true;
                 self.turn.run_seen(run_id);

@@ -85,7 +85,7 @@ shell (`src/user_shell.rs`) and the client's start-on-demand of the
 | `src/ui/` | Elm-style UI: `App::update(Msg) -> Vec<Effect>` (`mod.rs`), split by concern (`turns.rs`, commands held for a turn's end `deferred.rs`, `keys.rs`, peer messages `peer.rs`, `mouse.rs`, `dispatch.rs`, `delivery.rs`, `escalations.rs`, `helpers.rs`, `shell.rs`), rendering (`render.rs`), the input editor, the command table (`commands.rs`), completion, modals, the list pickers of `/schedules` and the like (`picker.rs`), the checklist; `ui/tests/` holds its unit tests split the same way |
 | `src/ui/transcript/` | The transcript model: blocks, the event-to-block mapping, helper folds (`helpers.rs`), notices (`notices.rs`), a stored conversation as blocks (`restore.rs`), a tool call as one plain line (`tool_line.rs`), a detached job's outcome (`outcome.rs`) |
 | `src/tools/` | The file tools the agent gets (the shell is the engine's), their search budget and cancellation (`scan.rs`), the watch tools (`watch.rs`), the agents' `compact_ready` (`compact.rs`), `assign` (`assign.rs`, over the daemon's host), and `skill_read` over the engine's skill runtime (`skill.rs`) |
-| `src/mobs/` | Helpers (delegate) as mob members: the customizer with the members' tool policy, follower, registry, the council mob a `council` call creates (`council.rs`), the helpers of `delegate` calls that ended without their result (`delegates.rs`) |
+| `src/mobs/` | Helpers (`assign`, `fork_off`, `spawn_member`) as mob members: the customizer with the members' tool policy, follower, registry, how each helper ends and who is told (`endings.rs`), the council mob a `council` call creates (`council.rs`), the `delegate` helpers a realm of an earlier build holds (`delegates.rs`; the engine's `delegate` is withdrawn) |
 | `src/memory/` | Notes at user and workspace scope, memory tools |
 | `src/endpoints/` | LLM endpoints: the types and `Endpoint`'s kinds (`mod.rs`: built-in, gateway, self-hosted), `endpoint:model` references (`refs.rs`), which endpoints this process has (`discover.rs`), their projection into the realm document (`project.rs`), the start-up plan (`startup.rs`) |
 | `src/models.rs`, `src/pricing.rs`, `src/cost.rs`, `src/thinking.rs` | Model listing, price table, token totals by model and their price (the daemon counts them, `daemon/usage.rs`), the per-model `[thinking]` setting |
@@ -153,20 +153,16 @@ repository). Open upstream issues this code waits on:
 - #2126: rewinding a session in place under the same identity; `/rewind`
   returns then.
 - #2206: a `delegate` call that times out leaves its helper seated.
-  rkat-tui's orphan retirement (`src/mobs/delegates.rs`) goes when the
-  engine retires the helper itself.
-- #2207: a deadline of `delegate`'s own. The load-time default
-  `default_delegate_wait` (`src/bootstrap/realm_config.rs`) goes when it
-  ships.
-- #2208: a `delegate` helper's mob discoverable after a failed call. The
-  persona's hint line naming `implicit-<your session id>`
-  (`src/daemon/deferral/mod.rs`) goes when it ships.
-
-- #2224: a `delegate` call that times out returns an error with no helper
-  identity (the engine raises it outside any dispatcher of ours).
+  #2207: a deadline of `delegate`'s own. #2208: a `delegate` helper's mob
+  discoverable after a failed call. #2224: a `delegate` call that times
+  out returns an error with no helper identity. Their workarounds (the
+  orphan retirement, `default_delegate_wait`, the persona's
+  `implicit-<your session id>` line) are gone with `delegate` itself,
+  which rkat-tui withdrew on 2026-11-16 (`assign` replaces it); the issues
+  stay open asks, nothing of ours waits on them now.
 - #2225: `member_not_found` from a per-member tool does not say that the
-  member is in another mob the caller owns. The hint line of #2208 covers
-  both until they ship.
+  member is in another mob the caller owns. Its workaround (the #2208 hint
+  line) is gone with `delegate`; an open ask.
 
 - #2231: a call that compacts an idle session. The quiet run `/compact`
   starts itself (`ui::COMPACT_PROMPT`) goes when it ships.

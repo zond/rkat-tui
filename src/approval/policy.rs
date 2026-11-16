@@ -258,7 +258,18 @@ pub const AGENT_SEND_TOOLS: &[&str] = &["send_message", "send_request", "send_re
 /// Tools that hand work to a helper (a mob member, see [`crate::mobs`]).
 /// Delegating does nothing by itself: every call the helper makes passes
 /// the delegating session's gate.
-pub const DELEGATION_TOOLS: &[&str] = &["delegate", "fork_off"];
+pub const DELEGATION_TOOLS: &[&str] = &["fork_off"];
+
+/// The engine's mob tools rkat-tui withdraws: every member's tool access
+/// policy denies them, and a call that reaches the gate anyway (the tool
+/// named by a model that has none of that name, or offered all the same)
+/// is [`Tier::Unavailable`] with what to use instead
+/// ([`DELEGATE_UNAVAILABLE`]). `delegate` blocked its caller until its
+/// helper was done; `assign` (`crate::tools::assign`) replaces it.
+pub const WITHDRAWN_TOOLS: [&str; 1] = ["delegate"];
+
+/// Why `delegate` is refused, with what to use instead.
+pub const DELEGATE_UNAVAILABLE: &str = "`delegate` is not available here: start a helper with `assign` (it runs alongside you and you are told when it finishes), or `fork_off` when the task needs this conversation";
 
 /// What a tool call does, as far as the policy is concerned.
 ///
@@ -303,6 +314,8 @@ pub enum ActionKind {
     Withheld,
     /// A tool from [`SHELL_JOB_TOOLS`]: withheld too, and unavailable.
     ShellJob,
+    /// A tool from [`WITHDRAWN_TOOLS`]: withdrawn, and unavailable.
+    Withdrawn,
     /// A tool from [`DELEGATION_TOOLS`].
     Delegation,
     /// `note_list` / `note_read`.
@@ -366,7 +379,16 @@ impl<'a> Action<'a> {
     pub fn parse(name: &'a str, args: &'a RawValue, origin: Option<&ToolOrigin>) -> Self {
         let family = origin.map_or(ToolFamily::Foreign, ToolOrigin::family);
         let mutation = origin.map_or(ToolMutationClass::Unknown, |o| o.mutation);
-        let kind = Self::kind(name, args, family, mutation);
+        // A withdrawn tool is refused as the engine's, also when the
+        // session offers none of the name (its policy withheld it): only
+        // a tool of that name from elsewhere (an MCP server's) is not it.
+        let kind = if WITHDRAWN_TOOLS.contains(&name)
+            && (origin.is_none() || family == ToolFamily::Native)
+        {
+            ActionKind::Withdrawn
+        } else {
+            Self::kind(name, args, family, mutation)
+        };
         Self {
             name,
             args,
@@ -478,6 +500,7 @@ impl<'a> Action<'a> {
             ActionKind::ReadOnlyBuiltin
             | ActionKind::Withheld
             | ActionKind::ShellJob
+            | ActionKind::Withdrawn
             | ActionKind::Delegation
             | ActionKind::NoteRead
             | ActionKind::Other => vec![pretty_args(self.args)],
@@ -661,6 +684,7 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
             Tier::Unavailable,
             BACKGROUND_SHELL_UNAVAILABLE,
         )),
+        ActionKind::Withdrawn => Ok(TierDecision::new(Tier::Unavailable, DELEGATE_UNAVAILABLE)),
         ActionKind::Delegation => Ok(TierDecision::new(
             Tier::AlwaysAllow,
             "delegation (the helper's own calls pass this gate)",
@@ -1559,12 +1583,14 @@ mod tests {
     #[test]
     fn delegation_and_mob_queries_need_no_review_but_mob_changes_do() {
         let (_dir, root) = project();
-        let task = json!({"member_id": "scout", "task": "rm -rf /", "result_label": "r", "max_text_bytes": 10});
-        assert_eq!(parse("delegate", &raw(&task)).kind, ActionKind::Delegation);
+        let task = json!({"member_id": "scout", "task": "rm -rf /"});
+        assert_eq!(parse("fork_off", &raw(&task)).kind, ActionKind::Delegation);
         assert_eq!(
-            tier(&root, &RuleSet::default(), false, "delegate", &task),
+            tier(&root, &RuleSet::default(), false, "fork_off", &task),
             Tier::AlwaysAllow
         );
+        // The withdrawn `delegate` is no delegation any more.
+        assert_eq!(parse("delegate", &raw(&task)).kind, ActionKind::Withdrawn);
         assert_eq!(
             tier(
                 &root,
@@ -1671,6 +1697,42 @@ mod tests {
                 assert_eq!(tier, Tier::Sealed, "{name}");
             }
         }
+    }
+
+    /// `delegate` is refused as unavailable, with what to use instead,
+    /// whatever a rule says and also when the session offers no tool of
+    /// the name; an MCP server's tool of that name is judged as any
+    /// foreign tool. Never a safety verdict: the tier is `Unavailable`.
+    #[test]
+    fn a_withdrawn_tool_is_unavailable_with_what_to_use_instead() {
+        let (_dir, root) = project();
+        let ctx = PolicyContext {
+            root: &root,
+            trust_project_builds: true,
+            posix_shell: true,
+            granted: crate::approval::classifier::GrantedDirs::none(),
+        };
+        let args = json!({"member_id": "scout", "task": "x"});
+        let raw = raw(&args);
+        let mut allow = RuleSet::default();
+        allow.push(Rule::new(RuleKind::Allow, "delegate", Some("*"), RuleOrigin::Realm).unwrap());
+        let native = ToolOrigin::native(meerkat_core::ToolSourceKind::Mob);
+        for origin in [Some(&native), None] {
+            for rules in [&RuleSet::default(), &allow] {
+                let decision = classify_tier(&Action::parse("delegate", &raw, origin), rules, &ctx);
+                assert_eq!(decision.tier, Tier::Unavailable, "{origin:?}");
+                assert_eq!(decision.detail, DELEGATE_UNAVAILABLE);
+            }
+        }
+        assert!(
+            DELEGATE_UNAVAILABLE.contains("start a helper with `assign`")
+                && DELEGATE_UNAVAILABLE
+                    .contains("`fork_off` when the task needs this conversation"),
+            "{DELEGATE_UNAVAILABLE}"
+        );
+        let mcp = ToolOrigin::mcp("evil");
+        let foreign = classify_tier(&Action::parse("delegate", &raw, Some(&mcp)), &allow, &ctx);
+        assert_ne!(foreign.tier, Tier::Unavailable);
     }
 
     #[test]

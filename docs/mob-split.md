@@ -14,7 +14,7 @@ The code, the comments and the texts use these words for these things:
   meant.
 - **`main`**: the profile every agent is seated with
   (`daemon::AGENT_PROFILE`, a stored name), never an agent itself.
-- **helper**: a member an agent spawns (`delegate`), followed and gated
+- **helper**: a member an agent spawns (`assign`, `fork_off`, `spawn_member`; the engine's `delegate` is withdrawn since 2026-11-16), followed and gated
   for its owner.
 - **client** / **the client runner**: an `rkat-tui` process attached to
   the daemon, and the loop in it (`client::runner`) that turns the UI's
@@ -610,7 +610,7 @@ rather than plain approval records (#2115).
 Upstream PRs:
 
 - #2100: sandbox pid namespace, read-only procfs, Unix socketpairs.
-- #2102: `delegate` follows the member's current identity and model (closed; the fix shipped in 0.9.11 and `helpers::a_helper_delegated_after_a_model_switch_runs_on_the_new_model` pins it).
+- #2102: `delegate` follows the member's current identity and model (closed; the fix shipped in 0.9.11; with `delegate` withdrawn `helpers::a_helper_assigned_after_a_model_switch_runs_on_the_new_model` pins the same for `assign`).
 - #2104: the thinking binding for uncatalogued model ids.
 - #2105: host trust over hook source bytes (`HookSourceTrust`).
 - #2112: fork children inherit the source's dispatch admission.

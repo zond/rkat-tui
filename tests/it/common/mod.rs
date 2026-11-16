@@ -560,6 +560,50 @@ pub fn user_texts(messages: &[Message]) -> Vec<String> {
         .collect()
 }
 
+/// An `assign` call `id` starting the helper `name` on `task`.
+pub fn assign(id: &'static str, name: &str, task: &str) -> Step {
+    Step::Tool {
+        id,
+        name: "assign",
+        args: serde_json::json!({"name": name, "task": task}),
+    }
+}
+
+/// Whether `messages` are those of a helper whose task carries `marker`
+/// (its first user message is the task it was given).
+pub fn is_helper(messages: &[Message], marker: &str) -> bool {
+    user_texts(messages)
+        .first()
+        .is_some_and(|task| task.contains(marker))
+}
+
+/// Whether the last message of `messages` is the note that tells a parent
+/// its `assign` helper finished.
+pub fn told_finished(messages: &[Message]) -> bool {
+    matches!(messages.last(), Some(Message::User(user))
+        if user.text_content().contains("finished its task"))
+}
+
+/// Whether the last message of `messages` is the result of the call `id`.
+pub fn after(messages: &[Message], id: &str) -> bool {
+    matches!(messages.last(), Some(Message::ToolResults { results, .. })
+        if results.iter().any(|r| r.tool_use_id == id))
+}
+
+/// Whether a request of a parent (not of a helper whose task carries
+/// `marker`) carried the note that its helper `name` finished.
+pub fn parent_told(llm: &ScriptedLlmClient, marker: &str, name: &str) -> bool {
+    let note = format!("Your helper `{name}` finished its task");
+    llm.recorded()
+        .iter()
+        .filter(|r| !is_helper(&r.messages, marker))
+        .any(|r| {
+            user_texts(&r.messages)
+                .iter()
+                .any(|text| text.contains(&note))
+        })
+}
+
 /// Copy a directory tree.
 pub fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();

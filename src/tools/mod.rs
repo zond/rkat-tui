@@ -101,7 +101,7 @@ use tokio::sync::mpsc;
 pub const READ_FILE: &str = "read_file";
 
 /// Provenance source id of the file tools. Stable across builds: a helper's
-/// inherited tool ceiling (a mob `delegate` with `inherit_parent` tooling)
+/// inherited tool ceiling (a spawn with `inherit_parent` tooling)
 /// matches its parent's tools by provenance, so every build tags them alike.
 pub const FILE_TOOLS_SOURCE: &str = "rkat-tui.files";
 

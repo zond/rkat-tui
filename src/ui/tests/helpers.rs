@@ -548,7 +548,37 @@ fn view_rows(app: &mut App, label: &str) -> Vec<String> {
     screen(app, 30)
 }
 
-/// The view of a `delegate` helper reads as the main transcript: its task
+/// An `assign` helper's view names its kind, by the call's `name`, and
+/// its state.
+#[test]
+fn an_assigned_helper_s_view_names_its_kind() {
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::Status(StatusUpdate::Agent(Some("main-ab12".into()))));
+    app.transcript.push(user("go"));
+    app.update(agent(AgentEvent::ToolCallRequested {
+        id: "a1".into(),
+        name: "assign".into(),
+        args: test_args(json!({"name": "scout", "task": "find the bug"})),
+    }));
+    app.update(live(&["scout"]));
+    for event in [
+        run_started("find the bug"),
+        AgentEvent::TextComplete {
+            content: "It is in a.rs.".into(),
+            assistant_message_id: None,
+        },
+    ] {
+        app.update(helper_msg("scout", event));
+    }
+    let rows = view_rows(&mut app, "scout");
+    assert!(
+        rows[0].starts_with("◂ [scout · m] assigned · finished"),
+        "{rows:#?}"
+    );
+}
+
+/// The view of a `delegate` helper (a conversation an earlier build
+/// stored) reads as the main transcript: its task
 /// from the agent first, as a prompt; a later peer message in order with
 /// its sender; its answer; the title names its kind and state.
 #[test]

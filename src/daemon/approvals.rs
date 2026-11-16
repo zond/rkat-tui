@@ -28,15 +28,13 @@
 //!   as a foreign tool (the classifier or the human decides it).
 //!
 //! [`watch`] follows the agent's events: a run start lifts a Stop,
-//! a model call is counted ([`super::usage`]), a run end refreshes the
-//! tool catalog, and how each `delegate` call ended goes to the helpers'
-//! endings ([`crate::mobs::endings`]: a timed-out or failed call's helper
-//! is retired, a cut-off one's keeps running). [`HelperEvents`] does the same for the helpers, from the
+//! a model call is counted ([`super::usage`]), and a run end refreshes the
+//! tool catalog. [`HelperEvents`] does the same for the helpers, from the
 //! follower's one subscription to each ([`crate::mobs::follow`]): their
 //! model calls are counted to their owner's conversation, and a helper's
 //! catalog is read after its first run; a helper that stays seated
 //! (`spawn_member`) is judged by its own catalog from its second run on,
-//! one retired after its run (`delegate`) never is.
+//! one retired after its run (`assign`'s, when it finished then) never is.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -515,9 +513,8 @@ pub struct Watched {
 /// goes to the engine (it lifts a Stop given to an earlier run) and makes
 /// the agent the most recently active one (`agents`), every run end
 /// refreshes the session's tool catalog, every model call and compaction
-/// is counted ([`super::usage`]), each run's start and end tell
-/// [`super::activity`] when the agent is idle, and how each `delegate`
-/// call ends goes to the helpers' endings. When the agent is seated
+/// is counted ([`super::usage`]), and each run's start and end tell
+/// [`super::activity`] when the agent is idle. When the agent is seated
 /// again (a conversation switch, a reseat:
 /// [`super::conversations::Conversations::seatings`]) it subscribes again,
 /// from the new incarnation's first event: the member's old stream does
@@ -563,9 +560,6 @@ struct Following {
     run: Option<meerkat_core::RunId>,
     /// A compaction's history estimate, until it completes.
     compacting: Option<u64>,
-    /// The agent's open `delegate` calls: how each ends goes to the
-    /// helpers' endings ([`crate::mobs::endings`]).
-    delegates: crate::mobs::delegates::DelegateCalls,
 }
 
 /// One agent's event watcher ([`watch`]).
@@ -732,16 +726,6 @@ impl Watcher {
         following: &mut Following,
     ) {
         let session = || event_session(&envelope.source, following.session.as_ref());
-        let ended = following
-            .delegates
-            .observe(session().as_ref(), &envelope.payload);
-        if !ended.is_empty()
-            && let Some(agents) = self.watched.agents.upgrade()
-        {
-            for (helper, how) in ended {
-                agents.core().registry.endings().call_ended(&helper, how);
-            }
-        }
         match &envelope.payload {
             AgentEvent::RunStarted {
                 session_id,
@@ -1035,7 +1019,7 @@ type ReadCatalog = Box<dyn Fn(SessionId) -> futures::future::BoxFuture<'static, 
 /// Read a helper's tool catalog the first time its session is idle: a run
 /// end of a session whose catalog is not read yet reads it (the read waits
 /// behind a run still closing). A helper that leaves its mob after its one
-/// run (`delegate`) is gone before the read answers; it stays judged by
+/// run (an `assign` helper that finished) is gone before the read answers; it stays judged by
 /// the known tools. One read per session at a time; a session leaves the
 /// in-flight set when its read ends, so a read that failed (the session
 /// was busy again, the helper's next turn already running) is tried again

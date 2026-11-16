@@ -1,7 +1,7 @@
 //! The user's skills directory (`<config dir>/skills`), end to end through
 //! the `rkat-tui-mob` daemon with a scripted LLM: its skills are named
 //! with their descriptions in the skill inventory of the system prompt of
-//! every workspace's agent and of a `delegate` helper, up to the
+//! every workspace's agent and of an `assign` helper, up to the
 //! inventory bound; a skill of the same name in the project's
 //! `.rkat/skills` does not stand in for the user's; a missing directory is
 //! no error; `[skills] enabled = false` in the realm config keeps skills
@@ -331,36 +331,42 @@ async fn skills_off_in_the_realm_config_stay_off() {
     assert!(!system.contains("USER-REVIEW-SKILL"), "{system}");
 }
 
-/// A `delegate` helper is built by the same factory over the same realm
+/// An `assign` helper is built by the same factory over the same realm
 /// config: its prompt lists the user's skill too, and it reads it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_delegate_helper_lists_the_users_skills() {
+async fn an_assigned_helper_lists_the_users_skills() {
     let ws = Workspace::new();
     let cfg = common::config_dir_for(&ws.root);
     skill(&cfg.join("skills"), "review", "USER-REVIEW-SKILL");
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "d1",
-            name: "delegate",
-            args: json!({
-                "member_id": "scout",
-                "task": "HELPER-TASK: look around",
-                "result_label": "result",
-                "max_text_bytes": 4000,
-            }),
+    let step = Step::Dynamic(std::sync::Arc::new(
+        |messages: &[meerkat_core::Message]| {
+            if common::is_helper(messages, "HELPER-TASK") {
+                return if common::after(messages, "h1") {
+                    Step::Text("HELPER-DONE")
+                } else {
+                    read("h1", json!({"name": "review"}))
+                };
+            }
+            if common::told_finished(messages) {
+                return Step::Text("parent done");
+            }
+            if common::after(messages, "a1") {
+                return Step::Text("waiting");
+            }
+            common::assign("a1", "scout", "HELPER-TASK: look around")
         },
-        read("h1", json!({"name": "review"})),
-        Step::Text("HELPER-DONE"),
-        Step::Text("parent done"),
-    ]);
+    ));
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
-    client.send(Effect::StartTurn("delegate it".into()));
+    client.send(Effect::StartTurn("start a helper".into()));
     let _ = client.turn_finished().await;
+    common::until(|| common::parent_told(&llm, "HELPER-TASK", "scout")).await;
+    daemon.idle(&daemon.agent).await;
     let recorded = llm.recorded();
     let helper = recorded
         .iter()
-        .find(|r| r.user().contains("HELPER-TASK"))
+        .find(|r| common::is_helper(&r.messages, "HELPER-TASK"))
         .expect("the helper's request");
     let system = helper.system();
     assert!(system.contains(&user_entry("review")), "{system}");
@@ -372,7 +378,10 @@ async fn a_delegate_helper_lists_the_users_skills() {
     );
     let body = recorded
         .iter()
-        .find(|r| r.user().contains("HELPER-TASK") && r.messages.len() > helper.messages.len())
+        .find(|r| {
+            common::is_helper(&r.messages, "HELPER-TASK")
+                && r.messages.len() > helper.messages.len()
+        })
         .map(|r| common::tool_text(&r.messages, "h1"))
         .expect("the helper's request after its read");
     assert!(body.ends_with("Body of review.\n"), "{body}");

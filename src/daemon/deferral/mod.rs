@@ -43,22 +43,21 @@ use parking_lot::RwLock;
 use super::{AGENT_PROFILE, MOB_ID};
 use crate::daemon::context::{FamilySize, family_sizes};
 
-/// The agent mob tools that stay direct: used in most sessions.
-pub const DIRECT_MOB_TOOLS: [&str; 1] = ["delegate"];
+/// The agent mob tools that are never deferred: the withdrawn ones
+/// ([`crate::approval::policy::WITHDRAWN_TOOLS`], `delegate`), which every
+/// agent's tool access policy denies, so no search may offer them.
+pub const DIRECT_MOB_TOOLS: [&str; 1] = crate::approval::policy::WITHDRAWN_TOOLS;
 
 /// The persona's lines naming each deferred capability, so a model that
 /// was never shown a schedule or council tool knows to search for one.
-/// The `delegate` line goes with lukacf/meerkat#2208 (a helper's mob named
-/// after a failed call).
 pub const PERSONA: &str = "\
 # Tools you can reveal
 
 Some tools are left out of your tool list until you search for them with `tool_search`:
 - You can schedule yourself (reminders, recurring checks, follow-ups): call `tool_search` with family `schedule`.
-- Teams, councils, forks and mob profiles beyond `delegate`: call `tool_search` with family `mob`. Among them: `mob_create` and `mob_spawn_member` start helpers in a mob of their own that stay after their task, which you check on with `mob_check_member` and retire with `mob_retire_member`; `council` convenes existing members for a few rounds, and its summary arrives later in your transcript; `fork_off` forks you from the conversation so far onto a task, and its outcome is written into your transcript later.
+- Teams, councils, forks and mob profiles: call `tool_search` with family `mob`. Among them: `mob_create` and `mob_spawn_member` start helpers in a mob of their own that stay after their task, which you check on with `mob_check_member` and retire with `mob_retire_member`; `council` convenes existing members for a few rounds, and its summary arrives later in your transcript; `fork_off` forks you from the conversation so far onto a task, and its outcome is written into your transcript later.
 - Without a search, `spawn_member` seats a helper that stays in your own mob (profile `main`) until `retire_member`; it is wired to you (rkat-tui sets `auto_wire_parent`), so you can message each other.
-- A `delegate` helper is a member of the mob `implicit-<your session id>`, not of the workspace's mob; `mob_list` shows the mobs.
-- A helper's status (`member_status`, `mob_check_member`) shows no live progress: `output_preview` and `tokens_used` are from its last completed turn, so while a helper runs its first turn they are empty or zero, and a `fork_off` child's preview is the answer it inherited from your conversation, not its own work. To know how a running helper is doing, ask it with `send_message` (a `delegate` or `spawn_member` helper is wired to you) or wait for its result.
+- A helper's status (`member_status`, `mob_check_member`) shows no live progress: `output_preview` and `tokens_used` are from its last completed turn, so while a helper runs its first turn they are empty or zero, and a `fork_off` child's preview is the answer it inherited from your conversation, not its own work. To know how a running helper is doing, ask it with `send_message` (every helper you start is wired to you) or wait for its note.
 ";
 
 /// The families whose tools are deferrable.
@@ -583,9 +582,8 @@ mod tests {
             assert!(PERSONA.contains(&call), "{call}");
         }
         assert!(!PERSONA.contains("tool catalog"));
-        // Where a `delegate` helper lives, which no tool says before its
-        // call returns (`docs/evidence.md`, "Where a helper lives").
-        assert!(PERSONA.contains("mob `implicit-<your session id>`"));
+        // The withdrawn `delegate` is never suggested.
+        assert!(!PERSONA.contains("delegate"), "{PERSONA}");
         // What a helper's status does not show while it runs (the engine's
         // status is its last completed turn's; a fork's is inherited).
         assert!(PERSONA.contains("shows no live progress"));
@@ -593,7 +591,7 @@ mod tests {
     }
 
     /// The `mob` line names only tools that are in the hidden family (the
-    /// engine's agent mob tools but `delegate`), and the direct operator
+    /// engine's agent mob tools but the withdrawn ones), and the direct operator
     /// tools only on a line of their own that says they need no search.
     #[test]
     fn the_mob_hint_names_only_hidden_tools() {
@@ -614,7 +612,7 @@ mod tests {
         let mob = line("- Teams, councils");
         let tools: Vec<String> = named(mob)
             .into_iter()
-            .filter(|word| !["delegate", "tool_search", "mob"].contains(&word.as_str()))
+            .filter(|word| !["tool_search", "mob"].contains(&word.as_str()))
             .collect();
         for tool in ["mob_create", "mob_spawn_member", "council", "fork_off"] {
             assert!(tools.iter().any(|t| t == tool), "{tool}: {mob}");

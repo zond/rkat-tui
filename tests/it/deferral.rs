@@ -1,9 +1,11 @@
 //! rkat-tui's own search and reveal (`src/daemon/deferral`) on the rig:
 //! a fresh conversation's requests leave the schedule tools and the agent
-//! mob tools other than `delegate` out; `tool_search` reveals exactly its
-//! matches for that conversation from its next request on, kept across a
-//! daemon restart; `/new` starts with nothing revealed; another agent of
-//! the same daemon and a `delegate` helper are not affected.
+//! mob tools out (`delegate` is withdrawn: never declared, never found);
+//! `tool_search` reveals exactly its matches for that conversation from
+//! its next request on, kept across a daemon restart; `/new` starts with
+//! nothing revealed; another agent of the same daemon is not affected (a
+//! helper's requests carry neither family nor the search tool:
+//! `tool_costs`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -64,8 +66,8 @@ fn hidden_in(daemon: &Running, request: &Recorded) -> Vec<String> {
         .collect()
 }
 
-/// A fresh conversation's request declares `delegate` and the search tool
-/// but no schedule tool and no other agent mob tool; a search for
+/// A fresh conversation's request declares `assign` and the search tool
+/// but no schedule tool and no agent mob tool (`delegate` neither); a search for
 /// `create` in the schedule family answers that one tool and reveals
 /// exactly it from the next request on; the agent calls it, the schedule
 /// fires and runs the agent's turn, whose request still declares it. A
@@ -96,7 +98,7 @@ async fn a_search_reveals_its_matches_and_the_schedule_fires() {
         first.tools
     );
     assert!(
-        first.tools.iter().any(|t| t == "delegate"),
+        first.tools.iter().any(|t| t == "assign") && !first.tools.iter().any(|t| t == "delegate"),
         "{:?}",
         first.tools
     );

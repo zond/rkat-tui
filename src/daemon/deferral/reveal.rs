@@ -404,7 +404,7 @@ mod tests {
                     ToolSourceKind::Mob,
                     "Convene a council of helpers.",
                 ),
-                def("delegate", ToolSourceKind::Mob, "Direct: never noted."),
+                def("delegate", ToolSourceKind::Mob, "Withdrawn: never noted."),
             ],
             &super::super::DIRECT_MOB_TOOLS,
         );

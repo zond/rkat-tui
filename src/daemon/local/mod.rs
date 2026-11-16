@@ -575,15 +575,15 @@ impl Local {
             return Ok(());
         };
         if mob == MOB_ID {
-            let foreign = Some(member) != own
-                && (self.agents.is_live(member) || method == engine::COMPACT_MEMBER);
-            return if foreign {
-                Err(refuse(format!("member {member}")))
-            } else {
-                Ok(())
-            };
-        }
-        if method == engine::COMPACT_MEMBER {
+            if Some(member) == own {
+                return Ok(());
+            }
+            if self.agents.is_live(member) || method == engine::COMPACT_MEMBER {
+                return Err(refuse(format!("member {member}")));
+            }
+            // A helper seated in the workspace's mob (`assign`,
+            // `spawn_member`): judged by whom it works for, as below.
+        } else if method == engine::COMPACT_MEMBER {
             return Err(refuse(format!("helper {member} of mob {mob}")));
         }
         let key = crate::mobs::HelperKey::new(MobId::from(mob), AgentIdentity::from(member));

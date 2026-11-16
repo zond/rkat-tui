@@ -1,5 +1,6 @@
-//! Helpers (mob members) end to end in the daemon, with a scripted LLM: a
-//! `delegate` call spawns a helper that runs one turn and returns; the
+//! Helpers (mob members) end to end in the daemon, with a scripted LLM: an
+//! `assign` call seats a helper that runs beside the agent and whose answer
+//! reaches it as a note; the
 //! helper's calls pass the agent's approval gate (a read runs, a
 //! Tier-3 call is denied with the reason the helper reads, judged against
 //! the user's words and counted for the session); its events reach the
@@ -25,19 +26,37 @@ use rkat_tui::bootstrap;
 use rkat_tui::endpoints::{ENDPOINT_REALM, Endpoint};
 use rkat_tui::models::{EndpointListing, ModelEntry, ModelLister, ModelSource};
 use rkat_tui::ui::{ApprovalNotice, Effect, Msg, StatusUpdate};
-use serde_json::{Value, json};
+use serde_json::json;
 
-fn delegate(id: &'static str, member: &str, task: &str) -> Step {
-    Step::Tool {
-        id,
-        name: "delegate",
-        args: json!({
-            "member_id": member,
-            "task": task,
-            "result_label": "result",
-            "max_text_bytes": 4000,
-        }),
+/// The agent's side of the helper tests: it assigns `task` to `name` (call
+/// `a1`), ends its run with "waiting", and answers the note that the
+/// helper finished with "parent done".
+fn agent(messages: &[Message], name: &str, task: &str) -> Step {
+    if common::told_finished(messages) {
+        return Step::Text("parent done");
     }
+    if common::after(messages, "a1") {
+        return Step::Text("waiting");
+    }
+    common::assign("a1", name, task)
+}
+
+/// The requests of the helper whose task carries `marker`.
+fn of_helper(llm: &ScriptedLlmClient, marker: &str) -> Vec<common::Recorded> {
+    llm.recorded()
+        .into_iter()
+        .filter(|r| common::is_helper(&r.messages, marker))
+        .collect()
+}
+
+/// The note the agent got when its helper `name` finished.
+fn note_of(llm: &ScriptedLlmClient, name: &str) -> String {
+    let note = format!("Your helper `{name}` finished its task");
+    llm.recorded()
+        .iter()
+        .flat_map(|r| common::user_texts(&r.messages))
+        .find(|text| text.contains(&note))
+        .unwrap_or_default()
 }
 
 fn no_helpers(msg: &Msg) -> bool {
@@ -61,7 +80,7 @@ fn helper_of(msg: &Msg) -> Option<(String, usize)> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_delegated_helper_runs_behind_the_sessions_gate() {
+async fn an_assigned_helper_runs_behind_the_sessions_gate() {
     let ws = Workspace::new();
     std::fs::write(ws.root.join("notes.txt"), "HELPER-READ-CONTENT\n").unwrap();
     let marker = ws.sibling("pwned");
@@ -73,19 +92,24 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
         path: None,
         effect: None,
     })]);
-    let llm = ScriptedLlmClient::new(vec![
-        delegate(
-            "d1",
+    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        if common::is_helper(messages, "HELPER-TASK") {
+            return if common::after(messages, "h1") {
+                Step::Text("HELPER-DONE: read it, the touch was blocked")
+            } else {
+                Step::Tools(vec![
+                    ("h1", "read_file", json!({"path": "notes.txt"})),
+                    ("h2", "shell", json!({ "command": command })),
+                ])
+            };
+        }
+        agent(
+            messages,
             "scout",
             "HELPER-TASK: read notes.txt and touch the marker",
-        ),
-        Step::Tools(vec![
-            ("h1", "read_file", json!({"path": "notes.txt"})),
-            ("h2", "shell", json!({ "command": command })),
-        ]),
-        Step::Text("HELPER-DONE: read it, the touch was blocked"),
-        Step::Text("parent done"),
-    ]);
+        )
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
     let realm = bootstrap::resolve_scope(&args_with(&ws.root, &[]))
         .unwrap()
         .realm_root();
@@ -93,23 +117,23 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
     let id = rig.current_session().await;
     rig.send(Effect::StartTurn("USER-ASK look into the notes".into()));
-    let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.expect("turn succeeds").text, "parent done");
+    rig.turn_finished().await.expect("turn succeeds");
+    common::until(|| common::parent_told(&llm, "HELPER-TASK", "scout")).await;
+    rig.daemon.idle(&rig.daemon.agent).await;
 
-    let recorded = llm.recorded();
-    assert_eq!(recorded.len(), 4, "parent, helper ×2, parent");
+    let helper = of_helper(&llm, "HELPER-TASK");
+    assert_eq!(helper.len(), 2, "two calls of the helper");
     // The helper ran on the session's model, with the helper instructions
     // and the TUI's file tools, and its task as its prompt.
-    assert_eq!(recorded[1].model, common::MODEL);
-    assert!(recorded[1].system().contains("Working as a helper"));
-    assert!(recorded[1].tools.iter().any(|t| t == "read_file"));
-    assert!(recorded[1].user().contains("HELPER-TASK"));
+    assert_eq!(helper[0].model, common::MODEL);
+    assert!(helper[0].system().contains("Working as a helper"));
+    assert!(helper[0].tools.iter().any(|t| t == "read_file"));
     // The read passed the gate; the Tier-3 shell call was denied, and the
     // helper read why.
-    let read = tool_result(&recorded[2].messages, "h1");
+    let read = tool_result(&helper[1].messages, "h1");
     assert!(!read.is_error, "{}", read.text_content());
     assert!(read.text_content().contains("HELPER-READ-CONTENT"));
-    let denied = tool_result(&recorded[2].messages, "h2");
+    let denied = tool_result(&helper[1].messages, "h2");
     assert!(denied.is_error);
     assert!(
         denied
@@ -141,10 +165,8 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
         matches!(m, Msg::Approval(ApprovalNotice { allowed: false, tool, .. }) if tool == "[scout] shell")
     })
     .await;
-    // The parent got the helper's result.
-    let result = tool_result(&recorded[3].messages, "d1");
-    assert!(!result.is_error, "{}", result.text_content());
-    assert!(result.text_content().contains("HELPER-DONE"));
+    // The parent got the helper's answer, in the note that it finished.
+    assert!(note_of(&llm, "scout").contains("HELPER-DONE"));
 
     // The UI heard the helper: running (then not), its events nested one
     // level deep and named.
@@ -242,38 +264,47 @@ fn proxy_setup(model: &'static str) -> Setup {
     setup
 }
 
-/// The helper session a `delegate` call `id` reports in `messages`.
-fn helper_session(messages: &[Message], id: &str) -> meerkat_core::SessionId {
-    let result = tool_result(messages, id);
-    let value: Value = serde_json::from_str(&result.text_content())
-        .unwrap_or_else(|_| panic!("delegate failed: {}", result.text_content()));
-    meerkat_core::SessionId::parse(value["session_id"].as_str().unwrap()).unwrap()
-}
-
-/// Delegate once on `proxy:<model>`; the helper's stored metadata.
-async fn delegate_on_the_proxy(model: &'static str) -> meerkat_core::SessionMetadata {
+/// Start a helper once on `proxy:<model>`; its stored metadata.
+async fn assign_on_the_proxy(model: &'static str) -> meerkat_core::SessionMetadata {
     let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        delegate("d1", "scout", "say hi"),
-        Step::Text("hi"),
-        Step::Text("done"),
-    ]);
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let step = {
+        let gate = Arc::clone(&gate);
+        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+            if common::is_helper(messages, "say hi") {
+                return Step::Gated(Arc::clone(&gate), Box::new(Step::Text("hi")));
+            }
+            agent(messages, "scout", "say hi")
+        }))
+    };
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
     let mut rig = Attached::start_with(&ws.root, &llm, proxy_setup(model)).await;
-    rig.send(Effect::StartTurn("delegate".into()));
+    rig.send(Effect::StartTurn("start one".into()));
     let _ = rig.turn_finished().await;
+    // The helper's session, while it runs (it is retired when done).
+    let registry = rig.daemon.registry();
+    let key = rkat_tui::mobs::HelperKey::new(
+        meerkat_mob::MobId::from("tui"),
+        meerkat_mob::AgentIdentity::from("scout"),
+    );
+    let helper = common::poll(async || registry.member_session(&key)).await;
+    gate.notify_one();
+    common::until(|| common::parent_told(&llm, "say hi", "scout")).await;
+    rig.daemon.idle(&rig.daemon.agent).await;
     let recorded = llm.recorded();
     assert_eq!(recorded[0].model, model);
+    let ran = of_helper(&llm, "say hi");
     assert_eq!(
-        recorded.len(),
-        3,
+        ran.len(),
+        1,
         "{}",
-        tool_result(&recorded[1].messages, "d1").text_content()
+        tool_result(&recorded[1].messages, "a1").text_content()
     );
     assert_eq!(
-        recorded[1].model, model,
+        ran[0].model, model,
         "the helper runs on the session's model"
     );
-    let helper = helper_session(&recorded[2].messages, "d1");
+    drop(registry);
     rig.quit().await;
     rig::stored_session(&ws.root, &helper)
         .await
@@ -283,7 +314,7 @@ async fn delegate_on_the_proxy(model: &'static str) -> meerkat_core::SessionMeta
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_configured_endpoints_helper_uses_the_same_binding() {
-    let meta = delegate_on_the_proxy(common::MODEL).await;
+    let meta = assign_on_the_proxy(common::MODEL).await;
     assert_eq!(meta.model, common::MODEL);
     let binding = meta.auth_binding.expect("the proxy's binding");
     assert_eq!(binding.realm.as_str(), ENDPOINT_REALM);
@@ -459,86 +490,108 @@ fn nesting_tools(recorded: &common::Recorded) -> Vec<&str> {
         .filter(|tool| {
             matches!(
                 *tool,
-                "delegate" | "council" | "fork_off" | "spawn_member" | "spawn_many_members"
+                "assign"
+                    | "delegate"
+                    | "council"
+                    | "fork_off"
+                    | "spawn_member"
+                    | "spawn_many_members"
             ) || tool.starts_with("mob_")
         })
         .collect()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_helper_at_the_default_depth_cannot_delegate() {
-    let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        delegate("d1", "scout", "HELPER-TASK: delegate onwards"),
-        delegate("d2", "inner", "NESTED-TASK"),
-        Step::Text("HELPER-DONE: did it myself"),
-        Step::Text("parent done"),
-    ]);
-    let mut rig = Attached::start(&ws.root, &llm).await;
-    rig.send(Effect::StartTurn("USER-ASK delegate it".into()));
-    let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.expect("turn succeeds").text, "parent done");
-    let recorded = llm.recorded();
-    assert_eq!(
-        recorded.len(),
-        4,
-        "parent, helper ×2, parent; no nested helper"
-    );
-    // The agent may delegate; its helper, at depth 1 of 1, is
-    // offered no tool that starts helpers, and its call is refused.
-    assert!(recorded[0].tools.iter().any(|t| t == "delegate"));
-    assert!(recorded[1].user().contains("HELPER-TASK"));
-    assert!(
-        nesting_tools(&recorded[1]).is_empty(),
-        "{:?}",
-        recorded[1].tools
-    );
-    assert!(recorded[1].system().contains("cannot delegate further"));
-    // Its other tools stay: only the mob category is off.
-    for tool in ["shell", "read_file"] {
-        assert!(recorded[1].tools.iter().any(|t| t == tool), "{tool}");
-    }
-    let refused = tool_result(&recorded[2].messages, "d2");
-    assert!(refused.is_error, "{}", refused.text_content());
-    assert!(
-        recorded.iter().all(|r| !r.user().contains("NESTED-TASK")),
-        "no nested helper ran"
-    );
-    let result = tool_result(&recorded[3].messages, "d1");
-    assert!(result.text_content().contains("HELPER-DONE"));
-    rig.quit().await;
+/// The script of the depth tests: the agent assigns `HELPER-TASK` to
+/// `scout`; the helper assigns `NESTED-TASK` to `inner` (call `a2`), then
+/// answers "HELPER-DONE" once the nested helper's note came (or at once
+/// when its call failed); the nested helper answers "NESTED-DONE".
+fn nesting() -> Arc<ScriptedLlmClient> {
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if common::is_helper(messages, "NESTED-TASK") {
+            return Step::Text("NESTED-DONE");
+        }
+        if common::is_helper(messages, "HELPER-TASK") {
+            if common::told_finished(messages) {
+                return Step::Text("HELPER-DONE: with its answer");
+            }
+            return match messages.iter().rev().find_map(|m| match m {
+                Message::ToolResults { results, .. } => Some(results.iter().any(|r| r.is_error)),
+                _ => None,
+            }) {
+                None => common::assign("a2", "inner", "NESTED-TASK"),
+                Some(true) => Step::Text("HELPER-DONE: did it myself"),
+                Some(false) => Step::Text("waiting for inner"),
+            };
+        }
+        agent(messages, "scout", "HELPER-TASK: start one of your own")
+    }));
+    ScriptedLlmClient::new(vec![step; 20])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_helper_below_a_raised_depth_limit_delegates_once_more() {
+async fn a_helper_at_the_default_depth_cannot_start_helpers() {
     let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        delegate("d1", "scout", "HELPER-TASK: delegate onwards"),
-        delegate("d2", "inner", "NESTED-TASK"),
-        Step::Text("NESTED-DONE"),
-        Step::Text("HELPER-DONE"),
-        Step::Text("parent done"),
-    ]);
+    let llm = nesting();
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    rig.send(Effect::StartTurn("USER-ASK start a helper".into()));
+    rig.turn_finished().await.expect("turn succeeds");
+    common::until(|| common::parent_told(&llm, "HELPER-TASK", "scout")).await;
+    rig.daemon.idle(&rig.daemon.agent).await;
+    let recorded = llm.recorded();
+    let helper = of_helper(&llm, "HELPER-TASK");
+    assert_eq!(helper.len(), 2, "two calls of the helper; no nested helper");
+    // The agent may start helpers; its helper, at depth 1 of 1, is
+    // offered no tool that starts helpers, and its call is refused.
+    assert!(recorded[0].tools.iter().any(|t| t == "assign"));
+    assert!(
+        nesting_tools(&helper[0]).is_empty(),
+        "{:?}",
+        helper[0].tools
+    );
+    assert!(helper[0].system().contains("cannot delegate further"));
+    // Its other tools stay: only the mob category is off.
+    for tool in ["shell", "read_file"] {
+        assert!(helper[0].tools.iter().any(|t| t == tool), "{tool}");
+    }
+    let refused = tool_result(&helper[1].messages, "a2");
+    assert!(refused.is_error, "{}", refused.text_content());
+    assert!(
+        of_helper(&llm, "NESTED-TASK").is_empty(),
+        "no nested helper ran"
+    );
+    assert!(note_of(&llm, "scout").contains("HELPER-DONE: did it myself"));
+    rig.quit().await;
+}
+
+/// Below a raised limit a helper starts one more with `assign`, which is
+/// at the limit itself and runs; its note is told (to the helper, or to
+/// the agent when the helper finished first).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_helper_below_a_raised_depth_limit_starts_one_more() {
+    let ws = Workspace::new();
+    let llm = nesting();
     let setup = Setup::args(&["--set", "helpers.max_depth=2"]);
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
-    rig.send(Effect::StartTurn("USER-ASK delegate it twice".into()));
-    let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.expect("turn succeeds").text, "parent done");
-    let recorded = llm.recorded();
-    assert_eq!(recorded.len(), 5, "parent, helper, nested, helper, parent");
-    assert!(recorded[1].tools.iter().any(|t| t == "delegate"));
+    rig.send(Effect::StartTurn(
+        "USER-ASK start a helper that starts one".into(),
+    ));
+    rig.turn_finished().await.expect("turn succeeds");
+    common::until(|| !note_of(&llm, "inner").is_empty()).await;
+    common::until(|| common::parent_told(&llm, "HELPER-TASK", "scout")).await;
+    rig.daemon.idle(&rig.daemon.agent).await;
+    let helper = of_helper(&llm, "HELPER-TASK");
+    assert!(helper[0].tools.iter().any(|t| t == "assign"));
     // The nested helper is at the limit: no tool that starts helpers.
-    assert!(recorded[2].user().contains("NESTED-TASK"));
+    let nested = of_helper(&llm, "NESTED-TASK");
+    assert_eq!(nested.len(), 1);
     assert!(
-        nesting_tools(&recorded[2]).is_empty(),
+        nesting_tools(&nested[0]).is_empty(),
         "{:?}",
-        recorded[2].tools
+        nested[0].tools
     );
-    let nested = tool_result(&recorded[3].messages, "d2");
-    assert!(!nested.is_error, "{}", nested.text_content());
-    assert!(nested.text_content().contains("NESTED-DONE"));
-    let result = tool_result(&recorded[4].messages, "d1");
-    assert!(result.text_content().contains("HELPER-DONE"));
+    let started = tool_result(&helper[1].messages, "a2");
+    assert!(!started.is_error, "{}", started.text_content());
+    assert!(note_of(&llm, "inner").contains("NESTED-DONE"));
     rig.quit().await;
 }
 
