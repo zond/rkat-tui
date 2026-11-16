@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-11-16
+
 ### Changed
 
 - A table in which any row wraps over several lines has a thin rule
