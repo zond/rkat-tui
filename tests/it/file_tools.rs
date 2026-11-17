@@ -78,6 +78,37 @@ impl Fixture {
     }
 }
 
+/// No file tool answers with blank text: an empty file, a glob or grep
+/// (in every output mode) that finds nothing, and writing an empty file
+/// each say what happened. A blank tool result is what an
+/// OpenAI-compatible proxy replaces with a placeholder sentence the model
+/// takes for its own words.
+#[tokio::test]
+async fn no_file_tool_answers_with_blank_text() {
+    let f = Fixture::new();
+    f.write("empty.txt", "");
+    f.write("blank.txt", "\n");
+    let calls = [
+        ("read_file", json!({"path": "empty.txt"})),
+        ("read_file", json!({"path": "blank.txt"})),
+        ("glob", json!({"pattern": "*.nothing"})),
+        ("grep", json!({"pattern": "absent-7f3a"})),
+        (
+            "grep",
+            json!({"pattern": "absent-7f3a", "output_mode": "content"}),
+        ),
+        (
+            "grep",
+            json!({"pattern": "absent-7f3a", "output_mode": "count"}),
+        ),
+        ("write_file", json!({"path": "new.txt", "content": ""})),
+    ];
+    for (name, args) in calls {
+        let text = f.ok(name, args.clone()).await;
+        assert!(!text.trim().is_empty(), "{name} {args}: {text:?}");
+    }
+}
+
 fn set_mtime(path: &Path, time: SystemTime) {
     let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
     file.set_modified(time).unwrap();

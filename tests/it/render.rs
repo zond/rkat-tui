@@ -79,6 +79,48 @@ fn render_sized(app: &mut App, now: Instant, width: u16) -> Vec<String> {
 }
 
 #[test]
+fn user_messages_are_a_full_width_band() {
+    use rkat_tui::ui::render::USER_BAND;
+    let mut app = App::new(StatusInfo::default());
+    app.transcript.push(Block::User {
+        text: "short".into(),
+    });
+    app.transcript.push(Block::Assistant {
+        md: "an answer".into(),
+    });
+    app.transcript.push(Block::User {
+        text: "a long message that wraps onto a second line of the narrow view".into(),
+    });
+    let mut terminal = Terminal::new(TestBackend::new(W, H)).unwrap();
+    terminal
+        .draw(|f| draw_at(f, &mut app, Instant::now()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let texts = rows(buffer);
+    let banded = |y: u16| (0..W).all(|x| buffer[(x, y)].bg == Color::Indexed(238));
+    // Rows: the short message, a spacer, the answer, a spacer, the long
+    // message on two rows, a spacer.
+    assert_eq!(texts[0], "› short", "{texts:#?}");
+    assert!(texts[4].starts_with("› a long message"), "{texts:#?}");
+    assert!(texts[5].starts_with("  "), "{texts:#?}");
+    for y in [0, 4, 5] {
+        assert!(banded(y), "row {y} is not a band: {texts:#?}");
+        let text_cells = texts[usize::from(y)].chars().count();
+        for x in 0..u16::try_from(text_cells).unwrap() {
+            let cell = &buffer[(x, y)];
+            assert_eq!(cell.fg, USER_BAND.fg.unwrap(), "row {y} col {x}");
+            assert!(cell.modifier.contains(Modifier::BOLD), "row {y} col {x}");
+        }
+    }
+    for y in [1, 2, 3, 6] {
+        assert!(
+            (0..W).all(|x| buffer[(x, y)].bg != Color::Indexed(238)),
+            "row {y} has the band: {texts:#?}"
+        );
+    }
+}
+
+#[test]
 fn renders_blocks_input_and_status_bar() {
     let mut app = sample_app();
     let rows = render(&mut app, Instant::now());

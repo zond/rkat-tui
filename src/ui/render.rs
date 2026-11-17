@@ -1045,6 +1045,14 @@ fn prefixed(
     }
 }
 
+/// How the user's own message is drawn: a grey band (256-colour palette)
+/// with bright bold text, both colours set so the band reads on dark and
+/// light terminal themes alike.
+pub const USER_BAND: Style = Style::new()
+    .fg(Color::White)
+    .bg(Color::Indexed(238))
+    .add_modifier(Modifier::BOLD);
+
 /// Lay out one block at `width` (including a trailing spacer line).
 pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
     let w = usize::from(width).max(4);
@@ -1058,10 +1066,17 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
     }
     match block {
         Block::User { text } => {
-            let style = Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD);
-            prefixed(text, w, "› ", "  ", style, &mut out);
+            // A band across the width, both colours set (it reads on dark
+            // and light themes alike), so the user's own words stand out
+            // when scrolling fast. The padding is trailing whitespace,
+            // which a copy of the selection trims.
+            prefixed(text, w, "› ", "  ", USER_BAND, &mut out);
+            for line in &mut out {
+                let pad = w.saturating_sub(line.width());
+                if pad > 0 {
+                    line.spans.push(Span::styled(" ".repeat(pad), USER_BAND));
+                }
+            }
         }
         Block::Queued { text, label, .. } => {
             let style = Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM);

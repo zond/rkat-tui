@@ -68,6 +68,9 @@ struct ListArgs {
     scope: Option<Scope>,
 }
 
+/// What `note_read` answers for a note whose file is empty.
+const EMPTY_NOTE: &str = "(empty note)";
+
 /// Why a note tool invocation failed in a way the model can recover from.
 type Outcome = Result<String, String>;
 
@@ -98,7 +101,15 @@ impl Stores {
     }
 
     fn read(&self, args: NoteArgs) -> Outcome {
-        self.get(args.scope)?.read(&args.name).map_err(describe)
+        let text = self.get(args.scope)?.read(&args.name).map_err(describe)?;
+        // `note_save` refuses an empty note, but the user can empty the
+        // file; an empty tool result is what proxies replace with a
+        // placeholder the model takes for its own words.
+        Ok(if text.trim().is_empty() {
+            EMPTY_NOTE.to_string()
+        } else {
+            text
+        })
     }
 
     fn forget(&self, args: NoteArgs) -> Outcome {
@@ -367,6 +378,21 @@ mod tests {
         )
         .await;
         assert!(is_error, "{msg}");
+    }
+
+    /// A note whose file the user emptied reads as "(empty note)", never as
+    /// an empty tool result.
+    #[tokio::test]
+    async fn an_emptied_note_reads_as_empty_note() {
+        let (tmp, d) = dispatcher(true);
+        let save = json!({"scope": "workspace", "name": "todo", "content": "x"});
+        text(&d, NOTE_SAVE, save).await;
+        let store = NoteStore::open(tmp.path().join("ws"), Scope::Workspace);
+        std::fs::write(store.dir().join("todo.md"), " \n").unwrap();
+        assert_eq!(
+            text(&d, NOTE_READ, json!({"scope": "workspace", "name": "todo"})).await,
+            (EMPTY_NOTE.into(), false)
+        );
     }
 
     #[tokio::test]

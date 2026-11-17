@@ -6,6 +6,10 @@
 //!   conversation, or a helper still running. A parent that is gone (a
 //!   helper that ended, a conversation left) hands the note to the agent
 //!   the helper worked for, when that agent still runs that conversation.
+//!   A parent helper that ends while the note is on its way (it finished,
+//!   [`crate::mobs::endings::HelperEndings::while_unsettled`]) or refuses
+//!   it passes it on as its own ending would go: to the next one up its
+//!   path, and finally to the agent, once.
 //! - **When.** At once: into a running parent's run (it reads it at its
 //!   next step), or as a message that starts a run for an idle one (a run
 //!   no user started: unattended unless a client is with the agent,
@@ -144,6 +148,16 @@ pub fn note_text(items: &[NoteItem]) -> String {
                 .join("\n");
             format!("{} notes about your helpers:\n{list}", many.len())
         }
+    }
+}
+
+/// What the clients are told of a note's delivery, `told`, naming the
+/// helpers it passed over because they ended first.
+fn with_passed(told: String, passed: &[String]) -> String {
+    if passed.is_empty() {
+        told
+    } else {
+        format!("{told} ({} ended first)", passed.join(", "))
     }
 }
 
@@ -394,30 +408,56 @@ impl Agents {
             })
             .collect();
         let text = note_text(&items);
-        match recipient {
-            Recipient::Agent { name, session } => {
-                if self.interrupted.0.lock().contains(name) {
-                    self.held.hold(name, session, text);
-                    format!("{name} is told with your next message to it")
-                } else {
-                    self.steer_note(name, text).await;
-                    format!("{name} was told")
+        let mut recipient = recipient.clone();
+        // Helpers passed over: they ended, or refused the note.
+        let mut passed: Vec<String> = Vec::new();
+        loop {
+            let (key, tag) = match recipient {
+                Recipient::Agent { name, session } => {
+                    let told = if self.interrupted.0.lock().contains(&name) {
+                        self.held.hold(&name, &session, text);
+                        format!("{name} is told with your next message to it")
+                    } else {
+                        self.steer_note(&name, text).await;
+                        format!("{name} was told")
+                    };
+                    return with_passed(told, &passed);
                 }
-            }
-            Recipient::Helper { key, tag } => {
-                let sent = super::notes::steer_member(
-                    &self.core.state,
-                    &key.mob,
-                    key.member.clone(),
-                    text,
+                Recipient::Helper { key, tag } => (key, tag),
+            };
+            let endings = self.core.registry.endings();
+            let sent = endings
+                .while_unsettled(
+                    &key,
+                    super::notes::steer_member(
+                        &self.core.state,
+                        &key.mob,
+                        key.member.clone(),
+                        text.clone(),
+                    ),
                 )
                 .await;
-                match sent {
-                    Ok(()) => format!("its parent helper {} was told", tag.label()),
-                    Err(err) => {
-                        tracing::warn!(helper = %key, error = %err, "a helper was not told of its own helper's ending");
-                        format!("its parent helper {} could not be told: {err}", tag.label())
-                    }
+            match sent {
+                Some(Ok(())) => {
+                    return with_passed(
+                        format!("its parent helper {} was told", tag.label()),
+                        &passed,
+                    );
+                }
+                Some(Err(err)) => {
+                    tracing::warn!(helper = %key, error = %err, "a helper refused its own helper's ending; it goes further up");
+                }
+                None => {
+                    tracing::info!(helper = %key, "a helper ended before its own helper's ending reached it; it goes further up");
+                }
+            }
+            passed.push(tag.label().to_string());
+            // The one the passed-over helper's own ending goes to.
+            match self.recipient(&key, &tag) {
+                Some(next) => recipient = next,
+                None => {
+                    tracing::info!("a helper's parents are gone: nobody is told of its ending");
+                    return format!("nobody could be told: {} ended first", passed.join(", "));
                 }
             }
         }

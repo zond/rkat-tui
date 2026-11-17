@@ -87,6 +87,7 @@ official tables name, then niche features.
 
 | 70 | Commands during a turn | slash commands typed while the agent works are queued with the messages | `/model`, `/new`, `/resume`, `/init`, `/agents <name>` and `/rehome <ref>` wait in the queue with the messages typed after them (shown "when the turn ends"), run in that order once the agent is idle, and `Up` takes one back; a picker command opens its picker at once and its choice waits; quitting drops them with a notice | same (as rkat-tui reads CC's queue) |
 | 71 | List dialogs' confirm step | a question with yes/no choices | a question naming what happens and its keys (`y yes · n or Esc no`); only `y`, `n` and Esc answer it, Enter does not; what was done is stated on the dialog and in the transcript; rows wrap, the highlighted one in full | same |
+| 72 | The user's message in the transcript | on a light grey background, so it stands out when scrolling | `› ` and the message on a grey band across the width (256-colour 238, bright bold text: it reads on dark and light themes), wrapped rows too; a queued one keeps its dim look until it is sent; a helper's task in its view keeps its cyan `› `; copying a line leaves out the band's padding | same |
 
 rkat-tui extras with no CC counterpart: `Shift+↑/↓`, `PgUp/PgDn` and
 `Home/End` scroll the transcript; mouse selection copies over OSC 52;

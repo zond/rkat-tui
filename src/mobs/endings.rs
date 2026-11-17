@@ -27,7 +27,11 @@
 //! not retired. A message sent after that look reaches a helper that is
 //! being retired, and its sender's `send_message` fails as any message to a
 //! peer that left (the engine names `peers`); the window is the retire's
-//! own few milliseconds.
+//! own few milliseconds. The daemon's own notes to a helper (the ending of
+//! a helper it started) are never in that window: each is sent while no
+//! decision runs ([`HelperEndings::while_unsettled`]), so it lands before
+//! the decision's last look (the helper goes on and reads it) or finds the
+//! helper settled and goes to the next one up its path.
 //!
 //! A long-lived member ([`super::HelperKind::Member`]: `spawn_member`,
 //! `mob_spawn_member`) does not end when a run of it ends: it ends when it
@@ -302,6 +306,36 @@ pub struct HelperEndings {
     /// Where a run at its limit goes for its checkpoint
     /// ([`Self::checkpoints_to`]); unset, it is a failure.
     checkpoints: OnceLock<mpsc::UnboundedSender<LimitReached>>,
+    /// Held while a helper's going idle is decided and while a note is
+    /// sent to a helper ([`Self::while_unsettled`]): a note either lands
+    /// before the decision (unfinished input: the helper goes on) or finds
+    /// the helper settled (it goes further up), never in between.
+    deciding: tokio::sync::Mutex<()>,
+    /// Tests: awaited before a helper's going idle is decided.
+    #[cfg(any(test, feature = "test-support"))]
+    before_deciding: OnceLock<DecidingHook>,
+    /// Tests: awaited before a finished `assign` helper is retired.
+    #[cfg(any(test, feature = "test-support"))]
+    before_retiring: OnceLock<DecidingHook>,
+}
+
+/// Tests: what [`HelperEndings::before_deciding`] awaits for a helper.
+#[cfg(any(test, feature = "test-support"))]
+pub type DecidingHookFn = Arc<
+    dyn Fn(HelperKey) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// [`DecidingHookFn`], held.
+#[cfg(any(test, feature = "test-support"))]
+struct DecidingHook(DecidingHookFn);
+
+#[cfg(any(test, feature = "test-support"))]
+impl std::fmt::Debug for DecidingHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DecidingHook")
+    }
 }
 
 /// How many retired `assign` helpers' peer ids are remembered.
@@ -510,7 +544,11 @@ impl HelperEndings {
                 let key = key.clone();
                 runtime.spawn(async move {
                     endings.settle_idle(&key, runs, &probe).await;
-                    endings.went_idle(&key, runs, terminal);
+                    #[cfg(any(test, feature = "test-support"))]
+                    if let Some(hook) = endings.before_deciding.get() {
+                        (hook.0)(key.clone()).await;
+                    }
+                    endings.decide_idle(&key, runs, terminal, &probe).await;
                 });
             }
             _ => self.went_idle(key, runs, terminal),
@@ -540,6 +578,63 @@ impl HelperEndings {
             tokio::time::sleep(wait.min(deadline - now)).await;
             wait = (wait * 2).min(RECHECK_MAX);
         }
+    }
+
+    /// Decide the end of run `runs` of `key` ([`Self::went_idle`]) with
+    /// no note to it in flight: under [`Self::deciding`], asked once more
+    /// whether the runtime holds input of it (a note that landed after the
+    /// last look is unfinished input). When it does, the lock is let go
+    /// for one more [`Self::settle_idle`] (a run that takes the note makes
+    /// this run's end none), and the end is decided after it.
+    async fn decide_idle(
+        &self,
+        key: &HelperKey,
+        runs: u64,
+        terminal: Terminal,
+        probe: &InputsProbe,
+    ) {
+        {
+            let _deciding = self.deciding.lock().await;
+            if self.runs_of(key) != Some(runs) {
+                return;
+            }
+            if !matches!(probe(key.clone()).await, Some(n) if n > 0) {
+                self.went_idle(key, runs, terminal);
+                return;
+            }
+        }
+        self.settle_idle(key, runs, probe).await;
+        let _deciding = self.deciding.lock().await;
+        self.went_idle(key, runs, terminal);
+    }
+
+    /// Run `send` (a note to the helper `key`) unless `key`'s ending was
+    /// settled, with no decision of a helper's going idle in between
+    /// (`None`: settled, nothing was sent; the note goes further up).
+    pub async fn while_unsettled<T>(
+        &self,
+        key: &HelperKey,
+        send: impl std::future::Future<Output = T>,
+    ) -> Option<T> {
+        let _deciding = self.deciding.lock().await;
+        if self.is_settled(key) {
+            return None;
+        }
+        Some(send.await)
+    }
+
+    /// Tests: await `hook` (with the helper's key) before each decision
+    /// of a helper's going idle (once).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn before_deciding(&self, hook: DecidingHookFn) {
+        let _ = self.before_deciding.set(DecidingHook(hook));
+    }
+
+    /// Tests: await `hook` (with the helper's key) before a finished
+    /// `assign` helper is retired (once).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn before_retiring(&self, hook: DecidingHookFn) {
+        let _ = self.before_retiring.set(DecidingHook(hook));
     }
 
     /// How many runs of `key` started (`None`: not followed).
@@ -744,7 +839,13 @@ impl HelperEndings {
         };
         let key = key.clone();
         let retired = Arc::clone(&self.retired_peers);
+        #[cfg(any(test, feature = "test-support"))]
+        let hook = self.before_retiring.get().map(|hook| Arc::clone(&hook.0));
         runtime.spawn(async move {
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(hook) = hook {
+                hook(key.clone()).await;
+            }
             match state.handle_for(&key.mob).await {
                 Ok(handle) => {
                     if let Ok(Some(endpoint)) = handle.member_peer_endpoint(&key.member).await {

@@ -867,6 +867,177 @@ async fn the_api_style_setting_picks_the_wire_end_to_end() {
     }
 }
 
+/// Where a model call's `body` carries text that is empty or only
+/// whitespace (paths), on either API style: a message's `content` string
+/// or a content part's `text`, a tool result's `output`, and an assistant
+/// message with no content and no tool call. A proxy such as LiteLLM
+/// replaces such content with a placeholder sentence for a provider that
+/// refuses it, which the model then reads as its own words.
+fn blank_texts(body: &serde_json::Value) -> Vec<String> {
+    use serde_json::Value;
+    let blank = |v: &Value| v.as_str().is_some_and(|s| s.trim().is_empty());
+    let mut out = Vec::new();
+    for key in ["messages", "input"] {
+        for (n, item) in body[key].as_array().into_iter().flatten().enumerate() {
+            let at = format!("{key}[{n}]");
+            for field in ["content", "output"] {
+                match &item[field] {
+                    text @ Value::String(_) if blank(text) => out.push(format!("{at}.{field}")),
+                    Value::Array(parts) => {
+                        for (p, part) in parts.iter().enumerate() {
+                            if blank(&part["text"]) {
+                                out.push(format!("{at}.{field}[{p}].text"));
+                            }
+                        }
+                        if parts.is_empty() {
+                            out.push(format!("{at}.{field}: []"));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if item["role"] == "assistant"
+                && item["content"].is_null()
+                && item["tool_calls"].as_array().is_none_or(Vec::is_empty)
+                && item.get("type").is_none()
+            {
+                out.push(format!("{at}: an empty assistant message"));
+            }
+        }
+    }
+    out
+}
+
+/// The bug from real use behind a LiteLLM proxy: a model sends a line
+/// break (or an empty text part) before each tool call, the engine stores
+/// it as the step's text, and every later request sent it back as an
+/// assistant message whose content is only whitespace, which the proxy
+/// "sanitised" into `[System: Empty message content sanitised to satisfy
+/// protocol]`. On both API styles, after answers with an empty, a
+/// whitespace-only and no text before a tool call, no request carries
+/// blank text anywhere; a step with real text goes back as it was; the
+/// stored session keeps what the model sent (only the wire changes); and
+/// the transcript draws no bare bullet for the blank parts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blank_text_before_a_tool_call_is_never_sent_back() {
+    use rkat_tui::ui::{App, StatusInfo};
+    const SPOKEN: &str = "Let me look at the notes.";
+    let read = || json!({"path": "notes.txt"});
+    for (style, extra) in [
+        ("responses", &[][..]),
+        (
+            "chat_completions",
+            &["--set", "endpoints.litellm.api_style=chat_completions"][..],
+        ),
+    ] {
+        let mut replies = Vec::new();
+        for text in ["\n", "", " \n\t "] {
+            replies.push(Reply::TextAndTool {
+                text,
+                name: "read_file",
+                args: read(),
+            });
+            replies.push(Reply::Text("noted"));
+        }
+        replies.push(Reply::Tool {
+            name: "read_file",
+            args: read(),
+        });
+        replies.push(Reply::Text("noted"));
+        replies.push(Reply::TextAndTool {
+            text: SPOKEN,
+            name: "read_file",
+            args: read(),
+        });
+        replies.push(Reply::Text("noted"));
+        replies.push(Reply::Text("the end"));
+        let fake = FakeEndpoint::start(models(), replies).await;
+        let ws = Workspace::new();
+        std::fs::write(ws.root.join("notes.txt"), "marker-7f3a\n").unwrap();
+        let llm = ScriptedLlmClient::new(Vec::new());
+        let mut rig = Attached::start_with(&ws.root, &llm, setup(&fake, LOCAL, extra)).await;
+        rig.saw(|m| is_model(m, "litellm", LOCAL)).await;
+        for turn in ["one", "two", "three", "four", "five", "six"] {
+            rig.send(Effect::StartTurn(turn.into()));
+            rig.turn_finished().await.unwrap();
+        }
+        let turns = fake.turns();
+        assert_eq!(turns.len(), 11, "{style}: {turns:#?}");
+        for (n, turn) in turns.iter().enumerate() {
+            let blank = blank_texts(&turn.body);
+            assert!(
+                blank.is_empty(),
+                "{style}: request {n} sends blank text at {blank:?}: {:#}",
+                turn.body
+            );
+        }
+        // The step with real text goes back as the engine sends it.
+        let last = &turns.last().unwrap().body;
+        let spoken = ["messages", "input"]
+            .iter()
+            .filter_map(|key| last[*key].as_array())
+            .flatten()
+            .find(|item| item.to_string().contains(SPOKEN))
+            .unwrap_or_else(|| panic!("{style}: {last}"));
+        let expected = match style {
+            "responses" => json!({
+                "type": "message", "role": "assistant", "id": "msg_9", "status": "completed",
+                "content": [{"type": "output_text", "text": SPOKEN, "annotations": []}],
+            }),
+            _ => json!({
+                "role": "assistant", "content": SPOKEN,
+                "tool_calls": [{"id": "call_9", "type": "function",
+                    "function": {"name": "read_file", "arguments": read().to_string()}}],
+            }),
+        };
+        assert_eq!(spoken, &expected, "{style}");
+        // What is stored is the engine's: the model's blank text stays.
+        let id = rig.current_session().await;
+        let stored = stored_session(&ws.root, &id).await;
+        let blanks = stored
+            .messages()
+            .iter()
+            .filter_map(|m| match m {
+                meerkat_core::Message::BlockAssistant(a) => Some(a.blocks.iter()),
+                _ => None,
+            })
+            .flatten()
+            .filter(|b| {
+                matches!(b, meerkat_core::AssistantBlock::Text { text, .. } if text.trim().is_empty())
+            })
+            .count();
+        assert!(blanks >= 2, "{style}: {blanks} blank text blocks stored");
+        // The transcript draws no bare bullet for them.
+        let mut app = App::new(StatusInfo::default());
+        for msg in &rig.seen {
+            if matches!(msg, Msg::Agent(_)) {
+                app.update(msg.clone());
+            }
+        }
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 200)).unwrap();
+        terminal
+            .draw(|f| rkat_tui::ui::render::draw_at(f, &mut app, std::time::Instant::now()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim()
+                    .to_string()
+            })
+            .collect();
+        assert!(!rows.iter().any(|row| row == "•"), "{style}: {rows:#?}");
+        assert!(
+            rows.iter().any(|row| row.contains(SPOKEN)),
+            "{style}: {rows:#?}"
+        );
+        rig.quit().await;
+    }
+}
+
 /// X2: an unknown `api_style` in a `tui.toml` is refused, naming the key
 /// and the values it takes; on another dialect the endpoint is skipped
 /// with a notice saying why.

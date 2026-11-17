@@ -34,6 +34,16 @@ pub enum Reply {
     Reasoning(&'static str, &'static str),
     /// One tool call.
     Tool { name: &'static str, args: Value },
+    /// Text, then one tool call, as a proxy streams it: on the Responses
+    /// API an assistant `message` item with its id (added, its text's
+    /// delta, done) before the `function_call` item; on Chat Completions a
+    /// `content` delta before the `tool_calls` one. `text` may be empty or
+    /// only whitespace, as some models send before a call.
+    TextAndTool {
+        text: &'static str,
+        name: &'static str,
+        args: Value,
+    },
     /// The answer this function makes of the request's body (where two
     /// actors call the model and their order is not known). Every model
     /// call takes it, and it is never used up.
@@ -51,6 +61,12 @@ impl std::fmt::Debug for Reply {
                 .finish(),
             Self::Tool { name, args } => f
                 .debug_struct("Tool")
+                .field("name", name)
+                .field("args", args)
+                .finish(),
+            Self::TextAndTool { text, name, args } => f
+                .debug_struct("TextAndTool")
+                .field("text", text)
                 .field("name", name)
                 .field("args", args)
                 .finish(),
@@ -89,6 +105,8 @@ struct Shared {
     models: Vec<FakeModel>,
     replies: Mutex<VecDeque<Reply>>,
     requests: Mutex<Vec<Recorded>>,
+    /// Model calls answered so far: each answer's tool call gets its own id.
+    calls: std::sync::atomic::AtomicU64,
 }
 
 /// The running endpoint (stopped when dropped).
@@ -114,6 +132,7 @@ impl FakeEndpoint {
             models,
             replies: Mutex::new(replies.into()),
             requests: Mutex::new(Vec::new()),
+            calls: std::sync::atomic::AtomicU64::new(0),
         });
         let serving = Arc::clone(&shared);
         let task = tokio::spawn(async move {
@@ -239,11 +258,14 @@ fn respond(request: &Recorded, shared: &Shared) -> (&'static str, String) {
         })),
         ("POST", path) if path.ends_with("/responses") => {
             let reply = next_reply(shared, &request.body);
-            ("text/event-stream", responses_sse(&reply))
+            (
+                "text/event-stream",
+                responses_sse(&reply, call_number(shared)),
+            )
         }
         ("POST", path) if path.ends_with("/chat/completions") => {
             let reply = next_reply(shared, &request.body);
-            ("text/event-stream", chat_sse(&reply))
+            ("text/event-stream", chat_sse(&reply, call_number(shared)))
         }
         _ => json_body(json!({})),
     }
@@ -255,6 +277,14 @@ fn next_reply(shared: &Shared, body: &Value) -> Reply {
         Some(Reply::Dynamic(make)) => make(body),
         _ => replies.pop_front().unwrap_or(Reply::Text("ok")),
     }
+}
+
+/// This model call's number, which its ids carry (`resp_<n>`, `call_<n>`).
+fn call_number(shared: &Shared) -> u64 {
+    shared
+        .calls
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        + 1
 }
 
 fn sse(events: &[Value]) -> String {
@@ -270,8 +300,10 @@ fn sse(events: &[Value]) -> String {
 const USAGE_IN: u64 = 1_000;
 const USAGE_OUT: u64 = 100;
 
-fn responses_sse(reply: &Reply) -> String {
-    let mut events = vec![json!({"type": "response.created", "response": {"id": "resp_1"}})];
+fn responses_sse(reply: &Reply, n: u64) -> String {
+    let response = format!("resp_{n}");
+    let message = format!("msg_{n}");
+    let mut events = vec![json!({"type": "response.created", "response": {"id": response}})];
     let text = |events: &mut Vec<Value>, text: &str| {
         events.push(json!({"type": "response.output_text.delta", "delta": text}));
     };
@@ -283,25 +315,35 @@ fn responses_sse(reply: &Reply) -> String {
             events.push(json!({"type": "response.reasoning_summary_text.delta", "delta": thought}));
             text(&mut events, answer);
         }
-        Reply::Tool { name, args } => {
+        Reply::Tool { name, args } => function_call_item(&mut events, 0, n, name, args),
+        Reply::TextAndTool { text, name, args } => {
+            events.push(json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {"type": "message", "id": message, "role": "assistant", "status": "in_progress", "content": []},
+            }));
+            events.push(json!({
+                "type": "response.output_text.delta",
+                "item_id": message,
+                "output_index": 0,
+                "content_index": 0,
+                "delta": text,
+            }));
             events.push(json!({
                 "type": "response.output_item.done",
                 "output_index": 0,
                 "item": {
-                    "type": "function_call",
-                    "id": "fc_1",
-                    "call_id": "call_1",
-                    "name": name,
-                    "arguments": args.to_string(),
-                    "status": "completed",
+                    "type": "message", "id": message, "role": "assistant", "status": "completed",
+                    "content": [{"type": "output_text", "text": text, "annotations": []}],
                 },
             }));
+            function_call_item(&mut events, 1, n, name, args);
         }
     }
     events.push(json!({
         "type": "response.completed",
         "response": {
-            "id": "resp_1",
+            "id": response,
             "status": "completed",
             "usage": {"input_tokens": USAGE_IN, "output_tokens": USAGE_OUT},
         },
@@ -309,7 +351,24 @@ fn responses_sse(reply: &Reply) -> String {
     sse(&events)
 }
 
-fn chat_sse(reply: &Reply) -> String {
+/// A finished Responses `function_call` output item at `index`.
+fn function_call_item(events: &mut Vec<Value>, index: u64, n: u64, name: &str, args: &Value) {
+    events.push(json!({
+        "type": "response.output_item.done",
+        "output_index": index,
+        "item": {
+            "type": "function_call",
+            "id": format!("fc_{n}"),
+            "call_id": format!("call_{n}"),
+            "name": name,
+            "arguments": args.to_string(),
+            "status": "completed",
+        },
+    }));
+}
+
+fn chat_sse(reply: &Reply, n: u64) -> String {
+    let call = format!("call_{n}");
     let chunk = |delta: Value, finish: Option<&str>| {
         json!({
             "id": "chat_1",
@@ -336,10 +395,21 @@ fn chat_sse(reply: &Reply) -> String {
             events.push(chunk(json!({"content": answer}), None));
             "stop"
         }
+        Reply::TextAndTool { text, name, args } => {
+            events.push(chunk(json!({"role": "assistant", "content": text}), None));
+            events.push(chunk(
+                json!({"tool_calls": [{
+                    "index": 0, "id": call, "type": "function",
+                    "function": {"name": name, "arguments": args.to_string()},
+                }]}),
+                None,
+            ));
+            "tool_calls"
+        }
         Reply::Tool { name, args } => {
             events.push(chunk(
                 json!({"role": "assistant", "tool_calls": [{
-                    "index": 0, "id": "call_1", "type": "function",
+                    "index": 0, "id": call, "type": "function",
                     "function": {"name": name, "arguments": args.to_string()},
                 }]}),
                 None,

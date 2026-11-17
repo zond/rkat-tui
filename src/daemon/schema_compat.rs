@@ -24,6 +24,11 @@
 //! One case stays as it was: a recursive type keeps its `$ref` past
 //! [`MAX_REF_DEPTH`] (and so its `$defs`), and a strict backend may still
 //! refuse that one tool.
+//!
+//! The same decorator sends each request's messages without blank text
+//! (`super::blank_text`: an assistant's empty or whitespace-only text
+//! part, a tool result with no text), which a proxy would otherwise
+//! replace with a placeholder sentence the model takes for its own words.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,6 +40,8 @@ use meerkat_core::{
 };
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
+
+use super::blank_text;
 
 /// How deep `$ref`s are inlined into each other (a recursive type stops
 /// there and keeps its `$ref`).
@@ -336,6 +343,15 @@ pub fn unconstrained(obj: &Map<String, Value>) -> bool {
     })
 }
 
+/// A request's `messages` with no blank text ([`blank_text::for_the_wire`]);
+/// the same `Arc` when nothing changes.
+fn wire_messages(messages: Arc<Vec<Message>>) -> Arc<Vec<Message>> {
+    match blank_text::for_the_wire(&messages) {
+        Some(sent) => Arc::new(sent),
+        None => messages,
+    }
+}
+
 /// The decorator the daemon's runtime applies to every agent-facing LLM
 /// client: [`SchemaCompat`] around it.
 #[must_use]
@@ -344,7 +360,8 @@ pub fn decorator() -> AgentLlmClientDecorator {
 }
 
 /// An agent-facing LLM client whose requests carry their tools with
-/// [`normalize`]d schemas. Every method of the trait is forwarded to
+/// [`normalize`]d schemas and their messages without blank text
+/// ([`blank_text::for_the_wire`]). Every method of the trait is forwarded to
 /// `inner` (a method left to its default would answer for `inner`, which
 /// the engine documents as a decorator's duty); `tests/it/layout.rs` fails
 /// when the trait declares a method this impl does not.
@@ -430,6 +447,7 @@ impl AgentLlmClient for SchemaCompat {
         authorization: Option<meerkat_core::LlmRequestAuthorization>,
     ) -> Result<Arc<dyn AgentLlmRequestAttempt>, AgentError> {
         let tools = self.tools(&tools);
+        let messages = wire_messages(messages);
         Arc::clone(&self.inner).prepare_request_attempt_authorized(
             messages,
             tools,
@@ -449,6 +467,7 @@ impl AgentLlmClient for SchemaCompat {
         provider_params: Option<ProviderParamsOverride>,
     ) -> Result<Arc<dyn AgentLlmRequestAttempt>, AgentError> {
         let tools = self.tools(&tools);
+        let messages = wire_messages(messages);
         Arc::clone(&self.inner).prepare_request_attempt(
             messages,
             tools,
@@ -471,6 +490,8 @@ impl AgentLlmClient for SchemaCompat {
         provider_params: Option<&ProviderParamsOverride>,
     ) -> Result<LlmStreamResult, AgentError> {
         let tools = self.tools(tools);
+        let sent = blank_text::for_the_wire(messages);
+        let messages = sent.as_deref().unwrap_or(messages);
         self.inner
             .stream_response(messages, &tools, max_tokens, temperature, provider_params)
             .await
@@ -486,6 +507,8 @@ impl AgentLlmClient for SchemaCompat {
         authorization: Option<meerkat_core::LlmRequestAuthorization>,
     ) -> Result<LlmStreamResult, AgentError> {
         let tools = self.tools(tools);
+        let sent = blank_text::for_the_wire(messages);
+        let messages = sent.as_deref().unwrap_or(messages);
         self.inner
             .stream_response_authorized(
                 messages,
@@ -507,6 +530,8 @@ impl AgentLlmClient for SchemaCompat {
         provider_params: Option<&ProviderParamsOverride>,
     ) -> Result<Option<meerkat_core::ProviderRequestPressure>, AgentError> {
         let tools = self.tools(tools);
+        let sent = blank_text::for_the_wire(messages);
+        let messages = sent.as_deref().unwrap_or(messages);
         self.inner
             .request_pressure(messages, &tools, max_tokens, temperature, provider_params)
     }
@@ -521,6 +546,8 @@ impl AgentLlmClient for SchemaCompat {
         provider_params: Option<&ProviderParamsOverride>,
     ) -> Result<Vec<meerkat_core::TargetCacheLoweringCapability>, AgentError> {
         let tools = self.tools(tools);
+        let sent = blank_text::for_the_wire(messages);
+        let messages = sent.as_deref().unwrap_or(messages);
         self.inner.target_cache_lowering_capabilities(
             issuer,
             messages,

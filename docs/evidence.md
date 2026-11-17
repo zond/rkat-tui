@@ -11267,3 +11267,101 @@ retires a member (`mobs::stop_helper`, which `HelperEndings::retire`,
   20 (a first version that looked for the parent's notice at the start,
   or right as the user's run ended, failed 13 and 10 of 20: the notice's
   timing above); the other three fork tests 0 of 20 before and after.
+
+## Blank text on the wire: LiteLLM's "Empty message content sanitised" (2026-11-17)
+
+- Seen in real use behind LiteLLM: `[System: Empty message content
+  sanitised to satisfy protocol]` in the conversation. The string is not
+  rkat-tui's or the engine's (grep of both). No copy of LiteLLM is on this
+  machine and nothing was fetched, so that LiteLLM writes it, and when
+  (assumed: when it forwards to a provider that refuses empty message
+  content), is an assumption, not checked.
+- Probe (the rig's fake OpenAI endpoint, a step "text then a tool call"
+  with the text `"\n"`, `""` and `" \n\t "`, and one with no text; the
+  next request's raw body recorded), engine 0.9.15:
+  - Stored (both styles): the text block stays as the model sent it.
+    Chat Completions stores `"\n"` and `" \n\t "` with no metadata and no
+    block at all for `""`; the Responses API stores all three with
+    `OpenAiAssistantMessage { id: "msg_N", response_id }`.
+  - Sent, Chat Completions: `{"role":"assistant","content":"\n","tool_calls":[…]}`
+    and `" \n\t "` likewise; `""` and no text give `"content": null` with
+    the tool calls (valid). A step of only blank text, no call, would go as
+    `"content": null, "tool_calls": []`.
+  - Sent, Responses: `{"type":"message","role":"assistant","id":"msg_1","status":"completed","content":[{"type":"output_text","text":"\n","annotations":[]}]}`,
+    the same with `"text": ""` (the engine replays an "identity-only empty
+    message" of a step it admits, and a self-hosted server's steps are
+    admitted: one issuer), and `" \n\t "`. No text: no message item.
+  - Tool results: none of the engine's tool results or ours in the probe
+    were blank; an empty one would go as `"content": ""` /
+    `"output": ""`.
+  - The Anthropic dialect drops empty text but not whitespace-only text
+    (`lowers_to_content`, `project_anthropic_assistant_blocks`); Gemini
+    likewise.
+- Fix (`daemon::blank_text::for_the_wire`, applied by the client
+  decorator `SchemaCompat` to every request's messages, in all of its
+  methods that take them, so pressure and cache lowering see the same
+  messages): an assistant `Text`/`Transcript` block empty after trimming
+  is left out when it carries no metadata, `OpenAiResponse` or
+  `OpenAiAssistantMessage` (the plain form the engine sends for a step it
+  does not replay as received; reasoning stays, and the engine drops a
+  reasoning item with no output item after it itself); one with Gemini,
+  Anthropic or OpenAI reasoning metadata stays untouched; an assistant
+  message left with no block is left out; a tool result that is text only
+  and blank goes as `(no output)`. User, system and notice messages are
+  never changed. A conversation with nothing blank passes through as the
+  same `Arc` (byte for byte the engine's request). What is stored is not
+  touched.
+- Other sources looked at: an interrupt before any text (the engine
+  commits whatever blocks it has; an empty assistant message would be left
+  out by the same rule); our tools' empty cases all answer in words
+  (`(empty file)`, `No files matched`, `No matches for`, `no notes saved`,
+  fixed texts of `assign`, `compact_ready`, the watch tools, `skill_read`,
+  `tool_search`), except `note_read` of a note whose file the user
+  emptied, which answered `""` and now `(empty note)`; a user message
+  cannot be sent empty from the input (Enter on a blank draft sends
+  nothing).
+- Tests: `daemon::blank_text::tests::*` (each shape, signed thinking and
+  reasoning untouched, tool calls kept, a message left empty, a blank tool
+  result, user messages); `litellm::blank_text_before_a_tool_call_is_never_sent_back`
+  (both API styles, the raw bodies; failed before with
+  `request 1 sends blank text at ["input[2].content[0].text"]`; also pins
+  the stored blank blocks, the real text's item byte for byte, and no bare
+  bullet in the transcript); `file_tools::no_file_tool_answers_with_blank_text`;
+  `memory::tools::tests::an_emptied_note_reads_as_empty_note`. Upstream
+  report drafted, not filed: `.handover/upstream-empty-text-parts.md`.
+
+## A nested helper's note sent to a parent being retired (2026-11-17)
+
+- Hosted CI on 5aaf6c9: `mobs::a_helper_below_a_raised_depth_limit_starts_one_more`
+  timed out waiting for the note of the nested `assign` helper `inner`.
+  The daemon's log: `scout` (its parent, an `assign` helper whose run had
+  ended "waiting for inner") was decided done and its retire was under
+  way ("member retirement stage started … agent_identity=scout"), then
+  `a helper was not told of its own helper's ending helper=tui/scout
+  error=mob member not found: scout`, then `inner` retired. The recipient
+  was computed from the registry, which still listed `scout` until its
+  retire settled; the send was refused (or, a moment earlier, accepted
+  by a helper about to be retired and never read), and nothing fell back.
+  A real race in the product, not the test's assumption.
+- Fix: `HelperEndings::deciding`, one lock held while a helper's going
+  idle is decided (`decide_idle`: under it, the runtime is asked once more
+  for the helper's unfinished input; a note that landed after the last
+  look keeps the helper going) and while the daemon sends a note to a
+  helper (`HelperEndings::while_unsettled`: nothing is sent to a helper
+  whose ending was settled). `Agents::tell` passes a note its helper
+  recipient did not take (settled, or the send refused) to where that
+  helper's own ending would go, up to the agent, once; the clients' line
+  names the helpers passed over.
+- Tests: `mobs::a_nested_helper_s_note_that_lands_before_its_parent_is_decided_goes_to_the_parent`
+  and `mobs::a_nested_helper_s_note_after_its_parent_was_decided_goes_up_to_the_agent`
+  order the two endings with test hooks (`before_deciding`,
+  `before_retiring`). The second failed before the fix every time (the
+  note to the retiring `scout`, the agent never told); the first passes
+  before and after (the window it guards, a note accepted between the
+  last look and the decision, could not be forced without a hook inside
+  the engine's send) and pins that the note goes to `scout` only.
+- Loaded rounds of `mobs::` (`taskset -c 0,1` beside two busy loops in the
+  build slice, 20 rounds each, the loops stopped and none left after):
+  before the fix `a_helper_below_a_raised_depth_limit_starts_one_more`
+  failed 9 of 20 and the new after-the-decision test 20 of 20; after it
+  all ten tests passed 20 of 20.

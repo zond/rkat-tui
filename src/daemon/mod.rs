@@ -31,6 +31,7 @@ pub mod agents;
 pub mod approvals;
 pub mod assign;
 pub mod audit;
+pub mod blank_text;
 pub mod checkpoint;
 pub mod context;
 pub mod conversations;

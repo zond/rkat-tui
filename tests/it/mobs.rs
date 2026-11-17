@@ -595,6 +595,162 @@ async fn a_helper_below_a_raised_depth_limit_starts_one_more() {
     rig.quit().await;
 }
 
+/// Holds each named helper's going idle at its decision
+/// (`HelperEndings::before_deciding`) until the test opens it: `reached`
+/// says it got there, `open` lets it (and every later decision of it) go.
+struct DecisionGates {
+    gates: Vec<(
+        &'static str,
+        tokio::sync::watch::Sender<bool>,
+        tokio::sync::watch::Sender<bool>,
+    )>,
+}
+
+impl DecisionGates {
+    fn install(rig: &Attached, names: &[&'static str]) -> Arc<Self> {
+        let gates = Arc::new(Self {
+            gates: names
+                .iter()
+                .map(|name| {
+                    (
+                        *name,
+                        tokio::sync::watch::channel(false).0,
+                        tokio::sync::watch::channel(false).0,
+                    )
+                })
+                .collect(),
+        });
+        let registry = rig.daemon.registry();
+        let endings = registry.endings();
+        endings.before_deciding(Self::hook(&gates, ""));
+        endings.before_retiring(Self::hook(&gates, "retire "));
+        gates
+    }
+
+    /// The hook that holds the helper at the gate named `prefix` and its
+    /// name.
+    fn hook(gates: &Arc<Self>, prefix: &'static str) -> rkat_tui::mobs::endings::DecidingHookFn {
+        let gates = Arc::clone(gates);
+        Arc::new(move |key: rkat_tui::mobs::HelperKey| {
+            let gates = Arc::clone(&gates);
+            Box::pin(async move {
+                let label = format!("{prefix}{}", key.member.as_str());
+                let Some((_, reached, open)) =
+                    gates.gates.iter().find(|(name, _, _)| *name == label)
+                else {
+                    return;
+                };
+                reached.send_replace(true);
+                let mut open = open.subscribe();
+                let _ = open.wait_for(|open| *open).await;
+            })
+        })
+    }
+
+    fn gate(
+        &self,
+        name: &str,
+    ) -> &(
+        &'static str,
+        tokio::sync::watch::Sender<bool>,
+        tokio::sync::watch::Sender<bool>,
+    ) {
+        self.gates.iter().find(|(n, _, _)| *n == name).unwrap()
+    }
+
+    async fn reached(&self, name: &str) {
+        let mut reached = self.gate(name).1.subscribe();
+        tokio::time::timeout(std::time::Duration::from_secs(30), reached.wait_for(|r| *r))
+            .await
+            .unwrap_or_else(|_| panic!("{name} never reached its decision"))
+            .unwrap();
+    }
+
+    fn open(&self, name: &str) {
+        self.gate(name).2.send_replace(true);
+    }
+}
+
+/// How many user messages of the last request of `requests` tell that
+/// the helper `name` finished.
+fn notes_in_last(requests: &[common::Recorded], name: &str) -> usize {
+    let note = format!("Your helper `{name}` finished its task");
+    requests.last().map_or(0, |r| {
+        common::user_texts(&r.messages)
+            .iter()
+            .filter(|text| text.contains(&note))
+            .count()
+    })
+}
+
+/// The agent's own requests (no helper's).
+fn of_agent(llm: &ScriptedLlmClient) -> Vec<common::Recorded> {
+    llm.recorded()
+        .into_iter()
+        .filter(|r| !common::is_helper(&r.messages, "TASK"))
+        .collect()
+}
+
+/// The race behind a hosted CI failure: a nested `assign` helper's ending
+/// reached while its parent helper's own ending is being decided. Here the
+/// nested helper `inner` ends just before `scout` (its parent, itself an
+/// `assign` helper whose run already ended) is decided: the note lands in
+/// `scout` first, which goes on and reads it; the agent is not told of
+/// `inner`, only of `scout`. Told once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_nested_helper_s_note_that_lands_before_its_parent_is_decided_goes_to_the_parent() {
+    let ws = Workspace::new();
+    let llm = nesting();
+    let setup = Setup::args(&["--set", "helpers.max_depth=2"]);
+    let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
+    let gates = DecisionGates::install(&rig, &["scout", "inner"]);
+    rig.send(Effect::StartTurn(
+        "USER-ASK start a helper that starts one".into(),
+    ));
+    rig.turn_finished().await.expect("turn succeeds");
+    gates.reached("scout").await;
+    gates.reached("inner").await;
+    gates.open("inner");
+    // (No gate holds the retires.)
+    common::until(|| notes_in_last(&of_helper(&llm, "HELPER-TASK"), "inner") == 1).await;
+    gates.open("scout");
+    common::until(|| common::parent_told(&llm, "HELPER-TASK", "scout")).await;
+    rig.daemon.idle(&rig.daemon.agent).await;
+    assert_eq!(notes_in_last(&of_helper(&llm, "HELPER-TASK"), "inner"), 1);
+    assert_eq!(notes_in_last(&of_agent(&llm), "inner"), 0);
+    assert_eq!(notes_in_last(&of_agent(&llm), "scout"), 1);
+    rig.quit().await;
+}
+
+/// The other order of the same race: `scout` is decided done and its
+/// retire is under way (held here, still seated) when `inner`'s ending is
+/// told. The note does not go to the helper being retired (before the fix
+/// it did and was lost, or refused: "mob member not found: scout"); it
+/// goes up to the agent, once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_nested_helper_s_note_after_its_parent_was_decided_goes_up_to_the_agent() {
+    let ws = Workspace::new();
+    let llm = nesting();
+    let setup = Setup::args(&["--set", "helpers.max_depth=2"]);
+    let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
+    let gates = DecisionGates::install(&rig, &["scout", "inner", "retire scout"]);
+    rig.send(Effect::StartTurn(
+        "USER-ASK start a helper that starts one".into(),
+    ));
+    rig.turn_finished().await.expect("turn succeeds");
+    gates.reached("scout").await;
+    gates.reached("inner").await;
+    gates.open("scout");
+    gates.reached("retire scout").await;
+    gates.open("inner");
+    common::until(|| notes_in_last(&of_agent(&llm), "inner") == 1).await;
+    gates.open("retire scout");
+    rig.daemon.idle(&rig.daemon.agent).await;
+    assert_eq!(notes_in_last(&of_agent(&llm), "inner"), 1);
+    assert_eq!(notes_in_last(&of_helper(&llm, "HELPER-TASK"), "inner"), 0);
+    rig.quit().await;
+}
+
 /// Item 20: an agent that writes a mob profile read-only with comms on is
 /// told, by its next turn, that the profile's members cannot send
 /// messages (whatever the engine made of the call).

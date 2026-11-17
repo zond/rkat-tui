@@ -159,6 +159,19 @@ RKAT_TUI_REQUIRE_SANDBOX=1 cargo nextest run --all-features --test it -E 'test(/
 These tests were flaky on CI and have been hardened. If one fails again, the
 output now says why; report it rather than retrying silently:
 
+- `a_helper_below_a_raised_depth_limit_starts_one_more`
+  (`tests/it/mobs.rs`): failed on hosted CI (commit 5aaf6c9, "the wait at
+  tests/it/mobs.rs:579"), a real race in the product. The nested `assign`
+  helper `inner` finished while its parent helper `scout` was being
+  retired; the note with its answer was sent to `scout` ("a helper was not
+  told of its own helper's ending … mob member not found: scout") and
+  nobody else was told. A note to a helper is now sent only while no
+  helper's going idle is being decided, and one whose helper ended (or
+  refused it) goes further up (`HelperEndings::while_unsettled`,
+  `Agents::tell`). Both orders are pinned with decision and retire hooks:
+  `a_nested_helper_s_note_that_lands_before_its_parent_is_decided_goes_to_the_parent`
+  and `a_nested_helper_s_note_after_its_parent_was_decided_goes_up_to_the_agent`.
+  No timeout was raised.
 - `parallel_escalations_share_one_timeout_including_the_queue`
   (`src/approval/engine.rs`): the paused tokio clock auto-advances while a task
   waits on `spawn_blocking`, so budget checks must happen after every await.

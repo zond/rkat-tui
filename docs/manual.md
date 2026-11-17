@@ -108,7 +108,8 @@ durable `Steer` input that the runtime writes into the running turn as an
 ordinary user message at its next model boundary (between tool calls), or
 runs as one follow-up turn when no boundary comes. Its placeholder in the
 transcript reads *queued*, then *delivering*, and becomes your message once
-the runtime reports it written. A steer never joins a model request already
+the runtime reports it written (your messages are drawn on a grey band
+across the transcript's width, so they stand out when you scroll). A steer never joins a model request already
 on its way: while one runs longer than five seconds, the status bar reads
 `queued N, waiting for the model's reply (Ns)` (after 20 s without word
 from the agent the activity segment says it instead, see **Working or

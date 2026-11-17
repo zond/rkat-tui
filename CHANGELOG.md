@@ -8,6 +8,25 @@
   models behind an OpenAI-compatible proxy) left a bare `•` on a line of
   its own before each call. Text that is only whitespace is no longer
   drawn.
+- Behind such a proxy (LiteLLM), that line break, or an empty text part,
+  was sent back to the model with every later request, and the proxy
+  replaced it with `[System: Empty message content sanitised to satisfy
+  protocol]`, which the model then read as its own words. Text that is
+  only whitespace is now left out of what is sent (the conversation keeps
+  it), and a tool result with no text is sent as `(no output)`.
+  `note_read` of a note whose file was emptied answers `(empty note)`.
+- When a helper started by another helper (`assign` with
+  `helpers.max_depth` of 2 or more) finished just as its parent helper
+  did, the note with its answer could be lost: it was sent to the parent
+  while that one was being retired, and nobody was told. It now goes to
+  the parent while that one still reads it, or else up to the agent,
+  once.
+
+### Changed
+
+- Your own messages in the transcript are a grey band across the width,
+  in bright bold text, so they stand out when you scroll quickly (as in
+  Claude Code). A queued message keeps its look until it is sent.
 
 ## [0.0.14] - 2026-11-17
 
