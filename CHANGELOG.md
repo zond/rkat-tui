@@ -78,6 +78,10 @@
   characters under `⏰ a helper ended`, and no second notice saying the
   same. A click or Ctrl-O opens the note; a re-opened conversation shows
   the same line, and `/export` keeps the note in full.
+- Esc in a helper's full view goes back to the conversation at once,
+  without asking whether to stop the helper. Stopping it from its view is
+  now Ctrl-C, which asks first (y stops it; n, Esc or Ctrl-C keep it and
+  stay in the view); the view's title says `Esc back · Ctrl-C stop`.
 
 ### Added
 

@@ -316,7 +316,7 @@ fn draw_helper_view(frame: &mut Frame<'_>, app: &mut App, header: BlockId, area:
     let title = match app.transcript.block(header) {
         Some(Block::Helper(fold)) => {
             let esc = if fold.state.is_running() {
-                "  Esc stop?"
+                "  Esc back · Ctrl-C stop"
             } else {
                 "  Esc back"
             };
@@ -324,7 +324,7 @@ fn draw_helper_view(frame: &mut Frame<'_>, app: &mut App, header: BlockId, area:
         }
         _ => Line::default(),
     };
-    // Esc asked whether to stop the helper: the question under its view.
+    // Ctrl-C asked whether to stop the helper: the question under its view.
     let question: Vec<Line<'static>> = app
         .stop_confirmation()
         .map(|question| {
@@ -334,7 +334,7 @@ fn draw_helper_view(frame: &mut Frame<'_>, app: &mut App, header: BlockId, area:
                 .map(|line| Line::styled(line, style))
                 .collect();
             lines.push(Line::styled(
-                "y stop it · n or Esc keep it running (back to the transcript)",
+                "y stop it · n, Esc or Ctrl-C keep it running",
                 style.add_modifier(Modifier::BOLD),
             ));
             lines
@@ -617,7 +617,7 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
         InputHint::Menu => " Tab completes · ↑/↓ choose · Esc closes the menu ".into(),
         InputHint::Shell => app.shell_mode_hint().into(),
         InputHint::HelperView => {
-            " Esc back (asks to stop a running helper) · PgUp/PgDn scroll · Enter sends typed text "
+            " Esc back · Ctrl-C stops a running helper · PgUp/PgDn scroll · Enter sends typed text "
                 .into()
         }
         InputHint::PanelSelection => {
@@ -1511,7 +1511,8 @@ fn helper_line(fold: &HelperFold, status: &str, w: usize, lead: &str, tail: &str
     };
     let head = truncate_to_width(&head, w);
     let rest = w.saturating_sub(display_width(&head));
-    let status = truncate_to_width(&status, rest);
+    // The tail (the keys) keeps its room; the status is cut first.
+    let status = truncate_to_width(&status, rest.saturating_sub(display_width(tail)).max(1));
     let rest = rest.saturating_sub(display_width(&status));
     Line::from(vec![
         Span::styled(

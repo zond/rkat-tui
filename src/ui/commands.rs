@@ -1126,8 +1126,10 @@ Keys:
                                  nothing shows while there are no tasks; saved as [ui] checklist)
   Ctrl+Up/Down                   select a helper in the panel under the input (newest first);
                                  Enter on an empty input opens its full view (PgUp/PgDn scroll
-                                 it; Esc returns, and for a running helper first asks whether to
-                                 stop it: y stops it, n or Esc keeps it); a click unfolds a header
+                                 it; Esc goes back at once, after a pending /btw takes the first;
+                                 Ctrl-C asks whether to stop a running helper: y stops it, n, Esc
+                                 or Ctrl-C keeps it and stays; quitting is from the transcript);
+                                 a click unfolds a header
   Ctrl-R                         search history (Ctrl-R again: older · Enter accept · Esc cancel)
   Ctrl-X Ctrl-S                  interrupt and send the input (sends normally when idle)
   Ctrl-G, Ctrl-X Ctrl-E          edit the input in $VISUAL / $EDITOR / vi (also while a turn runs)

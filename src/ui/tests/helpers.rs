@@ -149,19 +149,67 @@ fn enter_with_text_submits_despite_a_selection() {
     assert_eq!(app.panel_selection(), Some(fork));
 }
 
-/// Esc in a running helper's full view asks whether to stop it (the
-/// owner's decision of 2026-11-15; this test pinned Esc closing the view
-/// before): the question is drawn under the view, other keys leave it up,
-/// `n` (or Esc) keeps the helper running and goes back to the transcript,
-/// `y` stops it. A finished helper's view closes on Esc; then Esc drops
-/// the selection.
+/// The owner's rule of 2026-11-17, replacing the 0.0.8 one
+/// (`esc_in_a_running_helper_s_view_asks_to_stop_it`: Esc asked whether to
+/// stop a running helper): Esc in a helper's view, running or not, goes
+/// back to the transcript at once, with no question, without touching
+/// the agent's run (no interrupt) and without arming Esc-Esc; the next Esc
+/// drops the selection. A pending `/btw` takes the first Esc. The view's
+/// title says the keys.
 #[test]
-fn esc_in_a_running_helper_s_view_asks_to_stop_it() {
+fn esc_in_a_helper_s_view_goes_back_at_once() {
     let (mut app, _, fork) = helper_app();
+    // The agent's turn runs: an Esc that reached it would interrupt it.
+    app.running = true;
     app.update(ctrl_key(KeyCode::Down));
     app.update(key(KeyCode::Enter));
     assert_eq!(app.helper_view(), Some(fork));
+    let rows = screen(&mut app, 14);
+    assert!(rows[0].ends_with("Esc back · Ctrl-C stop"), "{rows:#?}");
+    assert!(app.update(key(KeyCode::Esc)).is_empty(), "no interrupt");
+    assert_eq!(app.helper_view(), None);
+    assert_eq!(app.stop_confirmation(), None);
+    assert!(app.last_esc.is_none(), "Esc-Esc is not armed");
+    assert_eq!(app.panel_selection(), Some(fork));
+    // The next Esc drops the selection (and the one after that is the
+    // agent's own).
     assert!(app.update(key(KeyCode::Esc)).is_empty());
+    assert_eq!(app.panel_selection(), None);
+    assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
+    // A finished helper's view: the title says only Esc.
+    app.update(ctrl_key(KeyCode::Down));
+    app.update(key(KeyCode::Enter));
+    app.update(live(&[]));
+    let rows = screen(&mut app, 14);
+    assert!(rows[0].ends_with("Esc back"), "{rows:#?}");
+    assert!(!rows[0].contains("Ctrl-C"), "{rows:#?}");
+    app.update(key(KeyCode::Esc));
+    assert_eq!(app.helper_view(), None);
+    // A pending `/btw` takes the first Esc; the next one goes back.
+    app.update(key(KeyCode::Enter));
+    assert_eq!(app.helper_view(), Some(fork));
+    submit(&mut app, "/btw how far is it?");
+    assert!(app.btw_pending());
+    assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::CancelBtw]);
+    assert_eq!(app.helper_view(), Some(fork));
+    app.update(key(KeyCode::Esc));
+    assert_eq!(app.helper_view(), None);
+}
+
+/// Ctrl-C in a running helper's view asks whether to stop it: the
+/// question is drawn under the view, other keys leave it up, `n`, Esc or a
+/// second Ctrl-C keep the helper running and stay in the view, `y` stops
+/// it (and the view closes). Ctrl-C never reaches the agent's interrupt
+/// or the quit ladder; in a finished helper's view it only says the
+/// helper is not running.
+#[test]
+fn ctrl_c_in_a_running_helper_s_view_asks_to_stop_it() {
+    let (mut app, _, fork) = helper_app();
+    app.running = true;
+    app.update(ctrl_key(KeyCode::Down));
+    app.update(key(KeyCode::Enter));
+    assert_eq!(app.helper_view(), Some(fork));
+    assert!(app.update(ctrl('c')).is_empty(), "no interrupt");
     assert_eq!(app.helper_view(), Some(fork));
     let question = app.stop_confirmation().unwrap();
     assert!(
@@ -172,36 +220,42 @@ fn esc_in_a_running_helper_s_view_asks_to_stop_it() {
     let rows = screen(&mut app, 14).join("\n");
     assert!(rows.contains("Stop helper fork-1?"), "{rows}");
     assert!(
-        rows.contains("y stop it · n or Esc keep it running (back to the transcript)"),
+        rows.contains("y stop it · n, Esc or Ctrl-C keep it running"),
         "{rows}"
     );
     // Another key is not typed and leaves the question up.
     assert!(app.update(key(KeyCode::Char('x'))).is_empty());
     assert!(app.input.is_empty() && app.stop_confirmation().is_some());
-    // n: back to the transcript, the helper left running.
-    assert!(app.update(key(KeyCode::Char('n'))).is_empty());
-    assert_eq!(app.helper_view(), None);
-    assert_eq!(app.panel_selection(), Some(fork));
-    assert!(app.update(key(KeyCode::Esc)).is_empty());
-    assert_eq!(app.panel_selection(), None);
+    // n, Esc, a second Ctrl-C: the helper left running, the view stays.
+    for answer in [key(KeyCode::Char('n')), key(KeyCode::Esc), ctrl('c')] {
+        assert!(app.update(answer).is_empty());
+        assert_eq!(app.helper_view(), Some(fork));
+        assert_eq!(app.stop_confirmation(), None);
+        app.update(ctrl('c'));
+        assert!(app.stop_confirmation().is_some());
+    }
     // y: the helper is stopped (by its labels) and the view closes.
-    app.update(ctrl_key(KeyCode::Down));
-    app.update(key(KeyCode::Enter));
-    app.update(key(KeyCode::Esc));
     assert_eq!(
         app.update(key(KeyCode::Char('y'))),
         vec![Effect::StopHelper(vec!["fork-1".into()])]
     );
     assert_eq!(app.helper_view(), None);
-    // A finished helper's view closes on Esc, nothing asked.
-    app.update(key(KeyCode::Esc));
+    // The Ctrl-C presses armed no quit: idle on the transcript, one
+    // Ctrl-C only arms it, as always.
+    app.running = false;
+    assert!(app.update(ctrl('c')).is_empty());
+    assert!(!app.update(ctrl('c')).is_empty(), "the second quits");
+    // A finished helper's view: Ctrl-C asks nothing and says why.
+    let (mut app, _, fork) = helper_app();
     app.update(ctrl_key(KeyCode::Down));
     app.update(key(KeyCode::Enter));
     app.update(live(&[]));
     assert_eq!(app.helper_view(), Some(fork));
-    assert!(app.update(key(KeyCode::Esc)).is_empty());
-    assert_eq!(app.helper_view(), None);
+    assert!(app.update(ctrl('c')).is_empty());
+    assert_eq!(app.helper_view(), Some(fork));
     assert_eq!(app.stop_confirmation(), None);
+    assert!(app.transcript.blocks().iter().any(|b| matches!(b,
+        Block::Notice { text, .. } if text == "helper fork-1 is not running: nothing to stop")));
 }
 
 /// The `/helpers` picker's `s` asks to stop a running helper (nested ones

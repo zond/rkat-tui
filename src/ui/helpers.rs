@@ -211,22 +211,29 @@ impl App {
         fx.push(Effect::StopHelper(path));
     }
 
-    /// Esc in the full view of a running helper asks whether to stop it
-    /// (`true`); a helper that is not running has nothing to stop.
-    pub(super) fn ask_stop_in_view(&mut self) -> bool {
+    /// Ctrl-C in the full view of a running helper asks whether to stop
+    /// it; of a helper that is not running it says so (a notice in the
+    /// transcript, shown once the view closes) and stops nothing.
+    pub(super) fn ask_stop_in_view(&mut self) {
         let Some(header) = self.helper_view() else {
-            return false;
+            return;
         };
-        let running =
-            matches!(self.transcript.block(header), Some(Block::Helper(f)) if f.state.is_running());
-        if running && let Some(view) = self.helper_view.as_mut() {
-            view.confirm_stop = true;
+        match self.transcript.block(header) {
+            Some(Block::Helper(fold)) if fold.state.is_running() => {
+                if let Some(view) = self.helper_view.as_mut() {
+                    view.confirm_stop = true;
+                }
+            }
+            Some(Block::Helper(fold)) => {
+                let text = format!("helper {} is not running: nothing to stop", fold.label);
+                self.transcript.push_notice(NoticeLevel::Info, text);
+            }
+            _ => {}
         }
-        running
     }
 
-    /// The question the full view of a running helper asks on Esc, when
-    /// it does.
+    /// The question the full view of a running helper asks on Ctrl-C,
+    /// when it does.
     #[must_use]
     pub fn stop_confirmation(&self) -> Option<String> {
         let view = self.helper_view.as_ref().filter(|view| view.confirm_stop)?;
@@ -237,24 +244,31 @@ impl App {
     }
 
     /// A key while the full view asks whether to stop its helper: `y`
-    /// stops it, `n` or Esc keeps it running and goes back to the
-    /// transcript, anything else leaves the question up.
+    /// stops it, `n`, Esc or Ctrl-C (a second press) keeps it running and
+    /// stays in the view, anything else leaves the question up.
     pub(super) fn stop_confirm_key(
         &mut self,
-        code: ratatui::crossterm::event::KeyCode,
+        key: &ratatui::crossterm::event::KeyEvent,
         fx: &mut Vec<Effect>,
     ) {
-        use ratatui::crossterm::event::KeyCode;
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
         let Some(header) = self.helper_view() else {
             return;
         };
-        match code {
-            KeyCode::Char('y' | 'Y') => self.stop_helper(header, fx),
-            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
-                self.helper_view = None;
-                self.clear_selection();
-            }
+        let ctrl_c =
+            key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('y' | 'Y') if !ctrl_c => self.stop_helper(header, fx),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => self.keep_helper(),
+            _ if ctrl_c => self.keep_helper(),
             _ => {}
+        }
+    }
+
+    /// The stop question is answered "keep it": the view stays open.
+    fn keep_helper(&mut self) {
+        if let Some(view) = self.helper_view.as_mut() {
+            view.confirm_stop = false;
         }
     }
 }

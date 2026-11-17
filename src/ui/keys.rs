@@ -213,7 +213,7 @@ impl App {
         if self.stop_confirmation().is_some() {
             self.quit.last_ctrl_c = None;
             self.last_esc = None;
-            self.stop_confirm_key(key.code, fx);
+            self.stop_confirm_key(key, fx);
             return;
         }
         if let InputMode::Search(search) = &mut self.mode {
@@ -284,13 +284,23 @@ impl App {
                 _ => self.submit(now, fx),
             },
             Action::SendNow => self.interrupt_and_send(now, fx),
-            // Esc in a running helper's view asks whether to stop it; in
-            // another's it closes the view. Then it drops the selection.
+            // Esc in a helper's view goes back to the transcript at once
+            // (a pending `/btw` takes it first); it neither interrupts the
+            // agent nor arms Esc-Esc. The next Esc drops the selection.
             Action::Escape if view.is_some() => {
-                if !self.ask_stop_in_view() {
+                if self.btw_pending() {
+                    self.cancel_btw(fx);
+                } else {
                     self.helper_view = None;
                     self.clear_selection();
                 }
+            }
+            // Ctrl-C in a helper's view asks whether to stop a running one
+            // (or says it is not running); it never reaches the agent's
+            // interrupt or the quit ladder.
+            Action::CtrlC if view.is_some() => {
+                self.quit.last_ctrl_c = None;
+                self.ask_stop_in_view();
             }
             Action::Escape if self.panel_selection().is_some() => self.panel_selected = None,
             Action::HelperPrev => self.move_panel_selection(false),

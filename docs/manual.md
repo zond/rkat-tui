@@ -1289,10 +1289,14 @@ approval prompts of their calls stay open for you to answer. A helper that
 finishes after the interrupt is told to the agent as below (held for your
 next message). The daemon's stop still ends every helper.
 
-**Stopping one helper.** Esc in a running helper's full view asks
-`Stop helper scout? It cannot be undone: …`: `y` stops it, `n` or Esc
-keeps it running and returns to the transcript (a finished helper's view
-just closes). In `/helpers`, `s` asks the same for the highlighted helper.
+**Stopping one helper.** Ctrl-C in a running helper's full view asks
+`Stop helper scout? It cannot be undone: …`: `y` stops it (and the view
+closes), `n`, Esc or a second Ctrl-C keeps it running and stays in the
+view. In a finished helper's view Ctrl-C only says it is not running.
+Ctrl-C in a view never interrupts the agent or counts toward quitting:
+quit from the transcript. Esc in a helper's view always goes back to the
+transcript at once, asking nothing (a pending `/btw` takes the first Esc).
+In `/helpers`, `s` asks the same for the highlighted helper.
 `s` (Stop) on the approval prompt of a helper's call stops that helper,
 not the agent. A stop cancels the helper's run and retires it; the
 helpers it started keep running (one level, as an interrupt).
@@ -1380,8 +1384,9 @@ own task: the conversation it inherited is not shown again. The task
 comes from the helper's own run start, so a helper whose start the TUI
 never saw begins with its work. PgUp/PgDn, Shift+↑/↓ and the wheel scroll
 it; it follows new output while at the bottom. The view stays open after
-the helper finishes, so its result can be read; Esc returns to the
-transcript (for a running helper it first asks whether to stop it, see
+the helper finishes, so its result can be read; its title ends with
+`Esc back · Ctrl-C stop` (`Esc back` once it finished). Esc returns to
+the transcript at once (Ctrl-C asks whether to stop a running helper, see
 above), a second Esc drops the selection.
 
 The transcript keeps each helper's header where it was spawned, as the
@@ -2460,7 +2465,7 @@ in `src/ui/commands.rs`, pinned to the keymap by a test):
 | Ctrl-D | On an empty input, quit on a second press within 3 s (see [Sessions](#sessions) and [Detach and reattach](#the-workspace-daemon)); with text, delete forward |
 | Ctrl-O | Show everything in full, or fold it all back: every tool call's arguments, output and diff, every reasoning block, every job outcome, in the transcript and an open helper view; while on, new ones arrive shown (a click toggles one until the next Ctrl-O). Expanding or folding, by Ctrl-O, a click or `/helpers`, keeps the line at the bottom of the screen where it is: what is above it grows or shrinks upwards, and folding again brings the view back as it was |
 | Ctrl-T | Show or hide the [task checklist](#task-checklist) |
-| Ctrl+Up/Down | Select a helper in the panel under the input (newest first); Enter on an empty input opens its full view: its task and later inputs with who gave them, its work and its answer, under a title with its kind, state and model (Esc returns, asking first whether to stop a running helper; PgUp/PgDn scroll it) |
+| Ctrl+Up/Down | Select a helper in the panel under the input (newest first); Enter on an empty input opens its full view: its task and later inputs with who gave them, its work and its answer, under a title with its kind, state and model (Esc returns at once, after a pending `/btw` takes the first; Ctrl-C asks whether to stop a running helper, `y` stops it, `n`, Esc or Ctrl-C keep it and stay; PgUp/PgDn scroll it) |
 | Ctrl-R | Search the prompt history, the workspace's then the global one (Ctrl-R again: older; Enter accepts; Esc cancels) |
 | Ctrl-X Ctrl-S | Interrupt and send the input (sends normally when idle) |
 | Ctrl-G, Ctrl-X Ctrl-E | Edit the input in `$VISUAL`, else `$EDITOR`, else `vi` (also while a turn runs) |

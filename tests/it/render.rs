@@ -1265,9 +1265,12 @@ fn a_helper_full_view_renders_title_prose_reasoning_and_tools() {
         .unwrap();
     let buffer = terminal.backend().buffer().clone();
     let rows = rows(&buffer);
-    assert_eq!(
-        rows[0],
-        "◂ [scout · opus] ⠋ running · 1 tool call · glob \"*.rs\"  Esc stop?"
+    // At 70 columns the status is cut so the keys stay whole.
+    assert!(
+        rows[0].starts_with("◂ [scout · opus] ⠋ running · 1 tool call")
+            && rows[0].ends_with("…  Esc back · Ctrl-C stop"),
+        "{}",
+        rows[0]
     );
     assert!(buffer[(0, 0)].modifier.contains(Modifier::REVERSED));
     assert_eq!(rows[1], "✻ thinking (18 chars, Ctrl-O to expand)");
@@ -1278,7 +1281,7 @@ fn a_helper_full_view_renders_title_prose_reasoning_and_tools() {
     // The transcript's own blocks are not drawn.
     assert!(rows.iter().all(|r| !r.contains("find it")), "{rows:?}");
     assert!(
-        rows[8].contains("Esc back (asks to stop a running helper)"),
+        rows[8].contains("Esc back · Ctrl-C stops a running helper"),
         "{:?}",
         rows[8]
     );
