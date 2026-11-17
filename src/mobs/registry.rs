@@ -147,6 +147,16 @@ impl std::fmt::Display for HelperKey {
     }
 }
 
+/// A helper, or every helper of a mob, that left for good
+/// ([`HelperRegistry::on_gone`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Gone {
+    /// The helper retired (finished, stopped or retired by a tool).
+    Member(HelperKey),
+    /// The mob was destroyed.
+    Mob(MobId),
+}
+
 /// The session a new helper works for, and what it inherits from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Owner {
@@ -215,6 +225,9 @@ pub struct HelperRegistry {
     scratch: crate::approval::scratch::ScratchDirs,
     /// How each helper ends, and when its parent is told.
     endings: std::sync::Arc<super::endings::HelperEndings>,
+    /// Where each helper and mob that left for good is reported
+    /// ([`Self::on_gone`]).
+    gone: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<Gone>>,
     /// Tests: forks are wired as their spawn is announced
     /// ([`Self::wire_forks_early`]).
     #[cfg(any(test, feature = "test-support"))]
@@ -251,6 +264,7 @@ impl HelperRegistry {
             destroyed: tokio::sync::broadcast::channel(DESTROYED_QUEUE).0,
             scratch: crate::approval::scratch::ScratchDirs::off(),
             endings: std::sync::Arc::default(),
+            gone: std::sync::OnceLock::new(),
             #[cfg(any(test, feature = "test-support"))]
             forks_early: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
@@ -610,6 +624,7 @@ impl HelperRegistry {
         if let Err(err) = self.bindings.remove_member(key) {
             tracing::warn!(helper = %key, error = %err, "cannot drop the helper's binding");
         }
+        self.report_gone(Gone::Member(key.clone()));
     }
 
     /// `mob` was destroyed: drop its helpers everywhere. Idempotent.
@@ -618,6 +633,20 @@ impl HelperRegistry {
         let _ = self.destroyed.send(mob.clone());
         if let Err(err) = self.bindings.remove_mob(mob) {
             tracing::warn!(mob = %mob, error = %err, "cannot drop the mob's bindings");
+        }
+        self.report_gone(Gone::Mob(mob.clone()));
+    }
+
+    /// Report each helper that retires and each mob destroyed from now on
+    /// to `sink` (once; the daemon's connections of helpers in different
+    /// mobs follow them, `crate::daemon::links`).
+    pub fn on_gone(&self, sink: tokio::sync::mpsc::UnboundedSender<Gone>) {
+        let _ = self.gone.set(sink);
+    }
+
+    fn report_gone(&self, gone: Gone) {
+        if let Some(sink) = self.gone.get() {
+            let _ = sink.send(gone);
         }
     }
 

@@ -3140,18 +3140,33 @@ two or more of its own helpers with `connect_helpers`, naming them as the
 call that started each one did (`{"helpers": ["scout", "tester"]}`):
 every pair of them is wired both ways, so each sees the others in `peers`
 and can message them. Any kind counts (`assign`, `fork_off`,
-`spawn_member`, and `mob_spawn_member` members of one mob the agent
-created), but all of one call's helpers must be in one mob: an `assign`
-helper and a member of a mob the agent created are refused, with what
-works instead (start them in the same mob). Each newly connected helper
+`spawn_member`, and `mob_spawn_member` members of mobs the agent
+created), in one mob or across mobs: an `assign` helper can be connected
+with a member of a mob the agent created, or members of two such mobs
+with each other. Each newly connected helper
 is told once, in a note it reads at its next step, whom it can reach now
 and how; the call answers which pairs are new and which were connected
 already. A name that is not the caller's own running helper (another
 agent's helper, a helper's helper, an agent of the workspace, the caller
 itself, a helper that finished) is refused, naming the caller's helpers;
-a fork still starting is waited for a few seconds. The engine keeps the
-edges across a daemon restart and drops them with a helper that is
-retired (an `assign` helper retires when it finishes). There is no
+a fork still starting is waited for a few seconds. A message between two
+helpers of the same agent passes without review, as one to the agent's
+own helper does, in every permission mode, plan mode included (plan mode
+asks only before a message to an agent of another workspace); the
+recipient's own calls pass its gate as always.
+
+A pair stays connected until one of them leaves: it is retired or
+stopped, an `assign` helper finishes, or its mob is destroyed. Then it is
+gone from the other's `peers`. Within one mob the engine keeps the edges
+across a daemon restart and drops them with a member that retires.
+Across mobs the engine's in-process transport does not reach (each mob's
+members listen in a namespace of their own), so the daemon serves each
+end on a Unix socket of its own under the realm (`wire/h-<digest>.sock`,
+as `/wire` serves an agent) and keeps the pairs in
+`<realm>/helper-links.json`: when an end leaves, the daemon removes the
+other end's edge to it and tells it so in a note; at each start it
+checks the record against the mobs, ends a pair whose end is gone, and
+makes the others' sockets listen again. There is no
 `disconnect_helpers`. Every message wakes its receiver, so the
 instructions tell an agent to connect only helpers that must coordinate.
 

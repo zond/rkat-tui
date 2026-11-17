@@ -90,9 +90,9 @@ impl Assigner {
 
     /// Seat and connect them through `state` (once; it is made after the
     /// tools).
-    pub fn bind(&self, state: &Arc<MobMcpState>) {
+    pub fn bind(&self, state: &Arc<MobMcpState>, links: &Arc<super::links::Links>) {
         let _ = self.state.set(Arc::downgrade(state));
-        self.connector.bind(state);
+        self.connector.bind(state, links);
     }
 
     /// The member running as `caller`: an agent, or a helper.

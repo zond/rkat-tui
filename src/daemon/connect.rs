@@ -11,14 +11,16 @@
 //!   workspace's mob (lukacf/meerkat#2233), so the host wires them, as it
 //!   wires a fork to its parent (`mob_wire_members_batch`; an edge that
 //!   exists stays). An edge joins two members of one mob; two helpers in
-//!   different mobs are refused (`docs/evidence.md`, "Helpers connected by
-//!   their parent").
+//!   different mobs are connected through the daemon's sockets
+//!   ([`super::links`]: the engine's in-process transport does not reach
+//!   across mobs).
 //! - **Told.** Each helper with a new edge is told once who it can reach
 //!   now and how, in a system note it reads at its next step (the note
 //!   wakes no one).
 //! - **Life.** The engine keeps a mob's edges across a restart and drops a
 //!   member's edges when it retires (an `assign` helper retires when it
-//!   finishes).
+//!   finishes); a pair across mobs ends the same way, by the daemon
+//!   ([`super::links`]).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock, Weak};
@@ -173,6 +175,7 @@ pub fn connected_note(parent: &str, peers: &[(String, String)]) -> String {
 pub struct Connector {
     registry: Arc<HelperRegistry>,
     state: OnceLock<Weak<MobMcpState>>,
+    links: OnceLock<Arc<super::links::Links>>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -188,12 +191,15 @@ impl Connector {
         Self {
             registry,
             state: OnceLock::new(),
+            links: OnceLock::new(),
         }
     }
 
-    /// Wire them through `state` (once; it is made after the tools).
-    pub fn bind(&self, state: &Arc<MobMcpState>) {
+    /// Wire them through `state`, and helpers in different mobs through
+    /// `links` (once; they are made after the tools).
+    pub fn bind(&self, state: &Arc<MobMcpState>, links: &Arc<super::links::Links>) {
         let _ = self.state.set(Arc::downgrade(state));
+        let _ = self.links.set(Arc::clone(links));
     }
 
     /// The caller running as `session`, with its own name.
@@ -252,75 +258,109 @@ impl Connector {
             .map(|root| root.member.to_string())
             .chain(std::iter::once(self_name.clone()).filter(|_| caller.path.is_empty()))
             .collect();
-        let chosen = choose(names, &own, &self_name, &agents, &elsewhere)?;
-        // By mob: an edge joins two members of one mob.
+        let helpers = choose(names, &own, &self_name, &agents, &elsewhere)?;
+        // The comms names the helpers see each other under, by mob.
         let mut by_mob: BTreeMap<MobId, Vec<Chosen>> = BTreeMap::new();
-        for helper in &chosen {
+        for helper in &helpers {
             by_mob
                 .entry(helper.key.mob.clone())
                 .or_default()
                 .push(helper.clone());
         }
-        if by_mob.len() > 1 {
-            let groups: Vec<String> = by_mob
-                .iter()
-                .map(|(mob, helpers)| {
-                    let names: Vec<String> =
-                        helpers.iter().map(|h| format!("`{}`", h.name)).collect();
-                    format!("{} in the mob `{mob}`", names.join(", "))
-                })
-                .collect();
-            return Err(format!(
-                "nothing was connected: these helpers are in different mobs ({}), and rkat-tui connects only helpers of one mob (an edge joins members of one mob). Start the helpers that must talk to each other in the same mob: all with `assign`, `fork_off` or `spawn_member` (your own mob), or all with `mob_spawn_member` in one mob you created",
-                groups.join("; ")
-            ));
-        }
-        let Some((mob, helpers)) = by_mob.into_iter().next() else {
-            return Err(not_here.to_string());
-        };
-        let handle = state.handle_for(&mob).await.map_err(|err| {
-            format!("the helpers' mob cannot be reached, so nothing was connected: {err}")
-        })?;
-        let mut edges = Vec::new();
-        for (i, a) in helpers.iter().enumerate() {
-            for b in &helpers[i + 1..] {
-                edges.push((a.key.member.clone(), b.key.member.clone()));
+        let mut roles: BTreeMap<HelperKey, String> = BTreeMap::new();
+        for mob in by_mob.keys() {
+            let handle = state.handle_for(mob).await.map_err(|err| {
+                format!(
+                    "the mob `{mob}` of the helpers cannot be reached, so nothing was connected: {err}"
+                )
+            })?;
+            for member in handle.list_members().await {
+                roles.insert(
+                    HelperKey::new(mob.clone(), member.agent_identity),
+                    member.role.to_string(),
+                );
             }
         }
-        let report = wire_when_seated(&state, &mob, edges).await?;
-        let new: Vec<(AgentIdentity, AgentIdentity)> = report
-            .wired
-            .into_iter()
-            .map(|edge| (edge.a, edge.b))
-            .collect();
-        // The comms names the helpers see each other under.
-        let roles: BTreeMap<AgentIdentity, String> = handle
-            .list_members()
-            .await
-            .into_iter()
-            .map(|member| (member.agent_identity, member.role.to_string()))
-            .collect();
-        let peer_name = |member: &AgentIdentity| {
+        let peer_name = |key: &HelperKey| {
             roles
-                .get(member)
+                .get(key)
                 .and_then(|role| {
-                    meerkat_core::MemberCommsName::new(mob.as_str(), role, member.as_str()).ok()
+                    meerkat_core::MemberCommsName::new(key.mob.as_str(), role, key.member.as_str())
+                        .ok()
                 })
-                .map_or_else(|| member.to_string(), |name| name.to_string())
+                .map_or_else(|| key.to_string(), |name| name.to_string())
         };
-        let name_of = |member: &AgentIdentity| {
+        // Within one mob, edges of that mob; across mobs, the daemon's
+        // sockets (`super::links`). The pairs new now:
+        let mut new: Vec<(HelperKey, HelperKey)> = Vec::new();
+        for (mob, members) in &by_mob {
+            let mut edges = Vec::new();
+            for (i, a) in members.iter().enumerate() {
+                for b in &members[i + 1..] {
+                    edges.push((a.key.member.clone(), b.key.member.clone()));
+                }
+            }
+            if edges.is_empty() {
+                continue;
+            }
+            let report = wire_when_seated(&state, mob, edges).await?;
+            new.extend(report.wired.into_iter().map(|edge| {
+                (
+                    HelperKey::new(mob.clone(), edge.a),
+                    HelperKey::new(mob.clone(), edge.b),
+                )
+            }));
+        }
+        let crossing: Vec<(&Chosen, &Chosen)> = helpers
+            .iter()
+            .enumerate()
+            .flat_map(|(i, a)| helpers[i + 1..].iter().map(move |b| (a, b)))
+            .filter(|(a, b)| a.key.mob != b.key.mob)
+            .collect();
+        if !crossing.is_empty() {
+            let links = self
+                .links
+                .get()
+                .ok_or("the daemon is stopping: nothing more was connected")?;
+            let end = |helper: &Chosen| super::links::End {
+                key: helper.key.clone(),
+                peer: peer_name(&helper.key),
+                name: helper.name.clone(),
+            };
+            for (a, b) in crossing {
+                let already = links.link(end(a), end(b)).await.map_err(|why| {
+                    let made: Vec<String> = new
+                        .iter()
+                        .map(|(x, y)| format!("`{x}` and `{y}`"))
+                        .collect();
+                    format!(
+                        "`{}` and `{}` (in different mobs) were not connected: {why}{}",
+                        a.name,
+                        b.name,
+                        if made.is_empty() {
+                            String::new()
+                        } else {
+                            format!("; connected before that: {}", made.join(", "))
+                        }
+                    )
+                })?;
+                if !already {
+                    new.push((a.key.clone(), b.key.clone()));
+                }
+            }
+        }
+        let name_of = |key: &HelperKey| {
             helpers
                 .iter()
-                .find(|h| &h.key.member == member)
-                .map_or_else(|| member.to_string(), |h| h.name.clone())
+                .find(|h| &h.key == key)
+                .map_or_else(|| key.to_string(), |h| h.name.clone())
         };
         let mut lines = Vec::new();
         for (i, a) in helpers.iter().enumerate() {
             for b in &helpers[i + 1..] {
-                let fresh = new.iter().any(|(x, y)| {
-                    (x == &a.key.member && y == &b.key.member)
-                        || (x == &b.key.member && y == &a.key.member)
-                });
+                let fresh = new
+                    .iter()
+                    .any(|(x, y)| (x == &a.key && y == &b.key) || (x == &b.key && y == &a.key));
                 lines.push(format!(
                     "`{}` and `{}`{}",
                     a.name,
@@ -338,9 +378,9 @@ impl Connector {
             let peers: Vec<(String, String)> = new
                 .iter()
                 .filter_map(|(x, y)| {
-                    if x == &helper.key.member {
+                    if x == &helper.key {
                         Some(y)
-                    } else if y == &helper.key.member {
+                    } else if y == &helper.key {
                         Some(x)
                     } else {
                         None
@@ -370,10 +410,10 @@ impl Connector {
         }
         let peers: Vec<String> = helpers
             .iter()
-            .map(|h| format!("`{}` is `{}`", h.name, peer_name(&h.key.member)))
+            .map(|h| format!("`{}` is `{}`", h.name, peer_name(&h.key)))
             .collect();
         Ok(format!(
-            "Connected, each pair both ways: {}. Each can now message the others with `send_message` ({} in `peers`); each newly connected helper was told whom it can reach. They stay connected until one of them is retired (an `assign` helper is retired when it finishes).",
+            "Connected, each pair both ways: {}. Each can now message the others with `send_message` ({} in `peers`); each newly connected helper was told whom it can reach. A pair stays connected until one of them leaves: it is retired or stopped, an `assign` helper finishes, or its mob is destroyed (it is then gone from the other's `peers`).",
             lines.join(", "),
             peers.join(", ")
         ))

@@ -92,6 +92,8 @@ pub struct Composed {
     /// clients, the helper follower's, and the one that tells the clients
     /// of destroyed mobs.
     pub tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// The connections of helpers in different mobs.
+    pub links: Arc<super::links::Links>,
     /// What every agent's and helper's model calls used.
     pub ledger: Arc<super::usage::Ledger>,
     /// The members' tool catalogs.
@@ -221,7 +223,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     ));
     let mut notices = notices;
     notices.extend(prepare.startup_notice());
-    let startup_notices =
+    let mut startup_notices =
         startup_notices(&confinement.notices, approval.notices.drain(..), notices);
     // The engine's decision events go to every attached client
     // (`rkat/approval_note`, forwarded once the consent surface exists).
@@ -378,7 +380,19 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         &registry,
     )?;
     prepare.bind(&state);
-    assigner.bind(&state);
+    // `connect_helpers` across mobs: the pairs connected so far, their
+    // sockets made at the start's check (`Links::reconcile`), each pair
+    // ending with an end that leaves.
+    let (links, links_problem) = super::links::Links::open(&realm_root);
+    if let Some(problem) = links_problem {
+        tracing::warn!(%problem, "no connections of helpers in different mobs this run");
+        startup_notices.push(StartupNotice::warn(problem));
+    }
+    links.bind(&state);
+    let (gone_tx, gone_rx) = mpsc::unbounded_channel();
+    registry.on_gone(gone_tx);
+    let links_task = links.follow(gone_rx);
+    assigner.bind(&state, &links);
     // The agent-facing mob tools (`fork_off`, `mob_*`, …) reach a session
     // build through the builder's mob-tools slot. `MethodRouter::new` fills
     // it on the first connection, which is after the agent's spawn:
@@ -469,7 +483,9 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             follower,
             destroyed_task,
             probe_task,
+            links_task,
         ],
+        links,
         ledger,
         origins,
         deferral,

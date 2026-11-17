@@ -45,6 +45,7 @@ pub mod engine;
 pub mod handshake;
 pub mod instructions;
 pub mod lifecycle;
+pub mod links;
 pub mod local;
 pub mod mob;
 pub mod policy;
@@ -599,6 +600,7 @@ impl Daemon {
                 options.build.unwrap_or_else(|| crate::BUILD.to_string()),
             ),
             wires: open_wires(&mut composed, &workspace),
+            links: Arc::clone(&composed.links),
             schedules: Arc::new(schedules::Schedules::new(
                 composed.runtime.schedule_service(),
                 Arc::clone(&composed.ledger),
@@ -646,6 +648,9 @@ impl Daemon {
             options.before_catalogs.clone(),
         )
         .await?;
+        // The connections of helpers in different mobs the last daemon
+        // left: those whose end is gone end, the others' sockets listen.
+        core.links.reconcile().await;
         let watch_task = deliver_watches(&agents, composed.watch_batches);
         let agents_for_space = Arc::clone(&agents);
         let local = Arc::new(local::Local::new(
@@ -798,8 +803,9 @@ impl Daemon {
         // The endpoint goes first: nobody should find a daemon that no
         // longer accepts.
         self.listener.remove_files();
-        // Nor an agent's socket.
+        // Nor an agent's socket, nor a connected helper's.
         self.local.core().wires.close();
+        self.local.core().links.close();
         // No more idle questions: one left asking about a conversation the
         // shutdown unregisters would keep the runtime and the mobs' handles
         // past the daemon's end (`activity::Activity::stop`).

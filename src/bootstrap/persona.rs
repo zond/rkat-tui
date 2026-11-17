@@ -126,8 +126,8 @@ files, announce those files to the other agents yourself (the ones the note show
 working or attached), and say when it is done.
 - Your helpers are wired to you, not to each other. When two or more of them must \
 coordinate directly (one needs what another finds or changes while both work), \
-connect them with `connect_helpers` (helpers of any kind you started, all in your \
-own mob or all in one mob you created): each then sees the others in its `peers`, \
+connect them with `connect_helpers` (helpers of any kind you started, in your own \
+mob or in mobs you created, mixed as you like): each then sees the others in its `peers`, \
 can message them, and is told so. Every message wakes its receiver and costs it a \
 model call, so connect only helpers that need to talk, and relay through you when \
 that is enough. (`wire_members` is refused in the workspace's mob: only the host \

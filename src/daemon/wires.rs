@@ -282,41 +282,18 @@ impl Wires {
 
     fn try_bind(&self, agent: &str) -> Result<Socket, WireError> {
         let path = self.socket_path(agent);
-        check_length(&path)?;
-        let io = |source| WireError::Socket {
-            path: path.clone(),
-            source,
-        };
-        crate::paths::create_private_dir(&self.dir)
-            .and_then(|()| set_mode(&self.dir, 0o700))
-            .map_err(io)?;
         // The previous one of this agent (its daemon ended without its
         // clean stop) or a stale file: the realm's lease makes this the
         // only daemon of the realm.
         self.sockets.lock().remove(agent);
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(io(err)),
-        }
-        let listener = tokio::net::UnixListener::bind(&path).map_err(io)?;
-        set_mode(&path, 0o600).map_err(io)?;
-        let state = Arc::clone(&self.state);
-        let name = agent.to_string();
-        let task = tokio::spawn(async move {
-            loop {
-                let stream = match listener.accept().await {
-                    Ok((stream, _)) => stream,
-                    Err(err) => {
-                        tracing::warn!(agent = %name, error = %err, "the wire socket stopped accepting");
-                        return;
-                    }
-                };
-                // One task per connection, unbounded: only this user can
-                // connect (0600 in a 0700 directory).
-                tokio::spawn(serve(Arc::clone(&state), name.clone(), stream));
-            }
-        });
+        let state = Arc::downgrade(&self.state);
+        let task = serve_socket(
+            &self.dir,
+            &path,
+            state,
+            MobId::from(MOB_ID),
+            AgentIdentity::from(agent),
+        )?;
         Ok(Socket { path, task })
     }
 
@@ -694,15 +671,71 @@ impl Wires {
     }
 }
 
-/// Serve one connection to `agent`'s socket with its comms key and inbox
-/// as they are now, waking it when it has no comms runtime.
-async fn serve(state: Arc<MobMcpState>, agent: String, stream: tokio::net::UnixStream) {
+/// Listen at `path` (in `dir`, made 0700; the socket 0600; a stale file
+/// there replaced) and serve each connection to the member `member` of
+/// `mob` ([`serve`]), while `state` lives. Wires to agents of other
+/// workspaces use it, and the connections of helpers in different mobs
+/// (`super::links`).
+///
+/// # Errors
+///
+/// [`WireError::PathTooLong`], [`WireError::Socket`].
+pub(super) fn serve_socket(
+    dir: &Path,
+    path: &Path,
+    state: std::sync::Weak<MobMcpState>,
+    mob: MobId,
+    member: AgentIdentity,
+) -> Result<tokio::task::JoinHandle<()>, WireError> {
+    check_length(path)?;
+    let io = |source| WireError::Socket {
+        path: path.to_path_buf(),
+        source,
+    };
+    crate::paths::create_private_dir(dir)
+        .and_then(|()| set_mode(dir, 0o700))
+        .map_err(io)?;
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(io(err)),
+    }
+    let listener = tokio::net::UnixListener::bind(path).map_err(io)?;
+    set_mode(path, 0o600).map_err(io)?;
+    Ok(tokio::spawn(async move {
+        loop {
+            let stream = match listener.accept().await {
+                Ok((stream, _)) => stream,
+                Err(err) => {
+                    tracing::warn!(%mob, %member, error = %err, "the wire socket stopped accepting");
+                    return;
+                }
+            };
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            // One task per connection, unbounded: only this user can
+            // connect (0600 in a 0700 directory).
+            tokio::spawn(serve(state, mob.clone(), member.clone(), stream));
+        }
+    }))
+}
+
+/// Serve one connection to `agent`'s socket (a member of `mob`) with its
+/// comms key and inbox as they are now, waking it when it has no comms
+/// runtime.
+async fn serve(
+    state: Arc<MobMcpState>,
+    mob: MobId,
+    identity: AgentIdentity,
+    stream: tokio::net::UnixStream,
+) {
+    let agent = identity.to_string();
     let served = tokio::time::timeout(CONNECTION_BOUND, async {
         let handle = state
-            .handle_for(&MobId::from(MOB_ID))
+            .handle_for(&mob)
             .await
             .map_err(|err| err.to_string())?;
-        let identity = AgentIdentity::from(agent.as_str());
         let session = handle
             .resolve_bridge_session_id(&identity)
             .await
@@ -735,9 +768,11 @@ async fn serve(state: Arc<MobMcpState>, agent: String, stream: tokio::net::UnixS
     })
     .await;
     match served {
-        Ok(Ok(())) => tracing::debug!(%agent, "a cross-workspace envelope was delivered"),
-        Ok(Err(why)) => tracing::info!(%agent, %why, "a cross-workspace connection was refused"),
-        Err(_) => tracing::info!(%agent, "a cross-workspace connection took too long"),
+        Ok(Ok(())) => tracing::debug!(%mob, %agent, "an envelope over a wire socket was delivered"),
+        Ok(Err(why)) => {
+            tracing::info!(%mob, %agent, %why, "a wire socket's connection was refused");
+        }
+        Err(_) => tracing::info!(%mob, %agent, "a wire socket's connection took too long"),
     }
 }
 

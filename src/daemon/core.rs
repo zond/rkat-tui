@@ -44,6 +44,8 @@ pub struct Core {
     pub lifecycle: Arc<Lifecycle>,
     /// The agents' sockets and wires to other workspaces.
     pub wires: Arc<Wires>,
+    /// The connections of helpers in different mobs (`connect_helpers`).
+    pub links: Arc<super::links::Links>,
     /// The agents' schedules.
     pub schedules: Arc<Schedules>,
     /// When the agents are idle.

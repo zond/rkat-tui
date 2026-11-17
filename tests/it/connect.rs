@@ -315,70 +315,6 @@ async fn a_connection_of_what_is_not_the_caller_s_own_helpers_is_refused() {
     daemon.stop().await;
 }
 
-/// A helper of the agent's own mob and a member of a mob it created are
-/// in different mobs: refused, saying why and what works.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn helpers_in_different_mobs_are_refused_saying_what_works() {
-    let ws = Workspace::new();
-    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
-        let user = common::user_texts(messages).concat();
-        if user.contains("TASK-OF-") || !user.contains("go") {
-            return Step::Text("idle");
-        }
-        let all = format!("{messages:?}");
-        if all.contains("\"c1\"") {
-            return Step::Text("done");
-        }
-        if all.contains("\"s2\"") {
-            return connect("c1", &["a", "w1"]);
-        }
-        if all.contains("\"s1\"") {
-            return tool(
-                "s2",
-                "mob_spawn_member",
-                json!({"mob_id": "team", "profile": "worker", "member_id": "w1"}),
-            );
-        }
-        if all.contains("\"m1\"") {
-            return tool(
-                "s1",
-                "spawn_member",
-                json!({"profile": "main", "member_id": "a", "initial_message": "TASK-OF-A", "auto_wire_parent": true}),
-            );
-        }
-        tool(
-            "m1",
-            "mob_create",
-            json!({"definition": {"id": "team", "profiles": {"worker": {"model": common::MODEL, "tools": {"comms": true}}}}}),
-        )
-    }));
-    let llm = ScriptedLlmClient::new(vec![step; 30]);
-    let (daemon, _classifier) = strict(&ws, &llm).await;
-    daemon
-        .reveal(&daemon.session, &["mob_create", "mob_spawn_member"])
-        .await;
-    let connection = daemon.connect_bound().await;
-    daemon.prompt(&connection, "go").await;
-    let (text, error) = llm
-        .recorded()
-        .iter()
-        .find_map(|r| result_of(&r.messages, "c1"))
-        .unwrap();
-    assert!(error, "{text}");
-    assert!(text.contains("in different mobs"), "{text}");
-    assert!(
-        text.contains("`a` in the mob `tui`") && text.contains("`w1` in the mob `team`"),
-        "{text}"
-    );
-    assert!(
-        text.contains("Start the helpers that must talk to each other in the same mob"),
-        "{text}"
-    );
-    daemon.idle(&daemon.agent).await;
-    drop(connection);
-    daemon.stop().await;
-}
-
 /// Mixed kinds: a fork and a `spawn_member` helper connected talk both
 /// ways, without review.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -466,6 +402,464 @@ async fn a_fork_and_a_kept_member_connected_talk_both_ways() {
     daemon.idle(&daemon.agent).await;
     no_send_reviewed(&classifier);
     drop(connection);
+    daemon.stop().await;
+}
+
+fn leak(text: String) -> &'static str {
+    Box::leak(text.into_boxed_str())
+}
+
+/// A helper driven by commands its owner's client sends it: `LIST<n>`
+/// lists its peers (call `l<n>`); `SEND<n>` lists them (`q<n>`) and sends
+/// `FROM-<me>-<n>` to the peer whose name holds `other` (`s<n>`).
+fn commanded(messages: &[Message], me: &str, other: &str) -> Step {
+    // The last command, as a user text or an external event's body.
+    let all = format!("{messages:?}");
+    let at = all.rfind("\"SEND").max(all.rfind("\"LIST"));
+    let last = at
+        .and_then(|at| {
+            let rest = &all[at + 1..];
+            rest.find('"').map(|end| rest[..end].to_string())
+        })
+        .unwrap_or_default();
+    let Some(n) = last
+        .strip_prefix("LIST")
+        .or_else(|| last.strip_prefix("SEND"))
+    else {
+        return Step::Text("idle");
+    };
+    let list = last.starts_with("LIST");
+    let (q, s) = if list {
+        (leak(format!("l{n}")), leak(format!("x{n}")))
+    } else {
+        (leak(format!("q{n}")), leak(format!("s{n}")))
+    };
+    if answered(messages, s) || (list && answered(messages, q)) {
+        return Step::Text("done");
+    }
+    if answered(messages, q) {
+        let peer = peer_id(messages, other);
+        return send(s, peer, &format!("FROM-{me}-{n}"));
+    }
+    tool(q, "peers", json!({}))
+}
+
+/// The mob tools the agent's script calls.
+const MOB_TOOLS: [&str; 3] = ["mob_create", "mob_spawn_member", "mob_destroy"];
+
+/// `mob_spawn_member` of `member` in `team` (its task names it).
+fn in_team(member: &str, task: &str) -> serde_json::Value {
+    json!({"mob_id": "team", "profile": "worker", "member_id": member, "initial_message": task})
+}
+
+/// `spawn_member` of `member` in the workspace's mob.
+fn in_tui(member: &str, task: &str) -> serde_json::Value {
+    json!({"profile": "main", "member_id": member, "initial_message": task, "auto_wire_parent": true})
+}
+
+/// A script in which the agent, prompted `go`, creates the mob `team`
+/// (its members addressable by their owner's client, so the test can
+/// drive them), seats `seats` in order, connects `pair` and is done;
+/// prompted `DESTROY`, it destroys `team`. Each helper of `helpers`
+/// (its task's marker, how it signs, the peer name it messages) does what
+/// the test tells it ([`commanded`]).
+fn team_script(
+    seats: Vec<(&'static str, &'static str, serde_json::Value)>,
+    helpers: Vec<(&'static str, &'static str, &'static str)>,
+    pair: &'static [&'static str],
+) -> Step {
+    Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        let user = common::user_texts(messages).concat();
+        for (marker, me, other) in &helpers {
+            if user.contains(marker) {
+                return commanded(messages, me, other);
+            }
+        }
+        let all = format!("{messages:?}");
+        let last = common::user_texts(messages)
+            .last()
+            .cloned()
+            .unwrap_or_default();
+        if last == "DESTROY" {
+            return if all.contains("\"d1\"") {
+                Step::Text("destroyed")
+            } else {
+                tool("d1", "mob_destroy", json!({"mob_id": "team"}))
+            };
+        }
+        if !user.contains("go") || all.contains("\"c1\"") {
+            return Step::Text("ok");
+        }
+        if !all.contains("\"m1\"") {
+            return tool(
+                "m1",
+                "mob_create",
+                json!({"definition": {"id": "team", "profiles": {"worker": {"model": common::MODEL, "external_addressable": true, "tools": {"comms": true}}}}}),
+            );
+        }
+        for (id, name, args) in &seats {
+            if !all.contains(&format!("\"{id}\"")) {
+                return Step::Tool {
+                    id,
+                    name,
+                    args: args.clone(),
+                };
+            }
+        }
+        connect("c1", pair)
+    }))
+}
+
+/// The result of the call `id` in a request whose user text holds
+/// `marker`, once there is one.
+async fn result_in(llm: &ScriptedLlmClient, marker: &str, id: &str) -> (String, bool) {
+    common::poll(async || {
+        llm.recorded()
+            .iter()
+            .filter(|r| r.user().contains(marker))
+            .find_map(|r| result_of(&r.messages, id))
+    })
+    .await
+}
+
+/// Tell `who` of `mob` (its task `marker`, signing `me`) to send message
+/// `n` to its peer; the send succeeded and the request of the peer (its
+/// task `to`) after it holds the message.
+async fn relay(
+    connection: &rkat_tui::client::transport::Connection,
+    llm: &ScriptedLlmClient,
+    (mob, who, marker, me): (&str, &str, &str, &str),
+    n: u32,
+    to: &str,
+) {
+    connection
+        .call(
+            "mob/member_send",
+            json!({"mob_id": mob, "agent_identity": who, "content": format!("SEND{n}")}),
+        )
+        .await
+        .unwrap();
+    let (sent, error) = result_in(llm, marker, &format!("s{n}")).await;
+    assert!(!error && sent.contains("\"sent\""), "{who}: {sent}");
+    let text = format!("FROM-{me}-{n}");
+    common::until(|| heard(llm, to, &text)).await;
+}
+
+/// `who` of `mob` (its task `marker`) lists its peers (`LIST<n>`): the
+/// listing.
+async fn listing(
+    connection: &rkat_tui::client::transport::Connection,
+    llm: &ScriptedLlmClient,
+    (mob, who, marker): (&str, &str, &str),
+    n: u32,
+) -> String {
+    connection
+        .call(
+            "mob/member_send",
+            json!({"mob_id": mob, "agent_identity": who, "content": format!("LIST{n}")}),
+        )
+        .await
+        .unwrap();
+    result_in(llm, marker, &format!("l{n}")).await.0
+}
+
+/// The record of the connections across mobs.
+fn record(ws: &Workspace) -> String {
+    std::fs::read_to_string(common::realm_of(&ws.root).join("helper-links.json"))
+        .unwrap_or_default()
+}
+
+const A: (&str, &str, &str, &str) = ("tui", "a", "TASK-OF-A", "A");
+const W1: (&str, &str, &str, &str) = ("team", "w1", "TASK-OF-W1", "W1");
+const W2: (&str, &str, &str, &str) = ("team", "w2", "TASK-OF-W2", "W2");
+
+/// A helper of the workspace's mob and a member of a mob the agent
+/// created, connected: each one's message reaches the other's next model
+/// request, both ways, with no review; each was told of the other; the
+/// pair is recorded. After a restart they still talk (the daemon's start
+/// made their sockets listen again). Then the far end retires: the
+/// survivor no longer lists it, is told, and the pair leaves the record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn helpers_in_different_mobs_connected_talk_both_ways_across_a_restart() {
+    let ws = Workspace::new();
+    let step = team_script(
+        vec![
+            ("s1", "spawn_member", in_tui("a", "TASK-OF-A")),
+            ("s2", "mob_spawn_member", in_team("w1", "TASK-OF-W1")),
+        ],
+        vec![
+            ("TASK-OF-A", "A", "team/worker/w1"),
+            ("TASK-OF-W1", "W1", "tui/main/a"),
+        ],
+        &["a", "w1"],
+    );
+    let llm = ScriptedLlmClient::new(vec![step.clone(); 60]);
+    let (daemon, classifier) = strict(&ws, &llm).await;
+    daemon.reveal(&daemon.session, &MOB_TOOLS).await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "go").await;
+    let (answer, error) = result_in(&llm, "go", "c1").await;
+    assert!(!error, "{answer}");
+    assert!(answer.contains("`a` and `w1` (new)"), "{answer}");
+    assert!(
+        answer.contains("`a` is `tui/main/a`") && answer.contains("`w1` is `team/worker/w1`"),
+        "{answer}"
+    );
+    let recorded = record(&ws);
+    assert!(
+        recorded.contains("\"w1\"") && recorded.contains("tui/main/a"),
+        "{recorded}"
+    );
+    relay(&connection, &llm, A, 1, "TASK-OF-W1").await;
+    relay(&connection, &llm, W1, 2, "TASK-OF-A").await;
+    for (marker, other) in [
+        ("TASK-OF-A", "`w1` (`team/worker/w1`"),
+        ("TASK-OF-W1", "`a` (`tui/main/a`"),
+    ] {
+        assert!(
+            heard(
+                &llm,
+                marker,
+                "who started you, connected you with its other helper"
+            ) && heard(&llm, marker, other),
+            "{marker}"
+        );
+    }
+    // Both ways the same tier as within one mob: no review.
+    no_send_reviewed(&classifier);
+    daemon.idle(&daemon.agent).await;
+    drop(connection);
+    daemon.stop().await;
+
+    let llm = ScriptedLlmClient::new(vec![step; 60]);
+    let (daemon, _classifier) = strict(&ws, &llm).await;
+    let connection = daemon.connect_bound().await;
+    relay(&connection, &llm, A, 3, "TASK-OF-W1").await;
+    relay(&connection, &llm, W1, 4, "TASK-OF-A").await;
+    daemon
+        .state()
+        .mob_retire(
+            &meerkat_mob::MobId::from("team"),
+            meerkat_mob::AgentIdentity::from("w1"),
+        )
+        .await
+        .unwrap();
+    common::until(|| !record(&ws).contains("\"w1\"")).await;
+    let peers = listing(&connection, &llm, ("tui", "a", "TASK-OF-A"), 5).await;
+    assert!(!peers.contains("team/worker/w1"), "{peers}");
+    assert!(peers.contains("main-"), "its parent stays: {peers}");
+    assert!(heard(
+        &llm,
+        "TASK-OF-A",
+        "`w1` (`team/worker/w1` in `peers`), the helper you were connected with, has left"
+    ));
+    daemon.idle(&daemon.agent).await;
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// The mob of one end of a connection is destroyed: the other end no
+/// longer lists it and the pair leaves the record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_destroyed_mob_s_member_leaves_its_connected_peer() {
+    let ws = Workspace::new();
+    let step = team_script(
+        vec![
+            ("s1", "spawn_member", in_tui("a", "TASK-OF-A")),
+            ("s2", "mob_spawn_member", in_team("w1", "TASK-OF-W1")),
+        ],
+        vec![
+            ("TASK-OF-A", "A", "team/worker/w1"),
+            ("TASK-OF-W1", "W1", "tui/main/a"),
+        ],
+        &["a", "w1"],
+    );
+    let llm = ScriptedLlmClient::new(vec![step; 60]);
+    let (daemon, _classifier) = strict(&ws, &llm).await;
+    daemon.reveal(&daemon.session, &MOB_TOOLS).await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "go").await;
+    assert!(!result_in(&llm, "go", "c1").await.1);
+    relay(&connection, &llm, A, 1, "TASK-OF-W1").await;
+    let before = listing(&connection, &llm, ("tui", "a", "TASK-OF-A"), 2).await;
+    assert!(before.contains("team/worker/w1"), "{before}");
+    daemon.idle(&daemon.agent).await;
+    daemon.prompt(&connection, "DESTROY").await;
+    common::until(|| !record(&ws).contains("\"w1\"")).await;
+    let after = listing(&connection, &llm, ("tui", "a", "TASK-OF-A"), 3).await;
+    assert!(!after.contains("team/worker/w1"), "{after}");
+    daemon.idle(&daemon.agent).await;
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// A recorded pair whose end is no member at the daemon's start (gone
+/// while no daemon could follow it; here the record names a member that
+/// never was) ends at that start: the survivor's edge goes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recorded_connection_whose_end_is_gone_ends_at_the_next_start() {
+    let ws = Workspace::new();
+    let step = team_script(
+        vec![
+            ("s1", "spawn_member", in_tui("a", "TASK-OF-A")),
+            ("s2", "mob_spawn_member", in_team("w1", "TASK-OF-W1")),
+        ],
+        vec![
+            ("TASK-OF-A", "A", "team/worker/w1"),
+            ("TASK-OF-W1", "W1", "tui/main/a"),
+        ],
+        &["a", "w1"],
+    );
+    let llm = ScriptedLlmClient::new(vec![step.clone(); 60]);
+    let (daemon, _classifier) = strict(&ws, &llm).await;
+    daemon.reveal(&daemon.session, &MOB_TOOLS).await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "go").await;
+    assert!(!result_in(&llm, "go", "c1").await.1);
+    let before = listing(&connection, &llm, ("tui", "a", "TASK-OF-A"), 1).await;
+    assert!(before.contains("team/worker/w1"), "{before}");
+    daemon.idle(&daemon.agent).await;
+    drop(connection);
+    daemon.stop().await;
+    // The record's far end is a member that is not there.
+    let file = common::realm_of(&ws.root).join("helper-links.json");
+    let text = record(&ws).replace("\"member\": \"w1\"", "\"member\": \"ghost\"");
+    assert!(text.contains("ghost"), "{text}");
+    std::fs::write(&file, text).unwrap();
+
+    let llm = ScriptedLlmClient::new(vec![step; 60]);
+    let (daemon, _classifier) = strict(&ws, &llm).await;
+    let connection = daemon.connect_bound().await;
+    assert!(!record(&ws).contains("ghost"), "{}", record(&ws));
+    let after = listing(&connection, &llm, ("tui", "a", "TASK-OF-A"), 2).await;
+    assert!(!after.contains("team/worker/w1"), "{after}");
+    daemon.idle(&daemon.agent).await;
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// Two `mob_spawn_member` members of one mob the agent created,
+/// connected: they talk both ways without review; in plan mode too (a
+/// message between helpers of one agent is tier 1 there as well: plan
+/// mode asks only before a message to an agent of another workspace).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_members_of_a_created_mob_connected_talk_both_ways_in_plan_mode_too() {
+    let ws = Workspace::new();
+    let step = team_script(
+        vec![
+            ("s1", "mob_spawn_member", in_team("w1", "TASK-OF-W1")),
+            ("s2", "mob_spawn_member", in_team("w2", "TASK-OF-W2")),
+        ],
+        vec![
+            ("TASK-OF-W1", "W1", "team/worker/w2"),
+            ("TASK-OF-W2", "W2", "team/worker/w1"),
+        ],
+        &["w1", "w2"],
+    );
+    let llm = ScriptedLlmClient::new(vec![step; 60]);
+    let (daemon, classifier) = strict(&ws, &llm).await;
+    daemon.reveal(&daemon.session, &MOB_TOOLS).await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "go").await;
+    let (answer, error) = result_in(&llm, "go", "c1").await;
+    assert!(!error, "{answer}");
+    assert!(answer.contains("`w1` and `w2` (new)"), "{answer}");
+    relay(&connection, &llm, W1, 1, "TASK-OF-W2").await;
+    relay(&connection, &llm, W2, 2, "TASK-OF-W1").await;
+    // An edge of one mob: nothing for the daemon to record.
+    assert!(!record(&ws).contains("\"w2\""), "{}", record(&ws));
+    connection
+        .call("rkat/set_mode", json!({"mode": "plan"}))
+        .await
+        .unwrap();
+    relay(&connection, &llm, W1, 3, "TASK-OF-W2").await;
+    relay(&connection, &llm, W2, 4, "TASK-OF-W1").await;
+    no_send_reviewed(&classifier);
+    daemon.idle(&daemon.agent).await;
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// Another agent's helper, named end to end: refused, saying whose it is
+/// not, and nothing is connected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_agent_s_helper_is_refused_end_to_end() {
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        let user = common::user_texts(messages).concat();
+        if user.contains("TASK-OF-") {
+            return Step::Text("helper idle");
+        }
+        let all = format!("{messages:?}");
+        if user.contains("SECOND-AGENT") {
+            return if all.contains("\"x1\"") {
+                Step::Text("seated x")
+            } else {
+                tool("x1", "spawn_member", in_tui("x", "TASK-OF-X"))
+            };
+        }
+        if user.contains("FIRST-AGENT") {
+            if all.contains("\"c1\"") {
+                return Step::Text("done");
+            }
+            if all.contains("\"a1\"") {
+                return connect("c1", &["a", "x"]);
+            }
+            return tool("a1", "spawn_member", in_tui("a", "TASK-OF-A"));
+        }
+        Step::Text("ok")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 40]);
+    let (daemon, _classifier) = strict(&ws, &llm).await;
+    let first = daemon.connect_bound().await;
+    let (second, _notes) = rkat_tui::client::transport::Connection::attach_to(
+        &daemon.endpoint(),
+        std::time::Duration::from_secs(5),
+        None,
+        false,
+        Some(rkat_tui::daemon::protocol::AgentChoice::New),
+    )
+    .await
+    .unwrap();
+    second.call("initialize", json!({})).await.unwrap();
+    assert_ne!(first.agent(), second.agent());
+    daemon.prompt(&second, "SECOND-AGENT").await;
+    common::until(|| {
+        daemon
+            .registry()
+            .bound_members()
+            .iter()
+            .any(|(key, _)| key.member.as_str() == "x")
+    })
+    .await;
+    daemon.prompt(&first, "FIRST-AGENT").await;
+    let (text, error) = result_in(&llm, "FIRST-AGENT", "c1").await;
+    assert!(error, "{text}");
+    assert!(
+        text.contains(
+            "`x` is not a helper you started (it is another agent's or another helper's)"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("your running helpers are `a`"), "{text}");
+    let members = daemon
+        .state()
+        .mob_list_members(&meerkat_mob::MobId::from("tui"))
+        .await
+        .unwrap();
+    let a = members
+        .iter()
+        .find(|m| m.agent_identity.as_str() == "a")
+        .unwrap();
+    assert!(
+        !a.wired_to.contains(&meerkat_mob::AgentIdentity::from("x")),
+        "{:?}",
+        a.wired_to
+    );
+    daemon.idle(first.agent()).await;
+    daemon.idle(second.agent()).await;
+    drop(first);
+    drop(second);
     daemon.stop().await;
 }
 

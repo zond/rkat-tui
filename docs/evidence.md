@@ -11768,20 +11768,8 @@ mounted beside `assign` in `src/tools/assign.rs`).
   building) answers `MemberNotFound` and is tried again within 12 s. The
   engine keeps the mob's edges across a restart and drops a member's edges
   when it retires.
-- Across mobs (a workspace helper and a `mob_spawn_member` member of a mob
-  the agent created): an edge is within one mob. The engine can bind a
-  member to a peer outside its mob (`PeerTarget::External` with the other
-  member's `inproc://<mob>/<role>/<member>` descriptor, as its own
-  `delegate` wired a helper to a parent in another mob:
-  `runtime/delegation.rs` `wire_parent`, one external edge plus
-  `apply_external_peer_reciprocal_trust`), and stores the edge in the
-  mob's record. Not done: the edge in mob A names a descriptor, not a
-  member of A, so the engine does not drop it when the member of mob B
-  retires or its mob is destroyed; nor would anything of ours without a
-  record of the edges we made, kept across restarts, and a follower that
-  unwires them (`PeerTarget::ExternalName`). A pair in different mobs is
-  refused, naming each helper's mob and saying to start the helpers that
-  must talk in one mob.
+- Across mobs: refused at first, built since; see "Helpers connected
+  across mobs" below.
 - The gate: a message from a helper to another helper working for the same
   agent (by the helper bindings: same owner session) is tier 1,
   `PeerKind::SameTree`, as an agent's message to its own helper; plan mode
@@ -11799,7 +11787,86 @@ mounted beside `assign` in `src/tools/assign.rs`).
   connections in the roster note and `/helpers`.
 - Tests: `connect::two_assigned_helpers_connected_talk_both_ways`,
   `connect::a_fork_and_a_kept_member_connected_talk_both_ways`,
-  `connect::helpers_in_different_mobs_are_refused_saying_what_works`,
   `connect::a_connection_of_what_is_not_the_caller_s_own_helpers_is_refused`,
   `connect::a_connection_outlives_a_restart_and_goes_with_a_retired_end`;
   unit tests in `daemon::connect::tests`.
+
+### Helpers connected across mobs (2026-11-17)
+
+The owner wants every agent an agent starts connectable, "no matter how",
+so the refusal of a pair in different mobs (a `tui` helper and a
+`mob_spawn_member` member of a mob the agent created, or members of two
+such mobs) went. Probed on the rig first, the host binding a `tui`
+helper `a` and a member `w1` of a created mob `team` with
+`MobHandle::wire(_, PeerTarget::External(descriptor))`, one edge in each
+mob, the descriptor from `member_peer_endpoint`:
+
+- Addressed at the engine's own `inproc://team/worker/w1` (and
+  `inproc://tui/main/a`): both wires answer `Ok`, each end's `peers` lists
+  the other as `trusted`, and every send fails both ways:
+  `peer_not_found_or_not_trusted: peer '<id>' is not found or not trusted`.
+  Each mob's members are built in the realm `mob.<id>`
+  (`meerkat_core::mob_realm_id`, checked by
+  `runtime/registration_hook.rs`), and the factory makes the realm id the
+  comms in-process namespace: a route to `w1` exists only in `mob.team`,
+  `a` sends in `mob.tui`. (The engine's own `delegate` wired a helper to a
+  parent in another mob this way, `runtime/delegation.rs` `wire_parent`.)
+- Registering each live inbox in the other's namespace by hand
+  (`InprocRegistry::register_with_meta_in_namespace`) carries messages
+  both ways, but the registration leaves with its inbox (an idle member
+  whose runtime is retired, any rebuild, the process): there is no wake
+  route in the other namespace, and nothing tells the host to register
+  again. Not used.
+- Addressed at Unix sockets the host serves with the engine's envelope
+  handler (`meerkat_comms::handle_connection` with the member's current
+  key and inbox, waking an idle one with `ensure_member_live`: exactly how
+  `/wire` serves an agent to another workspace): sends are `acked` both
+  ways and each message is in the other's next model request; an idle
+  member is woken by the connection; after a restart the edges are still
+  in both mobs' records (same peer ids: the keys are kept) and, once the
+  sockets listen again, carry messages both ways.
+- The far end retired (`mob_retire`): the survivor's edge stays
+  (`wired_to` still names `team/worker/w1`), `peers` still lists it, and a
+  send fails `peer delivery outcome is ambiguous … acknowledgement was not
+  observed` (socket served, no member) or `… IO error: No such file or
+  directory` (socket gone). The same after `mob_destroy` of its mob.
+  `MobHandle::unwire(_, PeerTarget::ExternalName(<comms name>))` removes
+  the edge, and the peer is gone from `peers` at once.
+
+Built (`src/daemon/links.rs`): `connect_helpers` wires a pair within one
+mob as before and a pair across mobs through sockets of the daemon's own
+(`<realm>/wire/h-<16 hex of SHA-256 of mob and member>.sock`, 0600 in the
+0700 directory `/wire` uses; `wires::serve_socket`, the same serve as an
+agent's), an external edge in each mob addressed `uds://` at the other's
+socket, named by the other's comms name. The pairs are kept in
+`<realm>/helper-links.json` (new file, `docs/state.md`; the engine's own
+records are not touched). A pair ends when either end leaves: the
+registry reports each helper it drops as retired (the follower sees it
+leave its mob: finished `assign`, stopped, retired by a tool) and each
+destroyed mob (the host's after-destroy hook) as `mobs::Gone`; the
+daemon then unwires the survivor (`ExternalName`), tells it in a note
+("… has left …: it is gone from your `peers` and gets no more
+messages"), drops the pair and closes the sockets no pair uses. At each
+start (`Links::reconcile`, after the agents and helpers are restored) a
+pair whose end is no member of its mob ends the same way, the others'
+sockets listen again and an edge the engine lost is made again.
+
+The gate needs nothing new: `agent_peer` finds a sibling by its peer id
+among the bound members of the same owner (the persisted helper
+bindings, which hold members of created mobs too), and a socket-addressed
+descriptor carries the member's own key, so the peer id is the same;
+`PeerKind::SameTree`, tier 1, the same words. Plan mode does not change
+it: `outcome` asks in plan mode only before a `PeerKind::Wired` peer (an
+agent of another workspace); a message between helpers of one agent is
+allowed there as in every mode (pinned by
+`two_members_of_a_created_mob_connected_talk_both_ways_in_plan_mode_too`).
+
+Tests: `connect::helpers_in_different_mobs_connected_talk_both_ways_across_a_restart`
+(duplex, notes, no review, record, restart, the far end retired: gone
+from `peers`, the survivor told, the record emptied),
+`connect::a_destroyed_mob_s_member_leaves_its_connected_peer`,
+`connect::a_recorded_connection_whose_end_is_gone_ends_at_the_next_start`,
+`connect::two_members_of_a_created_mob_connected_talk_both_ways_in_plan_mode_too`,
+`connect::another_agent_s_helper_is_refused_end_to_end`; unit tests in
+`daemon::links::tests`. The three life tests fail with the registry's
+report and the start's check taken out (checked once by hand).

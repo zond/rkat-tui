@@ -112,8 +112,9 @@ impl AssignToolDispatcher {
         let connect = ToolDef::new(
             CONNECT_HELPERS,
             "Wire two or more of your own helpers (any kind you started: assign, fork_off, \
-             spawn_member, or mob_spawn_member in one mob you created) to each other, every pair \
-             both ways, so they can message each other directly; each is told. Use it only for \
+             spawn_member, mob_spawn_member in a mob you created; in one mob or in different \
+             ones) to each other, every pair both ways, so they can message each other directly; \
+             each is told. A pair stays connected until one of them leaves. Use it only for \
              helpers that must coordinate: each message wakes its receiver.",
             json!({
                 "type": "object",

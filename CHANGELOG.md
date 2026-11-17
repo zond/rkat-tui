@@ -100,12 +100,15 @@
 - `connect_helpers`: an agent (or a helper with helpers of its own) wires
   two or more of the helpers it started to each other, every pair both
   ways, so they can message each other directly instead of through it.
-  Any kind counts (`assign`, `fork_off`, `spawn_member`, members of one
-  mob it created); each newly connected helper is told whom it can reach;
-  their messages to each other need no review. Helpers in different mobs,
-  and anything that is not the caller's own running helper, are refused
-  saying what to do. The edges survive a daemon restart and go with a
-  retired helper.
+  Any kind counts (`assign`, `fork_off`, `spawn_member`, members of mobs
+  it created), in one mob or across mobs (a pair across mobs is served by
+  the daemon over a socket of its own and recorded in
+  `<realm>/helper-links.json`); each newly connected helper is told whom
+  it can reach; their messages to each other need no review, in plan mode
+  too. Anything that is not the caller's own running helper is refused
+  saying what to do. The connections survive a daemon restart and end
+  when either helper leaves (retired, stopped, finished, or its mob
+  destroyed): the other no longer lists it and is told.
 - `/btw <question>`: a side question about the session that does not
   touch the agent's run, while it works or when it is idle. One quick
   model call on the agent's model, with no tools, reads the conversation,
