@@ -1050,6 +1050,12 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
     let w = usize::from(width).max(4);
     let dim = Style::default().add_modifier(Modifier::DIM);
     let mut out = Vec::new();
+    // A model's text that is only whitespace (some models send a line
+    // break before each tool call) takes no line: neither a bare bullet
+    // nor its spacer. Text that follows in the same block shows as usual.
+    if matches!(block, Block::Assistant { md } if md.trim().is_empty()) {
+        return out;
+    }
     match block {
         Block::User { text } => {
             let style = Style::default()
@@ -1654,6 +1660,21 @@ mod tests {
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// A model's whitespace-only text takes no line (no bare bullet, no
+    /// spacer); once it has text it shows as any answer.
+    #[test]
+    fn whitespace_only_text_is_not_drawn() {
+        for md in ["", "\n", "  \n\t "] {
+            let block = Block::Assistant { md: md.into() };
+            assert!(block_lines(&block, 60).is_empty(), "{md:?}");
+        }
+        let block = Block::Assistant {
+            md: "\nfound it".into(),
+        };
+        let lines: Vec<String> = block_lines(&block, 60).iter().map(line_text).collect();
+        assert_eq!(lines, ["• found it", ""]);
     }
 
     /// Another agent's message is one line, its sender and the message's

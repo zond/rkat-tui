@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A model that sends only a line break before a tool call (seen with
+  models behind an OpenAI-compatible proxy) left a bare `•` on a line of
+  its own before each call. Text that is only whitespace is no longer
+  drawn.
+
 ## [0.0.14] - 2026-11-17
 
 ### Added
