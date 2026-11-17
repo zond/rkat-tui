@@ -176,6 +176,10 @@ repository). Open upstream issues this code waits on:
   owner's unregister unfinished (the stop then takes about 30 s). Nothing
   of ours goes when it ships; the tests with forks wait for the result's
   run to end before they stop the daemon because of it.
+- #2384: a mob shutdown during a `fork_off` child's first run retires the
+  child as failed (the parent reads "finished (failed)" after the restart).
+  Nothing of ours goes when it ships; `forks::a_fork_stopped_in_its_first_run_is_retired_and_its_parent_told`
+  pins the engine's behaviour and the manual's sentence on it changes then.
 - #2234: the OpenAI dialect lowering nested tool schemas. The client
   wrapper `src/daemon/schema_compat.rs` goes when it ships.
 - #2235: a peer message that waits for an idle receiver's next run. The
