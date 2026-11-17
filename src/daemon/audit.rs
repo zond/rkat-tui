@@ -21,7 +21,10 @@
 //!   `"project_trusted"`, `"agent_retired"`, `"daemon_start"`,
 //!   `"daemon_stop"`: `detail`, and `agent` where one is concerned;
 //! - `"classifier_check"` (`/auto check`): `detail`, the model and the
-//!   totals, or how far a check got that its client left.
+//!   totals, or how far a check got that its client left;
+//! - `"interrupt"` (`rkat/interrupt`): `agent`, and in `detail` the run,
+//!   whether it was forced, and what came of it (stopped, had ended, or
+//!   the runtime's refusal in the engine's words).
 //!
 //! Rotation: a write that would take the file past [`ROTATE_BYTES`]
 //! renames it to `audit.1.jsonl` first (replacing the previous one: one

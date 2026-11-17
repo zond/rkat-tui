@@ -109,6 +109,11 @@ pub const QUIT_CONFIRM_WINDOW: Duration = Duration::from_secs(3);
 /// (saving it to the prompt history).
 pub const DOUBLE_ESC_WINDOW: Duration = Duration::from_millis(1500);
 
+/// Presses of Esc this close to each other belong to one interrupt: after
+/// its turn ended (its typed messages back in the editor) they do not clear
+/// the editor, and the runner says once that the turn is already stopped.
+pub const INTERRUPT_REPEAT: Duration = Duration::from_secs(2);
+
 /// Window after Ctrl-X in which the second key of a chord is accepted.
 pub const CHORD_WINDOW: Duration = Duration::from_millis(1500);
 
@@ -359,6 +364,11 @@ pub enum Msg {
         /// Failed cancels.
         errors: Vec<String>,
     },
+    /// The user's interrupt took these messages back (oldest first): the
+    /// agent never reads them, and they return to the editor. The turn's
+    /// end says how many came back, in its one line (or, after the turn,
+    /// one line of its own).
+    Returned(Vec<PendingId>),
     /// A steered message the runtime ended without writing it into a run
     /// (abandoned: the run was stopped, the agent retired, …): the agent
     /// never reads it, and it returns to the editor as a recalled one does.
@@ -1354,6 +1364,13 @@ pub struct App {
     run_first_block: BlockId,
     /// When an Esc on an idle input with text armed the draft clear.
     last_esc: Option<Instant>,
+    /// The last Esc (or Ctrl+C) that interrupted, while it belongs to that
+    /// interrupt ([`INTERRUPT_REPEAT`]).
+    last_interrupt: Option<Instant>,
+    /// Messages the turn's interrupt took back so far ([`Msg::Returned`]),
+    /// kept until its end puts them in the editor in the order they were
+    /// typed, counted in its one line.
+    returned: Vec<(PendingId, String)>,
     viewport_height: usize,
     /// Text to put on the system clipboard (drained by the runtime).
     clipboard: Option<QueuedCopy>,
@@ -1436,6 +1453,8 @@ impl App {
             running: false,
             run_first_block: BlockId(0),
             last_esc: None,
+            last_interrupt: None,
+            returned: Vec::new(),
             viewport_height: 20,
             clipboard: None,
             local: Vec::new(),
@@ -1785,6 +1804,7 @@ impl App {
             Msg::SteerAck { id, result } => self.steer_ack(id, result, now, &mut fx),
             Msg::SteerDelivered(id) => self.pending.show_delivered(&mut self.transcript, id),
             Msg::Recalled { recalled, errors } => self.recalled(&recalled, &errors),
+            Msg::Returned(ids) => self.returned(&ids),
             Msg::NotDelivered { id, why } => self.not_delivered(id, why.as_deref()),
             Msg::QuitDecided(decision) => self.quit_decided(decision, &mut fx),
             Msg::Rerooted { workspace, realm } => {

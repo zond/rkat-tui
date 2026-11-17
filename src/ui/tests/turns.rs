@@ -546,31 +546,36 @@ fn successful_turn_sends_held_messages_as_the_next_turn() {
     );
 }
 
-// An interrupted turn's held messages start the next turn at once,
-// shown in place.
+// The rule of 2026-11-17 (it replaced "an interrupted turn's held
+// messages start the next turn"): an interrupt returns every message the
+// agent did not read to the editor, in the order typed (the ones the
+// runner took back and the ones the UI held), before the draft, starts no
+// turn, and says so in one line. One the agent read stays delivered.
 #[test]
-fn interrupted_turn_sends_held_messages_next() {
+fn interrupted_turn_returns_the_unread_messages_to_the_editor() {
     let mut app = running_app();
     submit(&mut app, "two");
     submit(&mut app, "three");
+    submit(&mut app, "four");
     app.update(ack(1, Ok(())));
-    app.update(ack(2, Err(SteerFailure::NotRunning)));
+    app.update(ack(2, Ok(())));
+    app.update(ack(3, Err(SteerFailure::NotRunning)));
     app.update(Msg::SteerDelivered(PendingId(1)));
     assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
-    assert_eq!(app.status.queued, 1);
     type_str(&mut app, "draft");
+    // The runner took "three" back from the agent.
+    assert!(app.update(Msg::Returned(vec![PendingId(2)])).is_empty());
     let fx = app.update(finished(Err(TurnFailure::Interrupted)));
-    assert_eq!(fx, vec![Effect::StartTurn("three".into())]);
-    assert!(app.is_running());
-    // The draft stays in the editor.
-    assert_eq!(app.input.text(), "draft");
+    assert!(fx.is_empty(), "{fx:?}");
+    assert!(!app.is_running());
+    assert_eq!(app.input.text(), "three\nfour\ndraft");
     let users: Vec<&Block> = app
         .transcript
         .iter()
         .map(|(_, b)| b)
         .filter(|b| matches!(b, Block::User { .. }))
         .collect();
-    assert_eq!(users, vec![&user("one"), &user("two"), &user("three")]);
+    assert_eq!(users, vec![&user("one"), &user("two")]);
     assert!(
         !app.transcript
             .blocks()
@@ -578,6 +583,29 @@ fn interrupted_turn_sends_held_messages_next() {
             .any(|b| matches!(b, Block::Queued { .. }))
     );
     assert_eq!(app.status.queued, 0);
+    let notices: Vec<String> = app
+        .transcript
+        .blocks()
+        .iter()
+        .filter_map(|b| match b {
+            Block::Notice { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .filter(|text| text.contains("interrupt"))
+        .collect();
+    assert_eq!(
+        notices,
+        vec![
+            "turn interrupted; the agent is idle, and your 2 typed messages are back in the input, in the order you typed them"
+                .to_string()
+        ]
+    );
+    // More presses right after it neither clear the editor nor arm its
+    // clear: they go to the runner, which says once that the turn is
+    // already stopped.
+    assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
+    assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
+    assert_eq!(app.input.text(), "three\nfour\ndraft");
 }
 
 #[test]

@@ -35,6 +35,7 @@
 //! [`Local::call`] is the dispatch table, one line per method; the
 //! handlers live in files by concern: an agent's conversations and its
 //! leaving ([`lifecycle`]), the inputs a client sent ([`inputs`]), the
+//! user's interrupt, bound to one run ([`interrupt`]), the
 //! model and the permission mode ([`model`]), the wires to other
 //! workspaces ([`wires`]), and the reads behind `/status`, `/context`,
 //! `/audit` and `/trust` ([`report`]).
@@ -43,6 +44,7 @@
 /// before it ([`Local::observe`]).
 const MODE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 mod inputs;
+mod interrupt;
 mod lifecycle;
 mod model;
 mod report;
@@ -110,6 +112,9 @@ pub struct Local {
     /// Tests: a mode change waits on it before its note.
     #[cfg(any(test, feature = "test-support"))]
     mode_hold: Arc<tokio::sync::RwLock<()>>,
+    /// Tests: every `rkat/interrupt`'s answer, in order.
+    #[cfg(any(test, feature = "test-support"))]
+    interrupts: parking_lot::Mutex<Vec<protocol::Interrupted>>,
     /// Tests: how many prompts waited for a mode change.
     #[cfg(any(test, feature = "test-support"))]
     mode_waits: Arc<AtomicU64>,
@@ -203,6 +208,8 @@ impl Local {
             forwarded: parking_lot::Mutex::default(),
             #[cfg(any(test, feature = "test-support"))]
             mode_hold: Arc::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            interrupts: parking_lot::Mutex::default(),
             #[cfg(any(test, feature = "test-support"))]
             mode_waits: Arc::default(),
         }
@@ -402,6 +409,7 @@ impl Local {
             method::StopHelper, protocol::StopHelperParams { path } => self.stop_helper(&caller, &path);
             method::Recall, protocol::RecallParams { input_ids } => self.recall(&caller, &input_ids).await;
             method::Inputs, protocol::RecallParams { input_ids } => self.input_fates(&caller, &input_ids).await;
+            method::Interrupt, params => self.interrupt(&caller, params).await;
             method::Schedules, Empty {} => self.schedules(&caller).await;
             method::Schedule, protocol::ScheduleAction { op, schedule } => self.schedule(&caller, op, &schedule).await;
             method::Report, Empty {} => Ok(self.report(self.agent_of(&caller).ok().as_deref()));
@@ -524,8 +532,16 @@ impl Local {
                 self.agents.interrupted(&agent);
                 // A checkpoint under way is cancelled: nothing continues.
                 self.agents.user_acted(&agent, false);
-                if let Some(session) = self.core.conversations.current(&agent) {
-                    self.core.engine.stop(&session);
+                // A stop names its run: one that ended stops no newer run.
+                let run = (method == engine::STOP_MEMBER_RUN)
+                    .then(|| params.get("run_id").cloned())
+                    .flatten()
+                    .and_then(|run| {
+                        serde_json::from_value::<meerkat_core::lifecycle::RunId>(run).ok()
+                    });
+                if let Some(session) = self.core.conversations.current(&agent)
+                    && self.core.engine.interrupted(&session, run.as_ref())
+                {
                     self.parts.desk.stop(&session);
                 }
             }

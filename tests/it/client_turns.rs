@@ -777,6 +777,267 @@ async fn a_protected_write_is_put_to_the_user_and_runs_when_allowed() {
     rig.quit().await;
 }
 
+/// The texts no interrupt may show the user (the engine's own words).
+const RAW_INTERRUPT_TEXTS: &[&str] = &[
+    "Run was cancelled",
+    "MeerkatMachine",
+    "Runtime not ready",
+    "no live session actor",
+    "could not be read again",
+    "interrupt incomplete",
+    "from the approval dialog",
+];
+
+/// The owner's report of 2026-11-17, in its order: the agent inside a
+/// long foreground shell call, a message typed meanwhile (admitted as a
+/// steer, waiting for the tool), then Esc three times. Before the fix the
+/// first press stopped the run, the runtime ran the typed message as a
+/// follow-up run, and the later presses (force, the 10 s hard cancel) hit
+/// that run. Now the first press stops the run once, by its id, and takes
+/// the message back: no run starts from it, it is back in the editor, the
+/// later presses act on nothing and say so once, and the transcript holds
+/// none of the engine's words, only the one line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn three_presses_during_a_slow_shell_stop_one_run_and_return_the_typed_message() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "slow",
+            name: "shell",
+            args: json!({ "command": "sleep 30; echo done", "timeout_secs": 60 }),
+        },
+        Step::Text("a run started from the typed message"),
+        Step::Text("spare"),
+    ]);
+    let mut rig = Attached::start_with(&ws.root, &llm, allow_shell()).await;
+    let agent = rig.agent().await;
+    let mut app = rkat_tui::ui::App::new(rkat_tui::ui::StatusInfo::default());
+    for msg in rig.seen.clone() {
+        for effect in app.update(msg) {
+            rig.send(effect);
+        }
+    }
+    type_into(&rig, &mut app, "run something long");
+    pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::Agent(env)
+            if matches!(&env.payload, AgentEvent::ToolExecutionStarted { id, .. } if id == "slow"))
+    })
+    .await;
+    type_into(&rig, &mut app, "how is it going");
+    pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::SteerAck { result: Ok(()), .. })
+    })
+    .await;
+    let esc = |app: &mut rkat_tui::ui::App, rig: &Attached| {
+        for effect in app.update(Msg::Key(KeyEvent::from(KeyCode::Esc))) {
+            rig.send(effect);
+        }
+    };
+    // Press 1, then (ordered on the run's end, not on time) presses 2 and 3.
+    esc(&mut app, &rig);
+    let ended = pump(
+        &mut rig,
+        &mut app,
+        |msg| matches!(msg, Msg::Agent(env) if matches!(env.payload, AgentEvent::RunFailed { .. })),
+    )
+    .await;
+    let Msg::Agent(ended) = ended else {
+        unreachable!()
+    };
+    let AgentEvent::RunFailed { identity, .. } = &ended.payload else {
+        unreachable!()
+    };
+    let first = identity.run_id.clone().expect("the run's id");
+    esc(&mut app, &rig);
+    esc(&mut app, &rig);
+    pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::TurnFinished(_))
+    })
+    .await;
+    // A sync point after the presses: the runner answered every effect
+    // before it.
+    rig.send(Effect::RecallQueued);
+    pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::Recalled { .. })
+    })
+    .await;
+    rig.daemon.idle(&agent).await;
+
+    // The daemon stopped one run, the first, once; no engine interrupt
+    // method was sent at all.
+    let interrupts = rig.daemon.local().interrupts();
+    assert!(!interrupts.is_empty());
+    assert!(
+        interrupts.iter().all(|i| i.run_id.as_ref() == Some(&first)),
+        "{interrupts:#?}"
+    );
+    assert_eq!(
+        interrupts
+            .iter()
+            .filter(|i| i.run == rkat_tui::daemon::protocol::RunInterrupt::Stopped)
+            .count(),
+        1,
+        "{interrupts:#?}"
+    );
+    for method in [
+        "mob/stop_member_run",
+        "mob/force_cancel",
+        "mob/hard_cancel_member",
+    ] {
+        assert_eq!(rig.daemon.forwarded(method), 0, "{method}");
+    }
+    // No run started from the typed message; it is back in the editor.
+    assert_eq!(llm.requests().len(), 1, "no follow-up run");
+    let session = rig.messages().await;
+    assert!(!user_texts(&session).contains(&"how is it going".to_string()));
+    assert!(
+        rig.seen
+            .iter()
+            .any(|msg| matches!(msg, Msg::Returned(ids) if ids == &[PendingId(1)]))
+    );
+    assert!(
+        !rig.seen
+            .iter()
+            .any(|msg| matches!(msg, Msg::SteerDelivered(PendingId(1))))
+    );
+    assert_eq!(app.input.text(), "how is it going");
+    assert!(!app.is_running());
+    // The presses after the run's end said so once.
+    let already = rig
+        .seen
+        .iter()
+        .filter(|msg| matches!(msg, Msg::Notice { text, .. } if text == "the turn is already stopped; nothing else was interrupted"))
+        .count();
+    assert_eq!(already, 1, "{:#?}", rig.seen);
+    // The transcript: the one line, none of the engine's words.
+    let text = app.transcript.export_text();
+    for raw in RAW_INTERRUPT_TEXTS {
+        assert!(!text.contains(raw), "{raw}: {text}");
+    }
+    assert!(
+        text.contains(
+            "turn interrupted; the agent is idle, and your typed message is back in the input"
+        ),
+        "{text}"
+    );
+    assert_eq!(text.matches("turn interrupted").count(), 1, "{text}");
+    rig.quit().await;
+}
+
+/// A single Esc still stops the run at once, by its id, and a message the
+/// agent already read before the interrupt stays delivered (it is not
+/// returned).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_esc_stops_the_run_by_its_id_and_keeps_a_message_already_read() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "short",
+            name: "shell",
+            args: json!({ "command": "sleep 1; echo quick", "timeout_secs": 30 }),
+        },
+        Step::Hang,
+    ]);
+    let mut rig = Attached::start_with(&ws.root, &llm, allow_shell()).await;
+    rig.send(Effect::StartTurn("go".into()));
+    let started = rig
+        .wait_for(|msg| matches!(msg, Msg::Agent(env) if matches!(env.payload, AgentEvent::RunStarted { .. })))
+        .await;
+    let Msg::Agent(started) = started else {
+        unreachable!()
+    };
+    let AgentEvent::RunStarted { identity, .. } = &started.payload else {
+        unreachable!()
+    };
+    let run = identity.run_id.clone().expect("the run's id");
+    tool_started(&mut rig, "short").await;
+    rig.send(steer(1, "read before the interrupt"));
+    // It joins the run at the tool's boundary; the model's next request
+    // (held open) carries it.
+    rig.wait_for(|msg| matches!(msg, Msg::SteerDelivered(PendingId(1))))
+        .await;
+    llm.wait_call(1).await;
+    assert!(user_texts(&llm.requests()[1]).contains(&"read before the interrupt".to_string()));
+    let asked = std::time::Instant::now();
+    rig.send(Effect::Interrupt);
+    assert_eq!(rig.turn_finished().await, Err(TurnFailure::Interrupted));
+    assert!(asked.elapsed() < rkat_tui::client::runner::INTERRUPT_DEADLINE / 2);
+    let interrupts = rig.daemon.local().interrupts();
+    assert_eq!(interrupts.len(), 1, "{interrupts:#?}");
+    assert_eq!(interrupts[0].run_id.as_ref(), Some(&run));
+    assert_eq!(
+        interrupts[0].run,
+        rkat_tui::daemon::protocol::RunInterrupt::Stopped
+    );
+    assert!(interrupts[0].returned.is_empty(), "{interrupts:#?}");
+    assert!(!rig.seen.iter().any(|msg| matches!(msg, Msg::Returned(_))));
+    rig.quit().await;
+}
+
+/// Force still works when the run does not end: `rkat/interrupt` with
+/// `hard` cancels the stalled run at once, by its id; and one naming a
+/// run that has ended stops nothing, however the agent runs now.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forced_interrupt_cancels_its_run_and_never_a_later_one() {
+    use rkat_tui::daemon::protocol::{Interrupted, RunInterrupt};
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Hang, Step::Hang, Step::Text("after")]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    rig.send(Effect::StartTurn("stall".into()));
+    let started = rig
+        .wait_for(|msg| matches!(msg, Msg::Agent(env) if matches!(env.payload, AgentEvent::RunStarted { .. })))
+        .await;
+    let Msg::Agent(started) = started else {
+        unreachable!()
+    };
+    let AgentEvent::RunStarted { identity, .. } = &started.payload else {
+        unreachable!()
+    };
+    let first = identity.run_id.clone().expect("the run's id");
+    llm.wait_call(0).await;
+    let other = rig.daemon.connect_bound().await;
+    let forced: Interrupted = serde_json::from_value(
+        other
+            .call(
+                "rkat/interrupt",
+                json!({"target": "run", "run_id": first, "hard": true}),
+            )
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(forced.run, RunInterrupt::Stopped, "{forced:?}");
+    assert_eq!(rig.turn_finished().await, Err(TurnFailure::Interrupted));
+    // A later run, stalled too: the old run's interrupt leaves it alone.
+    rig.send(Effect::StartTurn("stall again".into()));
+    llm.wait_call(1).await;
+    for hard in [false, true] {
+        let late: Interrupted = serde_json::from_value(
+            other
+                .call(
+                    "rkat/interrupt",
+                    json!({"target": "run", "run_id": first, "hard": hard}),
+                )
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(late.run, RunInterrupt::Ended, "{late:?}");
+    }
+    assert!(
+        rig.daemon
+            .status()
+            .await
+            .agents
+            .iter()
+            .any(|row| row.running == Some(true))
+    );
+    rig.send(Effect::Interrupt);
+    assert_eq!(rig.turn_finished().await, Err(TurnFailure::Interrupted));
+    rig.quit().await;
+}
+
 /// Waits until the tool call `id` has started executing.
 async fn tool_started(rig: &mut Attached, id: &str) {
     rig.saw(|msg| {
@@ -1290,14 +1551,16 @@ async fn a_steer_the_runtime_abandoned_returns_to_the_editor() {
     rig.quit().await;
 }
 
-/// Esc stops only the run: a steer queued behind it stays with the
-/// runtime, which runs it as a follow-up run, so it is delivered, not
-/// returned.
+/// The rule of 2026-11-17 (it replaced "a steer queued behind an
+/// interrupted run runs after it"): Esc takes back a steer the agent has
+/// not read, so it starts no follow-up run; it is returned (to the editor),
+/// never delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_steer_queued_behind_an_interrupted_run_runs_after_it() {
+async fn a_steer_queued_behind_an_interrupted_run_comes_back() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Hang, Step::Text("after")]);
     let mut rig = Attached::start(&ws.root, &llm).await;
+    let agent = rig.agent().await;
     rig.send(Effect::StartTurn("hang".into()));
     rig.wait_for(|msg| matches!(msg, Msg::Agent(env) if matches!(env.payload, AgentEvent::RunStarted { .. })))
         .await;
@@ -1310,17 +1573,19 @@ async fn a_steer_queued_behind_an_interrupted_run_runs_after_it() {
     assert!(
         rig.seen
             .iter()
-            .any(|msg| matches!(msg, Msg::SteerDelivered(PendingId(1)))),
+            .any(|msg| matches!(msg, Msg::Returned(ids) if ids == &[PendingId(1)])),
         "{:#?}",
         rig.seen
     );
     assert!(
         !rig.seen
             .iter()
-            .any(|msg| matches!(msg, Msg::NotDelivered { .. }))
+            .any(|msg| matches!(msg, Msg::SteerDelivered(PendingId(1))))
     );
-    assert_eq!(llm.requests().len(), 2);
-    assert!(user_texts(&llm.requests()[1]).contains(&"typed while it hangs".to_string()));
+    rig.daemon.idle(&agent).await;
+    assert_eq!(llm.requests().len(), 1, "no follow-up run");
+    let session = rig.messages().await;
+    assert!(!user_texts(&session).contains(&"typed while it hangs".to_string()));
     rig.quit().await;
 }
 
@@ -1332,8 +1597,9 @@ fn count(messages: &[Message], text: &str) -> usize {
 /// The sequence of a user report (a model request that sends nothing): a
 /// steer typed during the stall, then Ctrl+Enter (interrupt, and the
 /// editor's text sent once the turn ends). The interrupt is confirmed
-/// well within the client's deadline, the stalled run ends, and the steer
-/// and the message sent next each reach the conversation once.
+/// well within the client's deadline, the stalled run ends, the steer
+/// comes back (the rule of 2026-11-17), and sent again with Ctrl+Enter's
+/// text it reaches the conversation once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_interrupt_during_a_stalled_model_request_ends_it_and_loses_nothing() {
     let ws = Workspace::new();
@@ -1371,23 +1637,26 @@ async fn an_interrupt_during_a_stalled_model_request_ends_it_and_loses_nothing()
         "{:#?}",
         rig.seen
     );
-    // Ctrl+Enter's text goes once the turn ended.
-    rig.send(Effect::StartTurn("sent after the interrupt".into()));
-    let done = rig.turn_finished().await.unwrap();
+    // The steer came back (the rule of 2026-11-17); Ctrl+Enter's text goes
+    // once the turn ended, with it as the user sends it again.
     assert!(
-        ["for the steer", "for the message"].contains(&done.text.as_str()),
-        "{done:?}"
+        rig.seen
+            .iter()
+            .any(|msg| matches!(msg, Msg::Returned(ids) if ids == &[PendingId(1)])),
+        "{:#?}",
+        rig.seen
     );
-    common::until(|| llm.requests().len() >= 3).await;
+    rig.send(Effect::StartTurn(
+        "steered during the stall\n\nsent after the interrupt".into(),
+    ));
+    let done = rig.turn_finished().await.unwrap();
+    assert_eq!(done.text, "for the steer");
     let session = rig.messages().await;
-    assert_eq!(
-        count(&session, "steered during the stall"),
-        1,
-        "{session:#?}"
-    );
-    assert_eq!(
-        count(&session, "sent after the interrupt"),
-        1,
+    assert_eq!(llm.requests().len(), 2, "{session:#?}");
+    assert!(
+        user_texts(&session)
+            .iter()
+            .any(|text| text.contains("steered during the stall")),
         "{session:#?}"
     );
     // The engine closes an interrupted run's tail without its prompt: the
@@ -1466,8 +1735,13 @@ async fn interrupt_then_recall_then_resend_during_a_stall_delivers_once() {
         took < rkat_tui::client::runner::INTERRUPT_DEADLINE / 2,
         "{took:?}"
     );
-    let taken_back =
-        matches!(&recalled, Msg::Recalled { recalled, .. } if recalled.contains(&PendingId(1)));
+    // Taken back by the recall, or by the interrupt itself (it returns
+    // what the agent has not read).
+    let taken_back = matches!(&recalled, Msg::Recalled { recalled, .. } if recalled.contains(&PendingId(1)))
+        || rig
+            .seen
+            .iter()
+            .any(|msg| matches!(msg, Msg::Returned(ids) if ids.contains(&PendingId(1))));
     let delivered = rig
         .seen
         .iter()

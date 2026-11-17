@@ -1089,10 +1089,13 @@ Keys:
                                  (sends normally when idle; same as Ctrl-X Ctrl-S)
   Shift+Enter, Alt+Enter, Ctrl+J insert a newline (so does \\ right before Enter at a line end)
   Ctrl-C                         interrupt the turn (as Esc) · clear the input · press twice to quit
-  Esc                            interrupt the turn; queued messages are sent next (no turn shown:
-                                 the client asks the daemon and says when nothing runs). It stops
-                                 the agent's own run only: its helpers keep working, and how each
-                                 ends comes to the agent with your next message
+  Esc                            interrupt the turn: your messages the agent has not read come back
+                                 to the input, nothing starts from them (no turn shown: the client
+                                 asks the daemon and says when nothing runs). Again within 1 s:
+                                 says when the next forces it; after that: force that run. Presses
+                                 after its end only say it is stopped (once). It stops the agent's
+                                 own run only: its helpers keep working, and how each ends comes to
+                                 the agent with your next message
   Esc Esc (idle, with text)      clear the input and save it to the prompt history (↑ recalls it)
   Up (empty input)               take queued messages back into the editor (and commands
                                  waiting for the turn's end: /model, /new, /resume, /init, …)
@@ -1924,7 +1927,8 @@ mod tests {
             "4, n, Esc",
             "j/k, Enter",
             "stop the turn",
-            "queued messages are sent next",
+            "your messages the agent has not read come back",
+            "only say it is stopped",
             "take queued messages back",
             "delivers it at the next step",
             "press again",

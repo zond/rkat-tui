@@ -1421,6 +1421,12 @@ impl Transcript {
             // daemon's line says what follows (`crate::daemon::checkpoint`).
             AgentEvent::RunFailed { error_report, .. }
                 if error_report.class == meerkat_core::AgentErrorClass::MaxTurns => {}
+            // The agent's own cancelled run: an interrupt, which the turn's
+            // end says in its one line (never the engine's "Run was
+            // cancelled" as an error).
+            AgentEvent::RunFailed { error_report, .. }
+                if helper.is_none()
+                    && error_report.class == meerkat_core::AgentErrorClass::Cancelled => {}
             AgentEvent::RunFailed { error_report, .. } => match helper {
                 None => {
                     self.push_notice(

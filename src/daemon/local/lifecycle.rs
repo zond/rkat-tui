@@ -82,7 +82,7 @@ impl Local {
     ) -> Result<Retired, Refusal> {
         let session = self.core.conversations.current(agent);
         if let Some(session) = &session {
-            self.core.engine.stop(session);
+            self.core.engine.interrupted(session, None);
             self.parts.desk.stop(session);
         }
         // Nothing wakes a retired agent: its schedules go first, so none

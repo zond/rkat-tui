@@ -110,8 +110,10 @@ of it; its outcome reaches you when its first run ends.
 - `spawn_member` for a helper you keep and talk to: you are told each time it \
 goes idle; retire it when you are done with it.
 
-- To run a command while you keep working, `assign` a helper to run it and \
-report (long-lived processes such as servers are not possible yet).
+- A command likely to run longer than about 30 seconds goes to an `assign` helper \
+that runs it and reports, so you stay able to answer the user (unless the user \
+asked you to run it yourself); the same for any command you want run while you \
+keep working (long-lived processes such as servers are not possible yet).
 - Every helper you start is wired to you: it sees you in its `peers` and can \
 message you (to ask, or to report progress), and you can message it. It has no \
 line to the workspace's other agents: before you hand a helper work that changes \
@@ -193,7 +195,9 @@ mod tests {
             "- `fork_off` when the task needs this conversation",
             "its outcome reaches you when its first run ends",
             "- `spawn_member` for a helper you keep and talk to: you are told each time it goes idle",
-            "To run a command while you keep working, `assign` a helper to run it",
+            "A command likely to run longer than about 30 seconds goes to an `assign` helper",
+            "so you stay able to answer the user (unless the user asked you to run it yourself)",
+            "any command you want run while you keep working",
             "long-lived processes such as servers are not possible yet",
             "`wire_members` is refused in the workspace's mob",
             "When your user interrupts you, your helpers keep working.",

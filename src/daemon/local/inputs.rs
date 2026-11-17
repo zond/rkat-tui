@@ -57,7 +57,7 @@ impl Local {
 
     /// The caller's agent's current conversation; `doing` names the method
     /// in its refusal.
-    fn caller_session(
+    pub(super) fn caller_session(
         &self,
         caller: &Caller,
         doing: &str,
@@ -107,7 +107,9 @@ impl Local {
 
 /// What the runtime's record of an input says became of it: still held,
 /// written into a run, or ended without one (and why, in words).
-fn input_fate(seed: &meerkat_runtime::input_state::InputStateSeed) -> protocol::InputFate {
+pub(super) fn input_fate(
+    seed: &meerkat_runtime::input_state::InputStateSeed,
+) -> protocol::InputFate {
     use meerkat_runtime::input_state::{InputLifecycleState as Phase, InputTerminalOutcome};
 
     match seed.phase {

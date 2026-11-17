@@ -103,6 +103,10 @@ pub const STOP_GRACE: Duration = Duration::from_secs(1);
 /// before the UI is given it back.
 pub const INTERRUPT_DEADLINE: Duration = Duration::from_secs(10);
 
+/// Presses of Esc this close to each other are one interrupt: once its
+/// run has ended they say so once and act on nothing.
+pub const INTERRUPT_REPEAT: Duration = crate::ui::INTERRUPT_REPEAT;
+
 /// Bound on the calls that answer at once (sends, stops).
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -124,9 +128,6 @@ const RESTART_EVERY: Duration = Duration::from_secs(30);
 /// Reconnect backoff: first and longest wait.
 const BACKOFF_FIRST: Duration = Duration::from_millis(100);
 const BACKOFF_MAX: Duration = Duration::from_secs(2);
-
-/// The reason recorded with an interrupt.
-const INTERRUPT_REASON: &str = "rkat-tui: interrupted by the user";
 
 /// How a missing daemon is started (`--attach=auto`).
 #[derive(Debug, Clone)]
@@ -321,8 +322,13 @@ enum Report {
         switch: ModelSwitch,
         result: Result<protocol::ModelSet, String>,
     },
-    /// A stop or a cancel failed.
-    Interrupt(String),
+    /// The daemon answered an interrupt (`rkat/interrupt`): of the turn's
+    /// interrupt `epoch` ([`Turn::interrupt_epoch`]), or of a press with no
+    /// turn open (`None`).
+    Interrupted {
+        epoch: Option<u64>,
+        result: Result<protocol::Interrupted, String>,
+    },
     /// The daemon answered `/compact`'s request ([`Runner::compact_asked`]).
     CompactAsked(Result<(), String>),
     /// The mobs the daemon hosts (listed once per attach and per
@@ -489,7 +495,23 @@ struct Turn {
     /// it follows ([`protocol::IdleNote::last_run`]).
     ended: HashSet<RunId>,
     result: Option<Result<TurnSummary, TurnFailure>>,
+    /// The first press of the user's interrupt.
     interrupted_at: Option<Instant>,
+    /// The run the interrupt is for (`None` until the daemon names it,
+    /// when this client knew no run's id): its force and its hard cancel
+    /// act on that run only, never on one that started after it ended.
+    interrupted_run: Option<RunId>,
+    /// The last press of the interrupt (presses within
+    /// [`INTERRUPT_REPEAT`] of each other are one interrupt).
+    last_press: Option<Instant>,
+    /// "Already stopped" was said for this interrupt.
+    said_stopped: bool,
+    /// `rkat/interrupt` calls not answered yet: the turn does not end
+    /// before they are (their answer returns the messages).
+    interrupt_calls: usize,
+    /// Which interrupt of the runner this turn's is
+    /// ([`Runner`]'s `interrupts`); an answer of another is not its.
+    interrupt_epoch: u64,
     force_cancelled: bool,
     /// The unconfirmed interrupt was followed by a hard cancel of the
     /// agent's current run ([`Runner::on_deadline`]).
@@ -534,6 +556,14 @@ impl Turn {
         }
         self.open_runs.insert(run.clone());
         self.current_run = Some(run.clone());
+    }
+
+    /// Whether the run the interrupt is for has not ended (as far as this
+    /// turn saw; a run the daemon has not named yet counts as open).
+    fn interrupted_run_open(&self) -> bool {
+        self.interrupted_run
+            .as_ref()
+            .is_none_or(|run| !self.ended.contains(run))
     }
 
     /// The run `run` ended.
@@ -652,6 +682,13 @@ pub struct Runner {
     /// What became of the followed steers is being asked (`rkat/inputs`);
     /// `Some(true)`: an idle notice came meanwhile, ask again on the answer.
     asking_fates: Option<bool>,
+    /// How many interrupts this runner started (each turn's interrupt is
+    /// numbered, [`Turn::interrupt_epoch`]).
+    interrupts: u64,
+    /// The last interrupted turn's last press, and whether "already
+    /// stopped" was said for it: a press soon after its end acts on
+    /// nothing ([`INTERRUPT_REPEAT`]).
+    after_interrupt: Option<(Instant, bool)>,
     /// The model and endpoint as last read or switched to.
     model: Option<ShownModel>,
     /// The daemon the events shown came from (the cursor names it, see
@@ -778,6 +815,8 @@ impl Runner {
             steers: Steers::default(),
             idle: None,
             asking_fates: None,
+            interrupts: 0,
+            after_interrupt: None,
             model: None,
             daemon_id_seen: None,
             approvals: Approvals::default(),
@@ -980,9 +1019,7 @@ impl Runner {
                 self.model_set(switch, result);
             }
             Report::CompactAsked(asked) => self.compact_asked(asked),
-            Report::Interrupt(err) => {
-                self.notice(NoticeLevel::Error, format!("interrupt incomplete: {err}"));
-            }
+            Report::Interrupted { epoch, result } => self.interrupt_answered(epoch, result),
             Report::Mobs(mobs) => {
                 self.known_mobs.extend(mobs);
                 self.open_known_mobs();
@@ -2381,7 +2418,13 @@ mod tests {
         let (mut runner, mut ui_rx) = runner(dir.path());
         runner.conn = up(link("live", SessionId::new()).await);
         runner.switching = true;
-        runner.on_report(0, Report::Interrupt("x".into()));
+        runner.on_report(
+            0,
+            Report::Interrupted {
+                epoch: None,
+                result: Err("x".into()),
+            },
+        );
         assert!(runner.switching);
         // One of a lost connection says why, and leaves a later switch be.
         runner.link_epoch = 1;
@@ -2928,7 +2971,8 @@ mod tests {
         assert!(
             notices
                 .iter()
-                .any(|t| t.contains("cancelling whatever the agent runs now")),
+                .any(|t| t
+                    .contains("the interrupted run did not end within 10s; cancelling it at once")),
             "{notices:?}"
         );
         runner.turn.give_up_at = Some(Instant::now());
@@ -2945,17 +2989,256 @@ mod tests {
         );
     }
 
-    #[test]
-    fn only_a_stopped_receipt_counts_as_a_stop() {
-        use serde_json::json;
-        assert!(remote::stopped(
-            &json!({"receipt": {"outcome": "stopped", "run_id": "r", "contributors": []}})
-        ));
-        for outcome in ["not_current", "not_stoppable"] {
-            assert!(!remote::stopped(
-                &json!({"receipt": {"outcome": outcome, "run_id": "r"}})
-            ));
+    use super::turn::ALREADY_STOPPED;
+
+    /// A link like [`link`] whose daemon side hands over every request
+    /// line after the attach (none are answered).
+    async fn link_recording(
+        stream: &str,
+        session: SessionId,
+    ) -> (Link, mpsc::UnboundedReceiver<serde_json::Value>) {
+        use tokio::io::AsyncBufReadExt as _;
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let (server_read, mut server_write) = tokio::io::split(server);
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(server_read);
+            let timeout = crate::daemon::handshake::TIMEOUT;
+            let pending =
+                crate::daemon::handshake::read_attach(&mut lines, &mut server_write, "t", timeout)
+                    .await
+                    .unwrap();
+            crate::daemon::handshake::acknowledge(
+                &mut server_write,
+                &pending,
+                None,
+                None,
+                None,
+                timeout,
+            )
+            .await
+            .unwrap();
+            let mut line = String::new();
+            while lines.read_line(&mut line).await.is_ok_and(|n| n > 0) {
+                if let Ok(request) = serde_json::from_str(&line) {
+                    let _ = tx.send(request);
+                }
+                line.clear();
+            }
+        });
+        let (read, write) = tokio::io::split(client);
+        let address: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let (connection, notifications) = Connection::attach_io(
+            read,
+            write,
+            "t",
+            protocol::AttachParams::default(),
+            address,
+            ATTACH_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let link = Link {
+            connection: Arc::new(connection),
+            notifications,
+            stream: stream.to_string(),
+            session,
+            endpoint: Endpoint {
+                address,
+                token: "t".into(),
+                pid: 1,
+                workspace: None,
+                started_at: None,
+            },
+        };
+        (link, rx)
+    }
+
+    /// The interrupt requests sent so far (`rkat/interrupt`'s params),
+    /// after the spawned sends had their turn.
+    async fn interrupts_sent(
+        rx: &mut mpsc::UnboundedReceiver<serde_json::Value>,
+    ) -> Vec<serde_json::Value> {
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
         }
-        assert!(!remote::stopped(&json!({})));
+        let mut sent = Vec::new();
+        while let Ok(request) = rx.try_recv() {
+            assert_ne!(request["method"], "mob/stop_member_run", "{request}");
+            assert_ne!(request["method"], "mob/force_cancel", "{request}");
+            assert_ne!(request["method"], "mob/hard_cancel_member", "{request}");
+            if request["method"] == "rkat/interrupt" {
+                sent.push(request["params"].clone());
+            }
+        }
+        sent
+    }
+
+    fn notices(rx: &mut mpsc::UnboundedReceiver<Msg>) -> Vec<String> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|msg| match msg {
+                Msg::Notice { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The owner's report (2026-11-17): the first press stopped the run,
+    /// a typed message started a follow-up run, and the next presses (and
+    /// the hard cancel at the deadline) hit that run. Now, once the
+    /// interrupted run has ended, presses in quick succession send nothing
+    /// and say once that the turn is already stopped, the deadline cancels
+    /// nothing, and the same after the turn's end.
+    #[tokio::test]
+    async fn presses_after_the_interrupted_run_ended_touch_no_later_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut ui_rx) = runner(dir.path());
+        let (link, mut requests) = link_recording("live", SessionId::new()).await;
+        runner.conn = up(link);
+        let (first, later) = (RunId::new(), RunId::new());
+        let now = Instant::now();
+        runner.turn = Turn {
+            active: true,
+            saw_run: true,
+            interrupted_at: Some(now),
+            last_press: Some(now),
+            give_up_at: Some(now),
+            interrupted_run: Some(first.clone()),
+            interrupt_epoch: 1,
+            ..Turn::default()
+        };
+        runner.turn.run_seen(&first);
+        runner.turn.run_over(&first);
+        // A follow-up run (another client's message) is open now.
+        runner.turn.run_seen(&later);
+        for _ in 0..3 {
+            runner.interrupt();
+        }
+        runner.on_deadline();
+        assert!(runner.turn.active, "the turn ends as its runs do");
+        assert!(interrupts_sent(&mut requests).await.is_empty());
+        let said = notices(&mut ui_rx);
+        assert_eq!(
+            said.iter().filter(|text| *text == ALREADY_STOPPED).count(),
+            1,
+            "{said:?}"
+        );
+        assert!(
+            !said.iter().any(|text| text.contains("cancelling")),
+            "{said:?}"
+        );
+
+        // After the turn's end, a press right away acts on nothing either,
+        // and says nothing again.
+        runner.turn.run_over(&later);
+        runner.finish_turn();
+        runner.interrupt();
+        assert!(interrupts_sent(&mut requests).await.is_empty());
+        assert!(
+            !notices(&mut ui_rx)
+                .iter()
+                .any(|text| text == ALREADY_STOPPED)
+        );
+    }
+
+    /// The first press stops the run by its id, with the messages the
+    /// agent has not read; a press after [`STOP_GRACE`] while that run has
+    /// not ended forces that run (and names no other).
+    #[tokio::test]
+    async fn the_first_press_stops_its_run_and_a_later_one_forces_that_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, _ui_rx) = runner(dir.path());
+        let (link, mut requests) = link_recording("live", SessionId::new()).await;
+        runner.conn = up(link);
+        let run = RunId::new();
+        runner.turn = Turn {
+            active: true,
+            saw_run: true,
+            ..Turn::default()
+        };
+        runner.turn.run_seen(&run);
+        runner.steers.sending(PendingId(1));
+        let input = InputId::new();
+        runner.steers.admitted(PendingId(1), input.clone());
+        runner.interrupt();
+        let sent = interrupts_sent(&mut requests).await;
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["target"], "run");
+        assert_eq!(sent[0]["run_id"], serde_json::to_value(&run).unwrap());
+        assert_eq!(sent[0]["hard"], false);
+        assert_eq!(
+            sent[0]["input_ids"],
+            serde_json::json!([serde_json::to_value(&input).unwrap()])
+        );
+        // Past the grace, the run still open, and another run noted meanwhile
+        // as current: the force names the interrupted run.
+        runner.turn.interrupted_at = Instant::now().checked_sub(STOP_GRACE * 2);
+        runner.turn.last_press = runner.turn.interrupted_at;
+        runner.turn.current_run = Some(RunId::new());
+        runner.interrupt();
+        let forced = interrupts_sent(&mut requests).await;
+        assert_eq!(forced.len(), 1, "{forced:?}");
+        assert_eq!(forced[0]["run_id"], serde_json::to_value(&run).unwrap());
+        assert_eq!(forced[0]["hard"], true);
+        // The run goes on past the deadline: it is cancelled at once, by
+        // its id.
+        runner.turn.give_up_at = Some(Instant::now());
+        runner.on_deadline();
+        let hard = interrupts_sent(&mut requests).await;
+        assert_eq!(hard.len(), 1, "{hard:?}");
+        assert_eq!(hard[0]["run_id"], serde_json::to_value(&run).unwrap());
+        assert_eq!(hard[0]["hard"], true);
+    }
+
+    /// The daemon's answer returns the messages it took back (to the
+    /// editor), marks the read ones delivered, and only then lets the turn
+    /// end.
+    #[tokio::test]
+    async fn the_interrupts_answer_returns_the_unread_messages_before_the_turn_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut ui_rx) = runner(dir.path());
+        let run = RunId::new();
+        runner.turn = Turn {
+            active: true,
+            saw_run: true,
+            interrupted_at: Some(Instant::now()),
+            interrupted_run: Some(run.clone()),
+            interrupt_calls: 1,
+            interrupt_epoch: 4,
+            result: Some(Err(TurnFailure::Interrupted)),
+            ..Turn::default()
+        };
+        runner.turn.run_seen(&run);
+        runner.turn.run_over(&run);
+        let (unread, read) = (InputId::new(), InputId::new());
+        runner.steers.sending(PendingId(1));
+        runner.steers.admitted(PendingId(1), read.clone());
+        runner.steers.sending(PendingId(2));
+        runner.steers.admitted(PendingId(2), unread.clone());
+        runner.idle = Some(protocol::IdleNote {
+            agent: "main".into(),
+            session_id: SessionId::new(),
+            last_run: Some(run.clone()),
+            held: 0,
+        });
+        runner.settle_turn();
+        assert!(runner.turn.active, "it waits for the interrupt's answer");
+        runner.interrupt_answered(
+            Some(4),
+            Ok(protocol::Interrupted {
+                run_id: Some(run),
+                run: protocol::RunInterrupt::Stopped,
+                follow_ups: 0,
+                returned: vec![unread],
+                read: vec![read],
+            }),
+        );
+        assert!(!runner.turn.active);
+        let msgs: Vec<Msg> = std::iter::from_fn(|| ui_rx.try_recv().ok()).collect();
+        let at = |pred: &dyn Fn(&Msg) -> bool| msgs.iter().position(pred);
+        let returned = at(&|m| matches!(m, Msg::Returned(ids) if ids == &[PendingId(2)])).unwrap();
+        let delivered = at(&|m| matches!(m, Msg::SteerDelivered(PendingId(1)))).unwrap();
+        let ended = at(&|m| matches!(m, Msg::TurnFinished(Err(TurnFailure::Interrupted)))).unwrap();
+        assert!(returned < ended && delivered < ended, "{msgs:?}");
     }
 }

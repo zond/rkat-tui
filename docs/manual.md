@@ -113,28 +113,51 @@ across the transcript's width, so they stand out when you scroll). A steer never
 on its way: while one runs longer than five seconds, the status bar reads
 `queued N, waiting for the model's reply (Ns)` (after 20 s without word
 from the agent the activity segment says it instead, see **Working or
-waiting** below). A steer an interrupted turn did not deliver
-is sent next (see below); one a failed turn did not deliver comes back to
-the editor.
+waiting** below). A steer the agent has not read when you interrupt the
+turn comes back to the editor (see below), and so does one a failed turn
+did not deliver.
 
 *Esc while a turn runs* interrupts it, as in Claude Code, and Ctrl-C does
 the same (the first Esc or Ctrl-C after a mouse selection only clears it):
 the daemon stops the agent's own run (its helpers keep working, see
-**Helpers**); a model request in flight is dropped at once. When the stop finds that the run the client
-knew is no longer the agent's current one, or the run has not ended 10 s
-after the interrupt, the client cancels whatever run the agent has then
-(a notice says so) and waits 10 s more; if even that is not confirmed, the
-turn ends with a notice that the run may still be going (it shows again
-when it reports, and what you send next waits behind it), never as
-"turn interrupted". The prompt of an interrupted run is not kept in the
-conversation the model sees (the engine closes the run without it); the
-transcript still shows it. A message sent to
-the daemon meanwhile is the runtime's: the agent gets it at its next step
-unless ↑ takes it back first. A second Esc a second later force-cancels
-the agent's work, which also drops the messages the runtime still holds
-queued; those come back to the editor. A press in between says the
-interrupt was sent and when the next one forces it; a press after the
-force says it waits for the run to end.
+**Helpers**); a model request in flight, or a shell command, is dropped
+at once. The interrupt is bound to that run, press by press:
+
+- the first press stops the run (by its id) and takes back every message
+  you typed during the turn that the agent has not read yet: a steer still
+  waiting for a tool's result, one still on its way to the daemon, and one
+  the UI held. They come back to the editor, in the order you typed them,
+  and none of them starts a run by itself: you decide whether to send
+  them. If the runtime had already started a follow-up run with one of
+  them, that run is stopped too (it belongs to the interrupted turn) and
+  the message comes back as well. A message the agent has already read
+  stays in the conversation;
+- a press within a second says the interrupt was sent and when the next
+  one forces it; a later press forces that run (cancels it at once); a
+  press after the force says it waits;
+- presses after the run has ended (within 2 s of each other) touch
+  nothing, also not a run that started since, and say once "the turn is
+  already stopped"; they do not clear the editor the messages came back
+  to. A press after a pause is a new interrupt.
+
+The turn ends with one line: "turn interrupted; the agent is idle, and
+your typed message is back in the input" (or how many came back). The
+engine's own words for a cancelled run are not shown. When the run has
+not ended 10 s after the interrupt, the client cancels that run (and only
+that run) at once (a notice says so) and waits 10 s more; if even that is
+not confirmed, the turn ends with a notice that the run may still be
+going (it shows again when it reports, and what you send next waits
+behind it), never as "turn interrupted". A call the run makes after the
+interrupt that needs a review is denied, and the agent reads that the
+user interrupted the turn ("from the approval dialog" only when you
+answered Stop in a dialog). When the runtime refuses the interrupt, the
+notice says what that means and to press Esc again; the engine's text is
+in the daemon's log and the audit log. When the agent's session is being
+brought back right after an interrupt, the client waits up to 10 s for
+it before it shows the conversation again. The prompt of an interrupted
+run is not kept in the conversation the model sees (the engine closes
+the run without it); the transcript still shows it. Ctrl+Enter
+(interrupt and send) sends the returned messages with its text.
 
 *Esc on an empty editor with no turn shown* (and Ctrl+Enter on an empty
 editor) still interrupts: the agent may run a turn this client does not
@@ -2389,7 +2412,7 @@ in `src/ui/commands.rs`, pinned to the keymap by a test):
 | Ctrl+Enter | Send now: interrupt the turn and send the input next (sends normally when idle; the same as Ctrl-X Ctrl-S) |
 | Shift+Enter, Alt+Enter, Ctrl+J | Insert a newline; so does a `\` typed right before Enter at a line end (the backslash is dropped) |
 | Ctrl-C | Interrupt the turn (as Esc), else clear the input, else press twice to quit |
-| Esc | Interrupt the turn (the agent's own run: its helpers keep working); queued messages are sent next. The first Esc or Ctrl-C after a mouse selection only clears it. In a running helper's full view: ask whether to stop that helper (`y` stops it, `n` or Esc keeps it) |
+| Esc | Interrupt the turn (the agent's own run: its helpers keep working); your messages the agent has not read come back to the input; again within 1 s it says when the next forces it, later it forces that run, and after the run ended it only says the turn is already stopped (see [Sessions](#sessions)). The first Esc or Ctrl-C after a mouse selection only clears it. In a running helper's full view: ask whether to stop that helper (`y` stops it, `n` or Esc keeps it) |
 | Esc Esc (idle, with text) | Clear the input and save it to the prompt history (↑ recalls it) |
 | Up (empty input) | Take queued messages back into the editor |
 | Ctrl-D | On an empty input, quit on a second press within 3 s (see [Sessions](#sessions) and [Detach and reattach](#the-workspace-daemon)); with text, delete forward |

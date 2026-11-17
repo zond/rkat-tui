@@ -11365,3 +11365,106 @@ retires a member (`mobs::stop_helper`, which `HelperEndings::retire`,
   before the fix `a_helper_below_a_raised_depth_limit_starts_one_more`
   failed 9 of 20 and the new after-the-decision test 20 of 20; after it
   all ten tests passed 20 of 20.
+
+## An interrupt is bound to its run, and returns what the agent did not read (2026-11-17)
+
+An owner report on 0.0.14: the agent in a long foreground shell call, a
+message typed meanwhile (a steer, waiting for the tool), Esc three times
+within about a second. Shown: `error: Run was cancelled` twice, the typed
+message "delivering…" and then a new run whose first shell call was
+denied "the user stopped this turn from the approval dialog", "the
+conversation could not be read again: mob/stream_open failed … no live
+session actor", the 10 s hard cancel, and `interrupt incomplete:
+mob/hard_cancel_member failed … must resolve through MeerkatMachine …
+Runtime not ready: running`.
+
+Reproduced on the rig with the code of 4411ad9 (scripted model, a real
+`sleep 30` shell call, a steer admitted during it, three
+`Effect::Interrupt`s 300 ms and then 600 ms apart): press 1 sent
+`mob/stop_member_run` for run A, which ended at once (`run_failed`
+"Run was cancelled"); the runtime then ran the steer as a follow-up run B
+(the client marked it delivered on B's `run_started`) whose shell call
+started; presses 2 and 3 at 300 ms only said "press again in N ms"; at
+600 ms spacing press 3 was past the grace and sent `mob/force_cancel`,
+which named no run and so hit B (and the daemon's observer marked the
+gate's Stop on B, the engine's current run: hence the denial of B's call
+when it needed a review); 10 s after press 1 the client sent
+`mob/hard_cancel_member`, again whichever run was current, killing B.
+Every escalation was bound to the turn, not to the run.
+
+What the engine offers (0.9.15, read in `meerkat-runtime`):
+`MeerkatMachine::stop_run(session, run)` and
+`hard_cancel_run_if_current(session, run)` compare the run with the
+machine's current run under the session's gate (a late call is
+`NotCurrent` / `false` and touches nothing newer); `stop_run`'s receipt
+says every contributor staged for the run reached its terminal and none
+started a successor, and a steer that only joined at a boundary is
+abandoned unless its append survived. `recall_queued_input` abandons an
+input only if it is still `Queued`, in one transition with a run's take
+of it, and answers `NotQueued { phase, run_id }` otherwise. The mob's
+`force_cancel_member` and `hard_cancel_member` name no run.
+
+The rule chosen: an interrupt returns every message of the user's that
+the agent has not read to the editor, in typed order, and nothing typed
+during the interrupted turn starts a run by itself (consistent with ↑'s
+recall and with "a steer the runtime dropped returns to the editor").
+`rkat/interrupt` (`daemon/local/interrupt.rs`) does, in order: recall
+each named input still queued (so the stop cannot stage it into a
+successor); mark the gate's Stop for that run only
+(`ApprovalEngine::interrupted`, which refuses a run a newer one replaced);
+stop exactly that run (`stop_run`, or `hard_cancel_run_if_current` when
+forced); stop any other run that holds one of the messages (a follow-up
+run: it belongs to the interrupted turn), and read each message's fate:
+abandoned or superseded comes back, applied or consumed stays. The client
+(`runner/turn.rs`) binds the interrupt to the run it named (or the one the
+daemon names for `Current`); a force and the deadline's hard cancel name
+that run; once it has ended, presses within `INTERRUPT_REPEAT` (2 s) of
+each other send nothing and say once "the turn is already stopped"; the
+turn waits for the interrupt's answer before it ends; a steer whose send
+was answered after the press is taken back by a second call
+(`InterruptTarget::Inputs`); a follow-up run's start no longer marks the
+turn's steers delivered while it is interrupted. The UI keeps the
+returned messages (`Msg::Returned`) until the turn's end and puts them,
+with the ones it held, in the editor with one line; presses in the
+window after an interrupt never arm the editor's Esc Esc clear.
+
+Wording: the agent's own cancelled run draws nothing (its end's one line
+says it); `DenyReason::Interrupted` ("the user interrupted this turn; the
+call was not run") beside `Stopped` (the dialog's Stop), the cause kept in
+the gate's `StopState`; a refused stop is said as what it means and to
+press Esc again (`plain_refusal`), the engine's text in the daemon's log
+and an `interrupt` audit line; the catch-up after a reseat opens the
+stream again every 250 ms for up to 10 s while the engine refuses it with
+"no live session actor" (`runner/switch.rs` `reopen_settled`), and says
+plainly when it persists. Engine interrupt methods are no longer sent by
+the client (`mob/stop_member_run` etc. stay served for other callers;
+their observer binds a stop's Stop mark to its `run_id`).
+
+Persona: one line merged with "to run a command while you keep working":
+a command likely to run longer than about 30 seconds goes to an `assign`
+helper unless the user asked for it to be run directly.
+
+Tests: `client_turns::three_presses_during_a_slow_shell_stop_one_run_and_return_the_typed_message`
+(the report's order through a real `App`: one stop of the first run,
+every `rkat/interrupt` names it, no engine interrupt method forwarded, one
+model request, the message back in the editor and not in the session,
+"already stopped" once, none of the engine's texts in the transcript);
+`client_turns::one_esc_stops_the_run_by_its_id_and_keeps_a_message_already_read`;
+`client_turns::a_forced_interrupt_cancels_its_run_and_never_a_later_one`;
+`client::runner::tests::{presses_after_the_interrupted_run_ended_touch_no_later_run,
+the_first_press_stops_its_run_and_a_later_one_forces_that_run,
+the_interrupts_answer_returns_the_unread_messages_before_the_turn_ends}`;
+`approval::engine::tests::an_interrupt_stops_its_own_run_only_and_says_so`;
+`daemon::local::interrupt::tests::a_refused_stop_is_said_in_plain_words`;
+`ui::tests::turns::interrupted_turn_returns_the_unread_messages_to_the_editor`.
+Changed to the rule: `client_turns::a_steer_queued_behind_an_interrupted_run_runs_after_it`
+(now `…_comes_back`), `an_interrupt_during_a_stalled_model_request_ends_it_and_loses_nothing`
+(the steer comes back and is sent again), `interrupt_then_recall_then_resend_during_a_stall_delivers_once`
+(the interrupt may be what takes it back), `ui::tests::turns::interrupted_turn_sends_held_messages_next`
+(replaced), and the three `resumed_runs` tests through `interrupt_and_go_on`
+(one `rkat/interrupt` for the run by its id instead of one forwarded
+`mob/stop_member_run`; the typed message comes back instead of running). The new tests use the new method and messages, so they were
+not run against the old code; the reproduction above is what fails
+there. Remaining window: a message admitted between the client's press
+and the daemon's recall is taken back by the second call, after the run
+it may have started has begun (it is stopped then).

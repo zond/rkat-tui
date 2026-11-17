@@ -394,6 +394,13 @@ methods! {
     /// (read only; a client asks when the agent is idle and holds nothing
     /// while it still waits for one of its steers).
     Inputs = "rkat/inputs" (RecallParams) -> InputFates;
+    /// Esc: interrupt the caller's agent's run the parameters name (and
+    /// only that run: one that has ended is never exchanged for a newer
+    /// one), and take back each named message the agent has not read
+    /// (`crate::daemon::local`'s `interrupt`). A message the runtime
+    /// already gave a follow-up run stops that run too: it belongs to the
+    /// interrupted turn.
+    Interrupt = "rkat/interrupt" (InterruptParams) -> Interrupted;
     /// A top-level agent's card for a cross-workspace wire: its workspace,
     /// name, comms identity and the address of its Unix socket
     /// ([`crate::daemon::wires`]). A bound caller asks for its own agent;
@@ -996,6 +1003,82 @@ pub struct Recalled {
     /// The cancels the runtime refused, in words.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
+}
+
+/// Which run an interrupt ([`method::Interrupt`]) is for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "target", rename_all = "snake_case")]
+pub enum InterruptTarget {
+    /// This run, and no other: once it has ended the interrupt stops
+    /// nothing.
+    Run {
+        /// The run.
+        run_id: meerkat_core::lifecycle::RunId,
+    },
+    /// The run the agent has as the daemon reads it (a client that knows no
+    /// run's id); the answer names it.
+    Current,
+    /// No run: only the named messages are taken back (one admitted after
+    /// the interrupt's first press), with the follow-up run that took one.
+    Inputs,
+}
+
+/// [`method::Interrupt`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptParams {
+    /// The run to interrupt.
+    #[serde(flatten)]
+    pub target: InterruptTarget,
+    /// The caller's messages the agent has not read yet (the inputs
+    /// `mob/member_send` admitted), oldest first: each is taken back
+    /// unless the agent has read it.
+    #[serde(default)]
+    pub input_ids: Vec<meerkat_core::lifecycle::InputId>,
+    /// Cancel the run at once (a second Esc, or no end within the
+    /// client's deadline), not at the stop's own pace.
+    #[serde(default)]
+    pub hard: bool,
+}
+
+/// What an interrupt did to its run ([`Interrupted`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum RunInterrupt {
+    /// The run was stopped (or is being stopped by the runtime already).
+    Stopped,
+    /// The run had already ended: nothing was stopped.
+    Ended,
+    /// The agent runs nothing ([`InterruptTarget::Current`]), or no run
+    /// was asked for ([`InterruptTarget::Inputs`]).
+    Idle,
+    /// The runtime did not take the interrupt; `why` says, in the user's
+    /// words, what that means and what to do (the engine's own words are
+    /// in the daemon's log and the audit log).
+    Failed {
+        /// What happened and what to do.
+        why: String,
+    },
+}
+
+/// [`method::Interrupt`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Interrupted {
+    /// The run the interrupt was for (the one it found, for
+    /// [`InterruptTarget::Current`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<meerkat_core::lifecycle::RunId>,
+    /// What became of that run.
+    #[serde(flatten)]
+    pub run: RunInterrupt,
+    /// Follow-up runs stopped because they had taken one of the messages.
+    #[serde(default)]
+    pub follow_ups: usize,
+    /// Messages taken back: the agent never reads them.
+    #[serde(default)]
+    pub returned: Vec<meerkat_core::lifecycle::InputId>,
+    /// Messages the agent has read: they stay.
+    #[serde(default)]
+    pub read: Vec<meerkat_core::lifecycle::InputId>,
 }
 
 /// What became of one input ([`method::Inputs`]).

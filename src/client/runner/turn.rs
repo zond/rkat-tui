@@ -115,6 +115,10 @@ impl Runner {
                 };
                 if delivered {
                     self.send(Msg::SteerDelivered(id));
+                } else if current && self.turn.interrupted_at.is_some() {
+                    // Admitted after the user interrupted the turn: it is
+                    // taken back too (with a run it started).
+                    self.send_interrupt(protocol::InterruptTarget::Inputs, false);
                 }
             }
             (Some(id), Err(why)) => {
@@ -212,38 +216,72 @@ impl Runner {
         }
     }
 
-    /// Esc: stop the run the stream reported, or the one the daemon said
-    /// was open as this client attached ([`Self::run_noted`]); a second Esc
-    /// after [`STOP_GRACE`] (or a first one while this client knows no
-    /// run's id) force-cancels the member. With no turn of this client's open the
-    /// daemon is asked whether the agent runs ([`Self::interrupt_unseen`]).
-    /// Every press acts or says why not.
+    /// Esc. The first press interrupts the run the stream reported, or the
+    /// one the daemon said was open as this client attached
+    /// ([`Self::run_noted`]), or (knowing no run's id) the one the daemon
+    /// finds current, which its answer names; with it go the messages of
+    /// this client's the agent has not read ([`Self::send_interrupt`]).
+    /// From then on the interrupt is bound to that run: a press within
+    /// [`STOP_GRACE`] says when the next one forces it, a later one forces
+    /// it, and one after that says it is forced. Once that run has ended, a
+    /// press within [`INTERRUPT_REPEAT`] of the last one acts on nothing
+    /// and says once that the turn is already stopped (a run that started
+    /// since is never touched); a press after a pause is a new interrupt.
+    /// With no turn of this client's open the daemon is asked to interrupt
+    /// whatever the agent runs ([`Self::interrupt_unseen`]). Every press
+    /// acts or says why not.
     pub(super) fn interrupt(&mut self) {
+        let now = Instant::now();
         if !self.turn.active {
+            if let Some((last, said)) = &mut self.after_interrupt
+                && now.duration_since(*last) < INTERRUPT_REPEAT
+            {
+                *last = now;
+                if !std::mem::replace(said, true) {
+                    self.notice(NoticeLevel::Info, ALREADY_STOPPED);
+                }
+                return;
+            }
+            self.after_interrupt = None;
             self.interrupt_unseen();
             return;
         }
-        let now = Instant::now();
-        let Some(connection) = self.connection() else {
+        if self.connection().is_none() {
             self.turn.record(Err(TurnFailure::Interrupted));
             self.finish_turn();
             return;
-        };
-        let reports = self.reporter();
-        let stop = match (&self.turn.interrupted_at, &self.turn.current_run) {
-            (None, Some(run))
-                if self.turn.open_runs.contains(run) || self.turn.noted.as_ref() == Some(run) =>
-            {
-                Some(run.to_string())
-            }
-            (None, _) => None,
-            (Some(first), _)
-                if now.duration_since(*first) >= STOP_GRACE && !self.turn.force_cancelled =>
-            {
-                None
-            }
-            (Some(first), _) if !self.turn.force_cancelled => {
-                let left = STOP_GRACE.saturating_sub(now.duration_since(*first));
+        }
+        if let Some(first) = self.turn.interrupted_at {
+            let repeat = self
+                .turn
+                .last_press
+                .is_some_and(|last| now.duration_since(last) < INTERRUPT_REPEAT);
+            self.turn.last_press = Some(now);
+            if !self.turn.interrupted_run_open() {
+                if repeat {
+                    if !std::mem::replace(&mut self.turn.said_stopped, true) {
+                        self.notice(NoticeLevel::Info, ALREADY_STOPPED);
+                    }
+                    return;
+                }
+                // A pause, then Esc: a new interrupt of what the turn runs
+                // now (a follow-up run another client's message started).
+                self.turn.interrupted_at = None;
+                self.turn.interrupted_run = None;
+                self.turn.said_stopped = false;
+                self.turn.force_cancelled = false;
+                self.turn.escalated = false;
+            } else if self.turn.force_cancelled {
+                self.notice(
+                    NoticeLevel::Info,
+                    format!(
+                        "the interrupt was forced; waiting for the run to end (it is cancelled at once if it has not within {}s)",
+                        INTERRUPT_DEADLINE.as_secs()
+                    ),
+                );
+                return;
+            } else if now.duration_since(first) < STOP_GRACE {
+                let left = STOP_GRACE.saturating_sub(now.duration_since(first));
                 self.notice(
                     NoticeLevel::Info,
                     format!(
@@ -252,67 +290,127 @@ impl Runner {
                     ),
                 );
                 return;
-            }
-            (Some(_), _) => {
-                self.notice(
-                    NoticeLevel::Info,
-                    format!(
-                        "the interrupt was forced; waiting for the run to end (whatever the agent runs is cancelled if it has not within {}s)",
-                        INTERRUPT_DEADLINE.as_secs()
-                    ),
-                );
+            } else {
+                self.turn.force_cancelled = true;
+                self.send_interrupt(self.interrupt_target(), true);
                 return;
             }
+        }
+        let run = self.turn.current_run.clone().filter(|run| {
+            self.turn.open_runs.contains(run) || self.turn.noted.as_ref() == Some(run)
+        });
+        self.interrupts += 1;
+        self.turn.interrupt_epoch = self.interrupts;
+        self.turn.interrupted_at = Some(now);
+        self.turn.last_press = Some(now);
+        self.turn.give_up_at = Some(now + INTERRUPT_DEADLINE);
+        self.turn.interrupted_run.clone_from(&run);
+        let target = match run {
+            Some(run_id) => protocol::InterruptTarget::Run { run_id },
+            None => protocol::InterruptTarget::Current,
         };
-        if self.turn.interrupted_at.is_none() {
-            self.turn.interrupted_at = Some(now);
-            self.turn.give_up_at = Some(now + INTERRUPT_DEADLINE);
+        self.send_interrupt(target, false);
+    }
+
+    /// The run the turn's interrupt is for, as `rkat/interrupt` names it.
+    fn interrupt_target(&self) -> protocol::InterruptTarget {
+        match &self.turn.interrupted_run {
+            Some(run_id) => protocol::InterruptTarget::Run {
+                run_id: run_id.clone(),
+            },
+            None => protocol::InterruptTarget::Current,
         }
-        if stop.is_none() {
-            self.turn.force_cancelled = true;
-        }
+    }
+
+    /// Send the turn's interrupt to the daemon (`rkat/interrupt`): for
+    /// `target`, with every steer of this client the agent has not read
+    /// yet, which the daemon takes back; the turn does not end until it
+    /// answers ([`Self::interrupt_answered`]).
+    fn send_interrupt(&mut self, target: protocol::InterruptTarget, hard: bool) {
+        let Some(connection) = self.connection() else {
+            return;
+        };
+        self.turn.interrupt_calls += 1;
+        let epoch = Some(self.turn.interrupt_epoch);
+        let params = protocol::InterruptParams {
+            target,
+            input_ids: self
+                .steers
+                .outstanding()
+                .into_iter()
+                .map(|(_, input)| input)
+                .collect(),
+            hard,
+        };
+        let reports = self.reporter();
         tokio::spawn(async move {
-            let result = match stop {
-                Some(run) => {
-                    match bounded(
-                        CALL_TIMEOUT,
-                        remote::stop_run(&connection, &run, INTERRUPT_REASON),
-                    )
-                    .await
-                    {
-                        Ok(answer) if remote::stopped(&answer) => Ok(()),
-                        // The run this client knew is not the one the agent
-                        // runs (or a stop was refused): interrupt whichever
-                        // runs now rather than wait for an end that will not
-                        // come.
-                        answered => {
-                            tracing::info!(
-                                ?answered,
-                                "the stop stopped nothing; hard-cancelling the current run"
-                            );
-                            bounded(
-                                CALL_TIMEOUT,
-                                remote::hard_cancel(&connection, INTERRUPT_REASON),
-                            )
-                            .await
-                        }
+            let result = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Interrupt>(&connection, &params),
+            )
+            .await
+            .map_err(|err| interrupt_failure(&err));
+            reports.send(Report::Interrupted { epoch, result });
+        });
+    }
+
+    /// The daemon answered an interrupt: the run it was for (when the
+    /// client named none), the messages it took back (to the editor, in
+    /// order: [`Msg::Returned`]) and the ones the agent had read (shown
+    /// delivered), and a failure in plain words. A press with no turn
+    /// (`epoch` `None`) says what it found.
+    pub(super) fn interrupt_answered(
+        &mut self,
+        epoch: Option<u64>,
+        result: Result<protocol::Interrupted, String>,
+    ) {
+        let current = epoch.is_some_and(|epoch| {
+            self.turn.active
+                && self.turn.interrupted_at.is_some()
+                && self.turn.interrupt_epoch == epoch
+        });
+        if current {
+            self.turn.interrupt_calls = self.turn.interrupt_calls.saturating_sub(1);
+        }
+        match result {
+            Ok(answer) => {
+                if current && self.turn.interrupted_run.is_none() {
+                    self.turn.interrupted_run.clone_from(&answer.run_id);
+                }
+                let returned = self.steers.recalled(&answer.returned);
+                self.admitted.retain(|id| !returned.contains(id));
+                if !returned.is_empty() {
+                    self.send(Msg::Returned(returned));
+                }
+                for input in &answer.read {
+                    if let Some(id) = self.steers.settled(input) {
+                        self.send(Msg::SteerDelivered(id));
                     }
                 }
-                None => bounded(CALL_TIMEOUT, remote::force_cancel(&connection)).await,
-            };
-            if let Err(failure) = result {
-                reports.send(Report::Interrupt(failure.to_string()));
+                match (answer.run, epoch) {
+                    (protocol::RunInterrupt::Failed { why }, _) => {
+                        self.notice(NoticeLevel::Warn, why);
+                    }
+                    (protocol::RunInterrupt::Stopped, None) => {
+                        self.notice(NoticeLevel::Info, INTERRUPTED_UNSEEN);
+                    }
+                    (protocol::RunInterrupt::Ended | protocol::RunInterrupt::Idle, None) => {
+                        self.notice(NoticeLevel::Info, NOTHING_RUNS);
+                    }
+                    _ => {}
+                }
             }
-        });
+            Err(why) => self.notice(NoticeLevel::Warn, why),
+        }
+        self.settle_turn();
     }
 
     /// Esc with no turn of this client's open. The agent may run all the
     /// same: a run this client did not see start (it attached mid-run), or
-    /// one that went on after this client's turn ended as interrupted or
-    /// unconfirmed. The daemon's `rkat/status` says whether the bound agent
-    /// runs: when it does (or cannot tell), its current run is cancelled
-    /// (`mob/hard_cancel_member`); when it is idle the user is told nothing
-    /// runs.
+    /// one that went on after this client's turn ended as unconfirmed. The
+    /// daemon interrupts the run its agent has now, if any
+    /// ([`protocol::InterruptTarget::Current`]), and the answer says which
+    /// ([`Self::interrupt_answered`]).
     fn interrupt_unseen(&self) {
         let Some(connection) = self.connection() else {
             self.notice(
@@ -321,68 +419,40 @@ impl Runner {
             );
             return;
         };
-        let ui_tx = self.ui_tx.clone();
+        let reports = self.reporter();
         tokio::spawn(async move {
-            let agent = connection.agent().to_string();
-            let running = bounded(
+            let params = protocol::InterruptParams {
+                target: protocol::InterruptTarget::Current,
+                input_ids: Vec::new(),
+                hard: false,
+            };
+            let result = bounded(
                 CALL_TIMEOUT,
-                remote::call::<protocol::method::Status>(&connection, &protocol::Empty {}),
+                remote::call::<protocol::method::Interrupt>(&connection, &params),
             )
             .await
-            .ok()
-            .and_then(|status| status.agents.into_iter().find(|row| row.name == agent))
-            .and_then(|row| row.running);
-            let (level, text) = if running == Some(false) {
-                (NoticeLevel::Info, NOTHING_RUNS.to_string())
-            } else {
-                match bounded(
-                    CALL_TIMEOUT,
-                    remote::hard_cancel(&connection, INTERRUPT_REASON),
-                )
-                .await
-                {
-                    Ok(()) if running == Some(true) => {
-                        (NoticeLevel::Info, INTERRUPTED_UNSEEN.to_string())
-                    }
-                    Ok(()) => (
-                        NoticeLevel::Info,
-                        "whether the agent runs could not be read; whatever it runs was interrupted"
-                            .to_string(),
-                    ),
-                    Err(err) => (NoticeLevel::Error, format!("interrupt incomplete: {err}")),
-                }
-            };
-            let _ = ui_tx.send(Msg::Notice { level, text });
+            .map_err(|err| interrupt_failure(&err));
+            reports.send(Report::Interrupted {
+                epoch: None,
+                result,
+            });
         });
     }
 
-    /// The interrupt's deadline passed with no end of the run: the first
-    /// time, interrupt whichever run the agent has now (`mob/hard_cancel_member`)
-    /// and wait once more.
+    /// The interrupt's deadline passed and its run has not ended: the
+    /// first time, cancel that run at once (and that run only) and wait
+    /// once more.
     fn escalate_interrupt(&mut self) {
-        let Some(connection) = self.connection() else {
-            return;
-        };
         self.turn.escalated = true;
         self.turn.give_up_at = Some(Instant::now() + INTERRUPT_DEADLINE);
         self.notice(
             NoticeLevel::Warn,
             format!(
-                "the run did not end within {}s of the interrupt; cancelling whatever the agent runs now",
+                "the interrupted run did not end within {}s; cancelling it at once",
                 INTERRUPT_DEADLINE.as_secs()
             ),
         );
-        let reports = self.reporter();
-        tokio::spawn(async move {
-            if let Err(failure) = bounded(
-                CALL_TIMEOUT,
-                remote::hard_cancel(&connection, INTERRUPT_REASON),
-            )
-            .await
-            {
-                reports.send(Report::Interrupt(failure.to_string()));
-            }
-        });
+        self.send_interrupt(self.interrupt_target(), true);
     }
 
     /// One of the member's events (live, or replayed after the cursor; of
@@ -468,7 +538,10 @@ impl Runner {
                 // turn that starts now while steers of this client are
                 // still with the agent: a turn ended before the runtime
                 // ran them) carries the steers that missed the boundary.
-                let own = if self.turn.saw_run || joining {
+                // Not after the user interrupted the turn: a follow-up run
+                // that took one of them is stopped with it, and the
+                // interrupt's answer says which the agent read.
+                let own = if (self.turn.saw_run || joining) && self.turn.interrupted_at.is_none() {
                     self.steers.take_all()
                 } else {
                     Vec::new()
@@ -765,6 +838,7 @@ impl Runner {
             || !self.turn.open_runs.is_empty()
             || self.turn.noted.is_some()
             || self.steers.sending_any()
+            || self.turn.interrupt_calls > 0
             || !idle
                 .last_run
                 .as_ref()
@@ -772,7 +846,8 @@ impl Runner {
         {
             return;
         }
-        if idle.held > 0 {
+        // After an interrupt the messages it took back are not held.
+        if idle.held > 0 && self.turn.interrupted_at.is_none() {
             self.notice(
                 NoticeLevel::Warn,
                 "the agent still holds a message for this turn; it runs when the agent takes it",
@@ -787,6 +862,13 @@ impl Runner {
     /// run may still be going, and it shows here again when it reports).
     pub(super) fn on_deadline(&mut self) {
         if self.turn.give_up_at.is_none_or(|at| at > Instant::now()) {
+            return;
+        }
+        // The interrupted run ended: nothing is cancelled (a run that
+        // started since is not the interrupt's); the turn ends as its runs
+        // do.
+        if !self.turn.interrupted_run_open() {
+            self.turn.give_up_at = None;
             return;
         }
         if !self.turn.escalated && self.connection().is_some() {
@@ -805,6 +887,10 @@ impl Runner {
         // Not the runs still open: an unconfirmed turn's run shows again
         // when it reports.
         self.finished_runs.clone_from(&turn.ended);
+        // A press right after an interrupted turn's end acts on nothing.
+        self.after_interrupt = turn
+            .interrupted_at
+            .map(|first| (turn.last_press.unwrap_or(first), turn.said_stopped));
         if turn.quiet {
             match &turn.result {
                 Some(Err(TurnFailure::Failed(why))) => self.notice(
@@ -1076,6 +1162,23 @@ use crate::ui::COMPACT_PROMPT;
 
 /// What an interrupt says when the agent runs nothing.
 pub const NOTHING_RUNS: &str = "nothing is running";
+
+/// What a press says, once, after the run its interrupt was for ended.
+pub const ALREADY_STOPPED: &str = "the turn is already stopped; nothing else was interrupted";
+
+/// An interrupt call that brought no answer, in plain words.
+fn interrupt_failure(err: &CallFailure) -> String {
+    match err {
+        CallFailure::TimedOut => {
+            "the daemon did not answer the interrupt in time; press Esc again".to_string()
+        }
+        // The daemon's own refusals and the connection's errors are this
+        // application's words.
+        CallFailure::Failed(err) => {
+            format!("the interrupt did not reach the agent ({err}); press Esc again")
+        }
+    }
+}
 
 /// What an interrupt says when it cancelled a run this client had no
 /// turn for.

@@ -177,8 +177,11 @@ pub enum DenyReason {
         /// The user's instruction to the agent, if they wrote one.
         comment: Option<String>,
     },
-    /// The human stopped the turn.
+    /// The human stopped the turn from an approval dialog (its Stop).
     Stopped,
+    /// The human interrupted the turn (Esc, Ctrl+C): a call of the
+    /// interrupted run that still asked for review.
+    Interrupted,
     /// Plan mode is on: the call would change something.
     PlanMode,
     /// No classifier or human could review the call (none is configured,
@@ -216,7 +219,9 @@ impl DenyReason {
             | Self::ClassifierUnavailable(_)
             | Self::ReviewIncomplete(_) => Decider::Policy,
             Self::Classifier { .. } => Decider::Classifier,
-            Self::Human { .. } | Self::Stopped | Self::EscalationTimedOut => Decider::Human,
+            Self::Human { .. } | Self::Stopped | Self::Interrupted | Self::EscalationTimedOut => {
+                Decider::Human
+            }
         }
     }
 
@@ -270,6 +275,9 @@ impl fmt::Display for DenyReason {
                 comment: Some(comment),
             } => write!(f, "denied by the user: {comment}"),
             Self::Stopped => f.write_str("the user stopped this turn from the approval dialog"),
+            Self::Interrupted => {
+                f.write_str("the user interrupted this turn; the call was not run")
+            }
             Self::PlanMode => f.write_str(PLAN_MODE_DENIAL),
             Self::ClassifierUnavailable(err) => write!(
                 f,
@@ -567,7 +575,14 @@ mod tests {
                 },
                 "denied by the user: use b.txt",
             ),
-            (DenyReason::Stopped, "the user stopped this turn"),
+            (
+                DenyReason::Stopped,
+                "the user stopped this turn from the approval dialog",
+            ),
+            (
+                DenyReason::Interrupted,
+                "the user interrupted this turn; the call was not run",
+            ),
             (
                 DenyReason::EscalationTimedOut,
                 "the user did not answer the approval request in time",

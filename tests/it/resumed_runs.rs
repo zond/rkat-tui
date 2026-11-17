@@ -216,8 +216,9 @@ async fn join(
 }
 
 /// Esc on the joined run, the message typed meanwhile, and a new message:
-/// the run stops at once by its id, the message then runs, and the next
-/// one gets its model call.
+/// the run stops at once by its id, the message comes back unread (the
+/// rule of 2026-11-17; before, it ran next), and the next one gets its
+/// model call.
 async fn interrupt_and_go_on(daemon: &Running, client: &mut Client, llm: &ScriptedLlmClient) {
     client.send(Effect::Steer {
         id: PendingId(1),
@@ -237,18 +238,35 @@ async fn interrupt_and_go_on(daemon: &Running, client: &mut Client, llm: &Script
     assert!(!agent_heard(llm, "typed meanwhile"), "the run holds it");
     client.send(Effect::Interrupt);
     assert_eq!(client.turn_finished().await, Err(TurnFailure::Interrupted));
-    // The run-fenced stop took the run: no force-cancel that waits for a
-    // boundary, no hard cancel after the interrupt's deadline.
-    assert_eq!(daemon.forwarded(STOP_MEMBER_RUN), 1);
-    assert_eq!(daemon.forwarded(FORCE_CANCEL), 0);
-    assert_eq!(daemon.forwarded(HARD_CANCEL_MEMBER), 0);
+    // The run-fenced stop took the run by its id, once: no force that
+    // waits for a boundary, no hard cancel after the interrupt's deadline,
+    // and no engine interrupt method (the client sends `rkat/interrupt`).
+    let interrupts = daemon.local().interrupts();
+    assert_eq!(interrupts.len(), 1, "{interrupts:#?}");
+    assert!(interrupts[0].run_id.is_some());
+    assert_eq!(
+        interrupts[0].run,
+        rkat_tui::daemon::protocol::RunInterrupt::Stopped
+    );
+    for method in [STOP_MEMBER_RUN, FORCE_CANCEL, HARD_CANCEL_MEMBER] {
+        assert_eq!(daemon.forwarded(method), 0, "{method}");
+    }
     assert!(
         !client.notices().contains("did not end within"),
         "{}",
         client.notices()
     );
-    // The message typed meanwhile reached the agent, and so does the next.
-    common::until(|| agent_heard(llm, "typed meanwhile")).await;
+    // The message typed meanwhile came back unread (the rule of
+    // 2026-11-17); the next message gets its model call.
+    assert!(
+        client
+            .seen
+            .iter()
+            .any(|m| matches!(m, Msg::Returned(ids) if ids == &[PendingId(1)])),
+        "{:#?}",
+        client.seen
+    );
+    assert!(!agent_heard(llm, "typed meanwhile"));
     client.send(Effect::StartTurn("after the stop".into()));
     assert_eq!(
         client.turn_finished().await.unwrap().text,
@@ -319,8 +337,8 @@ async fn a_client_attaching_inside_a_resumed_run_stops_the_run_by_its_id() {
 /// No restart: a client detaches while the agent's run is inside a slow
 /// shell call, and a client that attaches again joins that turn from the
 /// daemon's note (no event of the run comes while the command sleeps).
-/// Esc stops the run by its id at once, the message typed meanwhile then
-/// gets its model call, and so does the next. Before, the attaching client
+/// Esc stops the run by its id at once, the message typed meanwhile comes
+/// back unread, and the next one gets its model call. Before, the attaching client
 /// showed no turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_reattaching_inside_a_slow_shell_call_stops_the_run_by_its_id() {

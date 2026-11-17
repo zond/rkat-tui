@@ -4,6 +4,28 @@
 
 ### Fixed
 
+- Pressing Esc several times while the agent ran a long shell command,
+  with a message typed meanwhile, could stop the wrong run: the first
+  press stopped the command, the typed message then started a new run,
+  and the later presses (and the hard cancel 10 s later) stopped that new
+  run, whose first command was then refused "from the approval dialog".
+  An interrupt is now bound to the run it was started for: later presses
+  never touch a run that started after it ended, and say once that the
+  turn is already stopped.
+- An interrupt now gives back every message you typed during the turn
+  that the agent has not read: it returns to the input, in the order you
+  typed it, and nothing starts from it until you send it. (Before, such a
+  message was sent on its own as the next turn.) A message the agent has
+  already read stays. More presses right after the interrupt do not clear
+  the input it came back to.
+- An interrupt says so in one plain line ("turn interrupted; the agent is
+  idle, and your typed message is back in the input"), never as
+  `error: Run was cancelled`. A call denied after your interrupt says you
+  interrupted the turn; "from the approval dialog" only when you answered
+  Stop there. A refused interrupt says what to do instead of showing the
+  engine's text, and the conversation is no longer reported as "could
+  not be read again" while the agent's session is being brought back
+  after an interrupt.
 - A model that sends only a line break before a tool call (seen with
   models behind an OpenAI-compatible proxy) left a bare `•` on a line of
   its own before each call. Text that is only whitespace is no longer
@@ -24,6 +46,9 @@
 
 ### Changed
 
+- The agent is told to give a command likely to run longer than about 30
+  seconds to an `assign` helper, so it stays able to answer you while it
+  runs (unless you asked it to run the command itself).
 - Your own messages in the transcript are a grey band across the width,
   in bright bold text, so they stand out when you scroll quickly (as in
   Claude Code). A queued message keeps its look until it is sent.

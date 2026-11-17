@@ -400,6 +400,36 @@ impl App {
         self.scroll.bottom();
     }
 
+    /// [`Msg::Returned`](crate::ui::Msg::Returned): the interrupt took
+    /// these messages back. During the turn they leave the queue and wait
+    /// for its end, which puts them in the editor with the others and
+    /// counts them in its one line; after it they go to the editor at once
+    /// with a line of their own.
+    pub(super) fn returned(&mut self, ids: &[PendingId]) {
+        let mut taken: Vec<(PendingId, String)> = Vec::new();
+        for id in ids {
+            if let Some(text) = self.pending.get(*id).map(|p| p.text.clone()) {
+                self.withdraw(&[*id]);
+                taken.push((*id, text));
+            }
+        }
+        self.reached.retain(|reached| !ids.contains(reached));
+        if taken.is_empty() {
+            return;
+        }
+        if self.running {
+            self.returned.extend(taken);
+            return;
+        }
+        taken.sort_by_key(|(id, _)| *id);
+        let count = taken.len();
+        self.prepend_to_editor(taken.into_iter().map(|(_, text)| text).collect());
+        if let Some(text) = back_text(count) {
+            self.transcript.push_notice(NoticeLevel::Info, text);
+        }
+        self.scroll.bottom();
+    }
+
     /// ↑ on an empty editor with queued messages: while the runtime holds
     /// messages no recall has found with the agent (during a turn, or
     /// after one that ended before the agent read them), ask the runner to
@@ -449,6 +479,33 @@ impl App {
         );
         let succeeded = result.is_ok();
         let answered = matches!(&result, Ok(summary) if !summary.text.trim().is_empty());
+        // An interrupt returns every message the agent did not read to the
+        // editor, in the order typed: the ones it took back from the agent
+        // and the ones the UI still held; nothing typed during the
+        // interrupted turn starts a run by itself. Ctrl+Enter's text
+        // (`send_next`) is sent, with them, as the user asked.
+        let mut unsent = self.pending.take_unsent();
+        let returned = std::mem::take(&mut self.returned);
+        let mut back = 0;
+        if interrupted && self.send_next.is_none() {
+            self.drop_blocks(unsent.iter().map(|p| p.block));
+            let mut texts: Vec<(PendingId, String)> = returned;
+            texts.extend(unsent.drain(..).map(|p| (p.id, p.text)));
+            texts.sort_by_key(|(id, _)| *id);
+            back = texts.len();
+            self.prepend_to_editor(texts.into_iter().map(|(_, text)| text).collect());
+        } else if !returned.is_empty() {
+            // Sent first with Ctrl+Enter's text; else (the run ended on its
+            // own as the interrupt came) back in the editor.
+            let texts: Vec<String> = returned.into_iter().map(|(_, text)| text).collect();
+            back = texts.len();
+            if let Some(next) = self.send_next.take() {
+                self.send_next = Some(format!("{}\n\n{next}", texts.join("\n\n")));
+                back = 0;
+            } else {
+                self.prepend_to_editor(texts);
+            }
+        }
         match result {
             Ok(summary) => {
                 if !self.streamed_text && !summary.text.is_empty() {
@@ -461,17 +518,25 @@ impl App {
             }
             Err(TurnFailure::Interrupted) => {
                 self.transcript
-                    .push_notice(NoticeLevel::Warn, "turn interrupted");
+                    .push_notice(NoticeLevel::Warn, interrupted_line(back));
             }
             Err(TurnFailure::Unconfirmed) => {
                 self.transcript.push_notice(
                     NoticeLevel::Warn,
-                    "the daemon did not confirm the interrupt, not even after a hard cancel: the run may still be going and shows here again when it reports; what you send next waits behind it",
+                    format!(
+                        "the daemon did not confirm the interrupt, not even after a hard cancel: the run may still be going and shows here again when it reports; what you send next waits behind it{}",
+                        back_text(back).map(|text| format!("; {text}")).unwrap_or_default()
+                    ),
                 );
             }
         }
+        if !interrupted && let Some(text) = back_text(back) {
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                format!("{text} (the run had ended as you interrupted it)"),
+            );
+        }
         self.streamed_text = false;
-        let unsent = self.pending.take_unsent();
         // `!` commands typed during the turn run first; what would start the
         // next turn waits for them (a failed turn's messages still go back
         // to the editor). Commands held for the turn's end then go, in
@@ -565,5 +630,27 @@ impl App {
                 p.text
             })
             .collect()
+    }
+}
+
+/// The one line an interrupted turn ends with: the agent is idle, and how
+/// many typed messages are back in the editor.
+#[must_use]
+pub fn interrupted_line(back: usize) -> String {
+    match back_text(back) {
+        Some(text) => format!("turn interrupted; the agent is idle, and {text}"),
+        None => "turn interrupted; the agent is idle".to_string(),
+    }
+}
+
+/// How many of the user's typed messages an interrupt put back in the
+/// editor, in words (`None`: none).
+fn back_text(back: usize) -> Option<String> {
+    match back {
+        0 => None,
+        1 => Some("your typed message is back in the input".to_string()),
+        n => Some(format!(
+            "your {n} typed messages are back in the input, in the order you typed them"
+        )),
     }
 }

@@ -8,9 +8,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{
     Action, App, CHORD_WINDOW, Command, DOUBLE_CTRL_C_WINDOW, DOUBLE_ESC_WINDOW, Departure,
-    EditAction, EditorClosed, EditorTarget, Effect, HistorySearch, InputMode, LocalEffect, Modal,
-    ModalKey, ModelCommand, NoticeLevel, PathIndex, PendingId, PendingState, QUIT_CONFIRM_WINDOW,
-    QuitChoice, QuitDecision, QuitDialog, SearchOutcome, StashOutcome, complete, keymap, search,
+    EditAction, EditorClosed, EditorTarget, Effect, HistorySearch, INTERRUPT_REPEAT, InputMode,
+    LocalEffect, Modal, ModalKey, ModelCommand, NoticeLevel, PathIndex, PendingId, PendingState,
+    QUIT_CONFIRM_WINDOW, QuitChoice, QuitDecision, QuitDialog, SearchOutcome, StashOutcome,
+    complete, keymap, search,
 };
 
 impl App {
@@ -370,7 +371,7 @@ impl App {
     /// whether the agent runs a turn this UI does not show.
     pub(super) fn interrupt_and_send(&mut self, now: Instant, fx: &mut Vec<Effect>) {
         if self.input.text().trim().is_empty() {
-            self.interrupt(fx);
+            self.interrupt(now, fx);
         } else if !self.running {
             self.submit(now, fx);
         } else {
@@ -516,9 +517,13 @@ impl App {
     }
 
     /// Esc: while a turn runs, interrupt it (as Claude Code does); the
-    /// messages queued behind it are sent as the next turn once it ends
-    /// (see [`Self::next_after_turn`]). ↑ on an empty input takes them back
-    /// instead.
+    /// messages typed during it that the agent has not read come back to
+    /// the editor when it ends (see [`Self::turn_finished`]).
+    ///
+    /// Presses within [`INTERRUPT_REPEAT`] of an interrupting one belong to
+    /// that interrupt, also once its turn has ended: they go to the runner
+    /// (which forces the interrupt, or says the turn is already stopped)
+    /// and never clear the editor the returned messages are in.
     ///
     /// Idle, Esc twice within [`DOUBLE_ESC_WINDOW`] on an input with text
     /// clears it and saves it to the prompt history (`esc_armed`: the
@@ -527,12 +532,12 @@ impl App {
     /// does not show, and the client asks the daemon (it says when nothing
     /// runs).
     pub(super) fn escape(&mut self, esc_armed: bool, now: Instant, fx: &mut Vec<Effect>) {
-        if self.running {
-            self.interrupt(fx);
+        if self.running || self.interrupt_repeats(now) {
+            self.interrupt(now, fx);
         } else if self.shell.running.is_some() {
             fx.push(Effect::CancelShell);
         } else if self.input.is_empty() {
-            self.interrupt(fx);
+            self.interrupt(now, fx);
         } else if esc_armed {
             let text = self.input.take();
             if !text.trim().is_empty() {
@@ -544,9 +549,9 @@ impl App {
     }
 
     pub(super) fn ctrl_c(&mut self, now: Instant, fx: &mut Vec<Effect>) {
-        if self.running {
+        if self.running || self.interrupt_repeats(now) {
             self.quit.last_ctrl_c = None;
-            self.interrupt(fx);
+            self.interrupt(now, fx);
         } else if self.shell.running.is_some() {
             self.quit.last_ctrl_c = None;
             fx.push(Effect::CancelShell);
@@ -561,12 +566,22 @@ impl App {
         }
     }
 
-    /// Interrupt the running turn. The runner also cancels every steered
-    /// message not yet delivered; at the turn's end the UI takes them back
-    /// ([`PendingQueue::take_unsent`](super::delivery::PendingQueue::take_unsent))
-    /// and they start the next turn.
-    pub(super) fn interrupt(&mut self, fx: &mut Vec<Effect>) {
+    /// Interrupt the running turn. The runner takes back every message of
+    /// this client's the agent has not read ([`Msg::Returned`]); at the
+    /// turn's end they and the ones the UI held go back to the editor
+    /// ([`Self::turn_finished`]).
+    ///
+    /// [`Msg::Returned`]: super::Msg::Returned
+    pub(super) fn interrupt(&mut self, now: Instant, fx: &mut Vec<Effect>) {
+        self.last_interrupt = Some(now);
         fx.push(Effect::Interrupt);
+    }
+
+    /// Whether a press at `now` belongs to the last interrupt
+    /// ([`INTERRUPT_REPEAT`] after its last press).
+    fn interrupt_repeats(&self, now: Instant) -> bool {
+        self.last_interrupt
+            .is_some_and(|last| now.saturating_duration_since(last) < INTERRUPT_REPEAT)
     }
 
     /// Ctrl-D on an empty editor: when idle, the first press only arms

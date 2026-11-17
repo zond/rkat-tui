@@ -217,9 +217,29 @@ enum StopState {
     /// Calls are reviewed normally.
     #[default]
     Running,
-    /// Stopped until a run other than this one starts (`None` inside: the
-    /// stop was given before any run id was known).
-    Stopped(Option<RunId>),
+    /// Stopped until a run other than `run` starts (`None`: the stop was
+    /// given before any run id was known); `by` is what stopped it, which
+    /// the denials say.
+    Stopped { run: Option<RunId>, by: StopCause },
+}
+
+/// What stopped a session's run ([`StopState::Stopped`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopCause {
+    /// The user interrupted the turn (Esc, Ctrl+C, a `/quit`).
+    Interrupt,
+    /// The user answered Stop in an approval dialog.
+    Dialog,
+}
+
+impl StopCause {
+    /// The denial of a call this stop denies.
+    fn denial(self) -> DenyReason {
+        match self {
+            Self::Interrupt => DenyReason::Interrupted,
+            Self::Dialog => DenyReason::Stopped,
+        }
+    }
 }
 
 /// What the engine keeps per session for the decision path itself. A
@@ -809,7 +829,7 @@ impl ApprovalEngine {
         }
         let clears = match &state.stop {
             StopState::Running => false,
-            StopState::Stopped(stopped) => stopped.as_ref() != Some(run_id),
+            StopState::Stopped { run, .. } => run.as_ref() != Some(run_id),
         };
         if clears {
             state.stop = StopState::Running;
@@ -844,28 +864,74 @@ impl ApprovalEngine {
         human.push_back(run.clone());
     }
 
-    /// The human stopped `session_id`'s current run (an interrupt or a Stop
-    /// answer to one of its own calls): every call of that session's own
-    /// agent that needs review is denied, without asking anyone, until a new
-    /// run starts ([`Self::new_run_started`]). Its helpers' calls are not: an
-    /// interrupt stops the agent's run only, and its helpers keep working
-    /// (the owner's decision of 2026-11-15).
+    /// The human answered Stop to one of `session_id`'s own calls in an
+    /// approval dialog: every call of that session's own agent that needs
+    /// review is denied, without asking anyone, until a new run starts
+    /// ([`Self::new_run_started`]). Its helpers' calls are not: a Stop stops
+    /// the agent's run only, and its helpers keep working (the owner's
+    /// decision of 2026-11-15). A Stop the user's interrupt already gave
+    /// ([`Self::interrupted`]) stays as it is: the interrupt answers the
+    /// open dialogs with Stop, and its denials say it was the interrupt.
     pub fn stop(&self, session_id: &SessionId) {
         let mut state = self.session(session_id);
-        state.stop = StopState::Stopped(state.runs.current.clone());
+        if matches!(state.stop, StopState::Running) {
+            state.stop = StopState::Stopped {
+                run: state.runs.current.clone(),
+                by: StopCause::Dialog,
+            };
+        }
     }
 
-    /// Whether `caller`'s call is denied by a Stop: only the session's own
-    /// agent's calls are ([`Self::stop`]).
-    fn stopped(&self, caller: &Caller<'_>) -> bool {
-        caller.agent.is_none() && self.session_stopped(caller.session_id)
+    /// The user interrupted `session_id`'s run `run` (`None`: whichever
+    /// is current): its own agent's calls are denied as [`Self::stop`]
+    /// denies them, saying the user interrupted the turn. A run that is no
+    /// longer the current one (a newer run started since) is not marked:
+    /// an interrupt of a run that ended never stops the next. Answers
+    /// whether the Stop was given.
+    pub fn interrupted(&self, session_id: &SessionId, run: Option<&RunId>) -> bool {
+        let mut state = self.session(session_id);
+        let run = match run {
+            None => state.runs.current.clone(),
+            Some(run) => {
+                let older = state.runs.seen.contains(run)
+                    && state.runs.current.as_ref().is_some_and(|now| now != run);
+                if older {
+                    return false;
+                }
+                Some(run.clone())
+            }
+        };
+        state.stop = StopState::Stopped {
+            run,
+            by: StopCause::Interrupt,
+        };
+        true
     }
 
-    fn session_stopped(&self, session_id: &SessionId) -> bool {
-        self.sessions
+    /// The denial a Stop gives `caller`'s call, if one does: only the
+    /// session's own agent's calls are denied ([`Self::stop`]).
+    fn stop_denial(&self, caller: &Caller<'_>) -> Option<DenyReason> {
+        if caller.agent.is_some() {
+            return None;
+        }
+        self.session_stop_denial(caller.session_id)
+    }
+
+    fn session_stop_denial(&self, session_id: &SessionId) -> Option<DenyReason> {
+        match self
+            .sessions
             .lock()
             .get(session_id)
-            .is_some_and(|state| state.stop != StopState::Running)
+            .map(|state| &state.stop)
+        {
+            Some(StopState::Stopped { by, .. }) => Some(by.denial()),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn session_stopped(&self, session_id: &SessionId) -> bool {
+        self.session_stop_denial(session_id).is_some()
     }
 
     /// Forget a session's per-session state (transcript, allow cache, stop,
@@ -1418,8 +1484,8 @@ impl ApprovalEngine {
     /// user: a stopped session's is denied; then [`Self::put_to_user`].
     /// The classifier and its pause play no part.
     async fn ask(&self, caller: Caller<'_>, facts: &Facts<'_>, ask: Ask) -> Evaluated {
-        if self.stopped(&caller) {
-            return deny_at(ask.asking.tier(), DenyReason::Stopped).into();
+        if let Some(stopped) = self.stop_denial(&caller) {
+            return deny_at(ask.asking.tier(), stopped).into();
         }
         let attended = self.attended(caller.session_id, caller.run);
         self.put_to_user(caller, facts, ask, attended).await
@@ -1471,8 +1537,8 @@ impl ApprovalEngine {
     /// once more when its turn comes, [`Self::wait_turn`]).
     async fn review(&self, caller: Caller<'_>, facts: &Facts<'_>, content: bool) -> Evaluated {
         let session_id = caller.session_id;
-        if self.stopped(&caller) {
-            return deny3(DenyReason::Stopped).into();
+        if let Some(stopped) = self.stop_denial(&caller) {
+            return deny3(stopped).into();
         }
         // A turn no user started with nobody attached (the owner's decision
         // of 2026-11-14): the classifier still judges, and its allow runs
@@ -1514,14 +1580,14 @@ impl ApprovalEngine {
         }
 
         let (result, record) = self.classify(session_id, &facts.action, &payload).await;
-        if self.stopped(&caller) {
+        if let Some(stopped) = self.stop_denial(&caller) {
             // A Stop given while the classifier reviewed: the call is
             // denied whatever the verdict, and the verdict is not applied
             // (no cached allow, no allow or denial counted for a call that
             // does not run on its review).
             return Evaluated {
                 review: Some(record),
-                ..deny3(DenyReason::Stopped).into()
+                ..deny3(stopped).into()
             };
         }
         let mut evaluated = if escalating {
@@ -1844,14 +1910,21 @@ impl ApprovalEngine {
         // escalation queued behind this one sees it. A Stop of a helper's
         // call stops that helper only (its gate does that, on the Stop
         // denial it gets), never the session it works for.
+        // The interrupt answers its own agent's open dialogs with Stop: the
+        // denial then says the user interrupted the turn.
+        let mut interrupted = false;
         if matches!(decision, HumanDecision::Stop) && caller.agent.is_none() {
             self.stop(session_id);
+            interrupted = self.session_stop_denial(session_id) == Some(DenyReason::Interrupted);
         }
         drop(guard);
         let answerer = self.answerers.lock().remove(&id);
-        let verdict = self
+        let mut verdict = self
             .apply_answer(session_id, &asking, decision, session_grant)
             .await;
+        if interrupted && let Verdict::Deny { reason, .. } = &mut verdict {
+            *reason = DenyReason::Interrupted;
+        }
         Evaluated {
             answerer,
             ..verdict.into()
@@ -1879,8 +1952,8 @@ impl ApprovalEngine {
         if guard.unanswered_at.is_some_and(|at| at >= entered) {
             return Err(deny_at(tier, DenyReason::EscalationTimedOut).into());
         }
-        if self.stopped(&caller) {
-            return Err(deny_at(tier, DenyReason::Stopped).into());
+        if let Some(stopped) = self.stop_denial(&caller) {
+            return Err(deny_at(tier, stopped).into());
         }
         if !asking.rechecked() {
             return Ok(guard);
@@ -2375,7 +2448,7 @@ fn decider_label(
             DenyReason::UserRule { id, .. } => format!("rule:{id}"),
             DenyReason::Classifier { .. } => "classifier".to_string(),
             DenyReason::Human { .. } => human(),
-            DenyReason::Stopped => "human".to_string(),
+            DenyReason::Stopped | DenyReason::Interrupted => "human".to_string(),
             DenyReason::EscalationTimedOut => "timeout".to_string(),
             DenyReason::PlanMode | DenyReason::PlanWired { .. } => "mode".to_string(),
             DenyReason::Unattended => "unattended".to_string(),
@@ -3646,6 +3719,36 @@ mod tests {
         assert!(!task.await.unwrap().is_allowed());
         // A Stop answer stops the session again.
         assert_eq!(decide(&rig, "c3", &push()).await, stopped);
+    }
+
+    /// The interrupt's Stop is bound to its run and says the user
+    /// interrupted the turn (not "from the approval dialog"); one for a run
+    /// that a newer run replaced marks nothing (the owner's report of
+    /// 2026-11-17: a late press denied the next run's shell call).
+    #[tokio::test]
+    async fn an_interrupt_stops_its_own_run_only_and_says_so() {
+        let rig = rig(
+            vec![Err(ClassifierError::Timeout), Err(ClassifierError::Timeout)],
+            DEFAULT_ESCALATION_TIMEOUT,
+        );
+        let (run1, run2) = (RunId::new(), RunId::new());
+        rig.engine.run_started(&rig.session, Some(&run1));
+        assert!(rig.engine.interrupted(&rig.session, Some(&run1)));
+        let interrupted = Verdict::Deny {
+            tier: Tier::Classifier,
+            reason: DenyReason::Interrupted,
+        };
+        assert_eq!(decide(&rig, "c1", &push()).await, interrupted);
+        assert!(
+            !DenyReason::Interrupted
+                .to_string()
+                .contains("approval dialog")
+        );
+        rig.engine.run_started(&rig.session, Some(&run2));
+        assert!(!rig.engine.session_stopped(&rig.session));
+        // A late interrupt of the first run leaves the second alone.
+        assert!(!rig.engine.interrupted(&rig.session, Some(&run1)));
+        assert!(!rig.engine.session_stopped(&rig.session));
     }
 
     /// A call of the helper `scout` working for `rig`'s session, on its

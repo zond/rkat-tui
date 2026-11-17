@@ -6,8 +6,9 @@
 //! - a model switch: the daemon's `rkat/set_model`, in place on the
 //!   member's session (the daemon does not serve `mob/turn_start`, whose
 //!   run is tied to the connection that sent it);
-//! - interrupt: `mob/stop_member_run` for the run the stream reported, then
-//!   `mob/force_cancel`;
+//! - interrupt: the daemon's `rkat/interrupt`, bound to the run the stream
+//!   reported (it stops that run only, and takes back the messages the
+//!   agent has not read);
 //! - events: `mob/stream_open`, resumed after the last event shown with its
 //!   `{epoch, seq}` cursor; `events/list_since` on the member's session only
 //!   to render a conversation from its start (its last sequence and gauge)
@@ -238,63 +239,6 @@ pub struct ModelSwitch {
     pub endpoint: String,
     /// What the endpoint's list says of the model (`None`: not listed).
     pub listed: Option<crate::daemon::protocol::ListedModel>,
-}
-
-/// Stop the agent's run `run_id`.
-///
-/// # Errors
-///
-/// The call's error.
-pub async fn stop_run(
-    connection: &Connection,
-    run_id: &str,
-    reason: &str,
-) -> Result<Value, ClientError> {
-    connection
-        .call(
-            engine::STOP_MEMBER_RUN,
-            with_member(connection, json!({"run_id": run_id, "reason": reason})),
-        )
-        .await
-}
-
-/// Interrupt the agent's current run at once, whichever it is (queued
-/// input stays queued).
-///
-/// # Errors
-///
-/// The call's error.
-pub async fn hard_cancel(connection: &Connection, reason: &str) -> Result<(), ClientError> {
-    connection
-        .call(
-            engine::HARD_CANCEL_MEMBER,
-            with_member(connection, json!({"reason": reason})),
-        )
-        .await
-        .map(drop)
-}
-
-/// Whether the answer of [`stop_run`] says the run was stopped (its
-/// receipt's `outcome` is `stopped`; `not_current` and `not_stoppable`
-/// stopped nothing).
-#[must_use]
-pub fn stopped(answer: &Value) -> bool {
-    answer
-        .pointer("/receipt/outcome")
-        .and_then(Value::as_str)
-        .is_some_and(|outcome| outcome == "stopped")
-}
-
-/// Cancel whatever the agent runs.
-///
-/// # Errors
-///
-/// The call's error.
-pub async fn force_cancel(connection: &Connection) -> Result<(), ClientError> {
-    connection
-        .call(engine::FORCE_CANCEL, member(connection))
-        .await
-        .map(drop)
 }
 
 /// Call the daemon's own method `M` with `params`, its answer read as

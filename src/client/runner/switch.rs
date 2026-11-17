@@ -609,21 +609,63 @@ pub(super) async fn switch_and_adopt(
 /// Follow the agent's conversation `session` on `connection`: its
 /// stream opened again (the old one follows the retired session), its last
 /// sequence (what is shown starts after it) and its committed transcript.
+/// How long a stream's open waits for the agent's session to be live
+/// again ([`reopen_settled`]), and how often it asks.
+const SETTLE_WAIT: Duration = Duration::from_secs(10);
+const SETTLE_EVERY: Duration = Duration::from_millis(250);
+
+/// The engine's refusal of a stream on a member whose session actor is
+/// being stood down or brought back (right after an interrupt, a model
+/// switch's reseat): it passes once the actor is live again.
+fn actor_settling(err: &ClientError) -> bool {
+    matches!(err, ClientError::Rpc { message, .. } if message.contains("no live session actor"))
+}
+
+/// [`remote::reopen_stream`], asked again while the engine says the
+/// agent's session is not live yet, for at most [`SETTLE_WAIT`]: only a
+/// refusal that persists is an error, and then in plain words.
+async fn reopen_settled(connection: &Connection, old: &str) -> Result<String, String> {
+    let give_up = tokio::time::Instant::now() + SETTLE_WAIT;
+    let mut old = Some(old);
+    loop {
+        let opened = match old.take() {
+            Some(old) => remote::reopen_stream(connection, old).await,
+            None => remote::open_stream(connection, None).await,
+        };
+        match opened {
+            Err(err) if actor_settling(&err) => {
+                if tokio::time::Instant::now() >= give_up {
+                    tracing::warn!(%err, "the agent's session did not come back");
+                    return Err(format!(
+                        "the agent's session was not ready again within {}s; /resume shows the conversation once it is",
+                        SETTLE_WAIT.as_secs()
+                    ));
+                }
+                tokio::time::sleep(SETTLE_EVERY).await;
+            }
+            other => return other.map_err(|err| err.to_string()),
+        }
+    }
+}
+
 pub(super) async fn adopt(
     connection: &Connection,
     old_stream: &str,
     session: SessionId,
 ) -> Result<Adopted, String> {
     tokio::time::timeout(SWITCH_TIMEOUT, async {
-        let stream = remote::reopen_stream(connection, old_stream).await?;
-        let snapshot = remote::snapshot(connection, &session).await?;
-        let messages = remote::transcript(connection, &session).await?;
+        let stream = reopen_settled(connection, old_stream).await?;
+        let read = |err: ClientError| err.to_string();
+        let snapshot = remote::snapshot(connection, &session).await.map_err(read)?;
+        let messages = remote::transcript(connection, &session)
+            .await
+            .map_err(read)?;
         let usage = remote::usage(connection, &session).await.ok();
         let endpoint = remote::session_endpoint(connection, &session)
             .await
             .ok()
             .flatten();
-        Ok::<_, ClientError>(Adopted {
+        Ok::<_, String>(Adopted {
             blocks: crate::ui::transcript::blocks_from_messages(&messages),
             session,
             stream,
@@ -638,5 +680,4 @@ pub(super) async fn adopt(
     })
     .await
     .map_err(|_| "timed out reading the new conversation".to_string())?
-    .map_err(|err| err.to_string())
 }
