@@ -336,6 +336,21 @@ output now says why; report it rather than retrying silently:
   `a_fork_stopped_in_its_first_run_is_retired_and_its_parent_told`
   (`docs/evidence.md`, "A fork stopped in its first run"). Loaded
   rounds: 5 of 20 before, 0 of 20 after (the new test 0 of 20).
+- `client_turns::three_presses_during_a_slow_shell_stop_one_run_and_return_the_typed_message`
+  (hosted CI on 1be1ff0, and the local gate): the typed message was not
+  reported back (`Msg::Returned`). A product race, not the test's wait:
+  the daemon's interrupt answer did name it as returned, but on a loaded
+  machine the agent's `rkat/idle` (after the stopped run) reached the
+  client before that answer, the client asked the steer's fate
+  (`rkat/inputs`), heard "dropped: it was cancelled", and settled it as
+  not delivered; the interrupt's answer then found nothing to return.
+  The client now asks no fate while its turn's interrupt is unanswered
+  and asks after the answer for what it left unsettled
+  (`client::runner::turn` `ask_fates`, `interrupt_answered`). The test's
+  failure message now names what the client was told instead. Loaded
+  rounds (`taskset -c 0,1` beside two busy loops): 9 of 10 and 2 of 3
+  before (each "told instead: NotDelivered … it was cancelled"), 0 of 20
+  after.
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a

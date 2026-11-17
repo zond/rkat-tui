@@ -403,6 +403,11 @@ impl Runner {
             Err(why) => self.notice(NoticeLevel::Warn, why),
         }
         self.settle_turn();
+        // A steer the interrupt left unsettled, with the agent idle and
+        // holding nothing: its fate is asked now (held back meanwhile).
+        if self.idle.as_ref().is_some_and(|idle| idle.held == 0) {
+            self.ask_fates();
+        }
     }
 
     /// Esc with no turn of this client's open. The agent may run all the
@@ -751,7 +756,12 @@ impl Runner {
     /// event; [`Self::input_fates`] takes the answer.
     pub(super) fn ask_fates(&mut self) {
         let outstanding = self.steers.outstanding();
-        if outstanding.is_empty() {
+        // While the turn's interrupt is unanswered its answer settles the
+        // steers it named (returned to the editor, or read): asking here
+        // too would race it, and a message the stopped run dropped would
+        // be told as not delivered instead of coming back
+        // ([`Self::interrupt_answered`] asks after it).
+        if outstanding.is_empty() || self.turn.interrupt_calls > 0 {
             return;
         }
         if let Some(again) = &mut self.asking_fates {

@@ -894,7 +894,12 @@ async fn three_presses_during_a_slow_shell_stop_one_run_and_return_the_typed_mes
     assert!(
         rig.seen
             .iter()
-            .any(|msg| matches!(msg, Msg::Returned(ids) if ids == &[PendingId(1)]))
+            .any(|msg| matches!(msg, Msg::Returned(ids) if ids == &[PendingId(1)])),
+        "the message comes back: {interrupts:#?}; told instead: {:?}",
+        rig.seen
+            .iter()
+            .filter(|msg| matches!(msg, Msg::NotDelivered { .. } | Msg::Returned(_)))
+            .collect::<Vec<_>>()
     );
     assert!(
         !rig.seen
