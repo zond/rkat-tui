@@ -351,6 +351,22 @@ output now says why; report it rather than retrying silently:
   rounds (`taskset -c 0,1` beside two busy loops): 9 of 10 and 2 of 3
   before (each "told instead: NotDelivered … it was cancelled"), 0 of 20
   after.
+- `an_assigned_helper_the_engine_restores_after_a_restart_answers_its_agent`
+  (`tests/it/helper_endings.rs`): failed on hosted CI on 0b01fa7 ("the
+  wait at tests/it/helper_endings.rs:492", the user's turn never ending).
+  A product race, widened by that commit: a restarted daemon marked its
+  restored agents interrupted (so a restored helper's ending is held for
+  the user's next message) only after `Agents::start` returned, while the
+  agents were live from their admission on. A helper the engine restored
+  and that finished in between was told in a steered run of its own (the
+  CI log shows a run whose input is "Your helper `slow` finished its
+  task"), and the user's message waited behind it. 0b01fa7 made the window
+  longer (the instructions' check reads each restored conversation in
+  `Agents::start`). Each restored agent is now marked interrupted before it
+  is admitted. Loaded rounds (`taskset -c 0,1` beside two busy loops): 0
+  of 20 at 0b01fa7 itself (the race did not show locally), 0 of 20 after;
+  the cause is read from the hosted log, not reproduced. No timeout was
+  raised.
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a

@@ -33,7 +33,8 @@ mod watch;
 mod write;
 
 pub use assign::{
-    ASSIGN, ASSIGN_TOOLS_SOURCE, AssignArgs, AssignHost, AssignToolDispatcher, NoAssignments,
+    ASSIGN, ASSIGN_TOOLS_SOURCE, AssignArgs, AssignHost, AssignToolDispatcher, CONNECT_HELPERS,
+    ConnectArgs, NoAssignments,
 };
 pub use compact::{
     COMPACT_READY, COMPACT_TOOLS_SOURCE, CompactHost, CompactToolDispatcher, NoCompactions,

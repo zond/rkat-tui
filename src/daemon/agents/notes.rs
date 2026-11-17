@@ -139,7 +139,31 @@ pub(crate) async fn append_note(
     source: &str,
     text: String,
 ) -> Result<(), meerkat_mob_mcp::MobAppendSystemContextError> {
+    append_note_to(
+        state,
+        &MobId::from(MOB_ID),
+        &AgentIdentity::from(agent),
+        source,
+        text,
+    )
+    .await
+}
+
+/// [`append_note`] to `member` of `mob` (a helper: what its parent's
+/// `connect_helpers` gave it, [`crate::daemon::connect`]).
+///
+/// # Errors
+///
+/// The engine's refusal of the append.
+pub(crate) async fn append_note_to(
+    state: &MobMcpState,
+    mob: &MobId,
+    member: &AgentIdentity,
+    source: &str,
+    text: String,
+) -> Result<(), meerkat_mob_mcp::MobAppendSystemContextError> {
     static NOTES: AtomicU64 = AtomicU64::new(0);
+    let agent = member.as_str();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
@@ -151,7 +175,7 @@ pub(crate) async fn append_note(
         NOTES.fetch_add(1, Ordering::Relaxed)
     ));
     state
-        .mob_append_system_context(&MobId::from(MOB_ID), &AgentIdentity::from(agent), request)
+        .mob_append_system_context(mob, member, request)
         .await
         .map(drop)
 }

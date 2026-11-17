@@ -67,6 +67,8 @@ pub fn started_text(name: &str, peer: &str) -> String {
 pub struct Assigner {
     registry: Arc<HelperRegistry>,
     state: OnceLock<Weak<MobMcpState>>,
+    /// `connect_helpers` ([`super::connect`]).
+    connector: super::connect::Connector,
 }
 
 impl std::fmt::Debug for Assigner {
@@ -80,14 +82,17 @@ impl Assigner {
     #[must_use]
     pub fn new(registry: Arc<HelperRegistry>) -> Self {
         Self {
+            connector: super::connect::Connector::new(Arc::clone(&registry)),
             registry,
             state: OnceLock::new(),
         }
     }
 
-    /// Seat them through `state` (once; it is made after the tools).
+    /// Seat and connect them through `state` (once; it is made after the
+    /// tools).
     pub fn bind(&self, state: &Arc<MobMcpState>) {
         let _ = self.state.set(Arc::downgrade(state));
+        self.connector.bind(state);
     }
 
     /// The member running as `caller`: an agent, or a helper.
@@ -157,6 +162,17 @@ impl Assigner {
 impl AssignHost for Assigner {
     async fn assign(&self, caller: Option<&SessionId>, args: AssignArgs) -> (String, bool) {
         match self.seat(caller, args).await {
+            Ok(text) => (text, false),
+            Err(text) => (text, true),
+        }
+    }
+
+    async fn connect(
+        &self,
+        caller: Option<&SessionId>,
+        args: crate::tools::ConnectArgs,
+    ) -> (String, bool) {
+        match self.connector.connect(caller, &args.helpers).await {
             Ok(text) => (text, false),
             Err(text) => (text, true),
         }

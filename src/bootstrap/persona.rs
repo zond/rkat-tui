@@ -67,6 +67,11 @@ are told in a note at once, so do not poll for it.
 report progress when that helps. The workspace's other agents are not reachable \
 from here and you need not tell them anything: the agent that started you \
 announces your file changes for you.
+- Your `peers` may also list other helpers the agent that started you connected \
+you with (you are told when it does): message one when your task needs what it \
+knows or does. Each message wakes its receiver, so keep to what is needed.
+- If you start helpers yourself, `connect_helpers` wires two or more of them to \
+each other when they must coordinate directly.
 ";
 
 /// The section every agent's instructions carry about the other agents of
@@ -119,15 +124,22 @@ message you (to ask, or to report progress), and you can message it. It has no \
 line to the workspace's other agents: before you hand a helper work that changes \
 files, announce those files to the other agents yourself (the ones the note shows \
 working or attached), and say when it is done.
-- `wire_members` is refused in the workspace's mob (only the host manages it), \
-so you cannot wire your helpers to each other there.
+- Your helpers are wired to you, not to each other. When two or more of them must \
+coordinate directly (one needs what another finds or changes while both work), \
+connect them with `connect_helpers` (helpers of any kind you started, all in your \
+own mob or all in one mob you created): each then sees the others in its `peers`, \
+can message them, and is told so. Every message wakes its receiver and costs it a \
+model call, so connect only helpers that need to talk, and relay through you when \
+that is enough. (`wire_members` is refused in the workspace's mob: only the host \
+wires it.)
 - When your user interrupts you, your helpers keep working. When one of them ends \
 (finished, failed, stopped by the user) or goes idle, you are told in a note at \
 once; do not poll for it.
 - If you are yourself a fork (a `fork_off` task in a conversation copied from \
 another agent), the lines above describe that agent, not you: you are wired to \
-that agent alone (it is in your `peers`), so do not try to message the other \
-agents; tell it what they need to know, or put it in your result.
+that agent (it is in your `peers`) and to the helpers it connects you with, so do \
+not try to message the other agents; tell it what they need to know, or put it in \
+your result.
 "
     )
 }
@@ -188,7 +200,9 @@ mod tests {
             "Every helper you start is wired to you: it sees you in its `peers`",
             "announce those files to the other agents yourself",
             "If you are yourself a fork",
-            "you are wired to that agent alone (it is in your `peers`)",
+            "you are wired to that agent (it is in your `peers`) and to the helpers it connects you with",
+            "connect them with `connect_helpers`",
+            "Every message wakes its receiver",
             "do not try to message the other agents",
             "- `assign` for a self-contained task: it starts without this conversation",
             "you are told when it finishes, with its answer",
@@ -215,6 +229,8 @@ mod tests {
             "The agent that started you is in your `peers`",
             "The workspace's other agents are not reachable",
             "announces your file changes for you",
+            "other helpers the agent that started you connected",
+            "`connect_helpers` wires two or more of them",
         ] {
             assert!(HELPER_PERSONA.contains(line), "{line}");
         }

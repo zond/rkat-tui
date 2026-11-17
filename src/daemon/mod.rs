@@ -34,6 +34,7 @@ pub mod audit;
 pub mod blank_text;
 pub mod btw;
 pub mod checkpoint;
+pub mod connect;
 pub mod context;
 pub mod conversations;
 pub mod core;
@@ -1062,13 +1063,9 @@ async fn start_agents(
     // Records of schedules deleted while the daemon was down go.
     agents.core().schedules.reconcile().await;
     // The helpers the last daemon left: their parents are told how they
-    // ended with the user's next message (the stop ended the agents' runs
-    // as an interrupt does; no agent is woken by a start). A `delegate`
-    // helper an earlier build left is settled here
-    // (`crate::mobs::delegates`).
-    for name in agents.names() {
-        agents.interrupted(&name);
-    }
+    // ended with the user's next message (each restored agent is marked
+    // interrupted as it is admitted, `Agents::start`). A `delegate` helper
+    // an earlier build left is settled here (`crate::mobs::delegates`).
     agents.settle_left_helpers().await;
     // Their tool catalogs. An idle agent's is read at once, before the
     // daemon serves; but the engine's read waits behind a running turn

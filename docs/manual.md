@@ -3132,14 +3132,41 @@ once it is seated) each see their parent in `peers` and can message it,
 and it them. A member of a
 mob the agent created (`mob_spawn_member`) is not wired to it either (the
 engine wires a parent only within one mob), and `wire_members` is refused
-in the workspace's mob, so an agent cannot wire two of its helpers to each
-other there. The instructions say all this: the parent announces its
-helpers' file changes to the other agents, a helper is told it reaches
-only its parent, and a fork (whose prompt is its parent's) is told it
-reaches its parent alone.
-A message to another agent of the workspace, or from an agent to one of
-its own helpers, is tier 1 (it changes nothing, and what the receiver
-does about it passes its own gate); a send to any other peer is reviewed.
+in the workspace's mob (only the host wires it).
+
+**Connecting helpers.** Helpers are wired to their parent, not to each
+other. An agent (or a helper that started helpers of its own) connects
+two or more of its own helpers with `connect_helpers`, naming them as the
+call that started each one did (`{"helpers": ["scout", "tester"]}`):
+every pair of them is wired both ways, so each sees the others in `peers`
+and can message them. Any kind counts (`assign`, `fork_off`,
+`spawn_member`, and `mob_spawn_member` members of one mob the agent
+created), but all of one call's helpers must be in one mob: an `assign`
+helper and a member of a mob the agent created are refused, with what
+works instead (start them in the same mob). Each newly connected helper
+is told once, in a note it reads at its next step, whom it can reach now
+and how; the call answers which pairs are new and which were connected
+already. A name that is not the caller's own running helper (another
+agent's helper, a helper's helper, an agent of the workspace, the caller
+itself, a helper that finished) is refused, naming the caller's helpers;
+a fork still starting is waited for a few seconds. The engine keeps the
+edges across a daemon restart and drops them with a helper that is
+retired (an `assign` helper retires when it finishes). There is no
+`disconnect_helpers`. Every message wakes its receiver, so the
+instructions tell an agent to connect only helpers that must coordinate.
+
+The instructions say all this: the parent announces its helpers' file
+changes to the other agents, a helper is told it reaches its parent and
+the helpers its parent connected it with, and a fork (whose prompt is its
+parent's) is told the same.
+A message to another agent of the workspace, from an agent to one of its
+own helpers, or from a helper to another helper working for the same
+agent (one its parent connected it with), is tier 1 (it changes nothing,
+and what the receiver does about it passes its own gate; plan mode does
+not change that); a send to any other peer is reviewed. A helper restored
+by a daemon restart has its calls judged as foreign tools until its tool
+catalog is read at its first run's end, so a message in that first run is
+reviewed.
 A message
 reaches the other agent as input: an idle agent wakes for it, a busy one
 takes it at its next step. The receiving TUI shows it as a block labelled

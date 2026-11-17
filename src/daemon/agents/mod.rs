@@ -32,7 +32,7 @@ mod triggers;
 pub use names::is_agent;
 use names::new_name;
 pub use notes::Leave;
-pub(crate) use notes::{append_note, note_compacted, steer_member};
+pub(crate) use notes::{append_note, append_note_to, note_compacted, steer_member};
 pub use triggers::{HELPER_ENDED_LABEL, HELPER_IDLE_LABEL};
 
 use std::collections::BTreeMap;
@@ -257,6 +257,34 @@ impl Agents {
                 return Some(PeerKind::OwnHelper);
             }
         }
+        // From a helper, another helper working for the same agent: a
+        // sibling its parent connected it with (`connect_helpers`; only
+        // the host wires the workspace's mob), or a relative in that
+        // agent's tree. Its calls pass the same gate as the sender's.
+        if caller.is_none()
+            && let Some(sender) = self.core.registry.member_key_of_session(session)
+        {
+            let bound = self.core.registry.bound_members();
+            if let Some(owner) = bound
+                .iter()
+                .find(|(key, _)| key == &sender)
+                .map(|(_, tag)| tag.owner.clone())
+            {
+                for (key, tag) in bound
+                    .iter()
+                    .filter(|(key, tag)| tag.owner == owner && key != &sender)
+                {
+                    let Ok(handle) = self.core.state.handle_for(&key.mob).await else {
+                        continue;
+                    };
+                    if let Ok(Some(endpoint)) = handle.member_peer_endpoint(&key.member).await
+                        && endpoint.descriptor.peer_id.to_string() == peer_id
+                    {
+                        return Some(PeerKind::SameTree(tag.label().to_string()));
+                    }
+                }
+            }
+        }
         // An `assign` helper that finished and was retired: its own still,
         // and unreachable (`AgentAttendance::unreachable` says why).
         self.core
@@ -347,7 +375,6 @@ impl Agents {
             .map(|entry| entry.session_id)
             .collect();
         restored.sort_by_key(|(_, session)| order.iter().position(|s| s == session));
-        self.bring_up_helpers().await;
         if restored.is_empty() {
             let _one = self.seating.lock().await;
             let name = new_name(|name| self.taken(name));
@@ -363,6 +390,11 @@ impl Agents {
         }
         for (name, session) in &restored {
             self.core.conversations.record(session, name);
+            // The stop ended its run as an interrupt does: a helper the
+            // engine restored and that ends from now on is told with the
+            // user's next message, never in a run of its own. Marked
+            // before it is live, so no ending finds it live and unmarked.
+            self.interrupted(name);
             self.admit(name, false, true);
             self.core
                 .conversations
@@ -370,6 +402,7 @@ impl Agents {
                 .await;
             self.bring_up_instructions(name, session).await;
         }
+        self.bring_up_helpers().await;
         let names: Vec<String> = restored.iter().map(|(name, _)| name.clone()).collect();
         // The mob keeps its wiring across a restart; an edge it lost is
         // made again now.

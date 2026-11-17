@@ -28,8 +28,9 @@ use crate::bootstrap::HELPER_PERSONA;
 /// deeper. `fork_off` ([`DENIED_SPAWN_TOOLS`]) is denied unless the fork is gated;
 /// the daemon's members keep it
 /// ([`HelperCustomizer::with_gated_fork_off`]) except at the depth limit.
-pub const NESTING_TOOLS: [&str; 4] = [
+pub const NESTING_TOOLS: [&str; 5] = [
     crate::tools::ASSIGN,
+    crate::tools::CONNECT_HELPERS,
     "mob_create",
     "mob_spawn_member",
     "council",

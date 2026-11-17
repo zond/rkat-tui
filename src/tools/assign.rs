@@ -1,8 +1,10 @@
-//! `assign`: start a single-use helper on a self-contained task.
+//! `assign`: start a single-use helper on a self-contained task; and
+//! `connect_helpers`: wire helpers the caller started to each other.
 //!
-//! The tool only hands the call, with the calling session, to an
+//! The tools only hand the call, with the calling session, to an
 //! [`AssignHost`]; the daemon seats the helper and answers at once
-//! (`crate::daemon::assign`). The helper runs beside its caller, and the
+//! (`crate::daemon::assign`), or wires the helpers
+//! (`crate::daemon::connect`). The helper runs beside its caller, and the
 //! caller is told when it finishes (`crate::mobs::endings`).
 
 use std::sync::Arc;
@@ -18,9 +20,22 @@ use serde_json::json;
 
 /// Tool name.
 pub const ASSIGN: &str = "assign";
-/// Provenance source id of the tool (judged with the file tools' family,
+/// Tool name.
+pub const CONNECT_HELPERS: &str = "connect_helpers";
+/// Provenance source id of the tools (judged with the file tools' family,
 /// see `crate::approval::catalog`).
 pub const ASSIGN_TOOLS_SOURCE: &str = "rkat-tui.assign";
+
+/// The arguments of one `connect_helpers` call.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectArgs {
+    /// The caller's own helpers to wire to each other, by name.
+    pub helpers: Vec<String>,
+}
+
+/// A minimal valid `connect_helpers` call.
+pub const CONNECT_EXAMPLE: &str = r#"{"helpers": ["scout", "tester"]}"#;
 
 /// The arguments of one `assign` call.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -41,6 +56,9 @@ pub trait AssignHost: Send + Sync {
     /// The session `caller` asks for a helper on `args`: what the model is
     /// told, and whether that is an error.
     async fn assign(&self, caller: Option<&SessionId>, args: AssignArgs) -> (String, bool);
+    /// The session `caller` asks for its helpers `args` to be wired to
+    /// each other: what the model is told, and whether that is an error.
+    async fn connect(&self, caller: Option<&SessionId>, args: ConnectArgs) -> (String, bool);
 }
 
 /// The `assign` tool over a host (one for every agent and helper: the
@@ -91,9 +109,30 @@ impl AssignToolDispatcher {
             }),
         )
         .with_provenance(super::provenance(ASSIGN_TOOLS_SOURCE));
+        let connect = ToolDef::new(
+            CONNECT_HELPERS,
+            "Wire two or more of your own helpers (any kind you started: assign, fork_off, \
+             spawn_member, or mob_spawn_member in one mob you created) to each other, every pair \
+             both ways, so they can message each other directly; each is told. Use it only for \
+             helpers that must coordinate: each message wakes its receiver.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "helpers": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 2,
+                        "description": "Your helpers' names, as the call that started each one gave them."
+                    }
+                },
+                "required": ["helpers"],
+                "additionalProperties": false
+            }),
+        )
+        .with_provenance(super::provenance(ASSIGN_TOOLS_SOURCE));
         Self {
             host,
-            tools: vec![Arc::new(def)].into(),
+            tools: vec![Arc::new(def), Arc::new(connect)].into(),
         }
     }
 
@@ -102,6 +141,20 @@ impl AssignToolDispatcher {
         call: ToolCallView<'_>,
         caller: Option<&SessionId>,
     ) -> Result<ToolDispatchOutcome, ToolError> {
+        if call.name == CONNECT_HELPERS {
+            let args: ConnectArgs =
+                call.parse_args()
+                    .map_err(|err| ToolError::InvalidArguments {
+                        name: CONNECT_HELPERS.to_string(),
+                        reason: format!("{err}; a valid call looks like {CONNECT_EXAMPLE}"),
+                    })?;
+            let (text, is_error) = self.host.connect(caller, args).await;
+            return Ok(ToolDispatchOutcome::from(ToolResult::new(
+                call.id.to_string(),
+                text,
+                is_error,
+            )));
+        }
         if call.name != ASSIGN {
             return Err(ToolError::NotFound {
                 name: call.name.to_string(),
@@ -135,8 +188,9 @@ impl AgentToolDispatcher for AssignToolDispatcher {
     fn tool_mutation_class(&self, tool_name: &str) -> ToolMutationClass {
         match tool_name {
             // Seating a helper changes nothing by itself: every call the
-            // helper makes passes its caller's gate.
-            ASSIGN => ToolMutationClass::ReadOnly,
+            // helper makes passes its caller's gate. Wiring the caller's
+            // own helpers lets them message each other, nothing more.
+            ASSIGN | CONNECT_HELPERS => ToolMutationClass::ReadOnly,
             _ => ToolMutationClass::Unknown,
         }
     }
@@ -162,6 +216,10 @@ impl AssignHost for NoAssignments {
     async fn assign(&self, _caller: Option<&SessionId>, _args: AssignArgs) -> (String, bool) {
         ("no helper can be started here".to_string(), true)
     }
+
+    async fn connect(&self, _caller: Option<&SessionId>, _args: ConnectArgs) -> (String, bool) {
+        ("no helpers can be connected here".to_string(), true)
+    }
 }
 
 #[cfg(test)]
@@ -179,6 +237,10 @@ mod tests {
                 false,
             )
         }
+
+        async fn connect(&self, _caller: Option<&SessionId>, args: ConnectArgs) -> (String, bool) {
+            (format!("connect {}", args.helpers.join("+")), false)
+        }
     }
 
     /// One short definition naming `name` and `task` as required; a call
@@ -188,8 +250,10 @@ mod tests {
     async fn the_tool_is_one_short_definition_that_asks_the_host() {
         let tools = AssignToolDispatcher::new(Arc::new(Echo));
         let defs = tools.tools();
-        assert_eq!(defs.len(), 1);
+        assert_eq!(defs.len(), 2);
         assert_eq!(defs[0].name.as_str(), ASSIGN);
+        assert_eq!(defs[1].name.as_str(), CONNECT_HELPERS);
+        assert!(defs[1].description.len() < 400, "{}", defs[1].description);
         assert!(defs[0].description.len() < 300, "{}", defs[0].description);
         let schema = defs[0].input_schema.to_string();
         assert!(schema.contains(r#""required":["name","task"]"#), "{schema}");

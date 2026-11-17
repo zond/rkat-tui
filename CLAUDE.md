@@ -170,8 +170,11 @@ repository). Open upstream issues this code waits on:
   own children, and `auto_wire_parent` across mobs. The daemon wires each
   fork to its parent once it is seated, and holds the fork's calls until
   then (`src/mobs/follow.rs` `wire_to_parent`, `ApprovalGate::waiting_for`):
-  both go when #2232 ships; "helpers talk through the parent" goes with
-  #2233.
+  both go when #2232 ships. When #2233 ships, `connect_helpers`
+  (`src/daemon/connect.rs`, the host's batch wiring for an agent that may
+  not wire the workspace's mob itself) can become the agent's own
+  `wire_members`, and its refusal of helpers in different mobs goes if
+  `auto_wire_parent` across mobs comes with it.
 - #2374: a mob shutdown during a `fork_off` result's delivery leaves the
   owner's unregister unfinished (the stop then takes about 30 s). Nothing
   of ours goes when it ships; the tests with forks wait for the result's

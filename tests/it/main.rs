@@ -29,6 +29,7 @@ mod client_turns;
 mod compact;
 mod compact_prepare;
 mod confinement;
+mod connect;
 mod conversations;
 mod corpus;
 mod councils;

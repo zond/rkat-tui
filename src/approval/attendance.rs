@@ -54,6 +54,10 @@ pub enum PeerKind {
     Workspace,
     /// One of the sender's own helpers.
     OwnHelper,
+    /// Another helper working for the same agent as the sending helper
+    /// (by its name): a sibling their parent connected it with
+    /// (`connect_helpers`), or a relative in that agent's tree.
+    SameTree(String),
     /// An agent of another workspace the sender is wired to (`/wire`),
     /// by its label (`<workspace>/<agent>`): its workspace has its own
     /// permission mode.
@@ -68,6 +72,9 @@ impl PeerKind {
         match self {
             Self::Workspace => "a message to another agent of this workspace".to_string(),
             Self::OwnHelper => "a message to your own helper".to_string(),
+            Self::SameTree(name) => format!(
+                "a message to `{name}`, another helper of the same agent (connected by their parent)"
+            ),
             Self::Wired(label) => {
                 format!("a message to {label}, an agent of another workspace")
             }

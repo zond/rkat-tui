@@ -11754,3 +11754,52 @@ quoted that build's sentence that a `fork_off` child is wired to no one.
   fails with the bring-up switched off); the earlier build is
   `DaemonOptions::with_stale_instructions`. Unit tests in
   `daemon::instructions::tests`.
+
+## Helpers connected by their parent (owner, 2026-11-17)
+
+The owner: "I want the orchestrator to be able to wire together all agents
+it starts, no matter how." `connect_helpers` (`src/daemon/connect.rs`,
+mounted beside `assign` in `src/tools/assign.rs`).
+
+- Within one mob: the engine refuses an agent's own `wire_members` in the
+  workspace's mob (#2233), so the host wires the pairs with
+  `mob_wire_members_batch`, as it wires a fork to its parent; an existing
+  edge comes back as `already_wired`. A member not yet seated (a fork still
+  building) answers `MemberNotFound` and is tried again within 12 s. The
+  engine keeps the mob's edges across a restart and drops a member's edges
+  when it retires.
+- Across mobs (a workspace helper and a `mob_spawn_member` member of a mob
+  the agent created): an edge is within one mob. The engine can bind a
+  member to a peer outside its mob (`PeerTarget::External` with the other
+  member's `inproc://<mob>/<role>/<member>` descriptor, as its own
+  `delegate` wired a helper to a parent in another mob:
+  `runtime/delegation.rs` `wire_parent`, one external edge plus
+  `apply_external_peer_reciprocal_trust`), and stores the edge in the
+  mob's record. Not done: the edge in mob A names a descriptor, not a
+  member of A, so the engine does not drop it when the member of mob B
+  retires or its mob is destroyed; nor would anything of ours without a
+  record of the edges we made, kept across restarts, and a follower that
+  unwires them (`PeerTarget::ExternalName`). A pair in different mobs is
+  refused, naming each helper's mob and saying to start the helpers that
+  must talk in one mob.
+- The gate: a message from a helper to another helper working for the same
+  agent (by the helper bindings: same owner session) is tier 1,
+  `PeerKind::SameTree`, as an agent's message to its own helper; plan mode
+  and every other rule are unchanged, nothing changes for peers outside
+  that tree. `connect_helpers` itself is `ActionKind::Delegation` (tier 1):
+  it grants only messages within the caller's own tree, each of which
+  passes its sender's gate. A helper restored by a restart is judged as
+  foreign tools until its catalog is read at its first run's end (existing
+  behaviour), so a message in that run is reviewed.
+- The note: each helper with a new edge is told in a system note
+  (`append_note_to`, not a steered message: it wakes nobody). An append to
+  a member in the middle of a model step waits for that step's end, so the
+  notes are sent off the call.
+- Not built: `disconnect_helpers` (the edges go with a retired helper);
+  connections in the roster note and `/helpers`.
+- Tests: `connect::two_assigned_helpers_connected_talk_both_ways`,
+  `connect::a_fork_and_a_kept_member_connected_talk_both_ways`,
+  `connect::helpers_in_different_mobs_are_refused_saying_what_works`,
+  `connect::a_connection_of_what_is_not_the_caller_s_own_helpers_is_refused`,
+  `connect::a_connection_outlives_a_restart_and_goes_with_a_retired_end`;
+  unit tests in `daemon::connect::tests`.
