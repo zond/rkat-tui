@@ -23,8 +23,9 @@ use rkat_tui::ui::Effect;
 /// tool, about 56 KB (122 KB before rkat-tui's own deferral; `skill_read`
 /// added 373 bytes, `compact_ready` 197): no schedule
 /// tool and none of the agent mob tools (`delegate`, the one that was
-/// declared, is withdrawn); what is hidden (the eight schedule tools, 18
-/// mob tools, about 67 KB) `/context` reports as hidden. Its session's
+/// declared, is not offered, and `fork_off` neither); what is hidden (the
+/// eight schedule tools, 17 mob tools, about 67 KB) `/context` reports as
+/// hidden. Its session's
 /// catalog is inexact, so the engine defers nothing itself and its
 /// catalog control tools are absent. An `assign` helper's request carries
 /// neither hidden family nor the search tool.
@@ -70,10 +71,14 @@ async fn an_agent_s_request_carries_every_tool_definition() {
         .filter(|name| deferral.deferrable.contains(name))
         .collect();
     assert!(declared_hidden.is_empty(), "{declared_hidden:?}: {report}");
-    assert!(
-        !main.tools.iter().any(|name| name == "delegate"),
-        "{report}"
-    );
+    // The engine's helper tools rkat-tui does not offer are absent:
+    // `assign` starts every helper.
+    for name in rkat_tui::approval::policy::NOT_OFFERED {
+        assert!(
+            !main.tools.iter().any(|tool| tool == name),
+            "{name}: {report}"
+        );
+    }
     assert!(main.tools.iter().any(|name| name == "assign"), "{report}");
     assert!(bytes["mob"] < 12_000, "{report}");
     // The engine's comms tools, but `send_request` and `send_response`
@@ -103,7 +108,7 @@ async fn an_agent_s_request_carries_every_tool_definition() {
         "{report}"
     );
     assert!(total < 56_700, "{report}");
-    // What is hidden: the eight schedule tools and 18 mob tools.
+    // What is hidden: the eight schedule tools and 17 mob tools.
     let session = rig.current_session().await;
     let hidden = deferral.hidden(&session);
     let hidden_report = format!("{hidden:?}");
@@ -117,7 +122,8 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     use rkat_tui::daemon::context::ToolFamily;
     assert_eq!(of(ToolFamily::Schedule).tools, 8, "{hidden_report}");
     assert!(of(ToolFamily::Schedule).bytes > 30_000, "{hidden_report}");
-    assert_eq!(of(ToolFamily::Mob).tools, 18, "{hidden_report}");
+    // 17 since `fork_off` is not offered (it was the 18th).
+    assert_eq!(of(ToolFamily::Mob).tools, 17, "{hidden_report}");
     assert!(of(ToolFamily::Mob).bytes > 25_000, "{hidden_report}");
     let hidden_bytes: usize = hidden.iter().map(|size| size.bytes).sum();
     // The persona's hint lines and the search tool cost a small fraction

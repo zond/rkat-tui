@@ -84,7 +84,7 @@ pub fn own_helpers(caller: &Caller, bound: &[(HelperKey, HelperTag)]) -> Vec<Cho
 /// The names `own` holds, for a refusal.
 fn listed(own: &[Chosen]) -> String {
     if own.is_empty() {
-        return "you have no running helper now (start them with `assign`, `fork_off` or `spawn_member`)".to_string();
+        return "you have no running helper now (start them with `assign`)".to_string();
     }
     let names: Vec<String> = own.iter().map(|c| format!("`{}`", c.name)).collect();
     format!("your running helpers are {}", names.join(", "))
@@ -227,6 +227,60 @@ impl Connector {
             },
             name,
         ))
+    }
+
+    /// Retire the caller's own helper `name` (any kind; its run is
+    /// cancelled, the helpers it started go with it as the engine retires
+    /// a member's): the answer, or why not. Nobody is told: the caller
+    /// asked. The engine's `retire_member` cannot do this for a fresh
+    /// helper (it lets a member retire only the members whose spawn it
+    /// made inside its own turn, which only `fork_off` records).
+    ///
+    /// # Errors
+    ///
+    /// Every refusal, in words a model can act on.
+    pub async fn retire(&self, caller: Option<&SessionId>, name: &str) -> Result<String, String> {
+        let not_here = "`retire_helper` is not available to this caller (it is no agent or helper of this workspace's daemon)";
+        let (caller, self_name) = caller.and_then(|s| self.caller(s)).ok_or(not_here)?;
+        let state = self
+            .state
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or("the daemon is stopping: nothing was retired")?;
+        let bound = self.registry.bound_members();
+        let own = own_helpers(&caller, &bound);
+        let name = name.trim();
+        let matches: Vec<&Chosen> = own
+            .iter()
+            .filter(|c| c.name == name || format!("{}/{}", c.key.mob, c.name) == name)
+            .collect();
+        let helper = match matches.as_slice() {
+            [one] => (*one).clone(),
+            [] if name == self_name => {
+                return Err(format!(
+                    "`{name}` is you: name a helper you started; {}",
+                    listed(&own)
+                ));
+            }
+            [] => {
+                return Err(format!(
+                    "`{name}` is no running helper of yours (one that finished or was retired is gone already); {}",
+                    listed(&own)
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "`{name}` names helpers in more than one mob: name it as `<mob>/{name}`"
+                ));
+            }
+        };
+        let handle = state.handle_for(&helper.key.mob).await.map_err(|err| {
+            format!("the mob of `{name}` cannot be reached, so it was not retired: {err}")
+        })?;
+        // Ended with its parent's word: no note of it.
+        self.registry.endings().left(&helper.key);
+        crate::mobs::stop_helper(&handle, &helper.key).await;
+        Ok(format!("Helper `{}` was retired.", helper.name))
     }
 
     /// Connect `names` for the session `caller`: the answer, or why not.
@@ -459,7 +513,10 @@ mod tests {
             owner: owner.clone(),
             path: path.iter().map(ToString::to_string).collect(),
             model: "m".into(),
-            kind: crate::mobs::HelperKind::Assigned,
+            kind: crate::mobs::HelperKind::Started(
+                crate::mobs::HelperContext::Fresh,
+                crate::mobs::HelperLife::Single,
+            ),
         }
     }
 

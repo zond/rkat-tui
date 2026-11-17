@@ -19,8 +19,7 @@ use meerkat_core::Message;
 use rig::{Attached, Setup};
 use rkat_tui::approval::catalog::ToolOrigin;
 use rkat_tui::approval::policy::{
-    Action, DELEGATION_TOOLS, PolicyContext, READ_ONLY_BUILTINS, REVIEWED_BUILTINS, Tier,
-    classify_tier,
+    Action, PolicyContext, READ_ONLY_BUILTINS, REVIEWED_BUILTINS, Tier, classify_tier,
 };
 use rkat_tui::approval::rules::RuleSet;
 use rkat_tui::memory::NOTE_TOOL_NAMES;
@@ -76,7 +75,7 @@ async fn every_offered_builtin_is_classified_and_memory_search_is_tier_one() {
         .iter()
         .map(|def| def.name.to_string())
         .collect();
-    assert!(hidden.len() >= 26, "{hidden:?}");
+    assert!(hidden.len() >= 25, "{hidden:?}");
     let hidden: Vec<&str> = hidden.iter().map(String::as_str).collect();
     rig.daemon.reveal(&session, &hidden).await;
     rig.send(Effect::StartTurn("hi".into()));
@@ -100,7 +99,6 @@ async fn every_offered_builtin_is_classified_and_memory_search_is_tier_one() {
     for name in &tools {
         let known = READ_ONLY_BUILTINS.contains(&name.as_str())
             || REVIEWED_BUILTINS.contains(&name.as_str())
-            || DELEGATION_TOOLS.contains(&name.as_str())
             || FILE_TOOLS.contains(&name.as_str())
             || NOTE_TOOL_NAMES.contains(&name.as_str())
             || [rkat_tui::tools::WATCH_PATHS, rkat_tui::tools::UNWATCH].contains(&name.as_str())
@@ -109,6 +107,7 @@ async fn every_offered_builtin_is_classified_and_memory_search_is_tier_one() {
             || name == rkat_tui::tools::COMPACT_READY
             || name == rkat_tui::tools::ASSIGN
             || name == rkat_tui::tools::CONNECT_HELPERS
+            || name == rkat_tui::tools::RETIRE_HELPER
             // Mutating mob tools (the read-only ones are listed).
             || name.starts_with("mob_");
         if !known {

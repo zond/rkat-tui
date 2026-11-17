@@ -227,9 +227,8 @@ pub const REVIEWED_BUILTINS: &[&str] = &[
     "council",
     "conclude_objective",
     // The member-scoped mob tools a daemon member is offered that act on
-    // its mob: seating, retiring, wiring and cancelling members.
-    "spawn_member",
-    "spawn_many_members",
+    // its mob: retiring, wiring and cancelling members (seating is
+    // `assign`'s, `NOT_OFFERED`).
     "retire_member",
     "wire_members",
     "unwire_members",
@@ -254,36 +253,32 @@ pub const BLOB_SAVE_FILE: &str = "blob_save_file";
 /// answers the turn's sender, and is reviewed.)
 pub const AGENT_SEND_TOOLS: &[&str] = &["send_message"];
 
-/// Tools that hand work to a helper (a mob member, see [`crate::mobs`]).
-/// Delegating does nothing by itself: every call the helper makes passes
-/// the delegating session's gate.
-pub const DELEGATION_TOOLS: &[&str] = &["fork_off"];
-
-/// The engine's mob tools rkat-tui withdraws: every member's tool access
-/// policy denies them, and a call that reaches the gate anyway (the tool
-/// named by a model that has none of that name, or offered all the same)
-/// is [`Tier::Unavailable`] with what to use instead
-/// ([`DELEGATE_UNAVAILABLE`]). `delegate` blocked its caller until its
-/// helper was done; `assign` (`crate::tools::assign`) replaces it.
-pub const WITHDRAWN_TOOLS: [&str; 1] = ["delegate"];
-
-/// Why `delegate` is refused, with what to use instead.
-pub const DELEGATE_UNAVAILABLE: &str = "`delegate` is not available here: start a helper with `assign` (it runs alongside you and you are told when it finishes), or `fork_off` when the task needs this conversation";
-
-/// The engine's peer request and response tools rkat-tui withdraws, as
-/// [`WITHDRAWN_TOOLS`] are: on the engine release in use a session that
-/// sent a peer request stops for good when a response to it arrives
-/// without a result (lukacf/meerkat PR #2402's changelog entry,
-/// `docs/evidence.md`), and the engine's own instruction to a responder
-/// shows exactly such a response. Agents and helpers ask and answer with
-/// `send_message`; no flow of the engine needs a model to answer a
-/// request (the runtime answers its own). Not brought back when a release
-/// fixes it: messages suffice.
-pub const PEER_REQUEST_TOOLS: [&str; 2] = ["send_request", "send_response"];
-
-/// Why a call of a [`PEER_REQUEST_TOOLS`] tool is refused, with what to
-/// use instead.
-pub const PEER_REQUEST_UNAVAILABLE: &str = "this was not sent: `send_request` and `send_response` are not available here. Ask and answer peers with `send_message` (or `reply_to_peer` for a message this turn received); to answer a peer's request, `send_message` the answer to the peer_id the request came from";
+/// The engine's tools rkat-tui does not offer. Every member's tool access
+/// policy denies them (`crate::mobs::customizer::tool_access_policy`: the
+/// agents, every helper fresh or rebuilt, a member of a mob an agent
+/// created; a fork carries its source's), so the engine refuses a call of
+/// one before any dispatch, this gate's included ("Tool '…' is not allowed
+/// by policy", or "Tool not found" where the tool's family is off).
+///
+/// - `delegate` blocked its caller until its helper was done; `fork_off`,
+///   `spawn_member` and `spawn_many_members` started helpers that differed
+///   by accident. `assign` (`crate::tools::assign`) starts every helper,
+///   fresh or forked, single-use or kept; it forks through the engine's own
+///   `fork_off` (`crate::daemon::deferral::ForkRoutes`).
+/// - `send_request` and `send_response`: on the engine release in use a
+///   session that sent a peer request stops for good when a response to it
+///   arrives without a result (lukacf/meerkat PR #2402's changelog entry,
+///   `docs/evidence.md`). Agents and helpers ask and answer with
+///   `send_message`; no flow of the engine needs a model to answer a
+///   request (the runtime answers its own).
+pub const NOT_OFFERED: [&str; 6] = [
+    "delegate",
+    "fork_off",
+    "spawn_member",
+    "spawn_many_members",
+    "send_request",
+    "send_response",
+];
 
 /// What a tool call does, as far as the policy is concerned.
 ///
@@ -328,10 +323,8 @@ pub enum ActionKind {
     Withheld,
     /// A tool from [`SHELL_JOB_TOOLS`]: withheld too, and unavailable.
     ShellJob,
-    /// A tool from [`WITHDRAWN_TOOLS`] or [`PEER_REQUEST_TOOLS`]:
-    /// withdrawn, and unavailable.
-    Withdrawn,
-    /// A tool from [`DELEGATION_TOOLS`].
+    /// `assign` or `connect_helpers`: starting or wiring the caller's own
+    /// helpers, whose every call passes the caller's gate.
     Delegation,
     /// `note_list` / `note_read`.
     NoteRead,
@@ -394,17 +387,7 @@ impl<'a> Action<'a> {
     pub fn parse(name: &'a str, args: &'a RawValue, origin: Option<&ToolOrigin>) -> Self {
         let family = origin.map_or(ToolFamily::Foreign, ToolOrigin::family);
         let mutation = origin.map_or(ToolMutationClass::Unknown, |o| o.mutation);
-        // A withdrawn tool is refused as the engine's, also when the
-        // session offers none of the name (its policy withheld it): only
-        // a tool of that name from elsewhere (an MCP server's) is not it.
-        let engine_s = origin.is_none() || family == ToolFamily::Native;
-        let kind = if (WITHDRAWN_TOOLS.contains(&name) || PEER_REQUEST_TOOLS.contains(&name))
-            && engine_s
-        {
-            ActionKind::Withdrawn
-        } else {
-            Self::kind(name, args, family, mutation)
-        };
+        let kind = Self::kind(name, args, family, mutation);
         Self {
             name,
             args,
@@ -433,7 +416,6 @@ impl<'a> Action<'a> {
             (ToolFamily::Native, n) if READ_ONLY_BUILTINS.contains(&n) && !declared_mutating => {
                 ActionKind::ReadOnlyBuiltin
             }
-            (ToolFamily::Native, n) if DELEGATION_TOOLS.contains(&n) => ActionKind::Delegation,
             // The engine's blob save writes a file at `path`: every seal and
             // protected-path rule applies to it as to a `write_file` there.
             (ToolFamily::Native, BLOB_SAVE_FILE) => {
@@ -468,6 +450,9 @@ impl<'a> Action<'a> {
             // message each other; each message passes the sender's gate
             // (`crate::daemon::connect`).
             (ToolFamily::Files, crate::tools::CONNECT_HELPERS) => ActionKind::Delegation,
+            // Retiring one of the caller's own helpers ends only what it
+            // started (`crate::daemon::connect`).
+            (ToolFamily::Files, crate::tools::RETIRE_HELPER) => ActionKind::Delegation,
             // Reading a skill of the agent's own inventory, through the
             // engine's skill runtime: no path, nothing written.
             (ToolFamily::Files, crate::tools::SKILL_READ) if !declared_mutating => {
@@ -520,7 +505,6 @@ impl<'a> Action<'a> {
             ActionKind::ReadOnlyBuiltin
             | ActionKind::Withheld
             | ActionKind::ShellJob
-            | ActionKind::Withdrawn
             | ActionKind::Delegation
             | ActionKind::NoteRead
             | ActionKind::Other => vec![pretty_args(self.args)],
@@ -703,14 +687,6 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
         ActionKind::ShellJob => Ok(TierDecision::new(
             Tier::Unavailable,
             BACKGROUND_SHELL_UNAVAILABLE,
-        )),
-        ActionKind::Withdrawn => Ok(TierDecision::new(
-            Tier::Unavailable,
-            if PEER_REQUEST_TOOLS.contains(&action.name) {
-                PEER_REQUEST_UNAVAILABLE
-            } else {
-                DELEGATE_UNAVAILABLE
-            },
         )),
         ActionKind::Delegation => Ok(TierDecision::new(
             Tier::AlwaysAllow,
@@ -1610,14 +1586,27 @@ mod tests {
     #[test]
     fn delegation_and_mob_queries_need_no_review_but_mob_changes_do() {
         let (_dir, root) = project();
-        let task = json!({"member_id": "scout", "task": "rm -rf /"});
-        assert_eq!(parse("fork_off", &raw(&task)).kind, ActionKind::Delegation);
+        let task = json!({"name": "scout", "task": "rm -rf /", "context": "fork", "keep": true});
+        // Every way of starting a helper is the one tier.
+        let origin = ToolOrigin::tui(crate::tools::ASSIGN_TOOLS_SOURCE, crate::tools::ASSIGN);
+        let args = raw(&task);
+        let parsed = Action::parse(crate::tools::ASSIGN, &args, Some(&origin));
+        assert_eq!(parsed.family, ToolFamily::Files, "{parsed:?}");
+        assert_eq!(parsed.kind, ActionKind::Delegation);
         assert_eq!(
-            tier(&root, &RuleSet::default(), false, "fork_off", &task),
+            classify_tier(
+                &parsed,
+                &RuleSet::default(),
+                &PolicyContext {
+                    root: &root,
+                    trust_project_builds: false,
+                    posix_shell: true,
+                    granted: crate::approval::classifier::GrantedDirs::none(),
+                },
+            )
+            .tier,
             Tier::AlwaysAllow
         );
-        // The withdrawn `delegate` is no delegation any more.
-        assert_eq!(parse("delegate", &raw(&task)).kind, ActionKind::Withdrawn);
         assert_eq!(
             tier(
                 &root,
@@ -1687,12 +1676,12 @@ mod tests {
                 REVIEWED_BUILTINS.contains(name),
                 TUI_OWNED_BUILTINS.contains(name),
                 SHELL_JOB_TOOLS.contains(name),
-                PEER_REQUEST_TOOLS.contains(name),
+                NOT_OFFERED.contains(name),
             ];
             assert!(
                 lists.into_iter().filter(|listed| *listed).count() == 1,
                 "upstream builtin `{name}` must be in exactly one of READ_ONLY_BUILTINS, \
-                 REVIEWED_BUILTINS, TUI_OWNED_BUILTINS, SHELL_JOB_TOOLS and PEER_REQUEST_TOOLS"
+                 REVIEWED_BUILTINS, TUI_OWNED_BUILTINS, SHELL_JOB_TOOLS and NOT_OFFERED"
             );
         }
         let (_dir, root) = project();
@@ -1727,99 +1716,13 @@ mod tests {
         }
     }
 
-    /// `delegate` is refused as unavailable, with what to use instead,
-    /// whatever a rule says and also when the session offers no tool of
-    /// the name; an MCP server's tool of that name is judged as any
-    /// foreign tool. Never a safety verdict: the tier is `Unavailable`.
+    /// Every member's tool access policy denies the tools rkat-tui does
+    /// not offer, and a message to an agent stays a send the gate knows.
     #[test]
-    fn a_withdrawn_tool_is_unavailable_with_what_to_use_instead() {
-        let (_dir, root) = project();
-        let ctx = PolicyContext {
-            root: &root,
-            trust_project_builds: true,
-            posix_shell: true,
-            granted: crate::approval::classifier::GrantedDirs::none(),
-        };
-        let args = json!({"member_id": "scout", "task": "x"});
-        let raw = raw(&args);
-        let mut allow = RuleSet::default();
-        allow.push(Rule::new(RuleKind::Allow, "delegate", Some("*"), RuleOrigin::Realm).unwrap());
-        let native = ToolOrigin::native(meerkat_core::ToolSourceKind::Mob);
-        for origin in [Some(&native), None] {
-            for rules in [&RuleSet::default(), &allow] {
-                let decision = classify_tier(&Action::parse("delegate", &raw, origin), rules, &ctx);
-                assert_eq!(decision.tier, Tier::Unavailable, "{origin:?}");
-                assert_eq!(decision.detail, DELEGATE_UNAVAILABLE);
-            }
-        }
-        assert!(
-            DELEGATE_UNAVAILABLE.contains("start a helper with `assign`")
-                && DELEGATE_UNAVAILABLE
-                    .contains("`fork_off` when the task needs this conversation"),
-            "{DELEGATE_UNAVAILABLE}"
-        );
-        let mcp = ToolOrigin::mcp("evil");
-        let foreign = classify_tier(&Action::parse("delegate", &raw, Some(&mcp)), &allow, &ctx);
-        assert_ne!(foreign.tier, Tier::Unavailable);
-    }
-
-    /// `send_request` and `send_response` are both withdrawn: a call of
-    /// either, with a result or without, is refused saying to use
-    /// `send_message`, past any allow rule and also when the session
-    /// offers no tool of the name; an MCP server's tool of that name is
-    /// judged as any foreign tool. Every member's tool policy denies both,
-    /// and a message to an agent stays a send the gate knows.
-    #[test]
-    fn the_peer_request_and_response_tools_are_unavailable() {
-        let (_dir, root) = project();
-        let ctx = PolicyContext {
-            root: &root,
-            trust_project_builds: true,
-            posix_shell: true,
-            granted: crate::approval::classifier::GrantedDirs::none(),
-        };
-        let native = ToolOrigin::native(meerkat_core::ToolSourceKind::Builtin);
-        let mut allow = RuleSet::default();
-        for tool in PEER_REQUEST_TOOLS {
-            allow.push(Rule::new(RuleKind::Allow, tool, Some("*"), RuleOrigin::Realm).unwrap());
-        }
-        let calls = [
-            (
-                "send_request",
-                json!({"peer_id": "p", "intent": "checksum_token", "params": {"subject": "s"}}),
-            ),
-            (
-                "send_response",
-                json!({"peer_id": "p", "in_reply_to": "r", "status": "completed"}),
-            ),
-            (
-                "send_response",
-                json!({"peer_id": "p", "in_reply_to": "r", "status": "completed", "result": {"request_intent": "checksum_token", "request_subject": "s", "token": "t"}}),
-            ),
-        ];
-        for (name, args) in &calls {
-            let args = raw(args);
-            for origin in [Some(&native), None] {
-                for rules in [&RuleSet::default(), &allow] {
-                    let decision = classify_tier(&Action::parse(name, &args, origin), rules, &ctx);
-                    assert_eq!(decision.tier, Tier::Unavailable, "{name} {origin:?}");
-                    assert_eq!(decision.detail, PEER_REQUEST_UNAVAILABLE);
-                }
-            }
-            let mcp = ToolOrigin::mcp("other");
-            let foreign = classify_tier(&Action::parse(name, &args, Some(&mcp)), &allow, &ctx);
-            assert_ne!(foreign.tier, Tier::Unavailable, "{name}");
-        }
-        assert!(
-            PEER_REQUEST_UNAVAILABLE.contains("Ask and answer peers with `send_message`")
-                && PEER_REQUEST_UNAVAILABLE.contains(
-                    "to answer a peer's request, `send_message` the answer to the peer_id"
-                ),
-            "{PEER_REQUEST_UNAVAILABLE}"
-        );
+    fn the_tools_not_offered_are_denied_to_every_member() {
         let tools = format!("{:?}", crate::mobs::customizer::tool_access_policy());
-        for tool in PEER_REQUEST_TOOLS {
-            assert!(tools.contains(tool), "{tool}: {tools}");
+        for tool in NOT_OFFERED {
+            assert!(tools.contains(&format!("\"{tool}\"")), "{tool}: {tools}");
             assert!(!AGENT_SEND_TOOLS.contains(&tool), "{tool}");
         }
         assert_eq!(AGENT_SEND_TOOLS, ["send_message"]);

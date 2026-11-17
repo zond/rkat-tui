@@ -180,6 +180,11 @@ fn forwarding_wrappers_override_every_method_of_their_engine_trait() {
             "impl AgentToolDispatcher for Hiding",
         ),
         (
+            "pub trait AgentToolDispatcher",
+            "src/daemon/deferral/mod.rs",
+            "impl AgentToolDispatcher for Routed",
+        ),
+        (
             "pub trait ToolDispatchAdmission",
             "src/daemon/approvals.rs",
             "impl ToolDispatchAdmission for RootGate",

@@ -257,7 +257,17 @@ const RULES: &[Rule] = &[
     },
     Rule {
         tools: &[crate::tools::ASSIGN],
-        head: |_, args, _| member_task_head("assign", args),
+        head: |_, args, _| {
+            let fork = args.get("context").and_then(Value::as_str) == Some("fork");
+            let kept = args.get("keep").and_then(Value::as_bool) == Some(true);
+            let verb = match (fork, kept) {
+                (false, false) => "assign",
+                (false, true) => "assign (kept)",
+                (true, false) => "fork",
+                (true, true) => "fork (kept)",
+            };
+            member_task_head(verb, args)
+        },
         outcome: no_outcome,
     },
     Rule {
@@ -1048,6 +1058,20 @@ mod tests {
         assert_eq!(
             line("assign", json!({"name": "scout", "task": "find\n the bug"})),
             "assign scout: find the bug"
+        );
+        assert_eq!(
+            line(
+                "assign",
+                json!({"name": "kid", "task": "try it", "context": "fork"})
+            ),
+            "fork kid: try it"
+        );
+        assert_eq!(
+            line(
+                "assign",
+                json!({"name": "w", "task": "run", "keep": true, "context": "fresh"})
+            ),
+            "assign (kept) w: run"
         );
         assert_eq!(
             line("fork_off", json!({"member_id": "kid", "task": "try it"})),

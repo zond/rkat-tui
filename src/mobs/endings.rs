@@ -17,7 +17,7 @@
 //!   with that build's daemon, so it is told when its run ends, with its
 //!   answer, and retired.
 //!
-//! An `assign` helper ([`super::HelperKind::Assigned`]) ends when it
+//! A single-use helper ([`super::HelperLife::Single`]) ends when it
 //! finishes its task: a run of it ended, completed or failed, and the
 //! runtime holds no unfinished input of it ([`HelperEndings::run_ended`]
 //! asks until none is left or a later run starts, at most
@@ -33,8 +33,8 @@
 //! the decision's last look (the helper goes on and reads it) or finds the
 //! helper settled and goes to the next one up its path.
 //!
-//! A long-lived member ([`super::HelperKind::Member`]: `spawn_member`,
-//! `mob_spawn_member`) does not end when a run of it ends: it ends when it
+//! A kept helper ([`super::HelperLife::Kept`]: `assign` with `keep`, a
+//! member of a mob the agent created) does not end when a run of it ends: it ends when it
 //! is retired, which only the user's stop tells here (an agent that
 //! retires one with a tool is told by that tool's result). Each run of it
 //! that leaves it idle the same way is told to its parent once (`WentIdle`,
@@ -54,10 +54,12 @@
 //! an `assign` helper is done with its status as its answer and retired, a
 //! member stays seated, idle; its parent is told either way).
 //!
-//! A `fork_off` child ([`super::HelperKind::Fork`]) is told as such a
-//! member, except for its first run: the engine tells the parent of that
+//! A fork ([`super::HelperContext::Fork`]) is told as the others of its
+//! life, except for its first run: the engine tells the parent of that
 //! run's end itself ("Background fork_off job … finished"), and of no later
 //! run, which the parent's messages start now that the child is wired to it.
+//! A single-use fork is retired once the engine recorded that outcome
+//! ([`HelperEndings::fork_outcome_recorded`]).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, OnceLock, Weak};
@@ -324,10 +326,6 @@ pub struct HelperEndings {
     /// Tests: awaited before a finished `assign` helper is retired.
     #[cfg(any(test, feature = "test-support"))]
     before_retiring: OnceLock<DecidingHook>,
-    /// Tests: forks are kept seated after their outcome, as builds up to
-    /// 0.0.15 kept them ([`Self::keep_forks`]).
-    #[cfg(any(test, feature = "test-support"))]
-    keeps_forks: std::sync::atomic::AtomicBool,
 }
 
 /// Tests: what [`HelperEndings::before_deciding`] awaits for a helper.
@@ -400,8 +398,8 @@ impl HelperEndings {
             entry.tag.clone()
         };
         let Some(tag) = tag else { return };
-        match tag.kind {
-            super::HelperKind::Assigned => {
+        match tag.kind.life() {
+            Some(super::HelperLife::Single) => {
                 if let Some(tag) = self.settle(key) {
                     self.tell(Ended {
                         key: key.clone(),
@@ -416,7 +414,7 @@ impl HelperEndings {
                 }
                 self.retire_done(key);
             }
-            super::HelperKind::Member | super::HelperKind::Fork => self.tell(Ended {
+            Some(super::HelperLife::Kept) => self.tell(Ended {
                 key: key.clone(),
                 tag,
                 how: How::CheckpointStopped {
@@ -426,7 +424,7 @@ impl HelperEndings {
                     retired: false,
                 },
             }),
-            super::HelperKind::Other => {}
+            None => {}
         }
     }
 
@@ -465,23 +463,35 @@ impl HelperEndings {
         }
     }
 
-    /// The engine recorded the fork `key`'s completed outcome for its
-    /// parent (its mob's `ForkJobTerminal`, which outlives the fork and from
-    /// which a restart delivers it again): the fork is single-use from now
-    /// on, as an `assign` helper is. One idle already, with nothing queued
-    /// for it, is retired now; one still running (or with a message
-    /// queued) when its run ends.
-    pub fn fork_outcome_recorded(self: &Arc<Self>, key: &HelperKey) {
-        #[cfg(any(test, feature = "test-support"))]
-        if self.keeps_forks.load(std::sync::atomic::Ordering::Relaxed) {
-            return;
-        }
+    /// The engine recorded the single-use fork `key`'s completed outcome
+    /// for its parent (its mob's `ForkJobTerminal`, which outlives the fork
+    /// and from which a restart delivers it again): it is done. One idle
+    /// already, with nothing queued for it, is retired now; one still
+    /// running (or with a message queued) when its run ends. `restored`:
+    /// the record was found when the daemon restored the fork (its outcome
+    /// came before the last stop), so a fork that ran no run since is idle.
+    /// A kept fork stays.
+    pub fn fork_outcome_recorded(self: &Arc<Self>, key: &HelperKey, restored: bool) {
         let idle_after = {
             let mut tracked = self.tracked.lock();
             let Some(entry) = tracked.get_mut(key) else {
                 return;
             };
+            let single = entry.tag.as_ref().is_some_and(|tag| {
+                tag.kind
+                    == super::HelperKind::Started(
+                        super::HelperContext::Fork,
+                        super::HelperLife::Single,
+                    )
+            });
+            // A fresh fork's record is the one its own first run writes.
+            if !single || (restored && entry.first_told_elsewhere) {
+                return;
+            }
             entry.outcome_recorded = true;
+            if restored && entry.runs == 0 && entry.idle_after.is_none() {
+                entry.idle_after = Some(0);
+            }
             entry.idle_after.filter(|after| *after == entry.runs)
         };
         let Some(runs) = idle_after else { return };
@@ -499,12 +509,17 @@ impl HelperEndings {
                 endings.tracked.lock().get(&key).is_some_and(|tracked| {
                     tracked.runs == runs && tracked.idle_after == Some(runs)
                 });
+            // A restored fork's runtime holds an input of the restore
+            // itself that no run takes (probed 2026-11-18: still held
+            // 30 s after the start), so only a live fork is asked.
             let queued = match &probe {
-                Some(probe) => matches!(probe(key.clone()).await, Some(n) if n > 0),
-                None => false,
+                Some(probe) if !restored => matches!(probe(key.clone()).await, Some(n) if n > 0),
+                _ => false,
             };
             if still_idle && !queued {
                 endings.retire_fork(&key);
+            } else {
+                tracing::debug!(helper = %key, still_idle, queued, "a single-use fork whose outcome is recorded is not idle yet");
             }
         });
     }
@@ -695,14 +710,6 @@ impl HelperEndings {
         let _ = self.before_deciding.set(DecidingHook(hook));
     }
 
-    /// Tests: keep every fork seated after its outcome, as builds up to
-    /// 0.0.15 did (a realm such a build used holds forks seated so).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn keep_forks(&self) {
-        self.keeps_forks
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
     /// Tests: await `hook` (with the helper's key) before a finished
     /// `assign` helper is retired (once).
     #[cfg(any(test, feature = "test-support"))]
@@ -738,8 +745,10 @@ impl HelperEndings {
         let Some(tag) = tag else { return };
         self.idle_decided
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        use super::{HelperContext::Fork, HelperContext::Fresh, HelperKind::Started};
+        use super::{HelperLife::Kept, HelperLife::Single};
         match tag.kind {
-            super::HelperKind::Assigned => {
+            Started(Fresh, Single) => {
                 let how = match terminal {
                     Terminal::Completed(answer) => How::Done { answer },
                     Terminal::Failed(reason) => How::Failed { reason },
@@ -755,17 +764,18 @@ impl HelperEndings {
                 }
                 self.retire_done(key);
             }
-            super::HelperKind::Fork if first_told_elsewhere => {
+            Started(Fork, life) if first_told_elsewhere => {
                 // The engine tells its first run's end; once its outcome is
-                // recorded for the parent it is retired.
-                if outcome_recorded && matches!(terminal, Terminal::Completed(_)) {
+                // recorded for the parent a single-use fork is retired.
+                if life == Single && outcome_recorded && matches!(terminal, Terminal::Completed(_))
+                {
                     self.retire_fork(key);
                 }
             }
-            super::HelperKind::Fork if outcome_recorded => {
+            Started(Fork, Single) if outcome_recorded => {
                 // A later run (a message read before its first run ended)
                 // of a fork whose outcome reached its parent: it is done,
-                // told as an `assign` helper is, and retired.
+                // told as a fresh single-use helper is, and retired.
                 let how = match terminal {
                     Terminal::Completed(answer) => How::Done { answer },
                     Terminal::Failed(reason) => How::Failed { reason },
@@ -780,7 +790,9 @@ impl HelperEndings {
                 }
                 self.retire_done(key);
             }
-            super::HelperKind::Member | super::HelperKind::Fork => {
+            // A kept helper's run, and a single-use fork's later run whose
+            // outcome is not recorded yet.
+            Started(_, Kept) | Started(Fork, Single) => {
                 let how = match terminal {
                     Terminal::Completed(_) if messaged_parent => return,
                     Terminal::Completed(answer) => How::WentIdle {
@@ -1132,10 +1144,16 @@ mod tests {
     /// nothing here.
     #[test]
     fn an_assigned_helper_is_done_when_its_run_ends() {
-        use crate::mobs::HelperKind;
+        use crate::mobs::{HelperContext, HelperKind, HelperLife};
         let (endings, mut rx) = endings();
         let key = HelperKey::new(MobId::from("tui"), AgentIdentity::from("scout"));
-        endings.spawned(&key, &tagged("scout", HelperKind::Assigned));
+        endings.spawned(
+            &key,
+            &tagged(
+                "scout",
+                HelperKind::Started(HelperContext::Fresh, HelperLife::Single),
+            ),
+        );
         endings.run_started(&key);
         endings.run_ended(&key, Terminal::Cancelled);
         assert!(rx.try_recv().is_err());
@@ -1149,7 +1167,13 @@ mod tests {
         assert!(endings.settled(&key));
         assert_eq!(endings.retires(), 1);
         let failed = HelperKey::new(MobId::from("tui"), AgentIdentity::from("broken"));
-        endings.spawned(&failed, &tagged("broken", HelperKind::Assigned));
+        endings.spawned(
+            &failed,
+            &tagged(
+                "broken",
+                HelperKind::Started(HelperContext::Fresh, HelperLife::Single),
+            ),
+        );
         endings.run_ended(&failed, Terminal::Failed("a 500".into()));
         assert_eq!(
             rx.try_recv().unwrap().how,
@@ -1165,10 +1189,16 @@ mod tests {
     /// a member of any other kind (a fork, a council's) is not told of.
     #[test]
     fn a_member_is_told_of_each_idle_run_unless_it_just_messaged_its_parent() {
-        use crate::mobs::HelperKind;
+        use crate::mobs::{HelperContext, HelperKind, HelperLife};
         let (endings, mut rx) = endings();
         let key = HelperKey::new(MobId::from("tui"), AgentIdentity::from("w1"));
-        endings.spawned(&key, &tagged("w1", HelperKind::Member));
+        endings.spawned(
+            &key,
+            &tagged(
+                "w1",
+                HelperKind::Started(HelperContext::Fresh, HelperLife::Kept),
+            ),
+        );
         for answer in ["one", "two"] {
             endings.run_started(&key);
             endings.called(&key, false);
@@ -1204,15 +1234,20 @@ mod tests {
         assert_eq!(endings.idle_decided(), 4);
     }
 
-    /// A fresh fork's first run's end is the engine's to tell: not told
-    /// here, but decided; each later run that leaves it idle is told as a
-    /// member's; a fork rebuilt after a restart has every run told.
+    /// A fresh kept fork's first run's end is the engine's to tell: not
+    /// told here, but decided; each later run that leaves it idle is told
+    /// as a kept helper's, and its recorded outcome retires nothing; a fork
+    /// rebuilt after a restart has every run told. A single-use fork is
+    /// retired once its outcome is recorded and it is idle, untold here.
     #[test]
     fn a_fork_is_told_of_its_runs_after_the_first() {
-        use crate::mobs::HelperKind;
+        use crate::mobs::{HelperContext, HelperKind, HelperLife};
+        let kept = HelperKind::Started(HelperContext::Fork, HelperLife::Kept);
         let (endings, mut rx) = endings();
         let key = HelperKey::new(MobId::from("tui"), AgentIdentity::from("kid"));
-        endings.spawned(&key, &tagged("kid", HelperKind::Fork));
+        endings.spawned(&key, &tagged("kid", kept));
+        endings.first_run_told_by_engine(&key);
+        endings.fork_outcome_recorded(&key, false);
         endings.first_run_told_by_engine(&key);
         endings.run_started(&key);
         endings.run_ended(&key, Terminal::Completed("the outcome".into()));
@@ -1229,10 +1264,27 @@ mod tests {
         );
         assert_eq!(endings.retires(), 0);
         let rebuilt = HelperKey::new(MobId::from("tui"), AgentIdentity::from("kid2"));
-        endings.spawned(&rebuilt, &tagged("kid2", HelperKind::Fork));
+        endings.spawned(&rebuilt, &tagged("kid2", kept));
         endings.run_started(&rebuilt);
         endings.run_ended(&rebuilt, Terminal::Completed("after a restart".into()));
         assert!(matches!(rx.try_recv().unwrap().how, How::WentIdle { .. }));
+        // Single-use: its first run's end and the recorded outcome retire
+        // it (no probe in this rig: decided at once), nothing told here.
+        let single = HelperKey::new(MobId::from("tui"), AgentIdentity::from("kid3"));
+        endings.spawned(
+            &single,
+            &tagged(
+                "kid3",
+                HelperKind::Started(HelperContext::Fork, HelperLife::Single),
+            ),
+        );
+        endings.first_run_told_by_engine(&single);
+        endings.fork_outcome_recorded(&single, false);
+        endings.run_started(&single);
+        endings.run_ended(&single, Terminal::Completed("the outcome".into()));
+        assert!(rx.try_recv().is_err());
+        assert!(endings.settled(&single));
+        assert_eq!(endings.retires(), 1);
     }
 
     /// A run at its limit is no ending: it goes to the checkpoint, and the
@@ -1241,12 +1293,18 @@ mod tests {
     /// its status and retired, a member stays.
     #[test]
     fn a_run_at_its_limit_goes_to_its_checkpoint_before_any_ending() {
-        use crate::mobs::HelperKind;
+        use crate::mobs::{HelperContext, HelperKind, HelperLife};
         let (endings, mut rx) = endings();
         let (tx, mut limits) = mpsc::unbounded_channel();
         endings.checkpoints_to(tx);
         let key = HelperKey::new(MobId::from("tui"), AgentIdentity::from("scout"));
-        endings.spawned(&key, &tagged("scout", HelperKind::Assigned));
+        endings.spawned(
+            &key,
+            &tagged(
+                "scout",
+                HelperKind::Started(HelperContext::Fresh, HelperLife::Single),
+            ),
+        );
         endings.run_started(&key);
         endings.run_ended(&key, Terminal::Limit { steps: 10 });
         let reached = limits.try_recv().unwrap();
@@ -1267,7 +1325,13 @@ mod tests {
         );
         // Stopped: done with its status, retired.
         let stopped = HelperKey::new(MobId::from("tui"), AgentIdentity::from("loop"));
-        endings.spawned(&stopped, &tagged("loop", HelperKind::Assigned));
+        endings.spawned(
+            &stopped,
+            &tagged(
+                "loop",
+                HelperKind::Started(HelperContext::Fresh, HelperLife::Single),
+            ),
+        );
         endings.run_started(&stopped);
         endings.run_ended(&stopped, Terminal::Limit { steps: 10 });
         endings.checkpoint_stopped(&stopped, 10, "it loops".into(), "my status".into());
@@ -1283,7 +1347,13 @@ mod tests {
         assert!(endings.settled(&stopped) && !endings.is_live(&stopped));
         // A member stays.
         let member = HelperKey::new(MobId::from("tui"), AgentIdentity::from("w1"));
-        endings.spawned(&member, &tagged("w1", HelperKind::Member));
+        endings.spawned(
+            &member,
+            &tagged(
+                "w1",
+                HelperKind::Started(HelperContext::Fresh, HelperLife::Kept),
+            ),
+        );
         endings.run_started(&member);
         endings.run_ended(&member, Terminal::Limit { steps: 10 });
         endings.checkpoint_stopped(&member, 10, "enough".into(), "s".into());
@@ -1294,7 +1364,13 @@ mod tests {
         assert!(endings.is_live(&member));
         // Without a checkpoint sink the limit is a failure, as it was.
         let (plain, mut told) = super::tests::endings();
-        plain.spawned(&key, &tagged("scout", HelperKind::Assigned));
+        plain.spawned(
+            &key,
+            &tagged(
+                "scout",
+                HelperKind::Started(HelperContext::Fresh, HelperLife::Single),
+            ),
+        );
         plain.run_ended(&key, Terminal::Limit { steps: 10 });
         assert!(matches!(told.try_recv().unwrap().how, How::Failed { .. }));
     }

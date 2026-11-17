@@ -43,10 +43,246 @@ use parking_lot::RwLock;
 use super::{AGENT_PROFILE, MOB_ID};
 use crate::daemon::context::{FamilySize, family_sizes};
 
-/// The agent mob tools that are never deferred: the withdrawn ones
-/// ([`crate::approval::policy::WITHDRAWN_TOOLS`], `delegate`), which every
-/// agent's tool access policy denies, so no search may offer them.
-pub const DIRECT_MOB_TOOLS: [&str; 1] = crate::approval::policy::WITHDRAWN_TOOLS;
+/// The agent mob tools that are never deferred: the ones rkat-tui does not
+/// offer ([`crate::approval::policy::NOT_OFFERED`]: `delegate`, `fork_off`),
+/// which every agent's tool access policy denies, so no search may offer
+/// them.
+pub const DIRECT_MOB_TOOLS: [&str; 6] = crate::approval::policy::NOT_OFFERED;
+
+/// The engine's mob tool surface of every member's build, by the session
+/// it was built for: `assign` with `context: "fork"` forks its caller
+/// through the engine's own `fork_off` of the caller's surface
+/// (`crate::daemon::assign`), so the fork is the engine's in every respect
+/// (the caller's committed transcript, its completion custodian and the
+/// `ForkJobTerminal` record a restart delivers again). `fork_off` itself is
+/// not offered: the members' tool access policy filters it out of the
+/// session's tools, above the surface reached here.
+#[derive(Default)]
+pub struct ForkRoutes {
+    routes: parking_lot::Mutex<std::collections::HashMap<SessionId, std::sync::Weak<Routed>>>,
+}
+
+impl std::fmt::Debug for ForkRoutes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ForkRoutes").finish_non_exhaustive()
+    }
+}
+
+impl ForkRoutes {
+    /// `surface` (the engine's, built for `session`), noted as `session`'s.
+    fn wrap(
+        self: &Arc<Self>,
+        session: SessionId,
+        surface: Arc<dyn AgentToolDispatcher>,
+    ) -> Arc<dyn AgentToolDispatcher> {
+        let routed = Arc::new(Routed {
+            inner: surface,
+            session,
+            routes: Arc::clone(self),
+        });
+        self.note(&routed);
+        routed
+    }
+
+    fn note(&self, routed: &Arc<Routed>) {
+        let mut routes = self.routes.lock();
+        routes.retain(|_, weak| weak.strong_count() > 0);
+        routes.insert(routed.session.clone(), Arc::downgrade(routed));
+    }
+
+    /// The engine's mob tool surface of `session`'s build in use (`None`:
+    /// the session has none, or it is gone).
+    #[must_use]
+    pub fn surface(&self, session: &SessionId) -> Option<Arc<dyn AgentToolDispatcher>> {
+        let routed = self.routes.lock().get(session)?.upgrade()?;
+        Some(routed as Arc<dyn AgentToolDispatcher>)
+    }
+}
+
+/// A member's engine mob tool surface, reachable from [`ForkRoutes`] (it
+/// holds only a weak reference, so binding the surface to its lifecycle,
+/// which needs sole ownership, still can). Everything is `inner`'s: every
+/// method of the trait must be forwarded (`tests/it/layout.rs`).
+pub struct Routed {
+    inner: Arc<dyn AgentToolDispatcher>,
+    session: SessionId,
+    routes: Arc<ForkRoutes>,
+}
+
+#[async_trait]
+impl AgentToolDispatcher for Routed {
+    fn tools(&self) -> Arc<[Arc<ToolDef>]> {
+        self.inner.tools()
+    }
+
+    async fn resolve_tool_application(
+        &self,
+        source_tool: &str,
+        request: &meerkat_core::ToolApplicationRequest,
+        invocation: &serde_json::Value,
+        context: &ToolDispatchContext,
+    ) -> Result<meerkat_core::tool_application::ToolApplicationResolution, ToolError> {
+        self.inner
+            .resolve_tool_application(source_tool, request, invocation, context)
+            .await
+    }
+
+    fn tool_catalog_capabilities(&self) -> ToolCatalogCapabilities {
+        self.inner.tool_catalog_capabilities()
+    }
+
+    fn tool_catalog(&self) -> Arc<[ToolCatalogEntry]> {
+        self.inner.tool_catalog()
+    }
+
+    fn tool_mutation_class(&self, tool_name: &str) -> meerkat_core::ToolMutationClass {
+        self.inner.tool_mutation_class(tool_name)
+    }
+
+    fn live_bridge_effect_kind(&self, tool_name: &str) -> meerkat_core::LiveBridgeEffectKind {
+        self.inner.live_bridge_effect_kind(tool_name)
+    }
+
+    fn review_entry_support(
+        &self,
+        tool_name: &str,
+    ) -> meerkat_core::approval::review::ReviewEntrySupport {
+        self.inner.review_entry_support(tool_name)
+    }
+
+    fn execution_binding_epoch(&self, tool_name: &str) -> u64 {
+        self.inner.execution_binding_epoch(tool_name)
+    }
+
+    fn execution_binding_fingerprint(
+        &self,
+        tool_name: &str,
+    ) -> Result<
+        meerkat_core::EphemeralToolBindingFingerprint,
+        meerkat_core::ToolExecutionResolutionError,
+    > {
+        self.inner.execution_binding_fingerprint(tool_name)
+    }
+
+    fn resolve_execution_plan(
+        &self,
+        call: ToolCallView<'_>,
+        dispatch_context: &ToolDispatchContext,
+        resolution_context: &meerkat_core::ToolExecutionResolutionContext,
+    ) -> Result<meerkat_core::ResolvedToolExecutionPlan, meerkat_core::ToolExecutionResolutionError>
+    {
+        self.inner
+            .resolve_execution_plan(call, dispatch_context, resolution_context)
+    }
+
+    fn validate_resolved_execution_plan(
+        &self,
+        call: ToolCallView<'_>,
+        resolution_context: &meerkat_core::ToolExecutionResolutionContext,
+        plan: &meerkat_core::ResolvedToolExecutionPlan,
+    ) -> Result<(), meerkat_core::ToolExecutionResolutionError> {
+        self.inner
+            .validate_resolved_execution_plan(call, resolution_context, plan)
+    }
+
+    fn pending_catalog_sources(&self) -> Arc<[String]> {
+        self.inner.pending_catalog_sources()
+    }
+
+    fn adjudicates_tool_grants(&self) -> bool {
+        self.inner.adjudicates_tool_grants()
+    }
+
+    async fn dispatch(
+        &self,
+        call: ToolCallView<'_>,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
+        self.inner.dispatch(call).await
+    }
+
+    async fn dispatch_with_context(
+        &self,
+        call: ToolCallView<'_>,
+        context: &ToolDispatchContext,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
+        self.inner.dispatch_with_context(call, context).await
+    }
+
+    async fn dispatch_resolved_with_context(
+        &self,
+        call: ToolCallView<'_>,
+        context: &ToolDispatchContext,
+        plan: &meerkat_core::ResolvedToolExecutionPlan,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
+        self.inner
+            .dispatch_resolved_with_context(call, context, plan)
+            .await
+    }
+
+    async fn poll_external_updates(&self) -> meerkat_core::ExternalToolUpdate {
+        self.inner.poll_external_updates().await
+    }
+
+    fn external_tool_surface_snapshot(&self) -> Option<meerkat_core::ExternalToolSurfaceSnapshot> {
+        self.inner.external_tool_surface_snapshot()
+    }
+
+    fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn bind_ops_lifecycle(
+        self: Arc<Self>,
+        registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+        owner_bridge_session_id: SessionId,
+    ) -> Result<meerkat_core::agent::BindOutcome, meerkat_core::agent::OpsLifecycleBindError> {
+        use meerkat_core::agent::{BindOutcome, OpsLifecycleBindError};
+        let this = Arc::try_unwrap(self).map_err(|_| OpsLifecycleBindError::SharedOwnership)?;
+        let Self {
+            inner,
+            session,
+            routes,
+        } = this;
+        let wrap = |inner| routes.wrap(session, inner);
+        Ok(
+            match inner.bind_ops_lifecycle(registry, owner_bridge_session_id)? {
+                BindOutcome::Bound(inner) => BindOutcome::Bound(wrap(inner)),
+                BindOutcome::Skipped(inner) => BindOutcome::Skipped(wrap(inner)),
+            },
+        )
+    }
+
+    fn completion_enrichment(
+        &self,
+    ) -> Option<Arc<dyn meerkat_core::completion_feed::CompletionEnrichmentProvider>> {
+        self.inner.completion_enrichment()
+    }
+
+    fn bind_mcp_server_lifecycle_handle(
+        &self,
+        handle: Arc<dyn meerkat_core::handles::McpServerLifecycleHandle>,
+    ) {
+        self.inner.bind_mcp_server_lifecycle_handle(handle);
+    }
+
+    fn bind_external_tool_surface_handle(
+        &self,
+        handle: Arc<dyn meerkat_core::handles::ExternalToolSurfaceHandle>,
+    ) {
+        self.inner.bind_external_tool_surface_handle(handle);
+    }
+
+    fn bind_session_mob_tool_authority(
+        &self,
+        authority: Option<Arc<std::sync::RwLock<meerkat_core::service::MobToolAuthorityContext>>>,
+    ) {
+        self.inner.bind_session_mob_tool_authority(authority);
+    }
+
+    fn observes_bindings_only(&self) -> bool {
+        self.inner.observes_bindings_only()
+    }
+}
 
 /// The persona's lines naming each deferred capability, so a model that
 /// was never shown a schedule or council tool knows to search for one.
@@ -55,9 +291,8 @@ pub const PERSONA: &str = "\
 
 Some tools are left out of your tool list until you search for them with `tool_search`:
 - You can schedule yourself (reminders, recurring checks, follow-ups): call `tool_search` with family `schedule`.
-- Teams, councils, forks and mob profiles: call `tool_search` with family `mob`. Among them: `mob_create` and `mob_spawn_member` start helpers in a mob of their own that stay after their task, which you check on with `mob_check_member` and retire with `mob_retire_member`; `council` convenes existing members for a few rounds, and its summary arrives later in your transcript; `fork_off` forks you from the conversation so far onto a task, and its outcome is written into your transcript later.
-- Without a search, `spawn_member` seats a helper that stays in your own mob (profile `main`) until `retire_member`; it is wired to you (rkat-tui sets `auto_wire_parent`), so you can message each other.
-- A helper's status (`member_status`, `mob_check_member`) shows no live progress: `output_preview` and `tokens_used` are from its last completed turn, so while a helper runs its first turn they are empty or zero, and a `fork_off` child's preview is the answer it inherited from your conversation, not its own work. To know how a running helper is doing, ask it with `send_message` (every helper you start is wired to you) or wait for its note.
+- Teams, councils and mob profiles: call `tool_search` with family `mob`. Among them: `mob_create` and `mob_spawn_member` start a team in a mob of its own that stays after its task, which you check on with `mob_check_member` and retire with `mob_retire_member`; `council` convenes existing members for a few rounds, and its summary arrives later in your transcript.
+- A helper's status (`member_status`, `mob_check_member`) shows no live progress: `output_preview` and `tokens_used` are from its last completed turn, so while a helper runs its first turn they are empty or zero, and a fork's preview is the answer it inherited from your conversation, not its own work. To know how a running helper is doing, ask it with `send_message` (every helper you start is wired to you) or wait for its note.
 ";
 
 /// The families whose tools are deferrable.
@@ -424,6 +659,8 @@ pub struct Deferral {
     pub deferrable: Arc<Deferrable>,
     /// Each conversation's reveals.
     pub reveals: Arc<reveal::Reveals>,
+    /// Every member build's engine mob tool surface (`assign`'s forks).
+    pub routes: Arc<ForkRoutes>,
     factory: Arc<dyn meerkat_core::service::MobToolsFactory>,
     gate: tokio::sync::RwLock<()>,
 }
@@ -444,16 +681,19 @@ impl Deferral {
         deferrable: Arc<Deferrable>,
         reveals: Arc<reveal::Reveals>,
     ) -> Self {
+        let routes = Arc::new(ForkRoutes::default());
         let factory = Arc::new(AgentTools {
             inner,
             schedules,
-            policy: crate::mobs::customizer::agent_tool_access_policy(),
+            policy: crate::mobs::customizer::tool_access_policy(),
             reveals: Arc::clone(&reveals),
             deferrable: Arc::clone(&deferrable),
+            routes: Arc::clone(&routes),
         });
         Self {
             deferrable,
             reveals,
+            routes,
             factory,
             gate: tokio::sync::RwLock::new(()),
         }
@@ -512,6 +752,7 @@ struct AgentTools {
     policy: meerkat_core::ops::ToolAccessPolicy,
     reveals: Arc<reveal::Reveals>,
     deferrable: Arc<Deferrable>,
+    routes: Arc<ForkRoutes>,
 }
 
 #[async_trait]
@@ -522,7 +763,9 @@ impl meerkat_core::service::MobToolsFactory for AgentTools {
     ) -> Result<Arc<dyn AgentToolDispatcher>, Box<dyn std::error::Error + Send + Sync>> {
         let session = args.session_id.clone();
         let member = agent_member(args.comms_name.as_deref());
-        let surface = self.inner.build_mob_tools(args).await?;
+        let surface = self
+            .routes
+            .wrap(session.clone(), self.inner.build_mob_tools(args).await?);
         let Some(member) = member else {
             return Ok(surface);
         };
@@ -614,7 +857,7 @@ mod tests {
             .into_iter()
             .filter(|word| !["tool_search", "mob"].contains(&word.as_str()))
             .collect();
-        for tool in ["mob_create", "mob_spawn_member", "council", "fork_off"] {
+        for tool in ["mob_create", "mob_spawn_member", "council"] {
             assert!(tools.iter().any(|t| t == tool), "{tool}: {mob}");
         }
         for tool in &tools {
@@ -624,11 +867,12 @@ mod tests {
                 "{tool} is not a hidden mob tool"
             );
         }
-        let direct = line("- Without a search");
-        for tool in ["spawn_member", "retire_member"] {
-            assert!(named(direct).iter().any(|t| t == tool), "{direct}");
-            assert!(!meerkat_mob::AGENT_MOB_TOOL_NAMES.contains(&tool));
-        }
+        // No line names a direct tool: helpers are started with `assign`,
+        // whose own description says the rest.
+        assert!(
+            !PERSONA.lines().any(|l| l.starts_with("- Without a search")),
+            "{PERSONA}"
+        );
     }
 
     /// The deferrable tools are what a hidden family's dispatcher offers

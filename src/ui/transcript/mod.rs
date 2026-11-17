@@ -194,11 +194,9 @@ impl HelperFold {
         }
         match self.ended.as_deref().filter(|_| !self.state.is_running()) {
             Some(how) => out.push_str(how),
-            // A kept member or a fork whose run ended is seated still,
-            // idle, until it is retired (the daemon says so).
-            None if self.state == HelperState::Done
-                && matches!(self.kind, Some(HelperKind::Member | HelperKind::Fork)) =>
-            {
+            // A kept helper whose run ended is seated still, idle, until it
+            // is retired (the daemon says so).
+            None if self.state == HelperState::Done && self.kind.is_some_and(HelperKind::kept) => {
                 out.push_str("idle");
             }
             None => out.push_str(self.state.text()),
@@ -773,9 +771,20 @@ impl Transcript {
                     let _ = writeln!(out, "## notice ({level})");
                     body(&mut out, text);
                 }
-                Block::Helper(fold) => {
-                    let _ = writeln!(out, "## helper {} {}", fold.tag(), fold.state.text());
-                }
+                Block::Helper(fold) => match fold.kind {
+                    Some(kind) => {
+                        let _ = writeln!(
+                            out,
+                            "## helper {} ({}) {}",
+                            fold.tag(),
+                            kind.text(),
+                            fold.state.text()
+                        );
+                    }
+                    None => {
+                        let _ = writeln!(out, "## helper {} {}", fold.tag(), fold.state.text());
+                    }
+                },
             }
         }
         out

@@ -173,16 +173,7 @@ async fn a_compaction_keeps_the_replaced_instructions() {
 }
 
 fn spawn_member(member: &str, kickoff: &str) -> Step {
-    Step::Tool {
-        id: "s1",
-        name: "spawn_member",
-        args: json!({
-            "profile": "main",
-            "member_id": member,
-            "initial_message": kickoff,
-            "auto_wire_parent": true,
-        }),
-    }
+    common::keep("s1", member, kickoff)
 }
 
 /// Whether a recorded request of the helper (its task names `HELPER-TASK`)
@@ -194,7 +185,7 @@ fn helper_heard(llm: &ScriptedLlmClient, text: &str) -> bool {
         .any(|r| format!("{:?}", r.messages).contains(text))
 }
 
-/// A helper kept with `spawn_member` across the upgrade: restored, its
+/// A kept helper (`assign` with `keep: true`) across the upgrade: restored, its
 /// instructions are brought up at the start (audited as its agent's), and
 /// its next model request carries this build's section once and not the
 /// earlier build's.

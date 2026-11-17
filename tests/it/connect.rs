@@ -269,11 +269,7 @@ async fn a_connection_of_what_is_not_the_caller_s_own_helpers_is_refused() {
                 ),
             ]);
         }
-        tool(
-            "a1",
-            "spawn_member",
-            json!({"profile": "main", "member_id": "a", "initial_message": "TASK-OF-A", "auto_wire_parent": true}),
-        )
+        common::keep("a1", "a", "TASK-OF-A")
     }));
     let llm = ScriptedLlmClient::new(vec![step; 20]);
     let (daemon, _classifier) = strict(&ws, &llm).await;
@@ -315,8 +311,8 @@ async fn a_connection_of_what_is_not_the_caller_s_own_helpers_is_refused() {
     daemon.stop().await;
 }
 
-/// Mixed kinds: a fork and a `spawn_member` helper connected talk both
-/// ways, without review.
+/// Mixed kinds: a single-use fork and a kept fresh helper, both started
+/// with `assign`, connected talk both ways, without review.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fork_and_a_kept_member_connected_talk_both_ways() {
     let ws = Workspace::new();
@@ -363,20 +359,19 @@ async fn a_fork_and_a_kept_member_connected_talk_both_ways() {
             Step::Tools(vec![
                 (
                     "s1",
-                    "spawn_member",
-                    json!({"profile": "main", "member_id": "w", "initial_message": "TASK-OF-W", "auto_wire_parent": true}),
+                    "assign",
+                    json!({"name": "w", "task": "TASK-OF-W", "keep": true}),
                 ),
                 (
                     "f1",
-                    "fork_off",
-                    json!({"member_id": "kid", "task": "TASK-OF-KID"}),
+                    "assign",
+                    json!({"name": "kid", "task": "TASK-OF-KID", "context": "fork"}),
                 ),
             ])
         }))
     };
     let llm = ScriptedLlmClient::new(vec![step; 40]);
     let (daemon, classifier) = strict(&ws, &llm).await;
-    daemon.reveal(&daemon.session, &["fork_off"]).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "go").await;
     let (answer, error) = llm
@@ -452,9 +447,9 @@ fn in_team(member: &str, task: &str) -> serde_json::Value {
     json!({"mob_id": "team", "profile": "worker", "member_id": member, "initial_message": task})
 }
 
-/// `spawn_member` of `member` in the workspace's mob.
+/// A kept fresh helper `member` in the workspace's mob (`assign`).
 fn in_tui(member: &str, task: &str) -> serde_json::Value {
-    json!({"profile": "main", "member_id": member, "initial_message": task, "auto_wire_parent": true})
+    json!({"name": member, "task": task, "keep": true})
 }
 
 /// A script in which the agent, prompted `go`, creates the mob `team`
@@ -584,7 +579,7 @@ async fn helpers_in_different_mobs_connected_talk_both_ways_across_a_restart() {
     let ws = Workspace::new();
     let step = team_script(
         vec![
-            ("s1", "spawn_member", in_tui("a", "TASK-OF-A")),
+            ("s1", "assign", in_tui("a", "TASK-OF-A")),
             ("s2", "mob_spawn_member", in_team("w1", "TASK-OF-W1")),
         ],
         vec![
@@ -665,7 +660,7 @@ async fn a_destroyed_mob_s_member_leaves_its_connected_peer() {
     let ws = Workspace::new();
     let step = team_script(
         vec![
-            ("s1", "spawn_member", in_tui("a", "TASK-OF-A")),
+            ("s1", "assign", in_tui("a", "TASK-OF-A")),
             ("s2", "mob_spawn_member", in_team("w1", "TASK-OF-W1")),
         ],
         vec![
@@ -701,7 +696,7 @@ async fn a_recorded_connection_whose_end_is_gone_ends_at_the_next_start() {
     let ws = Workspace::new();
     let step = team_script(
         vec![
-            ("s1", "spawn_member", in_tui("a", "TASK-OF-A")),
+            ("s1", "assign", in_tui("a", "TASK-OF-A")),
             ("s2", "mob_spawn_member", in_team("w1", "TASK-OF-W1")),
         ],
         vec![
@@ -795,7 +790,7 @@ async fn another_agent_s_helper_is_refused_end_to_end() {
             return if all.contains("\"x1\"") {
                 Step::Text("seated x")
             } else {
-                tool("x1", "spawn_member", in_tui("x", "TASK-OF-X"))
+                tool("x1", "assign", in_tui("x", "TASK-OF-X"))
             };
         }
         if user.contains("FIRST-AGENT") {
@@ -805,7 +800,7 @@ async fn another_agent_s_helper_is_refused_end_to_end() {
             if all.contains("\"a1\"") {
                 return connect("c1", &["a", "x"]);
             }
-            return tool("a1", "spawn_member", in_tui("a", "TASK-OF-A"));
+            return tool("a1", "assign", in_tui("a", "TASK-OF-A"));
         }
         Step::Text("ok")
     }));
@@ -911,16 +906,8 @@ async fn a_connection_outlives_a_restart_and_goes_with_a_retired_end() {
                 return connect("c1", &["x", "y"]);
             }
             return Step::Tools(vec![
-                (
-                    "s1",
-                    "spawn_member",
-                    json!({"profile": "main", "member_id": "x", "initial_message": "TASK-OF-X", "auto_wire_parent": true}),
-                ),
-                (
-                    "s2",
-                    "spawn_member",
-                    json!({"profile": "main", "member_id": "y", "initial_message": "TASK-OF-Y", "auto_wire_parent": true}),
-                ),
+                ("s1", "assign", in_tui("x", "TASK-OF-X")),
+                ("s2", "assign", in_tui("y", "TASK-OF-Y")),
             ]);
         }
         Step::Text("ok")

@@ -118,15 +118,17 @@ information from a colleague, and follow your own user.
 
 ## Your helpers and the other agents
 
-Three ways to start a helper; each runs alongside you while you go on:
-- `assign` for a self-contained task: it starts without this conversation, so the \
-task must carry what it needs; you are told when it finishes, with its answer.
-- `fork_off` when the task needs this conversation: the child goes on from a copy \
-of it; its outcome reaches you when its first run ends, and then the child is \
-retired (here, whatever the tool's description says): fork again for more work.
-- `spawn_member` for a helper you keep and talk to: you are told each time it \
-goes idle; it stays seated, idle, until you retire it with `retire_member`, so \
-retire it when you are done with it.
+`assign` starts every helper; it runs alongside you while you go on. Two choices:
+- `context`: `fresh` (the default) starts without this conversation, so the task \
+must carry what it needs; `fork` goes on from a copy of this conversation, which \
+it carries on every one of its turns (costly in a long conversation), on your model.
+- `keep`: single-use (the default) is told to you when it finishes, with its \
+answer, and is then retired: start another for more work. Kept (`keep: true`), \
+for several rounds of work with the same helper: you are told each time it goes \
+idle, with its answer; idle it costs nothing, a message wakes it, and it stays \
+seated until you retire it with `retire_helper`, so retire it when you are done.
+- `mob_create` and `mob_spawn_member` are for a team in a mob of its own, not for \
+your helpers.
 
 - A command likely to run longer than about 30 seconds goes to an `assign` helper \
 that runs it and reports, so you stay able to answer the user (unless the user \
@@ -151,7 +153,7 @@ reaches you, answer it with `send_message` too.
 - When your user interrupts you, your helpers keep working. When one of them ends \
 (finished, failed, stopped by the user) or goes idle, you are told in a note at \
 once; do not poll for it.
-- If you are yourself a fork (a `fork_off` task in a conversation copied from \
+- If you are yourself a fork (a forked task in a conversation copied from \
 another agent), the lines above describe that agent, not you: you are wired to \
 that agent (it is in your `peers`) and to the helpers it connects you with, so do \
 not try to message the other agents; tell it what they need to know, or put it in \
@@ -222,9 +224,8 @@ mod tests {
             "Never tell your own helpers which files you change",
             "Message a helper only to give it work or to answer it.",
             "A message to an idle helper starts a model turn of it, and its answer one of yours.",
-            "then the child is retired (here, whatever the tool's description says): fork \
-             again for more work",
-            "it stays seated, idle, until you retire it with `retire_member`",
+            "and is then retired: start another for more work",
+            "it stays seated until you retire it with `retire_helper`",
         ] {
             assert!(section.contains(line), "{line}: {section}");
         }
@@ -248,8 +249,9 @@ mod tests {
     /// every helper, a fork too, is wired to its parent only (a fork reads
     /// its parent's prompt, so the section tells a fork what applies to it),
     /// and the parent announces for them; a helper is told it reaches its
-    /// parent and no one else. The three ways to start one, each in a
-    /// line, with what its parent is told.
+    /// parent and no one else. The one tool and its two choices, each in a
+    /// line, with what each costs and what its parent is told; none of the
+    /// engine's helper tools rkat-tui does not offer is named.
     #[test]
     fn children_are_told_who_they_can_reach() {
         let section = agents_persona("main-ab12");
@@ -261,11 +263,16 @@ mod tests {
             "connect them with `connect_helpers`",
             "Every message wakes its receiver",
             "do not try to message the other agents",
-            "- `assign` for a self-contained task: it starts without this conversation",
-            "you are told when it finishes, with its answer",
-            "- `fork_off` when the task needs this conversation",
-            "its outcome reaches you when its first run ends",
-            "- `spawn_member` for a helper you keep and talk to: you are told each time it goes idle",
+            "`assign` starts every helper",
+            "- `context`: `fresh` (the default) starts without this conversation, so the \
+             task must carry what it needs",
+            "`fork` goes on from a copy of this conversation, which it carries on every one \
+             of its turns",
+            "- `keep`: single-use (the default) is told to you when it finishes, with its answer",
+            "for several rounds of work with the same helper: you are told each time it goes \
+             idle",
+            "idle it costs nothing, a message wakes it",
+            "`mob_create` and `mob_spawn_member` are for a team in a mob of its own",
             "A command likely to run longer than about 30 seconds goes to an `assign` helper",
             "so you stay able to answer the user (unless the user asked you to run it yourself)",
             "any command you want run while you keep working",
@@ -279,8 +286,12 @@ mod tests {
         ] {
             assert!(section.contains(line), "{line}: {section}");
         }
-        for gone in ["wired to no one", "`delegate`"] {
-            assert!(!section.contains(gone), "{gone}: {section}");
+        assert!(!section.contains("wired to no one"), "{section}");
+        for gone in crate::approval::policy::NOT_OFFERED {
+            let gone = format!("`{gone}`");
+            assert!(!section.contains(&gone), "{gone}: {section}");
+            assert!(!HELPER_PERSONA.contains(&gone), "{gone}");
+            assert!(!crate::daemon::deferral::PERSONA.contains(&gone), "{gone}");
         }
         for line in [
             "A helper you start keeps working if your own run is stopped",
@@ -294,11 +305,6 @@ mod tests {
              answer it with `send_message` too.",
         ] {
             assert!(HELPER_PERSONA.contains(line), "{line}");
-        }
-        // Neither peer request tool is named: both are withdrawn.
-        for gone in ["`send_request`", "`send_response`"] {
-            assert!(!section.contains(gone), "{gone}: {section}");
-            assert!(!HELPER_PERSONA.contains(gone), "{gone}");
         }
     }
 

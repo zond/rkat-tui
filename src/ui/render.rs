@@ -374,7 +374,7 @@ fn draw_panel(frame: &mut Frame<'_>, app: &App, panel: &[BlockId], area: Rect) {
         .filter_map(|(i, id)| match app.transcript.block(*id) {
             Some(Block::Helper(fold)) => {
                 let indent = "  ".repeat(fold.depth);
-                let line = helper_line(fold, &fold.status_text(), w, &indent, "");
+                let line = helper_line(fold, &fold.panel_status_text(), w, &indent, "");
                 Some(if selected == Some(i) {
                     line.patch_style(Modifier::REVERSED)
                 } else {
@@ -1491,7 +1491,7 @@ fn helper_header(fold: &HelperFold, w: usize) -> Line<'static> {
     let marker = if fold.expanded { "▾ " } else { "▸ " };
     helper_line(
         fold,
-        &fold.status_text(),
+        &fold.panel_status_text(),
         w,
         &format!("{indent}{marker}"),
         "",

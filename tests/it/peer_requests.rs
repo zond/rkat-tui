@@ -35,12 +35,10 @@ fn result_of(messages: &[Message], id: &str) -> Option<(String, bool)> {
     })
 }
 
-/// Whether `text` is the refusal of a call of `name`: the members' tool
-/// policy's (the tool is not offered) or the gate's, which says to use
-/// `send_message`.
+/// Whether `text` is the refusal of a call of `name` by the members' tool
+/// policy (the tool is not offered).
 fn refused(text: &str, name: &str) -> bool {
     text.contains(&format!("'{name}' is not allowed by policy"))
-        || text.contains(rkat_tui::approval::policy::PEER_REQUEST_UNAVAILABLE)
 }
 
 /// The helper `w` tries a request to its parent, and the parent answers
@@ -84,11 +82,7 @@ async fn neither_peer_request_tool_is_offered_and_the_helper_runs_on() {
                 json!({"peer_id": w, "in_reply_to": "01a1ea66-0000-7000-8000-000000000000", "status": "completed", "result": {"request_intent": "checksum_token", "request_subject": "s", "token": "t"}}),
             );
         }
-        tool(
-            "s1",
-            "spawn_member",
-            json!({"profile": "main", "member_id": "w", "initial_message": "TASK-OF-W", "auto_wire_parent": true}),
-        )
+        common::keep("s1", "w", "TASK-OF-W")
     }));
     let llm = ScriptedLlmClient::new(vec![step; 40]);
     let classifier = ScriptedClassifier::allowing(Vec::new());

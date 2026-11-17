@@ -700,15 +700,7 @@ async fn a_helpers_reviewed_call_raises_an_approval_too() {
         } else if asked_helper {
             write("h1", "helper.txt", "FROM-HELPER")
         } else {
-            Step::Tool {
-                id: "s1",
-                name: "spawn_member",
-                args: json!({
-                    "profile": "main",
-                    "member_id": "scout",
-                    "initial_message": "HELPER-TASK: write helper.txt",
-                }),
-            }
+            common::keep("s1", "scout", "HELPER-TASK: write helper.txt")
         }
     }));
     let llm = ScriptedLlmClient::new(vec![step.clone(), step.clone(), step.clone(), step]);
@@ -716,14 +708,8 @@ async fn a_helpers_reviewed_call_raises_an_approval_too() {
     let mut client = attach(&ws.root).await;
     client.set_mode(PermissionMode::Manual).await;
     client.send(Effect::StartTurn("have a helper write helper.txt".into()));
-    // Manual mode asks for the spawn as well; then the helper's write asks,
-    // naming the helper.
-    let (prompt, id) = client.escalation().await;
-    assert_eq!(
-        (prompt.tool.as_str(), prompt.agent.as_deref()),
-        ("spawn_member", None)
-    );
-    client.send(Effect::RespondEscalation(id, EscalationAnswer::AllowOnce));
+    // Starting the helper asks nothing (its calls pass the gate); the
+    // helper's write asks, naming the helper.
     let (prompt, id) = client.escalation().await;
     assert_eq!(prompt.tool, "write_file");
     assert_eq!(prompt.agent.as_deref(), Some("scout"), "{prompt:?}");
@@ -1078,15 +1064,7 @@ async fn a_seated_helpers_catalog_is_read_after_its_first_run() {
         } else if results.iter().any(|id| id == "s1") {
             Step::Text("spawned")
         } else {
-            Step::Tool {
-                id: "s1",
-                name: "spawn_member",
-                args: json!({
-                    "profile": "main",
-                    "member_id": "scout",
-                    "initial_message": "HELPER-TASK: say done",
-                }),
-            }
+            common::keep("s1", "scout", "HELPER-TASK: say done")
         }
     }));
     let llm = ScriptedLlmClient::new(vec![step.clone(), step.clone(), step]);
@@ -1325,14 +1303,13 @@ async fn a_restarted_daemon_withdraws_the_request_its_predecessor_left_open() {
     daemon.stop().await;
 }
 
-/// The engine's `fork_off` seats its child under the source's dispatch
-/// admission (lukacf/meerkat#2112): an agent's fork child is a
-/// helper of the agent's session behind the same gate, so its
-/// write asks the human (naming the child) and a denial reaches it. Before
-/// the daemon's members kept `fork_off`, the call was refused and no child
-/// ran.
+/// A fork (`assign` with `context: "fork"`, through the engine's own
+/// `fork_off`) is seated under the source's dispatch admission
+/// (lukacf/meerkat#2112): an agent's fork is a helper of the agent's
+/// session behind the same gate, so its write asks the human (naming the
+/// child) and a denial reaches it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fork_off_child_runs_behind_the_gate() {
+async fn a_fork_runs_behind_the_gate() {
     const TASK: &str = "FORK-CHILD-TASK write forked.txt";
     let ws = Workspace::new();
     let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
@@ -1347,22 +1324,16 @@ async fn a_fork_off_child_runs_behind_the_gate() {
                 args: json!({"path": "forked.txt", "content": "FROM-FORK"}),
             },
             (true, true) => Step::Text("child done"),
-            (false, false) => Step::Tool {
-                id: "fo1",
-                name: "fork_off",
-                args: json!({"member_id": "forky", "task": TASK}),
-            },
+            (false, false) => common::fork("fo1", "forky", TASK, false),
             (false, true) => Step::Text("parent done"),
         }
     }));
     let llm = ScriptedLlmClient::new(vec![step.clone(), step.clone(), step.clone(), step]);
     let daemon = start(&ws.root, &llm, &Setup::default()).await;
-    // Revealed as a `tool_search` would (`tests/deferral.rs`).
-    daemon.reveal(&daemon.session, &["fork_off"]).await;
     let mut client = attach(&ws.root).await;
     client.set_mode(PermissionMode::Manual).await;
     client.send(Effect::StartTurn("fork a child".into()));
-    // `fork_off` itself runs in manual mode (the child is the helper the
+    // `assign` itself runs in manual mode (the child is the helper the
     // gate asks about); the child's write asks, naming the child.
     let (prompt, id) = client.escalation().await;
     assert_eq!(prompt.tool, "write_file", "{prompt:?}");
@@ -1391,13 +1362,13 @@ async fn a_fork_off_child_runs_behind_the_gate() {
     daemon.stop().await;
 }
 
-/// A `fork_off` call returns at once (its child runs in the background),
-/// and the child's outcome is written into the forking agent's transcript
-/// later, as a "Background fork_off job ... finished" notice that starts a
-/// turn of its own once the agent's turn has ended. The manual and the
-/// persona's hint say so.
+/// A fork's `assign` call returns at once (its child runs in the
+/// background), and the child's outcome is written into the forking
+/// agent's transcript later, as a "Background fork_off job ... finished"
+/// notice that starts a turn of its own once the agent's turn has ended.
+/// The call's answer says so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fork_off_outcome_arrives_later_in_the_transcript() {
+async fn a_fork_s_outcome_arrives_later_in_the_transcript() {
     const TASK: &str = "FORK-CHILD-TASK say the word";
     const OUTCOME: &str = "CHILD-OUTCOME-7731";
     let ws = Workspace::new();
@@ -1416,16 +1387,11 @@ async fn a_fork_off_outcome_arrives_later_in_the_transcript() {
         } else if child {
             Step::Text(OUTCOME)
         } else {
-            Step::Tool {
-                id: "fo1",
-                name: "fork_off",
-                args: json!({"member_id": "forky", "task": TASK}),
-            }
+            common::fork("fo1", "forky", TASK, false)
         }
     }));
     let llm = ScriptedLlmClient::new(vec![step; 8]);
     let daemon = start(&ws.root, &llm, &Setup::default()).await;
-    daemon.reveal(&daemon.session, &["fork_off"]).await;
     let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("fork a child".into()));
     let delivered = common::poll(async || {
@@ -1452,7 +1418,8 @@ async fn a_fork_off_outcome_arrives_later_in_the_transcript() {
         })
         .unwrap();
     assert!(
-        immediate.contains("Running in the background"),
+        immediate.contains("is running on a fork of this conversation")
+            && immediate.contains("Background fork_off job"),
         "{immediate}"
     );
     assert!(!immediate.contains(OUTCOME), "{immediate}");

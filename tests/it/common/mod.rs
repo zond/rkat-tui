@@ -572,6 +572,27 @@ pub fn assign(id: &'static str, name: &str, task: &str) -> Step {
     }
 }
 
+/// An `assign` call `id` starting the helper `name` on `task` with the
+/// two choices: `context` (`"fresh"` or `"fork"`) and `keep`.
+pub fn start(id: &'static str, name: &str, task: &str, context: &str, keep: bool) -> Step {
+    Step::Tool {
+        id,
+        name: "assign",
+        args: serde_json::json!({"name": name, "task": task, "context": context, "keep": keep}),
+    }
+}
+
+/// A kept fresh helper `name` on `task` (call `id`): what `spawn_member`
+/// started before `assign` took it over.
+pub fn keep(id: &'static str, name: &str, task: &str) -> Step {
+    start(id, name, task, "fresh", true)
+}
+
+/// A fork `name` on `task` (call `id`), `kept` or single-use.
+pub fn fork(id: &'static str, name: &str, task: &str, kept: bool) -> Step {
+    start(id, name, task, "fork", kept)
+}
+
 /// Whether `messages` are those of a helper whose task carries `marker`
 /// (its first user message is the task it was given).
 pub fn is_helper(messages: &[Message], marker: &str) -> bool {

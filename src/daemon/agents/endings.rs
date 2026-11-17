@@ -94,14 +94,14 @@ fn item_text(item: &NoteItem) -> String {
             answer,
             failed: None,
         } => format!(
-            "Your helper `{label}` went idle. Its last message:\n\n{}\n\nIt is still seated, idle: a message to it starts another run of it, so message it with `send_message` only to give it more work, and retire it with `retire_member` when you are done with it.",
+            "Your helper `{label}` went idle. Its last message:\n\n{}\n\nIt is still seated, idle: a message to it starts another run of it, so message it with `send_message` only to give it more work, and retire it with `retire_helper` when you are done with it.",
             bounded(answer, item.rest.as_deref())
         ),
         How::WentIdle {
             failed: Some(reason),
             ..
         } => format!(
-            "Your helper `{label}` went idle after its run failed: {}. It is still seated: message it with `send_message` to try again, or retire it with `retire_member`.",
+            "Your helper `{label}` went idle after its run failed: {}. It is still seated: message it with `send_message` to try again, or retire it with `retire_helper`.",
             crate::mobs::endings::plain_reason(reason)
         ),
         How::Failed { reason } => format!(
@@ -129,7 +129,7 @@ fn item_text(item: &NoteItem) -> String {
             status,
             retired: false,
         } => format!(
-            "Your helper `{label}` stopped at its checkpoint after {steps} steps and was not continued: {reason}. Its last status:\n\n{}\n\nIt is still seated, idle: message it with `send_message` to go on, or retire it with `retire_member`.",
+            "Your helper `{label}` stopped at its checkpoint after {steps} steps and was not continued: {reason}. Its last status:\n\n{}\n\nIt is still seated, idle: message it with `send_message` to go on, or retire it with `retire_helper`.",
             bounded(status, item.rest.as_deref())
         ),
     }
@@ -830,7 +830,7 @@ mod tests {
         )]);
         assert_eq!(
             idle,
-            "Your helper `w1` went idle. Its last message:\n\nwaiting for more\n\nIt is still seated, idle: a message to it starts another run of it, so message it with `send_message` only to give it more work, and retire it with `retire_member` when you are done with it."
+            "Your helper `w1` went idle. Its last message:\n\nwaiting for more\n\nIt is still seated, idle: a message to it starts another run of it, so message it with `send_message` only to give it more work, and retire it with `retire_helper` when you are done with it."
         );
         let idle_failed = note_text(&[item(
             "w1",
@@ -841,7 +841,7 @@ mod tests {
         )]);
         assert!(
             idle_failed.starts_with("Your helper `w1` went idle after its run failed: a 400.")
-                && idle_failed.contains("`retire_member`"),
+                && idle_failed.contains("`retire_helper`"),
             "{idle_failed}"
         );
         let stopped = note_text(&[item("scout", How::StoppedByUser)]);

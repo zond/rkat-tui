@@ -23,40 +23,32 @@ use super::registry::{HelperKey, HelperRegistry, HelperTag, Owner};
 use crate::approval::{ApprovalEngine, ApprovalGate};
 use crate::bootstrap::HELPER_PERSONA;
 
-/// The mob tools that start a member or a council: denied to a helper at
-/// the configured depth limit (`[helpers] max_depth`), so helpers nest no
-/// deeper. `fork_off` ([`DENIED_SPAWN_TOOLS`]) is denied unless the fork is gated;
-/// the daemon's members keep it
-/// ([`HelperCustomizer::with_gated_fork_off`]) except at the depth limit.
-pub const NESTING_TOOLS: [&str; 5] = [
+/// The tools that start a helper (fresh or forked, single-use or kept), a
+/// member of a mob of its own or a council: denied to a helper at the
+/// configured depth limit (`[helpers] max_depth`), so helpers nest no
+/// deeper.
+pub const NESTING_TOOLS: [&str; 6] = [
     crate::tools::ASSIGN,
     crate::tools::CONNECT_HELPERS,
+    crate::tools::RETIRE_HELPER,
     "mob_create",
     "mob_spawn_member",
     "council",
 ];
 
-/// Mob tools denied unless the member's fork is gated
-/// ([`HelperCustomizer::with_gated_fork_off`]): a fork child inherits the
-/// source's dispatch admission, so the daemon's members keep `fork_off`
-/// behind the gate except at the depth limit.
-pub const DENIED_SPAWN_TOOLS: [&str; 1] = ["fork_off"];
-
-/// The tool access policy every member's is merged with:
+/// The tool access policy every member's is merged with (the agents',
+/// every helper's, a scheduled helper target's):
 /// [`crate::approval::policy::TUI_OWNED_BUILTINS`], the shell's job controls
-/// ([`crate::approval::policy::SHELL_JOB_TOOLS`]), the withdrawn mob tools
-/// ([`crate::approval::policy::WITHDRAWN_TOOLS`]: `delegate`), the peer
-/// request and response ([`crate::approval::policy::PEER_REQUEST_TOOLS`]:
-/// `send_request`, `send_response`) and [`DENIED_SPAWN_TOOLS`] denied.
+/// ([`crate::approval::policy::SHELL_JOB_TOOLS`]) and the engine tools
+/// rkat-tui does not offer ([`crate::approval::policy::NOT_OFFERED`])
+/// denied.
 #[must_use]
 pub fn tool_access_policy() -> meerkat_core::ops::ToolAccessPolicy {
     meerkat_core::ops::ToolAccessPolicy::DenyList(
         crate::approval::policy::TUI_OWNED_BUILTINS
             .into_iter()
             .chain(crate::approval::policy::SHELL_JOB_TOOLS)
-            .chain(crate::approval::policy::WITHDRAWN_TOOLS)
-            .chain(crate::approval::policy::PEER_REQUEST_TOOLS)
-            .chain(DENIED_SPAWN_TOOLS)
+            .chain(crate::approval::policy::NOT_OFFERED)
             .collect::<meerkat_core::ToolNameSet>(),
     )
 }
@@ -163,10 +155,6 @@ pub struct HelperCustomizer {
     /// The application tool policy every member this customizer shapes is
     /// built with (`None`: the spawn's own).
     application_tool_policy: Option<meerkat_core::ApplicationToolPolicyBinding>,
-    /// Members keep `fork_off`: the host's engine seats a fork child under
-    /// its source's dispatch admission (it asks this customizer for the
-    /// child), so the child runs behind the gate.
-    gated_fork_off: bool,
     /// The configured endpoints (a helper on another model than its
     /// owner's is routed through the owner's, see [`helper_binding`]).
     endpoints: Vec<crate::endpoints::Endpoint>,
@@ -211,7 +199,6 @@ impl HelperCustomizer {
             max_depth,
             root: None,
             application_tool_policy: None,
-            gated_fork_off: false,
             endpoints: Vec::new(),
             models: crate::config::helper_models::SharedHelperModels::default(),
             realm_config: None,
@@ -258,15 +245,6 @@ impl HelperCustomizer {
     #[must_use]
     pub fn with_endpoints(mut self, endpoints: Vec<crate::endpoints::Endpoint>) -> Self {
         self.endpoints = endpoints;
-        self
-    }
-
-    /// Let the members keep `fork_off` (see the field). Only for a host
-    /// whose fork children reach this customizer: the mob daemon's, where
-    /// `a_fork_off_child_runs_behind_the_gate` pins it.
-    #[must_use]
-    pub fn with_gated_fork_off(mut self) -> Self {
-        self.gated_fork_off = true;
         self
     }
 
@@ -341,7 +319,6 @@ fn shape_root(
     root: &RootMember,
     shell_env: Option<&HashMap<String, String>>,
     fresh: bool,
-    gated_fork_off: bool,
 ) {
     // A fresh agent runs on the start-up endpoint; a rebuilt one keeps its
     // session's own binding (its customizer sets it), which may name
@@ -369,7 +346,7 @@ fn shape_root(
             .get_or_insert_with(Vec::new)
             .extend(root.host.instructions(&key.member));
     }
-    deny_tools(spec, &[], gated_fork_off);
+    deny_tools(spec, &[]);
 }
 
 /// The model `spec` names (an explicit override or an inline profile's;
@@ -528,8 +505,8 @@ enum Asked {
 }
 
 /// The profile the engine seated a `delegate` helper with, in its owner's
-/// implicit mob (`implicit-<session id>`); `delegate` is withdrawn
-/// ([`crate::approval::policy::WITHDRAWN_TOOLS`]), and such a helper is one
+/// implicit mob (`implicit-<session id>`); `delegate` is not offered
+/// ([`crate::approval::policy::NOT_OFFERED`]), and such a helper is one
 /// a realm of an earlier build holds. The engine keeps that profile on
 /// the owner's current model, provider and binding
 /// (`MobMcpState::ensure_implicit_mob_for_model`), so it is the one stored
@@ -789,9 +766,7 @@ fn shape(spec: &mut SpawnMemberSpec, owner: &Owner, key: &HelperKey, shaping: Sh
         .push(persona.to_string());
 }
 
-/// A helper is a seated member, so the engine would let it `fork_off`; its
-/// fork child would seat without this customizer and so without the gate.
-/// Every helper's tool access policy denies rkat-tui's denied tools
+/// Every member's tool access policy denies rkat-tui's denied tools
 /// ([`tool_access_policy`]), merged into whatever policy its
 /// spec names: none or `Inherit` becomes rkat-tui's deny list, a deny list
 /// gains the names, an allow list loses them, constraints gain a deny
@@ -799,12 +774,10 @@ fn shape(spec: &mut SpawnMemberSpec, owner: &Owner, key: &HelperKey, shaping: Sh
 /// `also` adds names to deny (a helper at the depth limit gets
 /// [`NESTING_TOOLS`]); with any, `ReadOnly` becomes a read-only constraint
 /// beside the deny constraint, so the names are denied whatever read-only
-/// admits. `gated_fork_off` keeps `fork_off` when nothing else is denied
-/// (`also` is empty: a member at the depth limit may not fork either, as a
-/// fork child is a helper one level deeper).
-fn deny_tools(spec: &mut SpawnMemberSpec, also: &[&str], gated_fork_off: bool) {
+/// admits.
+fn deny_tools(spec: &mut SpawnMemberSpec, also: &[&str]) {
     use meerkat_core::ops::{ToolAccessConstraint, ToolAccessPolicy};
-    let Some(denied) = denied_names(also, gated_fork_off) else {
+    let Some(denied) = denied_names(also) else {
         // The TUI policy is a deny list; anything else is a programming
         // error that must not widen a helper's tools.
         spec.tool_access_policy = Some(tool_access_policy());
@@ -836,30 +809,14 @@ fn deny_tools(spec: &mut SpawnMemberSpec, also: &[&str], gated_fork_off: bool) {
 
 /// The names [`deny_tools`] denies (`None`: [`tool_access_policy`] is not a
 /// deny list).
-fn denied_names(also: &[&str], gated_fork_off: bool) -> Option<meerkat_core::ToolNameSet> {
+fn denied_names(also: &[&str]) -> Option<meerkat_core::ToolNameSet> {
     let meerkat_core::ops::ToolAccessPolicy::DenyList(mut denied) = tool_access_policy() else {
         return None;
     };
     for name in also {
         denied.insert((*name).to_string());
     }
-    if gated_fork_off && also.is_empty() {
-        for name in DENIED_SPAWN_TOOLS {
-            denied.remove(name);
-        }
-    }
     Some(denied)
-}
-
-/// The tool access policy the daemon's agents are built with
-/// ([`shape_root`] with `fork_off` gated): what a scheduled helper target
-/// one of them creates inherits.
-#[must_use]
-pub fn agent_tool_access_policy() -> meerkat_core::ops::ToolAccessPolicy {
-    denied_names(&[], true).map_or_else(
-        tool_access_policy,
-        meerkat_core::ops::ToolAccessPolicy::DenyList,
-    )
 }
 
 /// Keep the mob tools out of a helper's tool list: the deny list refuses
@@ -987,7 +944,7 @@ impl HelperCustomizer {
         self.registry
             .spawning(key.clone(), tag.clone())
             .map_err(refuse)?;
-        if fresh && kind == super::HelperKind::Fork {
+        if fresh && kind.is_fork() {
             self.registry.endings().first_run_told_by_engine(&key);
         }
         if let Some(session) = session {
@@ -995,8 +952,8 @@ impl HelperCustomizer {
         }
         // A fresh fork's first steps wait for its edge to its parent: its
         // tools then find the parent in `peers` from its first call.
-        let wired = (fresh && kind == super::HelperKind::Fork)
-            .then(|| Arc::new(tokio::sync::watch::channel(false).0));
+        let wired =
+            (fresh && kind.is_fork()).then(|| Arc::new(tokio::sync::watch::channel(false).0));
         shape(
             spec,
             owner,
@@ -1015,7 +972,7 @@ impl HelperCustomizer {
         if let Some(dir) = self.registry.scratch_of_session(&owner.session) {
             give_scratch(spec, &dir, true);
         }
-        deny_tools(spec, depth.nesting_denied(), self.gated_fork_off);
+        deny_tools(spec, depth.nesting_denied());
         if depth == Depth::MayNest {
             // A helper that may start helpers is told their models (its
             // instructions are given again on every build).
@@ -1064,14 +1021,7 @@ impl SpawnMemberCustomizer for HelperCustomizer {
                     key.member
                 )));
             }
-            shape_root(
-                spec,
-                &key,
-                root,
-                self.shell_env.as_ref(),
-                fresh,
-                self.gated_fork_off,
-            );
+            shape_root(spec, &key, root, self.shell_env.as_ref(), fresh);
             // Its instructions are given once, at its first seat; the
             // directory's name stays the same for it.
             if let Some(dir) = self
@@ -1113,7 +1063,7 @@ impl SpawnMemberCustomizer for HelperCustomizer {
         let asked = Asked::of(ctx)
             .filter(|_| fresh)
             .map(|asked| (asked, self.seat(ctx, spec)));
-        let kind = fresh.then(|| kind_of(ctx, spec));
+        let kind = fresh.then(|| kind_of(ctx, self.registry.take_intent(&key)));
         self.admit(key, &owner, spec, None, kind, asked)
     }
 
@@ -1138,14 +1088,7 @@ impl SpawnMemberCustomizer for HelperCustomizer {
             if spec.auth_binding.is_none() {
                 spec.auth_binding = binding;
             }
-            shape_root(
-                spec,
-                &key,
-                root,
-                self.shell_env.as_ref(),
-                false,
-                self.gated_fork_off,
-            );
+            shape_root(spec, &key, root, self.shell_env.as_ref(), false);
             if let Some(dir) = self
                 .registry
                 .scratch_for_agent(key.member.as_str(), |path| {
@@ -1169,36 +1112,42 @@ impl SpawnMemberCustomizer for HelperCustomizer {
     }
 }
 
-/// What a fresh spawn starts, as far as its parent's notes go: an `assign`
-/// helper carries [`super::ASSIGN_LABEL`]; a member an agent or helper
-/// seats in a mob of its own (`spawn_member`, `mob_spawn_member`, a batch)
-/// is kept until retired; a `fork_off` child is a fork (wired to its parent,
-/// its later runs told); a `delegate` helper and a council's participant are
-/// told of by their own tools.
-fn kind_of(ctx: &SpawnCustomizationContext, spec: &SpawnMemberSpec) -> super::HelperKind {
-    use super::HelperKind;
-    // A fork first: a fork of an `assign` helper carries its source's
-    // labels, the assign label among them. A `fork_off` child's seat asks
-    // with `PersistedForkResume` (its fork is committed first), a
-    // prompt-context fork's with `Fork` (both probed 2026-11-16).
-    if matches!(
+/// What a fresh spawn starts, as far as its parent's notes go: what the
+/// `assign` call that seats it asked for (`intent`, from
+/// [`super::HelperRegistry::take_intent`]); a member an agent or helper
+/// seats in a mob it created (`mob_spawn_member`) is a kept fresh helper; a
+/// fork no `assign` asked for (a fork's own fork by the engine) is a kept
+/// fork; a `delegate` helper and a council's participant are told of by
+/// their own tools.
+fn kind_of(
+    ctx: &SpawnCustomizationContext,
+    intent: Option<super::HelperKind>,
+) -> super::HelperKind {
+    use super::{HelperContext, HelperKind, HelperLife};
+    // A `fork_off` child's seat asks with `PersistedForkResume` (its fork
+    // is committed first), a prompt-context fork's with `Fork` (both
+    // probed 2026-11-16).
+    let fork = matches!(
         ctx.spawn_source,
         SpawnSource::Fork | SpawnSource::PersistedForkResume
-    ) {
-        return HelperKind::Fork;
+    );
+    match intent {
+        Some(HelperKind::Started(_, life)) if fork => {
+            return HelperKind::Started(HelperContext::Fork, life);
+        }
+        Some(HelperKind::Started(_, life)) => {
+            return HelperKind::Started(HelperContext::Fresh, life);
+        }
+        _ => {}
     }
-    if spec
-        .labels
-        .as_ref()
-        .is_some_and(|labels| labels.contains_key(super::ASSIGN_LABEL))
-    {
-        return HelperKind::Assigned;
+    if fork {
+        return HelperKind::Started(HelperContext::Fork, HelperLife::Kept);
     }
     let mob = ctx.mob_id.as_str();
     match ctx.spawn_source {
         SpawnSource::HelperSpawn | SpawnSource::AttachedForkedParticipant => HelperKind::Other,
         _ if mob.starts_with("implicit-") || mob.starts_with("council") => HelperKind::Other,
-        _ => HelperKind::Member,
+        _ => HelperKind::Started(HelperContext::Fresh, HelperLife::Kept),
     }
 }
 
@@ -1234,18 +1183,12 @@ mod tests {
         for name in TUI_OWNED_BUILTINS
             .into_iter()
             .chain(crate::approval::policy::SHELL_JOB_TOOLS)
-            .chain(DENIED_SPAWN_TOOLS)
+            .chain(crate::approval::policy::NOT_OFFERED)
         {
             assert!(names.0.iter().any(|n| n.as_str() == name), "{name}");
         }
-        assert!(names.0.iter().any(|n| n.as_str() == "fork_off"));
-        // `delegate` is withdrawn from every member, agents included: the
-        // agents' policy keeps `fork_off` (gated), not `delegate`.
-        assert!(names.0.iter().any(|n| n.as_str() == "delegate"));
-        let ToolAccessPolicy::DenyList(agents) = agent_tool_access_policy() else {
-            unreachable!("a deny list");
-        };
-        assert!(agents.contains("delegate") && !agents.contains("fork_off"));
+        // `assign` is offered: it starts every helper.
+        assert!(!names.contains(crate::tools::ASSIGN));
     }
 
     /// E2 of the security review: a helper on another model than its
@@ -1697,7 +1640,7 @@ mod tests {
         for policy in [None, Some(ToolAccessPolicy::Inherit)] {
             let mut spec = SpawnMemberSpec::new("delegate", "worker");
             spec.tool_access_policy = policy;
-            deny_tools(&mut spec, &[], false);
+            deny_tools(&mut spec, &[]);
             assert_eq!(spec.tool_access_policy, Some(tool_access_policy()));
         }
     }
@@ -1709,7 +1652,7 @@ mod tests {
         spec.tool_access_policy = Some(ToolAccessPolicy::DenyList(
             ["web_fetch"].into_iter().collect(),
         ));
-        deny_tools(&mut spec, &[], false);
+        deny_tools(&mut spec, &[]);
         let Some(ToolAccessPolicy::DenyList(names)) = &spec.tool_access_policy else {
             panic!("{:?}", spec.tool_access_policy);
         };
@@ -1726,7 +1669,7 @@ mod tests {
         spec.tool_access_policy = Some(ToolAccessPolicy::AllowList(
             ["read_file", "fork_off"].into_iter().collect(),
         ));
-        deny_tools(&mut spec, &[], false);
+        deny_tools(&mut spec, &[]);
         let Some(ToolAccessPolicy::AllowList(names)) = &spec.tool_access_policy else {
             panic!("{:?}", spec.tool_access_policy);
         };
@@ -1741,14 +1684,14 @@ mod tests {
         use meerkat_core::ops::{ToolAccessConstraint, ToolAccessPolicy};
         let mut spec = SpawnMemberSpec::new("delegate", "worker");
         spec.tool_access_policy = Some(ToolAccessPolicy::ReadOnly);
-        deny_tools(&mut spec, &[], false);
+        deny_tools(&mut spec, &[]);
         assert_eq!(spec.tool_access_policy, Some(ToolAccessPolicy::ReadOnly));
 
         let mut spec = SpawnMemberSpec::new("delegate", "worker");
         spec.tool_access_policy = Some(ToolAccessPolicy::Constraints(vec![
             ToolAccessConstraint::ReadOnly,
         ]));
-        deny_tools(&mut spec, &[], false);
+        deny_tools(&mut spec, &[]);
         let Some(ToolAccessPolicy::Constraints(constraints)) = &spec.tool_access_policy else {
             panic!("{:?}", spec.tool_access_policy);
         };
@@ -1774,7 +1717,7 @@ mod tests {
         let depth = Depth::admit("scout", 1, 1, true).unwrap();
         assert_eq!(depth, Depth::Last);
         let mut spec = SpawnMemberSpec::new("delegate", "scout");
-        deny_tools(&mut spec, &NESTING_TOOLS, false);
+        deny_tools(&mut spec, &NESTING_TOOLS);
         let names = denied_names(&spec);
         for name in ["delegate", "mob_create", "mob_spawn_member", "council"] {
             assert!(names.contains(name), "{name}: {names:?}");
@@ -1783,7 +1726,7 @@ mod tests {
         // A read-only helper keeps read-only and loses them too.
         let mut spec = SpawnMemberSpec::new("delegate", "scout");
         spec.tool_access_policy = Some(meerkat_core::ops::ToolAccessPolicy::ReadOnly);
-        deny_tools(&mut spec, &NESTING_TOOLS, false);
+        deny_tools(&mut spec, &NESTING_TOOLS);
         let Some(meerkat_core::ops::ToolAccessPolicy::Constraints(constraints)) =
             &spec.tool_access_policy
         else {
@@ -1814,7 +1757,7 @@ mod tests {
         let depth = Depth::admit("scout", 1, 2, true).unwrap();
         assert_eq!(depth, Depth::MayNest);
         let mut spec = SpawnMemberSpec::new("delegate", "scout");
-        deny_tools(&mut spec, &[], false);
+        deny_tools(&mut spec, &[]);
         let names = denied_names(&spec);
         for name in NESTING_TOOLS {
             assert!(!names.contains(name), "{name}: {names:?}");
@@ -1875,7 +1818,7 @@ mod tests {
         let curated = HashMap::from([("PATH".to_string(), "/bin".to_string())]);
         let root = root();
         let mut spec = SpawnMemberSpec::host_root("main", "main");
-        shape_root(&mut spec, &key(), &root, Some(&curated), true, false);
+        shape_root(&mut spec, &key(), &root, Some(&curated), true);
         assert!(spec.external_tools.is_some());
         assert!(spec.tool_dispatch_admission.is_none(), "no gate was given");
         assert_eq!(spec.shell_env.as_ref(), Some(&curated));
@@ -1896,39 +1839,31 @@ mod tests {
             }),
             ..self::root()
         };
-        shape_root(
-            &mut resumed,
-            &key(),
-            &on_proxy,
-            Some(&curated),
-            false,
-            false,
-        );
+        shape_root(&mut resumed, &key(), &on_proxy, Some(&curated), false);
         assert!(resumed.external_tools.is_some());
         assert_eq!(resumed.additional_instructions, None);
         assert_eq!(resumed.auth_binding, None);
         let mut fresh = SpawnMemberSpec::host_root("main", "main");
-        shape_root(&mut fresh, &key(), &on_proxy, Some(&curated), true, false);
+        shape_root(&mut fresh, &key(), &on_proxy, Some(&curated), true);
         assert_eq!(fresh.auth_binding, on_proxy.auth_binding);
-        // The daemon's root keeps `fork_off` (its children are gated).
-        let mut gated = SpawnMemberSpec::host_root("main", "main");
-        shape_root(&mut gated, &key(), &root, Some(&curated), true, true);
-        let Some(meerkat_core::ops::ToolAccessPolicy::DenyList(names)) = &gated.tool_access_policy
+        // The daemon's root is denied the tools not offered, `fork_off`
+        // among them (it forks with `assign`).
+        let Some(meerkat_core::ops::ToolAccessPolicy::DenyList(names)) = &fresh.tool_access_policy
         else {
-            panic!("{:?}", gated.tool_access_policy);
+            panic!("{:?}", fresh.tool_access_policy);
         };
         assert!(
-            !names.contains("fork_off") && names.contains("apply_patch"),
+            denies_fork_off(names) && names.contains("apply_patch"),
             "{names:?}"
         );
-        // At the depth limit a member forks no further.
+        // At the depth limit a member starts no helper, forks included.
         let mut last = SpawnMemberSpec::new("delegate", "worker");
-        deny_tools(&mut last, &NESTING_TOOLS, true);
+        deny_tools(&mut last, &NESTING_TOOLS);
         let Some(meerkat_core::ops::ToolAccessPolicy::DenyList(names)) = &last.tool_access_policy
         else {
             panic!("{:?}", last.tool_access_policy);
         };
-        assert!(denies_fork_off(names), "{names:?}");
+        assert!(names.contains(crate::tools::ASSIGN), "{names:?}");
     }
 
     #[test]

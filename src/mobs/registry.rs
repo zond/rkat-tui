@@ -43,23 +43,61 @@ pub struct HelperTag {
     pub kind: HelperKind,
 }
 
-/// How a helper was started, as far as its parent's notes go
-/// ([`super::endings`]).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HelperKind {
-    /// `assign`: a single-use helper, retired when it finishes its task
-    /// (`crate::daemon::assign`).
-    Assigned,
-    /// A member kept until retired (`spawn_member`, `mob_spawn_member`):
-    /// its parent is told each time it goes idle.
-    Member,
-    /// A `fork_off` child: wired to its parent once seated; the engine
-    /// tells its parent of its first run's end, and its parent is told of
-    /// each later run that leaves it idle, as of a [`Self::Member`]'s.
+/// What a helper starts from (`assign`'s `context`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HelperContext {
+    /// The task text alone.
+    Fresh,
+    /// A copy of its parent's committed conversation (the engine's fork).
     Fork,
+}
+
+impl HelperContext {
+    /// Its word, as the tool, the panel and `/helpers` say it.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Fork => "fork",
+        }
+    }
+}
+
+/// How long a helper stays (`assign`'s `keep`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HelperLife {
+    /// Retired once its task's run ended and its answer reached its parent.
+    Single,
+    /// Seated and idle after each run until its parent retires it.
+    Kept,
+}
+
+impl HelperLife {
+    /// Its word, as the tool, the panel and `/helpers` say it.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Single => "single-use",
+            Self::Kept => "kept",
+        }
+    }
+}
+
+/// How a helper was started, as far as its parent's notes go
+/// ([`super::endings`]): the two choices of `assign`
+/// (`crate::daemon::assign`), or anything else. Stored in
+/// `tui_helpers.json` as one word ([`StoredKind`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "StoredKind", into = "StoredKind")]
+pub enum HelperKind {
+    /// Started with `assign` (or, by an earlier build, with `spawn_member`,
+    /// `mob_spawn_member` or `fork_off`). Single-use: its parent is told
+    /// when it finishes, with its answer, and it is retired. Kept: its
+    /// parent is told each time it goes idle. A fork's first run is told
+    /// by the engine ("Background fork_off job … finished").
+    Started(HelperContext, HelperLife),
     /// Anything else (a `delegate` helper, a council's participant, a
-    /// member an earlier build bound, a fork among them).
+    /// member an earlier build bound without a kind).
     #[default]
     Other,
 }
@@ -67,6 +105,77 @@ pub enum HelperKind {
 impl HelperKind {
     fn is_other(&self) -> bool {
         *self == Self::Other
+    }
+
+    /// Its life (`None`: not started by `assign`).
+    #[must_use]
+    pub fn life(self) -> Option<HelperLife> {
+        match self {
+            Self::Started(_, life) => Some(life),
+            Self::Other => None,
+        }
+    }
+
+    /// Whether it is a fork.
+    #[must_use]
+    pub fn is_fork(self) -> bool {
+        matches!(self, Self::Started(HelperContext::Fork, _))
+    }
+
+    /// Its two words (`fresh · single-use`; `None`: not started by `assign`).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn text(self) -> Option<String> {
+        match self {
+            Self::Started(context, life) => Some(format!("{} · {}", context.word(), life.word())),
+            Self::Other => None,
+        }
+    }
+}
+
+/// [`HelperKind`] as `tui_helpers.json` stores it. The words of earlier
+/// builds still open and mean what they meant: `assigned` (`assign`) is a
+/// fresh single-use helper, `member` (`spawn_member`, `mob_spawn_member`) a
+/// fresh kept one, `fork` (`fork_off`, kept seated after its outcome by
+/// 0.0.15) a kept fork.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredKind {
+    #[serde(alias = "assigned")]
+    FreshSingle,
+    #[serde(alias = "member")]
+    FreshKept,
+    ForkSingle,
+    #[serde(alias = "fork")]
+    ForkKept,
+    Other,
+}
+
+impl From<StoredKind> for HelperKind {
+    fn from(stored: StoredKind) -> Self {
+        use HelperContext::{Fork, Fresh};
+        use HelperLife::{Kept, Single};
+        match stored {
+            StoredKind::FreshSingle => Self::Started(Fresh, Single),
+            StoredKind::FreshKept => Self::Started(Fresh, Kept),
+            StoredKind::ForkSingle => Self::Started(Fork, Single),
+            StoredKind::ForkKept => Self::Started(Fork, Kept),
+            StoredKind::Other => Self::Other,
+        }
+    }
+}
+
+impl From<HelperKind> for StoredKind {
+    fn from(kind: HelperKind) -> Self {
+        use HelperContext::{Fork, Fresh};
+        use HelperLife::{Kept, Single};
+        match kind {
+            HelperKind::Started(Fresh, Single) => Self::FreshSingle,
+            HelperKind::Started(Fresh, Kept) => Self::FreshKept,
+            HelperKind::Started(Fork, Single) => Self::ForkSingle,
+            HelperKind::Started(Fork, Kept) => Self::ForkKept,
+            HelperKind::Other => Self::Other,
+        }
     }
 }
 
@@ -228,6 +337,10 @@ pub struct HelperRegistry {
     /// Where each helper and mob that left for good is reported
     /// ([`Self::on_gone`]).
     gone: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<Gone>>,
+    /// The kind each `assign` call asked for, by the helper it seats, until
+    /// its seat takes it ([`Self::intend`], [`Self::take_intent`]): a fork's
+    /// seat carries no label of the call (the engine's `fork_off` seats it).
+    intents: Mutex<HashMap<HelperKey, HelperKind>>,
     /// Tests: forks are wired as their spawn is announced
     /// ([`Self::wire_forks_early`]).
     #[cfg(any(test, feature = "test-support"))]
@@ -265,6 +378,7 @@ impl HelperRegistry {
             scratch: crate::approval::scratch::ScratchDirs::off(),
             endings: std::sync::Arc::default(),
             gone: std::sync::OnceLock::new(),
+            intents: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "test-support"))]
             forks_early: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
@@ -307,6 +421,23 @@ impl HelperRegistry {
     #[must_use]
     pub fn endings(&self) -> &std::sync::Arc<super::endings::HelperEndings> {
         &self.endings
+    }
+
+    /// An `assign` call is about to seat `key` as `kind`.
+    pub fn intend(&self, key: HelperKey, kind: HelperKind) {
+        self.intents.lock().insert(key, kind);
+    }
+
+    /// The kind an `assign` call asked for `key`, taken (`None`: no call
+    /// asked; or `drop`ped after a seat that failed, [`Self::forget_intent`]).
+    #[must_use]
+    pub fn take_intent(&self, key: &HelperKey) -> Option<HelperKind> {
+        self.intents.lock().remove(key)
+    }
+
+    /// The seat `key` was asked for did not happen.
+    pub fn forget_intent(&self, key: &HelperKey) {
+        self.intents.lock().remove(key);
     }
 
     /// The session that started the helper `key` (its parent): the session
@@ -851,6 +982,39 @@ mod tests {
         registry.retired(&key);
         assert!(registry.owner_for_resume(&key).is_err());
         assert!(registry.owner_for_spawn(&nested_mob, None).is_err());
+    }
+
+    /// The kinds are stored as one word each, and the words earlier builds
+    /// wrote open as what they meant: `assign`'s helper single-use, a
+    /// `spawn_member` one kept, a `fork_off` child a kept fork.
+    #[test]
+    fn kinds_are_stored_as_words_and_earlier_words_still_open() {
+        use HelperContext::{Fork, Fresh};
+        use HelperLife::{Kept, Single};
+        let word = |kind: HelperKind| serde_json::to_string(&kind).unwrap();
+        assert_eq!(
+            word(HelperKind::Started(Fresh, Single)),
+            r#""fresh_single""#
+        );
+        assert_eq!(word(HelperKind::Started(Fork, Kept)), r#""fork_kept""#);
+        for (stored, kind) in [
+            ("assigned", HelperKind::Started(Fresh, Single)),
+            ("member", HelperKind::Started(Fresh, Kept)),
+            ("fork", HelperKind::Started(Fork, Kept)),
+            ("other", HelperKind::Other),
+            ("fresh_kept", HelperKind::Started(Fresh, Kept)),
+            ("fork_single", HelperKind::Started(Fork, Single)),
+        ] {
+            let read: HelperKind = serde_json::from_str(&format!("\"{stored}\"")).unwrap();
+            assert_eq!(read, kind, "{stored}");
+            let again: HelperKind = serde_json::from_str(&word(kind)).unwrap();
+            assert_eq!(again, kind);
+        }
+        assert_eq!(
+            HelperKind::Started(Fork, Single).text().as_deref(),
+            Some("fork · single-use")
+        );
+        assert_eq!(HelperKind::Other.text(), None);
     }
 
     #[test]

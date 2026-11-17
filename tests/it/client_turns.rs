@@ -1670,7 +1670,7 @@ async fn an_interrupt_during_a_stalled_model_request_ends_it_and_loses_nothing()
     rig.quit().await;
 }
 
-/// The same with a `fork_off` child running in the background (its own
+/// The same with a fork (`assign` with `context: "fork"`) running in the background (its own
 /// model request stalled too): the agent's stalled request is still
 /// interrupted at once, and the next message is answered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1685,16 +1685,11 @@ async fn an_interrupt_during_a_stalled_request_is_confirmed_while_a_fork_runs() 
         } else if text.contains("FORK-CHILD-TASK") || text.contains("fo1") {
             Step::Hang
         } else {
-            Step::Tool {
-                id: "fo1",
-                name: "fork_off",
-                args: json!({"member_id": "forky", "task": TASK}),
-            }
+            common::fork("fo1", "forky", TASK, false)
         }
     }));
     let llm = ScriptedLlmClient::new(vec![step; 8]);
     let mut rig = Attached::start(&ws.root, &llm).await;
-    rig.daemon.reveal(&rig.daemon.session, &["fork_off"]).await;
     rig.send(Effect::StartTurn("fork, then stall".into()));
     // The parent's stalled request and the child's.
     llm.wait_call(2).await;

@@ -823,8 +823,8 @@ async fn an_assigned_helper_stopped_at_its_checkpoint_is_retired_and_its_parent_
     rig.quit().await;
 }
 
-/// A member kept with `spawn_member` stopped at its checkpoint stays
-/// seated, idle; its parent is told why.
+/// A kept helper (`assign` with `keep: true`) stopped at its checkpoint
+/// stays seated, idle; its parent is told why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_kept_member_stopped_at_its_checkpoint_stays_seated() {
     let ws = workspace();
@@ -835,7 +835,7 @@ async fn a_kept_member_stopped_at_its_checkpoint_stays_seated() {
             if is_review(messages) {
                 return Step::Text("STOP: enough for now.");
             }
-            // The gate's review of the `spawn_member` call.
+            // A review by the gate's classifier, should any call need one.
             if messages.iter().any(|m| {
                 matches!(m, Message::System(system) if system.content.contains("security monitor"))
             }) {
@@ -853,16 +853,7 @@ async fn a_kept_member_stopped_at_its_checkpoint_stays_seated() {
             if matches!(messages.last(), Some(Message::ToolResults { .. })) {
                 return Step::Text("spawned");
             }
-            Step::Tool {
-                id: "s1",
-                name: "spawn_member",
-                args: json!({
-                    "profile": "main",
-                    "member_id": "w1",
-                    "initial_message": TASK,
-                    "auto_wire_parent": true,
-                }),
-            }
+            common::keep("s1", "w1", TASK)
         }))
     };
     let llm = ScriptedLlmClient::new(vec![step; 60]);

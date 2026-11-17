@@ -636,7 +636,7 @@ fn an_assigned_helper_s_view_names_its_kind() {
     }
     let rows = view_rows(&mut app, "scout");
     assert!(
-        rows[0].starts_with("◂ [scout · m] assigned · finished"),
+        rows[0].starts_with("◂ [scout · m] fresh · single-use · finished"),
         "{rows:#?}"
     );
 }
@@ -734,9 +734,10 @@ fn a_fork_s_view_says_it_was_forked_and_shows_only_its_own_task() {
         },
     ));
     let rows = view_rows(&mut app, "forky");
-    // Seated, idle, until the daemon says it was retired.
+    // With no call seen (a stored `fork_off` child), a kept fork: seated,
+    // idle, until the daemon says it was retired.
     assert!(
-        rows[0].starts_with("◂ [forky · m] fork · idle"),
+        rows[0].starts_with("◂ [forky · m] fork · kept · idle"),
         "{rows:#?}"
     );
     assert_eq!(
@@ -751,7 +752,8 @@ fn a_fork_s_view_says_it_was_forked_and_shows_only_its_own_task() {
     assert!(all.contains("FORK-DONE"), "{all}");
 }
 
-/// A spawned member whose task is done is idle (it stays); a failed
+/// A spawned member (a call a conversation of an earlier build stored: a
+/// kept fresh helper) whose task is done is idle (it stays); a failed
 /// helper says so; a nested helper's task is from the helper above it.
 #[test]
 fn the_view_title_names_a_member_idle_and_a_nested_task_s_giver() {
@@ -769,7 +771,7 @@ fn the_view_title_names_a_member_idle_and_a_nested_task_s_giver() {
         Some(Block::Helper(fold)) => {
             assert_eq!(
                 fold.view_status_text(),
-                "spawned member · idle · 0 tool calls"
+                "fresh · kept · idle · 0 tool calls"
             );
         }
         other => panic!("{other:?}"),
@@ -1013,15 +1015,15 @@ fn a_woken_kept_helper_keeps_its_header_and_says_idle_until_retired() {
     let mut app = App::new(StatusInfo::default());
     app.update(agent(AgentEvent::ToolCallRequested {
         id: "s1".into(),
-        name: "spawn_member".into(),
-        args: test_args(json!({"profile": "main", "member_id": "w1"})),
+        name: "assign".into(),
+        args: test_args(json!({"name": "w1", "task": "index the repo", "keep": true})),
     }));
     app.update(live(&["w1"]));
     app.update(helper_msg("w1", run_started("index the repo")));
     let w1 = app.transcript.helper_header("w1").unwrap();
     app.update(helper_msg("w1", run_completed()));
     app.update(live(&[]));
-    assert!(picker_line(&mut app, "w1").contains("[w1 · m] spawned member · idle · 0 tool calls"));
+    assert!(picker_line(&mut app, "w1").contains("[w1 · m] fresh · kept · idle · 0 tool calls"));
     // The next turn: it drops off the panel.
     type_str(&mut app, "next");
     app.update(key(KeyCode::Enter));
@@ -1040,7 +1042,7 @@ fn a_woken_kept_helper_keeps_its_header_and_says_idle_until_retired() {
     let rows = screen(&mut app, 14);
     assert!(
         rows.iter()
-            .any(|r| r.contains("[w1 · m] idle · 0 tool calls")),
+            .any(|r| r.contains("[w1 · m] fresh · kept · idle · 0 tool calls")),
         "{rows:#?}"
     );
     type_str(&mut app, "again");
@@ -1055,9 +1057,7 @@ fn a_woken_kept_helper_keeps_its_header_and_says_idle_until_retired() {
         told: None,
     });
     assert_eq!(app.transcript.len(), before);
-    assert!(
-        picker_line(&mut app, "w1").contains("[w1 · m] spawned member · retired · 0 tool calls")
-    );
+    assert!(picker_line(&mut app, "w1").contains("[w1 · m] fresh · kept · retired · 0 tool calls"));
     // A helper whose line says how it ended keeps those words.
     let (mut app, _, _) = helper_app();
     app.update(Msg::HelperEnded {
@@ -1073,30 +1073,68 @@ fn a_woken_kept_helper_keeps_its_header_and_says_idle_until_retired() {
     assert!(picker_line(&mut app, "scout").contains("[scout · m] finished · 1 tool call"));
 }
 
-/// A fork whose run ended is idle until the daemon retires it (it does
-/// once its outcome reached its parent).
+/// A kept fork whose run ended is idle until it is retired; a stored
+/// conversation's `fork_off` child is a kept fork. A single-use fork's line
+/// says finished, then retired once the daemon retires it (it does once
+/// its outcome reached its parent).
 #[test]
 fn a_fork_s_line_says_idle_then_retired() {
-    let mut app = App::new(StatusInfo::default());
-    app.update(agent(AgentEvent::ToolCallRequested {
-        id: "f1".into(),
-        name: "fork_off".into(),
-        args: test_args(json!({"member_id": "kid", "task": "look"})),
-    }));
-    app.update(live(&["kid"]));
-    app.update(helper_msg(
-        "kid",
-        run_started("DELEGATED DURABLE FORK\n\nTask:\nlook"),
-    ));
-    app.update(helper_msg("kid", run_completed()));
-    app.update(live(&[]));
-    assert!(picker_line(&mut app, "kid").contains("[kid · m] fork · idle"));
-    app.update(Msg::HelperEnded {
-        path: vec!["kid".into()],
-        how: crate::daemon::protocol::HELPER_RETIRED.into(),
-        told: None,
-    });
-    assert!(picker_line(&mut app, "kid").contains("[kid · m] fork · retired"));
+    for (name, args, life, done) in [
+        (
+            "fork_off",
+            json!({"member_id": "kid", "task": "look"}),
+            "kept",
+            "idle",
+        ),
+        (
+            "assign",
+            json!({"name": "kid", "task": "look", "context": "fork", "keep": true}),
+            "kept",
+            "idle",
+        ),
+        (
+            "assign",
+            json!({"name": "kid", "task": "look", "context": "fork"}),
+            "single-use",
+            "finished",
+        ),
+    ] {
+        let mut app = App::new(StatusInfo::default());
+        app.update(agent(AgentEvent::ToolCallRequested {
+            id: "f1".into(),
+            name: name.into(),
+            args: test_args(args),
+        }));
+        app.update(live(&["kid"]));
+        app.update(helper_msg(
+            "kid",
+            run_started("DELEGATED DURABLE FORK\n\nTask:\nlook"),
+        ));
+        app.update(helper_msg("kid", run_completed()));
+        app.update(live(&[]));
+        let line = picker_line(&mut app, "kid");
+        assert!(line.contains(&format!("[kid · m] fork · {life}")), "{line}");
+        let header = app.transcript.helper_header("kid").unwrap();
+        match app.transcript.block(header) {
+            Some(Block::Helper(fold)) => assert!(
+                fold.view_status_text()
+                    .starts_with(&format!("fork · {life} · {done}")),
+                "{}",
+                fold.view_status_text()
+            ),
+            other => panic!("{other:?}"),
+        }
+        app.update(Msg::HelperEnded {
+            path: vec!["kid".into()],
+            how: crate::daemon::protocol::HELPER_RETIRED.into(),
+            told: None,
+        });
+        let line = picker_line(&mut app, "kid");
+        assert!(
+            line.contains(&format!("[kid · m] fork · {life} · retired")),
+            "{line}"
+        );
+    }
 }
 
 /// `/helpers` lists the live helpers (running, or seated and idle) by
@@ -1108,16 +1146,13 @@ fn a_fork_s_line_says_idle_then_retired() {
 fn helpers_lists_the_live_helpers_and_shows_the_ended_ones_on_a() {
     let mut app = App::new(StatusInfo::default());
     for (tool, args) in [
-        ("assign", json!({"name": "done1", "task": "t"})),
-        (
-            "spawn_member",
-            json!({"profile": "main", "member_id": "w1"}),
-        ),
-        ("fork_off", json!({"member_id": "kid", "task": "t"})),
+        ("a1", json!({"name": "done1", "task": "t"})),
+        ("a2", json!({"name": "w1", "task": "t", "keep": true})),
+        ("a3", json!({"name": "kid", "task": "t", "context": "fork"})),
     ] {
         app.update(agent(AgentEvent::ToolCallRequested {
             id: tool.into(),
-            name: tool.into(),
+            name: "assign".into(),
             args: test_args(args),
         }));
     }
@@ -1149,7 +1184,7 @@ fn helpers_lists_the_live_helpers_and_shows_the_ended_ones_on_a() {
     let (shown, footer) = rows(&app);
     assert_eq!(shown.len(), 1, "{shown:?}");
     assert!(
-        shown[0].0.contains("[w1 · m] spawned member · idle"),
+        shown[0].0.contains("[w1 · m] fresh · kept · idle"),
         "{shown:?}"
     );
     assert!(footer.contains("a: show 2 ended"), "{footer}");
@@ -1158,10 +1193,15 @@ fn helpers_lists_the_live_helpers_and_shows_the_ended_ones_on_a() {
     assert_eq!(shown.len(), 3, "{shown:?}");
     assert!(!shown[0].1 && shown[1].1 && shown[2].1, "{shown:?}");
     assert!(
-        shown[1].0.contains("[done1 · m] assigned · finished"),
+        shown[1]
+            .0
+            .contains("[done1 · m] fresh · single-use · finished"),
         "{shown:?}"
     );
-    assert!(shown[2].0.contains("[kid · m] fork · idle"), "{shown:?}");
+    assert!(
+        shown[2].0.contains("[kid · m] fork · single-use · done"),
+        "{shown:?}"
+    );
     assert!(footer.contains("a: hide the ended"), "{footer}");
     // An ended one's full view is still reachable.
     app.update(key(KeyCode::Down));

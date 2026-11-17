@@ -359,8 +359,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     .with_models(Arc::clone(&helper_models))
     .with_profiles(Arc::clone(&profiles))
     .with_realm_config(realm_config.path().to_path_buf())
-    .with_helper_persona(revisions.seated(crate::bootstrap::persona::HELPER_PERSONA.to_string()))
-    .with_gated_fork_off();
+    .with_helper_persona(revisions.seated(crate::bootstrap::persona::HELPER_PERSONA.to_string()));
     // The members' tool policy from the engine's deny rules (tests may
     // leave it out).
     let registry_for_policy = (!policy.without_registry)
@@ -424,6 +423,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         reveals,
     ));
     deferral.install(&runtime);
+    assigner.fork_through(Arc::clone(&deferral.routes));
     let decisions = Decisions::new(decision_service, principal, Some(Arc::new(router)))
         .map_err(DaemonError::Approval)?;
     let decisions_task = decisions.follow();

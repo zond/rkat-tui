@@ -1,10 +1,12 @@
-//! `fork_off` children wired to their parents (the owner's decision of
+//! Forks (`assign` with `context: "fork"`, which forks through the engine's
+//! own `fork_off`) wired to their parents (the owner's decision of
 //! 2026-11-16): the engine seats a fork with no edge, and the daemon wires
 //! it to its parent once it is seated (`mobs::follow`); its first calls wait
 //! for that edge. The engine tells the parent of the fork's first run's
-//! end; once it recorded that outcome the daemon retires the fork (it is
-//! single-use, as an `assign` helper is: decided 2026-11-17), after a run
-//! that a message read before the first one ended started, told as done.
+//! end; once it recorded that outcome the daemon retires a single-use fork
+//! (`keep: false`, the default), after a run that a message read before
+//! the first one ended started, told as done. A kept fork (`keep: true`)
+//! stays, and each later run of it is told as a kept helper's.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -56,12 +58,14 @@ fn peers(id: &'static str) -> Step {
     }
 }
 
+/// A single-use fork `kid` on `task`.
 fn fork(task: &str) -> Step {
-    Step::Tool {
-        id: "f1",
-        name: "fork_off",
-        args: json!({"member_id": "kid", "task": task}),
-    }
+    common::fork("f1", "kid", task, false)
+}
+
+/// A kept fork `kid` on `task`.
+fn kept_fork(task: &str) -> Step {
+    common::fork("f1", "kid", task, true)
 }
 
 /// Whether a recorded request of the fork (`fork`: its task names
@@ -162,7 +166,6 @@ async fn a_fork_and_its_parent_talk_both_ways_while_it_works() {
     let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
     let args = setup.command_line(&ws.root);
     let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
-    daemon.reveal(&daemon.session, &["fork_off"]).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "go").await;
     // Its first call already found its parent.
@@ -274,7 +277,6 @@ async fn a_completed_fork_is_retired_once_its_outcome_is_recorded() {
     };
     let llm = ScriptedLlmClient::new(vec![step; 20]);
     let daemon = Running::start(&ws.root, &llm).await;
-    daemon.reveal(&daemon.session, &["fork_off"]).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "go").await;
     let agent = daemon.agent.clone();
@@ -362,7 +364,6 @@ async fn a_fork_wired_before_it_is_seated_is_wired_once_it_is() {
     let daemon = Running::start(&ws.root, &llm).await;
     let registry = daemon.registry();
     registry.wire_forks_early();
-    daemon.reveal(&daemon.session, &["fork_off"]).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "go").await;
     let agent = daemon.agent.clone();
@@ -458,8 +459,6 @@ async fn a_helper_s_fork_is_wired_to_the_helper() {
         meerkat_mob::AgentIdentity::from("scout"),
     );
     common::until(|| registry.member_session(&scout).is_some()).await;
-    let session = registry.member_session(&scout).unwrap();
-    daemon.reveal(&session, &["fork_off"]).await;
     go.notify_one();
     common::until(|| heard(&llm, true, "\"peers\"")).await;
     let listed = llm
@@ -510,7 +509,6 @@ async fn a_fork_stopped_in_its_first_run_is_retired_and_its_parent_told() {
         12
     ]);
     let daemon = Running::start(&ws.root, &first).await;
-    daemon.reveal(&daemon.session, &["fork_off"]).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "go").await;
     let agent = daemon.agent.clone();
@@ -556,11 +554,10 @@ async fn a_fork_stopped_in_its_first_run_is_retired_and_its_parent_told() {
     daemon.stop().await;
 }
 
-/// The edge's life: a fork restored by the next start (one a build up to
-/// 0.0.15 kept seated after its outcome, as a realm it used holds) is
-/// wired to its parent again (the roster names the edge, and the parent's
-/// message reaches the fork's model), and its later runs are told as a
-/// kept member's; a fork retired leaves its parent's edges.
+/// The edge's life: a kept fork restored by the next start is wired to its
+/// parent again (the roster names the edge, and the parent's message
+/// reaches the fork's model), and its later runs are told as a kept
+/// helper's; a fork retired leaves its parent's edges.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restored_fork_is_wired_and_a_retired_one_is_not() {
     let ws = Workspace::new();
@@ -575,13 +572,11 @@ async fn a_restored_fork_is_wired_and_a_retired_one_is_not() {
             if matches!(messages.last(), Some(Message::ToolResults { .. })) {
                 return Step::Text("PARENT-WAITS");
             }
-            fork("FORK-TASK: wait")
+            kept_fork("FORK-TASK: wait")
         }));
         12
     ]);
     let daemon = Running::start(&ws.root, &first).await;
-    daemon.registry().endings().keep_forks();
-    daemon.reveal(&daemon.session, &["fork_off"]).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "go").await;
     let agent = daemon.agent.clone();
@@ -591,6 +586,20 @@ async fn a_restored_fork_is_wired_and_a_retired_one_is_not() {
     // and the outcome's run ends before the stop (lukacf/meerkat#2374).
     common::until(|| outcome_heard(&first)).await;
     daemon.idle(&agent).await;
+    // Kept: its outcome retires nothing (no retire of it was started), and
+    // the call's answer said how it stays.
+    assert!(seated(&connection, "kid").await);
+    assert_eq!(daemon.registry().endings().retires(), 0);
+    let started = first
+        .recorded()
+        .iter()
+        .find(|r| answered(&r.messages, "f1"))
+        .map(|r| common::tool_text(&r.messages, "f1"))
+        .unwrap();
+    assert!(
+        started.contains("on a fork of this conversation") && started.contains("It is kept"),
+        "{started}"
+    );
     drop(connection);
     daemon.stop().await;
 
@@ -643,6 +652,71 @@ async fn a_restored_fork_is_wired_and_a_retired_one_is_not() {
             .contains(&"kid".to_string())
     })
     .await;
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// A single-use fork whose outcome the engine recorded, but that the daemon
+/// stopped before retiring it (its retire held here), is restored by the
+/// next start and retired then: its outcome on record says it is done.
+/// Nothing more is told of it (the outcome was the news, before the stop).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restored_single_use_fork_whose_outcome_was_recorded_is_retired() {
+    let ws = Workspace::new();
+    let first = ScriptedLlmClient::new(vec![
+        Step::Dynamic(Arc::new(|messages: &[Message]| {
+            if common::user_texts(messages).concat().contains("FORK-TASK") {
+                return Step::Text("FORK-FIRST");
+            }
+            if tail_is_outcome(messages) {
+                return Step::Text("OUTCOME-NOTED");
+            }
+            if matches!(messages.last(), Some(Message::ToolResults { .. })) {
+                return Step::Text("PARENT-WAITS");
+            }
+            fork("FORK-TASK: answer")
+        }));
+        12
+    ]);
+    let daemon = Running::start(&ws.root, &first).await;
+    // The retire after the outcome waits until the daemon stopped.
+    let release = Arc::new(tokio::sync::watch::channel(false).0);
+    let reached = Arc::new(tokio::sync::Notify::new());
+    {
+        let reached = Arc::clone(&reached);
+        let release = Arc::clone(&release);
+        daemon
+            .registry()
+            .endings()
+            .before_retiring(Arc::new(move |_key| {
+                let mut released = release.subscribe();
+                let reached = Arc::clone(&reached);
+                Box::pin(async move {
+                    reached.notify_one();
+                    let _ = released.wait_for(|go| *go).await;
+                })
+            }));
+    }
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "go").await;
+    let agent = daemon.agent.clone();
+    common::until(|| outcome_heard(&first)).await;
+    // Its retire started (the outcome was recorded and it is idle) and is
+    // held: it is still seated when the daemon stops.
+    tokio::time::timeout(std::time::Duration::from_secs(30), reached.notified())
+        .await
+        .unwrap();
+    assert!(seated(&connection, "kid").await);
+    daemon.idle(&agent).await;
+    drop(connection);
+    daemon.stop().await;
+    release.send_replace(true);
+
+    let second = ScriptedLlmClient::new(vec![Step::Text("NOTED"); 12]);
+    let daemon = Running::start(&ws.root, &second).await;
+    let connection = daemon.connect_bound().await;
+    common::until_async(async || !seated(&connection, "kid").await).await;
+    assert_eq!(daemon.registry().endings().told(), 0);
     drop(connection);
     daemon.stop().await;
 }

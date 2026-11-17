@@ -281,24 +281,41 @@ async fn a_message_to_a_finished_helper_says_it_was_retired() {
     daemon.stop().await;
 }
 
-/// `delegate` is withdrawn, shown positively on both sides: the agent's
-/// request carries `assign` and no `delegate`, its helper's no
-/// `delegate`, and a `delegate` call either of them makes all the same is
-/// refused, nothing run and no helper seated for it.
+/// The ids of the calls of each tool not offered, the agent's and its
+/// helper's, in the order of `NOT_OFFERED`.
+const AGENT_IDS: [&str; 6] = ["n0", "n1", "n2", "n3", "n4", "n5"];
+const HELPER_IDS: [&str; 6] = ["h0", "h1", "h2", "h3", "h4", "h5"];
+
+/// A call of every tool rkat-tui does not offer, with the ids `ids`.
+fn not_offered(ids: [&'static str; 6]) -> Step {
+    let args =
+        json!({"member_id": "old", "task": "x", "profile": "main", "peer_id": "p", "body": "b"});
+    Step::Tools(
+        rkat_tui::approval::policy::NOT_OFFERED
+            .into_iter()
+            .zip(ids)
+            .map(|(name, id)| (id, name, args.clone()))
+            .collect(),
+    )
+}
+
+/// The engine tools rkat-tui does not offer (`delegate`, `fork_off`,
+/// `spawn_member`, `spawn_many_members`, `send_request`, `send_response`)
+/// are in no request of the agent nor of its helper, and a call of each
+/// that either makes all the same is refused by the engine before any
+/// dispatch, the gate's included: the agent's policy denies it ("not
+/// allowed by policy"), the helper at the default depth limit has none of
+/// the mob ones ("Tool not found") and its policy denies the others.
+/// Nothing reached the classifier, nothing was seated for them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn delegate_is_withdrawn_from_agents_and_helpers() {
+async fn the_tools_not_offered_are_refused_before_the_gate() {
     let ws = Workspace::new();
-    let delegate = |id: &'static str| Step::Tool {
-        id,
-        name: "delegate",
-        args: json!({"member_id": "old", "task": "x", "result_label": "r", "max_text_bytes": 100}),
-    };
     let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
         if common::is_helper(messages, "HELPER-TASK") {
-            return if common::after(messages, "hd") {
+            return if common::after(messages, "h0") {
                 Step::Text("HELPER-REFUSED")
             } else {
-                delegate("hd")
+                not_offered(HELPER_IDS)
             };
         }
         if common::told_finished(messages) {
@@ -307,13 +324,16 @@ async fn delegate_is_withdrawn_from_agents_and_helpers() {
         if common::after(messages, "a1") {
             return Step::Text("waiting");
         }
-        if common::after(messages, "ad") {
-            return assign("scout", "HELPER-TASK: try delegate");
+        if common::after(messages, "n0") {
+            return assign("scout", "HELPER-TASK: try them");
         }
-        delegate("ad")
+        not_offered(AGENT_IDS)
     }));
     let llm = ScriptedLlmClient::new(vec![step; 12]);
-    let daemon = Running::start(&ws.root, &llm).await;
+    let classifier = rig::ScriptedClassifier::allowing(Vec::new());
+    let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
+    let daemon =
+        Running::start_with(&setup.command_line(&ws.root), setup.options(&ws.root, &llm)).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "go").await;
     common::until(|| common::parent_told(&llm, "HELPER-TASK", "scout")).await;
@@ -326,12 +346,15 @@ async fn delegate_is_withdrawn_from_agents_and_helpers() {
     // The agent has `assign`; its helper, at the default depth limit,
     // starts no helper at all.
     assert!(recorded[0].tools.iter().any(|t| t == "assign"));
+    assert!(!helper.tools.iter().any(|t| t == "assign"));
     for request in [&recorded[0], helper] {
-        assert!(
-            !request.tools.iter().any(|t| t == "delegate"),
-            "{:?}",
-            request.tools
-        );
+        for name in rkat_tui::approval::policy::NOT_OFFERED {
+            assert!(
+                !request.tools.iter().any(|t| t == name),
+                "{name}: {:?}",
+                request.tools
+            );
+        }
     }
     let refused = |id: &str| {
         recorded
@@ -340,19 +363,27 @@ async fn delegate_is_withdrawn_from_agents_and_helpers() {
             .map(|r| common::tool_text(&r.messages, id))
             .unwrap()
     };
-    // The engine refuses the call before any dispatch, the gate's
-    // included, in its own words: the agent's policy withholds the tool,
-    // and the helper (no mob tools at the depth limit) has none of the
-    // name. The gate's own refusal, with what to use instead, is for a call
-    // that reaches it anyway (`approval::policy`'s
-    // `a_withdrawn_tool_is_unavailable_with_what_to_use_instead`).
-    let agent = refused("ad");
+    for (name, ids) in rkat_tui::approval::policy::NOT_OFFERED
+        .into_iter()
+        .zip(AGENT_IDS.into_iter().zip(HELPER_IDS))
+    {
+        for id in [ids.0, ids.1] {
+            let text = refused(id);
+            assert!(
+                text.contains(&format!("Tool '{name}' is not allowed by policy"))
+                    || text.contains(&format!("Tool not found: {name}")),
+                "{id} {name}: {text}"
+            );
+        }
+    }
     assert!(
-        agent.contains("Tool 'delegate' is not allowed by policy"),
-        "{agent}"
+        !classifier
+            .tools()
+            .iter()
+            .any(|t| rkat_tui::approval::policy::NOT_OFFERED.contains(&t.as_str())),
+        "{:?}",
+        classifier.tools()
     );
-    let helper = refused("hd");
-    assert!(helper.contains("Tool not found: delegate"), "{helper}");
     let seated = members(&connection).await;
     assert!(!seated.iter().any(|m| m == "old"), "{seated:?}");
     drop(connection);
@@ -360,45 +391,67 @@ async fn delegate_is_withdrawn_from_agents_and_helpers() {
 }
 
 fn spawn_member(member: &str, kickoff: &str) -> Step {
-    Step::Tool {
-        id: "s1",
-        name: "spawn_member",
-        args: json!({
-            "profile": "main",
-            "member_id": member,
-            "initial_message": kickoff,
-            "auto_wire_parent": true,
-        }),
-    }
+    common::keep("s1", member, kickoff)
 }
 
-/// A helper kept with `spawn_member` tells its parent when it goes idle,
-/// with its last message, and stays seated (the roster still lists it); no
-/// note comes for its start (the only note the parent ever got is the idle
-/// one).
+/// A kept fresh helper (`assign` with `keep: true`) tells its parent when
+/// it goes idle, with its last message, and stays seated (the roster still
+/// lists it); no note comes for its start. A message to it runs it again,
+/// and it is told again with that run's answer; `retire_helper` retires it
+/// (the engine's `retire_member` refuses: it lets a member retire only the
+/// members a `fork_off` of its own seated).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_spawned_member_s_parent_is_told_when_it_goes_idle_and_it_stays() {
+async fn a_kept_helper_s_parent_is_told_each_time_it_goes_idle_and_it_stays_until_retired() {
     let ws = Workspace::new();
     let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
         if common::user_texts(messages)
             .concat()
             .contains("HELPER-TASK")
         {
+            if format!("{messages:?}").contains("MORE-WORK") {
+                return Step::Text("SECOND-ANSWER");
+            }
             return Step::Text("IDLE-ANSWER");
         }
+        if common::after(messages, "r1") {
+            return Step::Text("retired");
+        }
+        if last(messages).contains("SECOND-ANSWER") {
+            return Step::Tool {
+                id: "r1",
+                name: "retire_helper",
+                args: json!({"name": "w1"}),
+            };
+        }
+        if common::after(messages, "m1") {
+            return Step::Text("sent");
+        }
+        if after_peers(messages) {
+            return send(peer_id(messages, "main/w1"), "MORE-WORK");
+        }
         if last(messages).contains("went idle") {
-            return Step::Text("NOTED");
+            return peers();
         }
         if matches!(messages.last(), Some(Message::ToolResults { .. })) {
             return Step::Text("spawned");
         }
         spawn_member("w1", "HELPER-TASK: say something")
     }));
-    let llm = ScriptedLlmClient::new(vec![step; 12]);
+    let llm = ScriptedLlmClient::new(vec![step; 24]);
     let daemon = Running::start(&ws.root, &llm).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "go").await;
     common::until(|| heard(&llm, false, "Your helper `w1` went idle")).await;
+    let started = llm
+        .recorded()
+        .iter()
+        .find(|r| common::after(&r.messages, "s1"))
+        .map(|r| common::tool_text(&r.messages, "s1"))
+        .unwrap();
+    assert!(
+        started.contains("It is kept") && started.contains("retire_helper"),
+        "{started}"
+    );
     let notes: Vec<String> = llm
         .recorded()
         .iter()
@@ -407,12 +460,33 @@ async fn a_spawned_member_s_parent_is_told_when_it_goes_idle_and_it_stays() {
         .filter(|m| m.contains("Your helper `w1`"))
         .collect();
     assert!(notes[0].contains("IDLE-ANSWER"), "{notes:?}");
-    assert!(
-        members(&connection).await.contains(&"w1".to_string()),
-        "a kept member is not retired when it goes idle"
-    );
+    // The parent's message runs it again (so it stayed seated after its
+    // first run); that run's end is told too.
+    common::until(|| heard(&llm, false, "SECOND-ANSWER")).await;
     let registry = daemon.registry();
-    assert_eq!(registry.endings().told(), 1, "only the idle note was told");
+    assert_eq!(registry.endings().told(), 2, "one idle note for each run");
+    // `retire_helper` ends it: the roster lists it no more.
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .any(|r| common::after(&r.messages, "r1"))
+    })
+    .await;
+    let retired = llm
+        .recorded()
+        .iter()
+        .find(|r| common::after(&r.messages, "r1"))
+        .map(|r| common::tool_text(&r.messages, "r1"))
+        .unwrap();
+    let roster = connection
+        .call("mob/members", json!({"mob_id": "tui"}))
+        .await
+        .unwrap();
+    assert!(
+        retired.contains("Helper `w1` was retired"),
+        "{retired}; {roster}"
+    );
+    common::until_async(async || !members(&connection).await.contains(&"w1".to_string())).await;
     drop(connection);
     daemon.stop().await;
 }
@@ -482,6 +556,11 @@ async fn assign_refuses_a_bad_or_taken_name_saying_what_is_allowed() {
                     "assign",
                     json!({"name": "scout", "task": "HELPER-TASK: wait"}),
                 ),
+                (
+                    "a4",
+                    "assign",
+                    json!({"name": "kid", "task": "x", "context": "fork", "model": "other"}),
+                ),
             ]),
             1 => assign("scout", "HELPER-TASK: again"),
             _ => Step::Text("done"),
@@ -497,12 +576,16 @@ async fn assign_refuses_a_bad_or_taken_name_saying_what_is_allowed() {
         "`main-ab12` is reserved for the workspace's agents",
         "the name `scout` is taken by another member",
         "call `assign` again",
+        "a fork runs on your own model",
     ] {
         assert!(all.contains(refusal), "{refusal}: {all}");
     }
+    assert!(all.contains("call `assign` again without `model`"), "{all}");
     let seated = members(&connection).await;
     assert!(
-        !seated.iter().any(|m| m == "main-ab12" || m == "Bad Name"),
+        !seated
+            .iter()
+            .any(|m| m == "main-ab12" || m == "Bad Name" || m == "kid"),
         "{seated:?}"
     );
     drop(connection);

@@ -12104,3 +12104,119 @@ and `peers`. It had been encouraged to use `fork_off`.
   follower sees a helper leave its mob (`HELPER_RETIRED`), and the
   workspace mob's members the client lists when it opens the mob's
   stream (`Msg::SeatedHelpers`). Tests in `ui::tests::helpers`.
+
+## One tool for every helper: fresh or fork, single-use or kept (owner decision, 2026-11-18)
+
+The owner objected to retiring every completed fork ("that's the role of
+assign - fork and spawn are supposed to remain") and decided: one tool,
+two independent choices, what a helper starts from and how long it
+stays. `assign` keeps its name (it already is the tool agents use, and a
+stored conversation's `assign` calls then need no mapping) and gains
+`context` (`"fresh"` default, `"fork"`) and `keep` (`false` default);
+`name` stays required (the parent addresses the helper by it, and the UI
+labels the helper from the call).
+
+**How a fork is started from our tool (engine 0.9.16 sources).** The
+engine's `fork_off` is `AgentMobToolSurface::dispatch_fork_off`
+(`meerkat-mob-mcp` `agent_tools.rs`): it resolves the caller from the
+surface's own `owner_bridge_session_id`, builds the child spec from the
+source's roster entry (role, override profile, model override,
+turn-driven), calls `MobHandle::fork_member_then_run_detached` with
+`DurableForkSourceAdmission::CallerTurn` (the fork of the caller's
+committed transcript, inside the caller's own turn) and a
+`ForkJobBinding`, and hands the run to `spawn_detached_completion_custodian`,
+which records `ForkJobTerminal` and delivers "Background fork_off job …
+finished". The custodian, `ForkOffCompletion` and the delivery route are
+crate-private: from the public API the fork itself could be made, but not
+its outcome's record and delivery, so a fork of our own would lose the
+restart re-delivery. So `assign` with `context: "fork"` dispatches a
+`fork_off` call (`{member_id: name, task}`) to the caller's own engine
+surface, with the `assign` call's id and dispatch context (objective,
+retained work): the fork is the engine's in every respect. The surface
+is reached through `ForkRoutes` (`src/daemon/deferral/mod.rs`): the
+daemon's mob tools factory wraps every member's surface (agents' and
+helpers') in `Routed`, which forwards every method and is noted by the
+session it was built for; the route holds only a weak reference, so the
+engine's `bind_ops_lifecycle` (which needs sole ownership,
+`Arc::strong_count == 1`) still binds it, and the bound surface is noted
+again. `fork_off` itself is denied by every member's tool policy; the
+surface reached this way is below the session's policy filter
+(`FilteredToolDispatcher`), so the forwarded call is not refused. The
+kind each call asks for goes to the customizer through the registry
+(`HelperRegistry::intend`, taken at the seat): a fork's seat carries only
+its source's labels. A helper at the depth limit has no mob tools (its
+mob category is off), so it has no route; it has no `assign` either.
+
+**The four, and what differs.** Fresh single-use is the earlier
+`assign`; fresh kept is what `spawn_member` seated (same spawn call,
+`auto_wire_parent`); a fork is the engine's. They share naming, wiring
+(the follower wires forks, as before), the gate, `NESTING_TOOLS`,
+`connect_helpers`, stop and retire. What stays different is the engine's:
+a fork runs on its caller's model (`model` with `context: "fork"` is
+refused, `FORK_MODEL_REFUSAL`), and a fork's first run is told by the
+engine's outcome, not by our note. `HelperKind` is
+`Started(HelperContext, HelperLife) | Other`, stored as one word
+(`fresh_single`, `fresh_kept`, `fork_single`, `fork_kept`); the words of
+earlier builds open as what they meant (`assigned`, `member`, and `fork`
+as a kept fork: 0.0.15 kept forks). The retire on `ForkJobTerminal`
+(previous entry) now applies to single-use forks only; a restored
+single-use fork whose outcome is on record (`MobHandle::fork_job_terminals`,
+read when the follower starts) is retired once idle. Not covered: a name
+reused for a second fork within one mob epoch whose own outcome was not
+recorded before a stop would be taken as done by the first's record.
+
+**Retiring a kept helper: `retire_member` refused, `retire_helper`
+added.** The rig showed the agent's `retire_member` of its kept fresh
+helper refused, `{"error":"access_denied","message":"Tool 'retire_member'
+is not allowed by policy"}`. The engine's per-member tools admit a member
+without manage scope only for a target in its spawn tree
+(`MobOperatorToolDispatcher::ensure_owned_member_scope`,
+`MobHandle::spawn_tree_owns` over the roster's `spawned_by`), and
+`SpawnMemberSpec::spawned_by` is `pub(crate)`, set only by `fork_off`
+("Set only by compositions that run inside the spawner's turn"): so a
+`spawn_member` helper of an earlier build was never retirable by its agent
+either, although the idle note said to retire it with `retire_member`.
+`retire_helper` (`name`, beside `assign` and `connect_helpers`, denied at
+the depth limit with them) retires one of the caller's own helpers (one
+level below it in its tree, `daemon::connect::own_helpers`), settled
+untold, through the mob host (force-cancel, retire). An upstream ask
+(a host-recorded spawner for a spawn made with an owner context) would
+let `retire_member` do it; not filed.
+
+**Restored single-use fork, the input it holds.** A single-use fork
+restored with its outcome on record was first not retired: the runtime
+held an unfinished input of it after the restore (the follower's probe
+answered queued, and no run took it within 30 s;
+`a single-use fork whose outcome is recorded is not idle yet … queued=true`).
+A restored fork is retired without asking the probe.
+
+**Not offered, one list.** `NOT_OFFERED` (`delegate`, `fork_off`,
+`spawn_member`, `spawn_many_members`, `send_request`, `send_response`) is
+in every member's tool policy (`customizer::tool_access_policy`: agents
+through `shape_root`, every helper fresh or rebuilt through `admit`, a
+member of a mob the agent created through the same customizer, a
+scheduled helper target through the creator policy; a fork inherits its
+source's resolved policy). The engine's policy filter refuses a call
+before any dispatch ("Tool 'x' is not allowed by policy", or "Tool not
+found" for a helper whose mob category is off), so the gate's dedicated
+branch (`ActionKind::Withdrawn`, `DELEGATE_UNAVAILABLE`,
+`PEER_REQUEST_UNAVAILABLE`) could not be reached and is gone, as are
+`DELEGATION_TOOLS` and the gated `fork_off` of agents
+(`with_gated_fork_off`, `DENIED_SPAWN_TOOLS`). The stored conversations'
+calls still show (`HelperKind::of_call`, the tool line rules).
+
+Pinned by `assign::{the_tools_not_offered_are_refused_before_the_gate,
+a_kept_helper_s_parent_is_told_each_time_it_goes_idle_and_it_stays_until_retired,
+assign_refuses_a_bad_or_taken_name_saying_what_is_allowed}` (the fork
+with a `model`), `agents::children_are_wired_to_their_parent` (all four),
+`forks::{a_restored_fork_is_wired_and_a_retired_one_is_not (kept),
+a_restored_single_use_fork_whose_outcome_was_recorded_is_retired}` and
+the other `forks::` tests (single-use), `connect::a_fork_and_a_kept_member_connected_talk_both_ways`
+(fork single-use with fresh kept), `approvals::{a_fork_runs_behind_the_gate,
+a_fork_s_outcome_arrives_later_in_the_transcript}`,
+`mobs::registry::tests::kinds_are_stored_as_words_and_earlier_words_still_open`,
+`mobs::endings::tests::a_fork_is_told_of_its_runs_after_the_first`,
+`daemon::assign::tests::the_answer_says_how_each_kind_ends`,
+`tools::assign::tests::the_tool_is_one_short_definition_that_asks_the_host`,
+`approval::policy::tests::the_tools_not_offered_are_denied_to_every_member`,
+`ui::tests::helpers::a_fork_s_line_says_idle_then_retired`, `tool_costs::`.

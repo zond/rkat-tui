@@ -39,15 +39,7 @@ async fn an_agent_cannot_seat_a_member_under_an_agents_name() {
     let ws = Workspace::new();
     let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
         if tool_results(messages).is_empty() {
-            Step::Tool {
-                id: "s1",
-                name: "spawn_member",
-                args: json!({
-                    "profile": "main",
-                    "member_id": "main-zz9z",
-                    "initial_message": "pretend to be an agent",
-                }),
-            }
+            common::keep("s1", "main-zz9z", "pretend to be an agent")
         } else {
             Step::Text("done")
         }
@@ -73,10 +65,9 @@ async fn an_agent_cannot_seat_a_member_under_an_agents_name() {
     daemon.stop().await;
 }
 
-/// A member the agent seats with the operator tool `spawn_member` and
-/// `auto_wire_parent` is wired to the agent both ways (so the two can
-/// message each other) and stays after its first turn until retired. The
-/// persona's hint says so.
+/// A kept helper the agent seats with `assign` (`keep: true`) is wired to
+/// the agent both ways (so the two can message each other) and stays after
+/// its first turn until retired.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_seated_with_auto_wire_parent_is_wired_to_the_agent() {
     let ws = Workspace::new();
@@ -87,16 +78,7 @@ async fn a_member_seated_with_auto_wire_parent_is_wired_to_the_agent() {
         if helper {
             Step::Text("helper idle")
         } else if tool_results(messages).is_empty() {
-            Step::Tool {
-                id: "s1",
-                name: "spawn_member",
-                args: json!({
-                    "profile": "main",
-                    "member_id": "scout",
-                    "initial_message": "HELPER-KICKOFF wait",
-                    "auto_wire_parent": true,
-                }),
-            }
+            common::keep("s1", "scout", "HELPER-KICKOFF wait")
         } else {
             Step::Text("done")
         }
@@ -1281,7 +1263,7 @@ async fn an_agent_cannot_recall_another_agents_input() {
 /// What a child's `peers` lists, by route, run as the agent's helpers
 /// would (`HELPER-TASK` marks the child's conversation). Returns the
 /// child's `peers` result.
-async fn child_peers(route: &'static str) -> (String, String) {
+async fn child_peers(route: (&'static str, bool)) -> (String, String) {
     let ws = Workspace::new();
     let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
         let child = messages
@@ -1304,33 +1286,11 @@ async fn child_peers(route: &'static str) -> (String, String) {
         if !results.is_empty() {
             return Step::Text("parent done");
         }
-        match route {
-            "assign" => Step::Tool {
-                id: "r1",
-                name: "assign",
-                args: json!({"name": "kid", "task": "HELPER-TASK list your peers"}),
-            },
-            "spawn_member" => Step::Tool {
-                id: "r1",
-                name: "spawn_member",
-                args: json!({
-                    "profile": "main",
-                    "member_id": "kid",
-                    "initial_message": "HELPER-TASK list your peers",
-                }),
-            },
-            _ => Step::Tool {
-                id: "r1",
-                name: "fork_off",
-                args: json!({"member_id": "kid", "task": "HELPER-TASK list your peers"}),
-            },
-        }
+        let (context, keep) = route;
+        common::start("r1", "kid", "HELPER-TASK list your peers", context, keep)
     }));
     let llm = ScriptedLlmClient::new(vec![step; 10]);
     let daemon = Running::start(&ws.root, &llm).await;
-    if route == "fork_off" {
-        daemon.reveal(&daemon.session, &["fork_off"]).await;
-    }
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "start a child").await;
     let peers = common::poll(async || {
@@ -1346,20 +1306,39 @@ async fn child_peers(route: &'static str) -> (String, String) {
     })
     .await;
     let agent = daemon.agent.clone();
+    if route.0 == "fork" {
+        // The fork's outcome run ends before the stop (lukacf/meerkat#2374).
+        common::until(|| {
+            llm.requests().iter().any(|messages| {
+                messages.iter().any(|m| {
+                    !matches!(m, Message::ToolResults { .. })
+                        && format!("{m:?}").contains("Background fork_off job")
+                })
+            })
+        })
+        .await;
+        daemon.idle(&agent).await;
+    }
     drop(connection);
     daemon.stop().await;
     (peers, agent)
 }
 
-/// Every child an agent starts is wired to it without being asked: its
-/// `peers` names the agent, from its first call. A `fork_off` child too:
-/// the engine seats it without a trust edge, the daemon wires it once it is
-/// seated, and its first call waits for that edge (`forks` has the rest).
+/// Every child an agent starts is wired to it without being asked, the
+/// same for each of `assign`'s four ways: its `peers` names the agent,
+/// from its first call. A fork too: the engine seats it without a trust
+/// edge, the daemon wires it once it is seated, and its first call waits
+/// for that edge (`forks` has the rest).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn children_are_wired_to_their_parent() {
-    for route in ["assign", "spawn_member", "fork_off"] {
+    for route in [
+        ("fresh", false),
+        ("fresh", true),
+        ("fork", false),
+        ("fork", true),
+    ] {
         let (peers, agent) = child_peers(route).await;
-        assert!(peers.contains(&agent), "{route}: {peers}");
+        assert!(peers.contains(&agent), "{route:?}: {peers}");
     }
 }
 
@@ -1383,15 +1362,7 @@ async fn a_parent_messages_its_child_like_a_peer() {
             })
         };
         if !answered("r1") {
-            Step::Tool {
-                id: "r1",
-                name: "spawn_member",
-                args: json!({
-                    "profile": "main",
-                    "member_id": "kid",
-                    "initial_message": "HELPER-TASK wait for word",
-                }),
-            }
+            common::keep("r1", "kid", "HELPER-TASK wait for word")
         } else if !answered("p1") {
             Step::Tool {
                 id: "p1",

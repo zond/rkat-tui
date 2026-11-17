@@ -25,8 +25,7 @@
 use meerkat_core::ToolSourceKind;
 use rkat_tui::approval::catalog::ToolOrigin;
 use rkat_tui::approval::policy::{
-    Action, DELEGATION_TOOLS, PolicyContext, READ_ONLY_BUILTINS, REVIEWED_BUILTINS, Tier,
-    TierDecision, classify_tier,
+    Action, PolicyContext, READ_ONLY_BUILTINS, REVIEWED_BUILTINS, Tier, TierDecision, classify_tier,
 };
 use rkat_tui::approval::policy::{SHELL_JOB_TOOLS, TUI_OWNED_BUILTINS};
 use rkat_tui::approval::rules::{Rule, RuleKind, RuleOrigin, RuleSet};
@@ -105,11 +104,12 @@ fn origin(name: &str) -> ToolOrigin {
         ToolOrigin::tui(FILE_TOOLS_SOURCE, name)
     } else if NOTE_TOOL_NAMES.contains(&name) {
         ToolOrigin::tui(NOTES_SOURCE, name)
+    } else if name == rkat_tui::tools::ASSIGN {
+        ToolOrigin::tui(rkat_tui::tools::ASSIGN_TOOLS_SOURCE, name)
     } else if READ_ONLY_BUILTINS.contains(&name)
         || REVIEWED_BUILTINS.contains(&name)
         || TUI_OWNED_BUILTINS.contains(&name)
         || SHELL_JOB_TOOLS.contains(&name)
-        || DELEGATION_TOOLS.contains(&name)
         || name.starts_with("mob_")
     {
         ToolOrigin::native(ToolSourceKind::Builtin)
@@ -560,7 +560,11 @@ fn an_mcp_tool_named_like_a_builtin_is_not_trusted_like_one() {
         ),
         ("glob", json!({"pattern": "**/*.rs"}), Tier::AlwaysAllow),
         ("task_list", json!({}), Tier::AlwaysAllow),
-        ("fork_off", json!({"task": "x"}), Tier::AlwaysAllow),
+        (
+            "assign",
+            json!({"name": "x", "task": "x"}),
+            Tier::AlwaysAllow,
+        ),
         ("shell", json!({"command": "ls"}), Tier::AlwaysAllow),
         (
             "note_save",
@@ -580,18 +584,4 @@ fn an_mcp_tool_named_like_a_builtin_is_not_trusted_like_one() {
             "{name} the session does not offer"
         );
     }
-    // The engine's withdrawn `delegate` is unavailable, also unoffered; an
-    // MCP server's tool of the name is reviewed as any other of its tools.
-    let args = json!({"task": "x"});
-    let native = ToolOrigin::native(ToolSourceKind::Mob);
-    for origin in [Some(&native), None] {
-        assert_eq!(
-            h.decide_from("delegate", &args, origin).tier,
-            Tier::Unavailable
-        );
-    }
-    assert_eq!(
-        h.decide_from("delegate", &args, Some(&mcp)).tier,
-        Tier::Classifier
-    );
 }

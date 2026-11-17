@@ -106,7 +106,7 @@ async fn follow(
     // Tests: the fork's wire is made as its spawn is announced, before it
     // is seated (what a slow spawn does to the normal order).
     #[cfg(any(test, feature = "test-support"))]
-    let wiring_early = tag.kind == super::HelperKind::Fork && registry.wires_forks_early();
+    let wiring_early = tag.kind.is_fork() && registry.wires_forks_early();
     #[cfg(not(any(test, feature = "test-support")))]
     let wiring_early = false;
     if wiring_early {
@@ -129,7 +129,7 @@ async fn follow(
             // A fresh fork, and one restored (the mob keeps the edge
             // across a restart; one it lost is made again): wired once it
             // is seated, off this task, which reads its events meanwhile.
-            if tag.kind == super::HelperKind::Fork && !wiring_early {
+            if tag.kind.is_fork() && !wiring_early {
                 tokio::spawn(wire_fork(
                     Weak::clone(&state),
                     Arc::clone(&registry),
@@ -137,6 +137,15 @@ async fn follow(
                     tag.clone(),
                     wired.take(),
                 ));
+            }
+            // A single-use fork restored after a restart whose outcome the
+            // engine recorded before the stop is done: retired once idle.
+            if tag.kind.is_fork() && tag.kind.life() == Some(super::HelperLife::Single) {
+                let recorded = outcome_on_record(&handle, &key.member).await;
+                tracing::debug!(helper = %key, recorded, "a single-use fork followed: its outcome on record");
+                if recorded {
+                    registry.endings().fork_outcome_recorded(&key, true);
+                }
             }
             // Nothing else waits for an edge (dropped on any other path).
             drop(wired);
@@ -188,7 +197,7 @@ async fn follow(
                     }
                     event = recv(&mut mob_events) => match event.map(|event| {
                         if outcome_recorded(&event.kind, &key.member) {
-                            registry.endings().fork_outcome_recorded(&key);
+                            registry.endings().fork_outcome_recorded(&key, false);
                         }
                         left(&event.kind, &key.member)
                     }) {
@@ -423,6 +432,21 @@ fn outcome_recorded(kind: &MobEventKind, identity: &AgentIdentity) -> bool {
     matches!(kind, MobEventKind::ForkJobTerminal(terminal)
         if &terminal.child == identity
             && terminal.status == meerkat_core::event::BackgroundJobTerminalStatus::Completed)
+}
+
+/// Whether `handle`'s mob holds a completed `fork_off` outcome of the fork
+/// `identity` (its `ForkJobTerminal` ledger of the current epoch).
+async fn outcome_on_record(handle: &MobHandle, identity: &AgentIdentity) -> bool {
+    match handle.fork_job_terminals().await {
+        Ok(terminals) => terminals.iter().any(|terminal| {
+            &terminal.child == identity
+                && terminal.status == meerkat_core::event::BackgroundJobTerminalStatus::Completed
+        }),
+        Err(err) => {
+            tracing::debug!(helper = %identity, error = %err, "cannot read the mob's fork outcomes");
+            false
+        }
+    }
 }
 
 /// Whether `identity` left `handle`'s mob for good: the mob still runs and

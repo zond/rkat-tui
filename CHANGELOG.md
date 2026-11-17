@@ -17,14 +17,47 @@
   file changes and are messaged only to give them work or to answer them,
   and that a message to an idle helper starts a model turn of it.
 - A completed `fork_off` child stayed seated, idle and wakeable, so a
-  long session piled them up. A fork now runs one task: once the engine
-  has recorded its outcome for its parent, the daemon retires it (after
-  one more run when its parent's message was waiting for it, told as an
-  `assign` helper's ending). A message to it afterwards is refused saying
-  it finished and was retired. Forks an earlier build kept seated stay
-  until they are retired.
+  long session piled them up. A fork is now single-use unless asked to be
+  kept (`assign` with `context: "fork"`, below): once the engine has
+  recorded its outcome for its parent, the daemon retires it (after one
+  more run when its parent's message was waiting for it, told as a
+  single-use helper's ending), also when the daemon restores it after a
+  stop that came before its retire. A message to it afterwards is refused
+  saying it finished and was retired. Forks an earlier build kept seated
+  are kept forks and stay until they are retired.
+
+- An agent could not retire a helper it kept: the engine's
+  `retire_member` lets a member retire only the members its own
+  `fork_off` seated, so a `spawn_member` helper's retire was refused ("not
+  allowed by policy") while the idle note told the agent to use it. The
+  new `retire_helper` (`name`) retires any helper the caller started, and
+  the notes and instructions name it.
 
 ### Changed
+
+- One tool starts every helper: `assign` gains two choices, `context`
+  (`"fresh"`, the default: the task is all it knows; `"fork"`: it goes on
+  from a copy of the caller's conversation, on the caller's model) and
+  `keep` (`false`, the default: told when it finishes, with its answer,
+  then retired; `true`: told each time it goes idle, seated until
+  `retire_helper`). All four ways are named, wired to the parent, told,
+  listed, limited in depth, gated and restored the same way. A fork with
+  a `model` is refused, saying to leave `model` out or start a fresh
+  helper. The engine's `fork_off`, `spawn_member` and `spawn_many_members`
+  are no longer offered to agents or helpers (a fork is still the engine's
+  own, started through its `fork_off`). `mob_create` and
+  `mob_spawn_member` are unchanged, for teams in mobs of their own.
+- The engine tools rkat-tui does not offer (`delegate`, `fork_off`,
+  `spawn_member`, `spawn_many_members`, `send_request`, `send_response`)
+  are one list, denied in every member's tool policy; the engine refuses a
+  call of one before the gate, so the gate's own refusal texts for
+  `delegate` and the peer request tools are gone.
+- Helpers are shown by their two choices everywhere: the panel, the
+  transcript header, `/helpers`, the full view's title and `/export` say
+  `fresh · single-use`, `fresh · kept`, `fork · single-use` or
+  `fork · kept`. A conversation stored by an earlier build shows its
+  `assign` helpers as fresh single-use, its `spawn_member` ones as fresh
+  kept and its `fork_off` children as kept forks.
 
 - Announcing file changes to the workspace's other agents: only to the
   agents shown working, once when a task starts and once when it is done,
@@ -34,7 +67,7 @@
   another run of it, so to message it only with more work and to retire
   it when done.
 - `/helpers` lists the live helpers only (running, or seated and idle),
-  each with its kind (`assigned`, `fork`, `spawned member`) and state; `a`
+  each with its kind (`fresh · single-use` and the like) and state; `a`
   shows the ended ones too (finished, retired, failed, stopped), dim,
   after them, and the hint counts them (`a: show 14 ended`). With only
   ended ones it says `no live helpers; a shows N ended`. Whether a helper
@@ -42,7 +75,7 @@
   was retired, and the mob's members on attach), not from its run's end.
   `/helpers list` lists the live ones and counts the ended ones; `/helpers
   list all` lists all.
-- A kept member or a fork whose run ended says `idle` (was `done`) until
+- A kept helper whose run ended says `idle` (was `done`) until
   it is retired; one that a message wakes again stays in the panel under
   the input until the next turn starts, as a new helper does.
 

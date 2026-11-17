@@ -1,7 +1,7 @@
 //! The `delegate` helpers a realm of an earlier build holds.
 //!
-//! `delegate`, the engine's tool, is withdrawn
-//! ([`crate::approval::policy::WITHDRAWN_TOOLS`]; `assign` replaces it), so
+//! `delegate`, the engine's tool, is not offered
+//! ([`crate::approval::policy::NOT_OFFERED`]; `assign` replaces it), so
 //! no helper of it is seated any more. A realm an earlier build wrote may
 //! still hold one: a member of its caller's implicit mob
 //! (`implicit-<session>`), seated by the mob's `delegate` profile, bound to its

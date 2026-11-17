@@ -330,8 +330,8 @@ async fn a_helper_of_the_stored_main_profile_runs_on_the_agent_s_model() {
     let llm = calls_gated(
         vec![(
             "s1",
-            "spawn_member",
-            json!({"profile": "main", "member_id": "scout", "initial_message": TASK}),
+            "assign",
+            json!({"name": "scout", "task": TASK, "keep": true}),
         )],
         Some(Arc::clone(&gate)),
     );
@@ -352,7 +352,7 @@ async fn a_helper_of_the_stored_main_profile_runs_on_the_agent_s_model() {
     .await;
     assert_eq!(ran, [OPUS]);
     // The client's helper view names it, and never the start-up model.
-    // `spawn_member` does not hold the agent's turn, so its end may show
+    // `assign` does not hold the agent's turn, so its end may show
     // before the view: both are waited for as seen or arriving.
     rig.saw(|m| matches!(m, Msg::Status(StatusUpdate::Helpers(h)) if h.len() == 1 && h[0].model == OPUS))
         .await;
@@ -375,7 +375,7 @@ async fn a_helper_of_the_stored_main_profile_runs_on_the_agent_s_model() {
     rig.quit().await;
 }
 
-/// A `fork_off` child continues its parent's conversation on the parent's
+/// A fork (`assign` with `context: "fork"`) continues its parent's conversation on the parent's
 /// model as it is now, after a `/model` switch, and `helpers.model` does
 /// not move it (the engine copies the agent's spawn-time profile to the
 /// child, whose model is the start-up one).
@@ -384,12 +384,11 @@ async fn a_fork_runs_on_its_parent_s_current_model() {
     let ws = Workspace::new();
     let llm = calls(vec![(
         "f1",
-        "fork_off",
-        json!({"member_id": "kid", "task": TASK}),
+        "assign",
+        json!({"name": "kid", "task": TASK, "context": "fork"}),
     )]);
     let setup = Setup::args(&["--set", &format!("helpers.model={HAIKU}")]);
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
-    rig.daemon.reveal(&rig.daemon.session, &["fork_off"]).await;
     rig.send(Effect::SetModel(format!("anthropic:{OPUS}")));
     rig.wait_for(|m| matches!(m, Msg::Status(StatusUpdate::Model { model, .. }) if model == OPUS))
         .await;

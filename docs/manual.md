@@ -274,11 +274,11 @@ daemon starts, its calls that would ask you are asked while a client is
 attached to the agent, and denied (and told at your next attach) while
 none is.
 
-Helpers have checkpoints too (`assign`, `spawn_member` and `fork_off`
-helpers), with the line naming the helper (`helper `scout`: checkpoint
-after 100 steps: …`). A stopped `assign` helper's parent is told why,
-with the helper's status as its answer, and the helper is retired; a kept
-member's parent is told and the member stays seated, idle. Nothing of a
+Helpers have checkpoints too (every kind `assign` starts), with the line
+naming the helper (`helper `scout`: checkpoint after 100 steps: …`). A
+stopped single-use helper's parent is told why, with the helper's status
+as its answer, and the helper is retired; a kept helper's parent is told
+and the helper stays seated, idle. Nothing of a
 checkpoint is stored: a daemon stop during one leaves the agent idle at
 the next start, its run ended at the checkpoint; say "continue" to go
 on. `agent.checkpoint_steps` applies to the conversations and helpers
@@ -297,7 +297,7 @@ resumed sessions and helpers carry it too. First match wins:
 | Tier | What | Review |
 |---|---|---|
 | 0 | A user **deny** rule matches, or `write_file` / `edit_file` / the engine's `blob_save_file` (or any target of a patch) is a **sealed** path: the project's `.rkat/` (its `tui.toml`, `mcp.toml`, hooks), every `.rkat` and every `.git` inside it, and, wherever they lie, the git directories governing the project (an enclosing repository's `.git` when the workspace is a subdirectory, a worktree's git dir and the common dir its `commondir` names, with the hooks), the realm directory (the workspace's state directory: `config.toml`, approvals, `tui.toml`, sessions, the audit log) and the user config directory (`~/.rkat/tui`: global rules, trust records). On a file system that resolves names ignoring case (macOS's default), every spelling counts: `.RKAT/` is the real `.rkat/` there and is sealed as well; on a case-sensitive one it is an ordinary directory. Neither the classifier nor an allow rule opens a sealed path, and reading one is not sealed (except the daemon's endpoint directories, below); a shell command that writes there is still judged by the classifier. The engine's own file tools refuse the same state again by themselves (Meerkat 0.9.12): any `.rkat` in the workspace, and the realm, the config directory, the user config document and the credential store when the command line puts them inside the workspace. The directories that hold the daemon's endpoint file and its attach token (`$XDG_STATE_HOME/rkat-tui/`, else `~/.local/state/rkat-tui/`, and `$XDG_RUNTIME_DIR/rkat-tui/`) are sealed for reads and searches too: `read_file`, `grep` and `glob` never open them, and a search above them skips them; so is the realm directory | denied |
-| 1 | Read-only tools (`read_file`, `glob`, `grep` inside the project, the agent's [scratch directory](#the-scratch-directory), or a directory you named with `--confinement-write`/`--confinement-read`, task tools, `memory_search`, `note_list`/`note_read`, `blob_inspect`, skill browsing, read-only `mob_*` queries, `assign`, `fork_off`), read-only shell commands (`cat`, `ls`, `rg`, `git status/diff/log`, `cargo check/test` when builds are trusted, …; their output redirected into the scratch directory, and a leading `TMPDIR=<scratch directory>`), narrow user **allow** rules | allowed |
+| 1 | Read-only tools (`read_file`, `glob`, `grep` inside the project, the agent's [scratch directory](#the-scratch-directory), or a directory you named with `--confinement-write`/`--confinement-read`, task tools, `memory_search`, `note_list`/`note_read`, `blob_inspect`, skill browsing, read-only `mob_*` queries, `assign` in each of its four ways), read-only shell commands (`cat`, `ls`, `rg`, `git status/diff/log`, `cargo check/test` when builds are trusted, …; their output redirected into the scratch directory, and a leading `TMPDIR=<scratch directory>`), narrow user **allow** rules | allowed |
 | 2 | `write_file` / `edit_file` / `blob_save_file` where every target is inside the project, the agent's scratch directory, or a directory you named with `--confinement-write` or `[confinement] extra_write`, and not protected (`.rkat/`, `.git/` and any `.git` file, `.env*`, …, matched inside a named directory as inside the project); workspace notes | allowed (manual mode asks you) |
 | ask | `write_file` / `edit_file` / `blob_save_file` (or any target of a patch) is a **protected** path in the project (or in a directory you granted). Two kinds. What **runs later or widens access**: `.envrc`, `.cargo/`, `rust-toolchain*`, `.claude/`, `.cursor/`, `.codex/`, `.gemini/`, `.mcp.json`, `.gitmodules`, `.gitattributes`, `tui.toml`, `.vscode/`, `.idea/`, shell profiles (`.bashrc`, `.zshrc`, `.profile`, …): never the classifier, the dialog names each path and what it is (`protected path: .envrc (secrets); the policy always asks for these`). What is protected for its **content**: `.env*`, `build.rs`, `AGENTS.md`, `CLAUDE.md`: in auto mode the classifier reviews it (rule S6, instruction poisoning, and the credential rules) and you are asked when it blocks; the other modes ask. A user allow rule for the path (what the dialog's "allow and add a rule" adds) allows it, a deny rule denies it | asks you (content: the classifier in auto mode) |
 | 3 | Everything else: other shell commands, MCP tools, web search, comms sends, mutating mob tools, out-of-project paths, user-level notes | classifier (manual and accept-edits modes ask you) |
@@ -1262,21 +1262,35 @@ neither hang nor take a helper's whole time:
 
 The agent can hand work to helper agents (Meerkat mobs: each helper is a
 mob member), and none of them blocks it: while a helper works the agent
-still hears you and answers. It starts one in one of three ways:
+still hears you and answers. One tool starts every helper, `assign`, with
+two choices that do not depend on each other:
 
-- **`assign`** for a self-contained task: a single-use helper that starts
-  from a fresh context (the task is all it knows), runs alongside the
-  agent, and whose answer reaches the agent in a note when it finishes;
-  it is retired then.
-- **`fork_off`** when the task needs the conversation so far: a fork of
-  the agent's conversation on the task. Its outcome reaches the agent when
-  its first run ends.
-- **`spawn_member`** for a helper the agent keeps and talks to: it stays
-  seated after its task, the agent is told each time it goes idle, and the
-  agent retires it with `retire_member` when done (`mob_create` and
-  `mob_spawn_member` make teams in mobs of their own the same way).
+| | single-use (`keep: false`, the default) | kept (`keep: true`) |
+|---|---|---|
+| **fresh** (`context: "fresh"`, the default): the task is all it knows | `fresh · single-use`: told when it finishes, with its answer; then retired | `fresh · kept`: told each time it goes idle, with its answer; seated until `retire_helper` |
+| **fork** (`context: "fork"`): goes on from a copy of the agent's conversation, on the agent's model | `fork · single-use`: its outcome reaches the agent when its first run ends; then retired | `fork · kept`: its outcome reaches the agent when its first run ends; each later run is told as it goes idle; seated until `retire_helper` |
 
-Every one is wired to the agent both ways: each sees the other in `peers`
+What each costs: a fork carries the whole conversation on every one of its
+model calls (costly in a long one), and a fresh helper knows only what its
+task says, so the task must carry what it needs. A kept helper costs
+nothing while idle, but every message to it starts a run of it (and its
+answer one of the agent's), so it is for several rounds of work with the
+same helper; single-use is the default because left-over idle helpers cost
+attention. `mob_create` and `mob_spawn_member` make teams in mobs of their
+own (their members are kept fresh helpers); the engine's `fork_off`,
+`spawn_member` and `spawn_many_members` are not offered (a fork is the
+engine's own all the same: `assign` starts it through the engine's
+`fork_off`).
+
+`retire_helper` (`name`) retires one of the agent's own helpers of any
+kind (its run is cancelled; nobody is told, the agent asked). The
+engine's `retire_member` cannot: it lets a member retire only the
+members its own `fork_off` seated.
+
+All four are the same in everything else: named the same way, wired to
+the agent, told and listed (by their two words, below), limited in depth,
+gated, stopped, retired and restored the same way. Every one is wired to
+the agent both ways: each sees the other in `peers`
 and either can `send_message` the other at any time. A helper runs with the
 TUI's file tools and a helper persona, on the model the rules below give it
 (**Helper models**), through the session's endpoint, never the model's
@@ -1292,34 +1306,43 @@ a helper to run it and report (long-lived processes such as servers are not
 possible yet).
 
 The engine's `delegate`, which blocked the agent until its helper was done
-(it heard no one meanwhile), is not offered: no agent or helper has it, and
-a call of it is refused. A conversation of an earlier rkat-tui that used it
-still opens and shows its `delegate` calls and helpers as they were; a
-`delegate` helper such a daemon left running is run on at the next start,
-and its answer comes to the agent as a note.
+(it heard no one meanwhile), is not offered either: no agent or helper has
+it, and the engine refuses a call of it ("not allowed by policy"). A
+conversation of an earlier rkat-tui still opens and shows its `delegate`,
+`fork_off` and `spawn_member` calls and helpers (a `fork_off` child as a
+kept fork, a `spawn_member` helper as a kept fresh one); a `delegate`
+helper such a daemon left running is run on at the next start, and its
+answer comes to the agent as a note.
 
 **`assign`.** The agent (and a helper that may start helpers) starts a
-single-use helper with `assign` (`name`, `task`, optionally `model`): the
-call returns at once (`Helper scout is running …`) and the agent goes on,
-hearing you and answering while the helper works. The helper starts from a
-fresh context (the task is all it knows), is seated in the agent's own mob
-beside it and wired to it both ways: each sees the other in `peers`, and
-either can `send_message` the other at any time (a message to an idle one
-starts a run for it). When its run ends and nothing is queued for it, its
-parent is told at once with its answer (`Your helper scout finished its
-task. …`, cut at 4 000 characters as above) and it is retired. A message
-from its parent that it has not read yet when its run ends makes it go on
-instead. The transcript shows the call as one line, `assign scout: <task>`.
-A name is 1 to 32 lowercase letters, digits and `-`, not an agent's name
-and not one in use in the mob; anything else is refused with what to do.
+helper with `assign` (`name`, `task`, optionally `context`, `keep` and
+`model`): the call returns at once (`Helper scout is running …`) and the
+agent goes on, hearing you and answering while the helper works. The
+helper is seated in the agent's own mob beside it and wired to it both
+ways: each sees the other in `peers`, and either can `send_message` the
+other at any time (a message to an idle one starts a run for it). A
+single-use helper's parent is told at once, when its run ends and nothing
+is queued for it, with its answer (`Your helper scout finished its task.
+…`, cut at 4 000 characters as above), and it is retired. A message from
+its parent that it has not read yet when its run ends makes it go on
+instead. A fork's first run is told by the engine's own note
+("Background fork_off job … finished", with its answer); a single-use fork
+is retired once the engine recorded that outcome. A fork runs on the
+agent's model: `context: "fork"` with a `model` is refused, saying to
+leave `model` out or start a fresh helper. The transcript shows the call
+as one line, `assign scout: <task>` (`assign (kept)`, `fork`, `fork
+(kept)` for the other three). A name is 1 to 32 lowercase letters, digits
+and `-`, not an agent's name and not one in use in the mob; anything else
+is refused with what to do.
 
-**When a kept helper goes idle.** A helper started with `spawn_member` or
-`mob_spawn_member` stays seated after its task. Each time a run of it ends
+**When a kept helper goes idle.** A kept helper (`keep: true`, or a member
+of a mob the agent created with `mob_spawn_member`) stays seated after its
+task. Each time a run of it ends
 and nothing is queued for it, its parent is told once, with its last
 message (`Your helper w1 went idle. …`), delivered as the endings are; it is
 not retired, and the note says that a message to it starts another run of
 it, so to message it only with more work and to retire it with
-`retire_member` when done. No note comes when it starts (the spawn's result says so) or
+`retire_helper` when done. No note comes when it starts (the spawn's result says so) or
 when it becomes active (its parent or a peer made it so), and none when the
 run's last call was a message to its parent (the parent has its last word).
 A run an idle note starts for the agent is labelled `a helper went idle`.
@@ -1421,7 +1444,7 @@ message an agent or helper sent it under `✉ from agent <sender>`, any
 other input under `message`), its prose (markdown, its last one being
 its answer), its reasoning (one line), its tool calls as lines (Ctrl-O
 shows all of them and the reasoning in full) and notes,
-and the headers of helpers it spawned. A `fork_off` child opens with the
+and the headers of helpers it spawned. A fork opens with the
 dim line `forked from <agent> with its conversation so far` and then its
 own task: the conversation it inherited is not shown again. The task
 comes from the helper's own run start, so a helper whose start the TUI
@@ -1433,13 +1456,16 @@ the transcript at once (Ctrl-C asks whether to stop a running helper, see
 above), a second Esc drops the selection.
 
 The transcript keeps each helper's header where it was spawned, as the
-record: `▸ [scout · model] done · 7 tool calls`. A click on it unfolds the
+record: `▸ [scout · model] fresh · single-use · done · 7 tool calls` (the
+kind when the call that started it was seen; the panel under the input
+shows it too). A click on it unfolds the
 helper's blocks in place (indented, tool output still collapsed), and
 `/helpers` (or `/tasks`) opens a list of this conversation's live helpers:
 the ones running, and the ones seated and idle that a message would reach
-(a `spawn_member` helper, or a fork not yet retired). Each row is as its
-header shows it, with its kind: label, model, kind (`assigned`, `fork`,
-`spawned member`), state (`running`, `idle`, or how it ended), calls and
+(a kept helper, or a single-use one not yet retired). Each row is as its
+header shows it, with its kind: label, model, kind (`fresh · single-use`,
+`fresh · kept`, `fork · single-use`, `fork · kept`; `delegate` for an
+earlier build's), state (`running`, `idle`, or how it ended), calls and
 tokens; nested ones are indented under their parent. The helpers that
 ended (finished, retired, failed, stopped, ended with the daemon) are left
 out; the hint line counts them (`a: show 14 ended`), and `a` lists them
@@ -1477,7 +1503,7 @@ levels: a helper at the limit gets no `assign`, `mob_create`,
 by its tool access policy), and a deeper spawn is refused.
 
 **Helper models.** A helper's model never comes from a stored profile. For
-every helper started with `assign`, `spawn_member` or `mob_spawn_member`
+every fresh helper started with `assign` or `mob_spawn_member`
 (into any mob, by a profile's name, an inline profile or nothing), it is,
 in this order:
 
@@ -1491,7 +1517,7 @@ profile of a mob the agent made with `mob_create`) still gives everything
 else it defines (tools, instructions and the rest), but its model, its
 provider and server, and its fallback chain are replaced: the workspace's
 mob keeps the `main` profile of its first start, on the model of that day,
-and a profile the agent wrote may name any model. A `fork_off` child is
+and a profile the agent wrote may name any model. A fork is
 the one exception: it continues its parent's conversation, so it stays on
 its parent's current model, and neither `helpers.model` nor the lists
 below apply to it. Whatever the
@@ -1506,7 +1532,7 @@ refused, and so is a `helpers.model` naming one).
 
 `helpers.allow_models` or `helpers.deny_models` (at most one of the two,
 over your own and the workspace's file and the command line) limits the
-models those helpers (`assign`, `spawn_member`, `mob_spawn_member`) may run
+models those helpers (`assign`'s fresh ones, `mob_spawn_member`) may run
 on. Each is a list of patterns: an exact model name
 or a prefix ending in one `*` (`"claude-haiku-*"`); a `*` anywhere else, an
 empty entry, whitespace, an empty list or `*` alone is refused naming the
@@ -1539,31 +1565,33 @@ ignored), and, when one of the three is set, the default and which models
 are permitted; every live agent is told of a change. The classifier's model (`auto.classifier_model`) is separate
 and unaffected.
 
-The agent forks itself with the engine's `fork_off`: the child starts
-from the conversation so far, works on the task it is given, runs behind
-the same gate as every helper and shows as one (see [The workspace daemon](#the-workspace-daemon)).
-The `fork_off` call returns at once while the child works in the
-background, and when the child's first run ends its outcome is written
+The agent forks itself with `assign` and `context: "fork"`, which starts
+the fork through the engine's own `fork_off`: the child starts from the
+conversation so far (its committed part), works on the task it is given,
+runs behind the same gate as every helper and shows as one (see [The
+workspace daemon](#the-workspace-daemon)). The call returns at once while
+the child works in the background, and when the child's first run ends
+its outcome is written
 into the agent's transcript ("Background fork_off job … finished"): at
 the agent's next model call if it is mid-turn, else in a turn of its
 own. The engine seats a fork wired to no one; the daemon wires it to the
 agent (or helper) that forked it as soon as it is seated, and its tool
 calls wait for that edge, so the two can message each other while it
 runs (the parent's message to its fork is a peer message, not reviewed).
-A fork runs one task: once the engine has recorded its completed first
-run's outcome for the parent (the record the outcome is delivered from,
-across a restart too), the daemon retires it, as an `assign` helper is
-retired when it finishes (the engine's own `fork_off` description says a
-finished child stays seated; here it does not, and the agents'
-instructions say so). Nothing more is told: the outcome is the news. A
-message the parent sent that the fork had not read when its first run
-ended starts one more run; when that ends the parent is told as for an
-`assign` helper ("Your helper `kid` finished its task. … It is
-retired"), and the fork is retired then. A message to a retired fork is
-refused, saying it finished and was retired. A fork that an earlier
-build kept seated after its outcome stays seated, across restarts too,
-until it is retired; a later run of it is told as for a member kept with
-`spawn_member` ("Your helper `kid` went idle …"). A fork still in its
+A single-use fork runs one task: once the engine has recorded its
+completed first run's outcome for the parent (the record the outcome is
+delivered from, across a restart too), the daemon retires it, as a fresh
+single-use helper is retired when it finishes; one the daemon stopped
+before retiring it is retired at the next start. Nothing more is told:
+the outcome is the news. A message the parent sent that the fork had not
+read when its first run ended starts one more run; when that ends the
+parent is told as for a fresh single-use helper ("Your helper `kid`
+finished its task. … It is retired"), and the fork is retired then. A
+message to a retired fork is refused, saying it finished and was retired.
+A kept fork (`keep: true`), and a fork that an earlier build kept seated
+after its outcome, stays seated, across restarts too, until it is
+retired; a later run of it is told as for a kept helper ("Your helper
+`kid` went idle …"). A fork still in its
 first run when the daemon
 stops does not survive the stop: the engine counts the stopped run as
 failed and retires the fork, and after the next start the parent is told
@@ -1777,9 +1805,9 @@ it may only lower a value, its lowering applies over every layer).
 | `auto.compact_prepare`: What every agent is asked to do before an automatic compaction (empty: none here). | text (at most 2000 characters) | none | may set it (the command line wins) | at once | `/compact prepare <text>\|off\|default` |
 | `auto.compact_prepare_at`: Where the agents are asked to prepare: tokens, or a share of the window. | tokens (`300000`, `300k`, `1.2m`) or a share of the window (`"65%"`) | 70% | may set it (the command line wins) | at once | `/compact prepare at <threshold>\|default` |
 | `helpers.max_depth`: How many levels of helpers a session may have (0: none). | a whole number from 0 to 255 | 1 | may only lower it | at the next start | — |
-| `helpers.model`: The model a helper started with `assign`, `spawn_member` or `mob_spawn_member` runs on when the call names none (through its owner's endpoint); a `fork_off` child stays on its parent's. | a model, `[endpoint:]model` | the owner's model | may not set it | at once | — |
-| `helpers.allow_models`: The only models a helper started with `assign`, `spawn_member` or `mob_spawn_member` may run on (not with `deny_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: any model | may not set it | at once | — |
-| `helpers.deny_models`: Models a helper started with `assign`, `spawn_member` or `mob_spawn_member` may not run on (not with `allow_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: none | may not set it | at once | — |
+| `helpers.model`: The model a fresh helper started with `assign` or `mob_spawn_member` runs on when the call names none (through its owner's endpoint); a fork stays on its parent's. | a model, `[endpoint:]model` | the owner's model | may not set it | at once | — |
+| `helpers.allow_models`: The only models a fresh helper started with `assign` or `mob_spawn_member` may run on (not with `deny_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: any model | may not set it | at once | — |
+| `helpers.deny_models`: Models a fresh helper started with `assign` or `mob_spawn_member` may not run on (not with `allow_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: none | may not set it | at once | — |
 | `agent.checkpoint_steps`: The model calls one run of an agent or a helper makes before a checkpoint: it is asked for a short status, the classifier's model judges whether going on is sensible, and it continues or stops (the conversations and helpers started from then on). | a whole number from 10 to 100000 | 100 | may not set it | from the next conversation | — |
 | `agent.checkpoint_continues`: How many checkpoints in a row may continue automatically before the run stops and waits for you (0: every checkpoint stops); a message of yours starts the count again. | a whole number from 0 to 1000 | 5 | may not set it | at once | — |
 | `shell.user_timeout_secs`: How long a `!` command may run, in seconds. | a whole number from 1 | 120 | may only lower it | at the next start | — |
@@ -1980,7 +2008,7 @@ catalogued model does not accept (an adaptive-only model with a budget, say:
 Claude Fable 5.2, `claude-fable-5-2`, takes only `"adaptive"`)
 are ignored with a start-up notice; an id outside the catalog is sent as
 set. Like `[pricing]`, only your own `tui.toml` files set it. Helpers
-(`assign`, `fork_off`, `spawn_member`) keep the engine's default.
+(every kind `assign` starts) keep the engine's default.
 
 The status bar shows the context gauge, `ctx 42% (84k/200k)` (yellow from 70%,
 red from 90%, `~` for an estimate), and the session's cost, `$0.42`: each
@@ -3037,12 +3065,12 @@ modes, `/permissions`, `/trust` and `!` commands. The token
 counter shows the conversation's totals on attach and after `/new` or
 `/resume`.
 
-**Helpers.** The agent starts helpers with `assign` (and seats team
-members with `spawn_member`); the helpers run in the daemon behind the
+**Helpers.** The agent starts helpers with `assign` (fresh or forked,
+single-use or kept); the helpers run in the daemon behind the
 same gate and show here: a `[helper · model]` header, its
 progress and result, the running count, its usage under `/cost`. Every
-attached TUI shows them. The agent can also fork itself with the engine's
-`fork_off`: the child starts from the conversation so far, works on the
+attached TUI shows them. A fork (`context: "fork"`, through the engine's
+own `fork_off`) starts from the conversation so far, works on the
 task it is given and runs behind the same gate (its calls ask you, naming
 it), shows as a helper and stops with Esc. Helpers at the
 `[helpers] max_depth` limit cannot fork.
@@ -3199,12 +3227,11 @@ this engine release a response without a result stops the requesting
 conversation for good, so they ask and answer with messages, and answer a
 request that still reaches them (from an agent of another workspace whose
 daemon runs an earlier build) with `send_message` too. An agent's helpers are wired
-to it, not to the workspace's other agents: an `assign` helper and a member
-seated with `spawn_member` or `spawn_many_members` (rkat-tui sets
-`auto_wire_parent` on every helper it shapes) and a `fork_off` child (the
-engine seats it without a trust edge; the daemon wires it to its parent
-once it is seated) each see their parent in `peers` and can message it,
-and it them. A member of a
+to it, not to the workspace's other agents: a fresh `assign` helper
+(rkat-tui sets `auto_wire_parent` on every helper it shapes) and a fork
+(the engine seats it without a trust edge; the daemon wires it to its
+parent once it is seated) each see their parent in `peers` and can
+message it, and it them. A member of a
 mob the agent created (`mob_spawn_member`) is not wired to it either (the
 engine wires a parent only within one mob), and `wire_members` is refused
 in the workspace's mob (only the host wires it).
@@ -3214,9 +3241,9 @@ other. An agent (or a helper that started helpers of its own) connects
 two or more of its own helpers with `connect_helpers`, naming them as the
 call that started each one did (`{"helpers": ["scout", "tester"]}`):
 every pair of them is wired both ways, so each sees the others in `peers`
-and can message them. Any kind counts (`assign`, `fork_off`,
-`spawn_member`, and `mob_spawn_member` members of mobs the agent
-created), in one mob or across mobs: an `assign` helper can be connected
+and can message them. Any kind counts (all four ways of `assign`, and
+`mob_spawn_member` members of mobs the agent created), in one mob or
+across mobs: an `assign` helper can be connected
 with a member of a mob the agent created, or members of two such mobs
 with each other. Each newly connected helper
 is told once, in a note it reads at its next step, whom it can reach now
@@ -3530,9 +3557,8 @@ agent.
 Every tool definition an agent declares rides on every model request. So
 two families stay out of a conversation's requests until the agent asks
 for them: the eight schedule tools (38.5 KB) and the engine's agent mob
-tools (`council`, `fork_off`, `mob_create`,
-`mob_spawn_member`, the `mob_profile_*` tools and the rest, 18 tools,
-29 KB). Every tool stays enabled; what changes is only which ones a
+tools (`council`, `mob_create`, `mob_spawn_member`, the `mob_profile_*`
+tools and the rest, 17 tools, about 26 KB). Every tool stays enabled; what changes is only which ones a
 request declares. A fresh conversation's request carries about 55 KB of
 tool definitions instead of 122 KB (roughly 14k tokens instead of 30k).
 
@@ -3544,11 +3570,8 @@ next step on they are declared with their full schemas and it calls them
 directly. Tools nobody searched for cost nothing. The agent's persona
 names both capabilities in a line each, so a model knows to search; the
 `mob` line also says what its main tools do (`mob_create` and
-`mob_spawn_member` start helpers that stay until retired, a `council`'s
-summary and a fork's outcome arrive later in the transcript), and a
-further line says that the engine's `spawn_member`, which needs no
-search, seats a helper in the agent's own mob, wired to it with
-`auto_wire_parent`.
+`mob_spawn_member` start a team that stays until retired, a `council`'s
+summary arrives later in the transcript).
 `tool_search` is tier 1 in every mode, plan mode included (it only changes
 what the next request declares); a revealed tool's calls pass the gate as
 that tool, exactly as if it had always been declared, and the audit log
@@ -3566,7 +3589,7 @@ and a helper allowed to nest keeps the engine's mob tools as they are.
 `/context` lists what the requests carry and, separately, what is hidden,
 by family. Other families cannot be hidden this way: the comms tools
 (messages to the other agents) and the engine's mob operator tools
-(`spawn_member`, `list_members` and the rest) are mounted by the engine
+(`retire_member`, `list_members` and the rest) are mounted by the engine
 with no slot a host can wrap, so their definitions ride on every request.
 
 This is rkat-tui's own stand-in for the engine's deferred tool catalog

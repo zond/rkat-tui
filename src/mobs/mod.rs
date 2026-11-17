@@ -1,13 +1,13 @@
 //! Helpers (sub-agents) as Meerkat mob members.
 //!
-//! The agent starts helpers three ways: rkat-tui's `assign` (a single-use
-//! helper beside it, in its own mob, whose answer reaches it as a note:
-//! `crate::tools::assign`, `crate::daemon::assign`), the engine's
-//! `fork_off` (a fork of its conversation) and `spawn_member` (a helper it
-//! keeps), with the `mob_*` tools for teams of their own. The engine's
-//! `delegate`, which blocked its caller until its helper was done, is
-//! withdrawn ([`crate::approval::policy::WITHDRAWN_TOOLS`]); a realm of an
-//! earlier build may still hold its helpers ([`delegates`]). The
+//! The agent starts every helper with rkat-tui's `assign`
+//! (`crate::tools::assign`, `crate::daemon::assign`), beside it in its own
+//! mob, with two choices: from a fresh context or a fork of its
+//! conversation, single-use or kept ([`HelperKind`]); the `mob_*` tools
+//! make teams of their own. The engine's `delegate`, `fork_off` and
+//! `spawn_member` are not offered ([`crate::approval::policy::NOT_OFFERED`]);
+//! a realm of an earlier build may still hold `delegate` helpers
+//! ([`delegates`]). The
 //! daemon hosts them in its [`MobMcpState`] (mob state durable under the
 //! realm, see `crate::daemon::engine`) and adds what upstream leaves to the
 //! host:
@@ -69,14 +69,9 @@ use std::sync::Arc;
 use meerkat_core::SessionId;
 
 pub use registry::{Gone, HelperKey, HelperRegistry};
-pub use registry::{HelperKind, HelperStatus, HelperTag};
+pub use registry::{HelperContext, HelperKind, HelperLife, HelperStatus, HelperTag};
 
 use meerkat_mob_mcp::MobMcpState;
-
-/// The member label an `assign` helper is seated with
-/// (`crate::daemon::assign`): the mob keeps it with the member, so a
-/// helper the engine restores after a restart is still known as one.
-pub const ASSIGN_LABEL: &str = "rkat-tui.assign";
 
 /// Stop every running helper `registry` lists for `owner` in `state`'s mobs:
 /// force-cancel its run, then retire it. Failures are logged. The daemon
@@ -99,7 +94,7 @@ pub(crate) async fn cancel_helpers(
 }
 
 /// Force-cancel the helper `key`'s run in its mob `handle`, then retire it.
-async fn stop_helper(handle: &meerkat_mob::MobHandle, key: &HelperKey) {
+pub(crate) async fn stop_helper(handle: &meerkat_mob::MobHandle, key: &HelperKey) {
     if let Err(err) = handle.force_cancel_member(key.member.clone()).await {
         tracing::debug!(helper = %key, error = %err, "helper run not cancelled");
     }

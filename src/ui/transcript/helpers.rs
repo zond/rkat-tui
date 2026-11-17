@@ -31,41 +31,60 @@ pub enum HelperState {
     Cancelled,
 }
 
+use crate::mobs::{HelperContext, HelperLife};
+
 /// What a helper is, from the call that started it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelperKind {
-    /// An `assign` helper: one task beside its parent, told when done.
-    Assigned,
+    /// Started by `assign` with its two choices (or, in a conversation an
+    /// earlier build stored, by `fork_off`: a kept fork; by `spawn_member`,
+    /// `spawn_many_members`: a kept fresh helper). A member of a mob the
+    /// agent created (`mob_spawn_member`) is a kept fresh one too.
+    Started(HelperContext, HelperLife),
     /// A `delegate` helper (a conversation an earlier build stored: the
-    /// engine's `delegate` is withdrawn): one task, its answer returned to
-    /// the caller.
+    /// engine's `delegate` is not offered): one task, its answer returned
+    /// to the caller.
     Delegate,
-    /// A `fork_off` child: a copy of its parent's conversation on a task.
-    Fork,
-    /// A member spawned into a mob (`spawn_member`, `spawn_many_members`,
-    /// `mob_spawn_member`): it stays after its task.
-    Member,
 }
 
 impl HelperKind {
-    /// The word the full view's title shows.
+    /// Its words, as the panel, `/helpers`, the full view's title and
+    /// `/export` show them (`fresh · single-use`, `fork · kept`).
     #[must_use]
-    pub fn text(self) -> &'static str {
+    pub fn text(self) -> String {
         match self {
-            Self::Assigned => "assigned",
-            Self::Delegate => "delegate",
-            Self::Fork => "fork",
-            Self::Member => "spawned member",
+            Self::Started(context, life) => format!("{} · {}", context.word(), life.word()),
+            Self::Delegate => "delegate".to_string(),
         }
     }
 
-    /// The kind of helper the tool `name` starts (`None`: it starts none).
-    fn of_tool(name: &str) -> Option<Self> {
+    /// Whether it stays seated after its runs.
+    #[must_use]
+    pub fn kept(self) -> bool {
+        matches!(self, Self::Started(_, HelperLife::Kept))
+    }
+
+    /// The kind of helper the call of the tool `name` with `args` starts
+    /// (`None`: it starts none).
+    fn of_call(name: &str, args: &Value) -> Option<Self> {
         match name {
-            crate::tools::ASSIGN => Some(Self::Assigned),
+            crate::tools::ASSIGN => {
+                let context = match args.get("context").and_then(Value::as_str) {
+                    Some("fork") => HelperContext::Fork,
+                    _ => HelperContext::Fresh,
+                };
+                let life = if args.get("keep").and_then(Value::as_bool) == Some(true) {
+                    HelperLife::Kept
+                } else {
+                    HelperLife::Single
+                };
+                Some(Self::Started(context, life))
+            }
             "delegate" => Some(Self::Delegate),
-            "fork_off" => Some(Self::Fork),
-            "spawn_member" | "spawn_many_members" | "mob_spawn_member" => Some(Self::Member),
+            "fork_off" => Some(Self::Started(HelperContext::Fork, HelperLife::Kept)),
+            "spawn_member" | "spawn_many_members" | "mob_spawn_member" => {
+                Some(Self::Started(HelperContext::Fresh, HelperLife::Kept))
+            }
             _ => None,
         }
     }
@@ -144,16 +163,34 @@ pub struct HelperFold {
 }
 
 impl HelperFold {
+    /// The helper panel's and the transcript header's text after the tag:
+    /// its kind (when known) after a running helper's spinner, then its
+    /// status (`⠋ fresh · single-use · running · 2 tool calls`).
+    #[must_use]
+    pub fn panel_status_text(&self) -> String {
+        let status = self.status_text();
+        let Some(kind) = self.kind else {
+            return status;
+        };
+        let kind = kind.text();
+        match status.split_once(' ') {
+            Some((glyph, rest)) if SPINNER.contains(&glyph.chars().next().unwrap_or(' ')) => {
+                format!("{glyph} {kind} · {rest}")
+            }
+            _ => format!("{kind} · {status}"),
+        }
+    }
+
     /// The full view's title text after the tag: its kind, state and
-    /// progress (`delegate · finished · 3 tool calls · 2.1k tokens`). A
-    /// spawned member or a fork whose run is done is idle: it stays until
-    /// it is retired.
+    /// progress (`fresh · single-use · finished · 3 tool calls · 2.1k
+    /// tokens`). A kept helper whose run is done is idle: it stays until it
+    /// is retired.
     #[must_use]
     pub fn view_status_text(&self) -> String {
         let status = self.status_text();
         let state = self.state.text();
         let shown = match (self.state, self.kind) {
-            (HelperState::Done, Some(HelperKind::Member | HelperKind::Fork)) => "idle",
+            (HelperState::Done, Some(kind)) if kind.kept() => "idle",
             (HelperState::Done, _) => "finished",
             _ => state,
         };
@@ -532,10 +569,8 @@ impl Transcript {
         if fold.ended.is_some() {
             return false;
         }
-        let own_mob = matches!(
-            fold.kind,
-            Some(HelperKind::Assigned | HelperKind::Fork | HelperKind::Member)
-        ) && !self.elsewhere.contains(&fold.label);
+        let own_mob = matches!(fold.kind, Some(HelperKind::Started(..)))
+            && !self.elsewhere.contains(&fold.label);
         !(own_mob
             && self
                 .seated_helpers
@@ -547,10 +582,10 @@ impl Transcript {
     /// says what they are (by the `member_id` of its arguments, or of each
     /// of their entries; an `assign`'s `name`).
     pub(super) fn note_spawn(&mut self, tool: &str, args: &Value) {
-        let Some(kind) = HelperKind::of_tool(tool) else {
+        let Some(kind) = HelperKind::of_call(tool, args) else {
             return;
         };
-        let id = if kind == HelperKind::Assigned {
+        let id = if tool == crate::tools::ASSIGN {
             "name"
         } else {
             "member_id"
@@ -596,7 +631,15 @@ impl Transcript {
                 collapsed: true,
             }));
         } else if let Some(task) = fork_task(input) {
-            self.update_fold(helper.header, |f| f.kind = Some(HelperKind::Fork));
+            // A fork: its life as the call said, else (a stored `fork_off`
+            // child) kept.
+            self.update_fold(helper.header, |f| {
+                let life = match f.kind {
+                    Some(HelperKind::Started(_, life)) => life,
+                    _ => HelperLife::Kept,
+                };
+                f.kind = Some(HelperKind::Started(HelperContext::Fork, life));
+            });
             blocks.push(Block::Notice {
                 level: super::NoticeLevel::Info,
                 text: format!("forked from {parent} with its conversation so far"),
