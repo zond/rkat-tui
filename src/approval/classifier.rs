@@ -1110,6 +1110,24 @@ fn assistant_text(reply: &BlockAssistantMessage) -> String {
     out
 }
 
+/// One model call whose text is all that matters, outside any review
+/// (`/btw`'s side question, [`crate::daemon::btw`]): the request projected
+/// through the client's replay projection, streamed and folded; its text
+/// and the usage the provider reported.
+///
+/// # Errors
+///
+/// The provider's failure.
+pub(crate) async fn text_call(
+    client: &dyn LlmClient,
+    request: LlmRequest,
+) -> Result<(String, Option<Usage>), LlmError> {
+    let projection = client.project_replay_request(&request.messages)?;
+    let prepared = PreparedLlmRequest::from_projection(request, projection);
+    let reply = collect_turn(client, &prepared).await?;
+    Ok((assistant_text(&reply.message), reply.usage))
+}
+
 /// One folded reply and the usage the provider reported for it.
 struct Reply {
     message: BlockAssistantMessage,

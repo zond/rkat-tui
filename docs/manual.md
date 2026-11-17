@@ -2325,6 +2325,33 @@ open their picker at once; the choice waits. `/compact` does not wait
 detaching with commands still waiting drops them, with a notice naming
 them.
 
+#### A side question: `/btw`
+
+`/btw <question>` asks about this session without touching the agent's
+run: while the agent works (also inside a long command) or when it is
+idle. It is not held for the turn's end and never sent to the agent. The
+daemon makes one model call of its own, on the agent's current model and
+endpoint, with no tools; it reads the session's stored history (past a
+budget of about 60 KB the first user message and the most recent part,
+with a line saying the middle was left out), the running turn as your
+transcript shows it (the stored history has a run only once it ended),
+and the name of the tool the agent is running and how long it has run.
+It is told to answer briefly from that record, that it cannot act, and
+to say so when the answer is not there (for example the output of a
+command that has not finished). The answer shows as a dim `↳ btw:` block
+under the question: a side note, not the agent's turn. Nothing is written
+to the agent's session, so the agent never sees the question or the
+answer; `/export` keeps the note, labelled as a side question, but
+showing the conversation again (a re-attach, `/resume`) does not have it.
+
+While one is pending the status bar says `btw: asking… Ns (Esc cancels)`,
+and the first Esc cancels that question only; the next Esc is the usual
+interrupt. One `/btw` at a time: a second while one is pending is refused
+with a line. A failure (no model client, the provider's error, no answer
+within a minute) is a line in the block. Its tokens count under the
+session's usage and show in `/cost`. In a helper's full view it still
+asks about the agent this client works with, and says so.
+
 #### List dialogs
 
 The lists of `/approve`, `/permissions`, `/schedules`, `/agents`, `/wire`,

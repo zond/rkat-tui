@@ -65,6 +65,7 @@ use crate::workbench::{
     AgentContext, ContextError, ContextSink, SavedUnsent, Workbench, WorkbenchParts,
 };
 
+mod btw;
 mod commands;
 mod conn;
 mod depart;
@@ -328,6 +329,11 @@ enum Report {
     Interrupted {
         epoch: Option<u64>,
         result: Result<protocol::Interrupted, String>,
+    },
+    /// The daemon answered the `/btw` numbered `id`.
+    Btw {
+        id: u64,
+        result: Result<String, String>,
     },
     /// The daemon answered `/compact`'s request ([`Runner::compact_asked`]).
     CompactAsked(Result<(), String>),
@@ -689,6 +695,10 @@ pub struct Runner {
     /// stopped" was said for it: a press soon after its end acts on
     /// nothing ([`INTERRUPT_REPEAT`]).
     after_interrupt: Option<(Instant, bool)>,
+    /// How many `/btw` questions this runner asked, and the pending one's
+    /// number and call (one at a time).
+    btws: u64,
+    btw: Option<(u64, tokio::task::AbortHandle)>,
     /// The model and endpoint as last read or switched to.
     model: Option<ShownModel>,
     /// The daemon the events shown came from (the cursor names it, see
@@ -817,6 +827,8 @@ impl Runner {
             asking_fates: None,
             interrupts: 0,
             after_interrupt: None,
+            btws: 0,
+            btw: None,
             model: None,
             daemon_id_seen: None,
             approvals: Approvals::default(),
@@ -1020,6 +1032,7 @@ impl Runner {
             }
             Report::CompactAsked(asked) => self.compact_asked(asked),
             Report::Interrupted { epoch, result } => self.interrupt_answered(epoch, result),
+            Report::Btw { id, result } => self.btw_answered(id, result),
             Report::Mobs(mobs) => {
                 self.known_mobs.extend(mobs);
                 self.open_known_mobs();
@@ -1197,6 +1210,12 @@ impl Runner {
             Effect::CompactNow => self.compact_now(),
             Effect::StatusReport => self.status_report(),
             Effect::ContextReport(header) => self.context_report(header),
+            Effect::Btw {
+                question,
+                running_tool,
+                current_turn,
+            } => self.ask_btw(question, running_tool, current_turn),
+            Effect::CancelBtw => self.cancel_btw(),
             Effect::Export { path: Some(_), .. } if self.local_refused("/export to a path") => {}
             Effect::Remember(_) if self.local_refused("/remember") => {}
             Effect::OpenMemory(_) if self.local_refused("/memory") => {}

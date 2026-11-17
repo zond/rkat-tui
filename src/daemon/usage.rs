@@ -238,6 +238,13 @@ impl Ledger {
         .await;
     }
 
+    /// One `/btw` side question about `session` ([`super::btw`]), on
+    /// `model`: counted under the session as a classifier call is (the
+    /// gauge stays the agent's last call's).
+    pub async fn side_question(&self, session: &SessionId, model: &str, usage: &Usage) {
+        self.classifier(session, model, usage).await;
+    }
+
     /// A compaction of `session` on `model`: `summarized` when a provider
     /// call made the summary (which costs), `after` the history estimate
     /// it left.

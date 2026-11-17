@@ -11468,3 +11468,58 @@ not run against the old code; the reproduction above is what fails
 there. Remaining window: a message admitted between the client's press
 and the daemon's recall is taken back by the second call, after the run
 it may have started has begun (it is stopped then).
+
+## `/btw`: a side question beside the run (2026-11-17)
+
+Owner-approved (plan item 6). Where it runs: the daemon (`rkat/btw`,
+`daemon/local/btw.rs`, `daemon/btw.rs`), which has the session and builds
+model clients the way the classifier's are built
+(`AgentFactory::build_llm_client_for_identity` for the session's durable
+`SessionMetadata::llm_identity()`, the agent's current model and auth
+binding, not the classifier's model; the rig's scripted client when a
+test installs one). The request has no tools, `btw::SYSTEM` as system
+prompt and one user message (`btw::prompt`).
+
+What the engine gives: `SessionService::read_history` is the committed
+transcript only; a run's messages are committed when it ends (the first
+rig test read zero messages while the agent's first run sat in a shell
+call). So the record is the stored history (`btw::record`, bounded by
+`btw::BUDGET` = 60 000 bytes: past it the first user message, a line
+"[… N messages in the middle of the session are left out here …]" and
+the latest messages that fit; one tool argument or result at most 4 000
+bytes) plus the running turn as the client's transcript shows it
+(`Transcript::turn_text` from the turn's first block, without `/btw`
+notes, its last 30 000 bytes), plus the running tool's name and seconds
+from the status bar's open tools.
+
+Nothing is written to the session: no append, no input, no run; the call
+is not a mob or session method. Its usage is counted under the session as
+a classifier call's (`Ledger::side_question`), so `/cost` shows it. One at
+a time per client (the UI refuses a second; the runner guards too);
+`rkat/btw_cancel` aborts the daemon's task (the client numbers each
+question), and `rkat/btw` is in `CANCELLED_ON_LEAVE`. Bounds: 60 s in
+the daemon, 75 s in the client. A call aborted mid-stream reports no
+usage, so its tokens are not counted (not verifiable without a provider).
+
+The note is `Block::Btw`, drawn dim and labelled (`↳ btw: …`), exported
+as `## btw (a side question, not part of the conversation): …`; it lives
+only in the client's transcript, so a re-attach or `/resume` (which show
+the conversation from the daemon) do not have it, and nothing is stored
+on disk. Esc: a pending `/btw` takes the first Esc and cancels only it;
+the next Esc is the usual ladder.
+
+Tests: `btw::a_side_question_during_a_slow_tool_leaves_the_run_alone`
+(answered while a real shell call runs; the side request has no tools,
+the running turn, the tool's line and the question; the session's message
+count is unchanged; the agent made its two calls and neither, nor the
+stored session, holds the question or answer; 777 input tokens counted
+under the session), `btw::a_pending_side_question_is_one_at_a_time_and_cancels_alone`
+(during a held model call: a second refused, a cancel leaves the run to
+its answer and never answers; idle answered over the committed history),
+`daemon::btw::tests::*` (the budget rule, the prompt, cutting),
+`ui::tests::btw::*` (asked at once during a turn with the running tool
+and the turn's text, the block, `/export`, the status segment, Esc's
+order, one at a time, the usage error) and
+`ui::render::tests::a_btw_block_is_a_labelled_dim_side_note`. These are
+tests of a new feature: they do not compile without it, so none was run
+against the old code.

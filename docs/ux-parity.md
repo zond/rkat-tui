@@ -75,7 +75,7 @@ official tables name, then niche features.
 | 58 | Custom commands / skills | `.claude/commands/*.md`, `.claude/skills/*/SKILL.md` as `/name` | none | missing |
 | 59 | `/add-dir`, `/cd` | `/add-dir <path>` | `--confinement-read`/`--confinement-write` and `[confinement] extra_read`/`extra_write`, at start | partial |
 | 60 | `/branch`, `/fork`, `/rename` | branch or fork the conversation; name the session | none for the user; the agent forks itself with the engine's `fork_off` | missing |
-| 61 | `/btw` side question | `/btw [q]` | none | missing |
+| 61 | `/btw` side question | `/btw [q]` | `/btw <question>`: one model call on the agent's model with no tools (in the daemon, `rkat/btw`) over the session's stored history, the running turn as the screen shows it and the running tool's name and time; answered in a dim `↳ btw:` block that is not part of the conversation (the agent never sees it; gone after a re-attach or `/resume`, kept by `/export`); works while a turn runs and when idle; one at a time; a pending one takes the first Esc (cancels it only); its tokens count in `/cost` | same (differs in detail: a pending `/btw` takes the first Esc) |
 | 62 | `/doctor` | setup checkup | none | missing |
 | 63 | Notifications / bell | terminal bell or notification on completion or prompt | terminal bell when a turn ends or a dialog opens while the terminal is unfocused | same |
 | 64 | `/statusline` | custom status line | fixed status bar | missing |

@@ -32,6 +32,7 @@ pub mod approvals;
 pub mod assign;
 pub mod audit;
 pub mod blank_text;
+pub mod btw;
 pub mod checkpoint;
 pub mod context;
 pub mod conversations;
@@ -641,6 +642,7 @@ impl Daemon {
                 workspace: composed.scope.context_root.clone(),
                 endpoints: composed.endpoints,
                 startup_notices: composed.startup_notices,
+                side_clients: composed.side_clients,
                 report: local::ReportParts {
                     realm: composed.scope.realm_root(),
                     realm_id: composed.scope.realm_id.clone(),

@@ -520,6 +520,9 @@ impl App {
     /// messages typed during it that the agent has not read come back to
     /// the editor when it ends (see [`Self::turn_finished`]).
     ///
+    /// A pending `/btw` takes the first Esc: it cancels that question
+    /// only, never the agent's run; the next Esc is the usual one.
+    ///
     /// Presses within [`INTERRUPT_REPEAT`] of an interrupting one belong to
     /// that interrupt, also once its turn has ended: they go to the runner
     /// (which forces the interrupt, or says the turn is already stopped)
@@ -532,7 +535,11 @@ impl App {
     /// does not show, and the client asks the daemon (it says when nothing
     /// runs).
     pub(super) fn escape(&mut self, esc_armed: bool, now: Instant, fx: &mut Vec<Effect>) {
-        if self.running || self.interrupt_repeats(now) {
+        // A pending `/btw` takes the first Esc, and only it is cancelled;
+        // the next Esc is the usual one.
+        if self.btw_pending() {
+            self.cancel_btw(fx);
+        } else if self.running || self.interrupt_repeats(now) {
             self.interrupt(now, fx);
         } else if self.shell.running.is_some() {
             fx.push(Effect::CancelShell);

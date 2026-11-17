@@ -4,6 +4,7 @@
 //! returns [`Effect`]s that the client runner (session/approval wiring) executes.
 //! Everything the client runner wants to show is pushed back in as a [`Msg`].
 
+mod btw;
 pub mod checklist;
 pub mod commands;
 pub mod compaction;
@@ -369,6 +370,9 @@ pub enum Msg {
     /// end says how many came back, in its one line (or, after the turn,
     /// one line of its own).
     Returned(Vec<PendingId>),
+    /// The answer to the pending `/btw` ([`Effect::Btw`]), or why there is
+    /// none, in plain words.
+    BtwAnswered(Result<String, String>),
     /// A steered message the runtime ended without writing it into a run
     /// (abandoned: the run was stopped, the agent retired, …): the agent
     /// never reads it, and it returns to the editor as a recalled one does.
@@ -811,6 +815,21 @@ pub enum Effect {
     /// compaction policy); the client runner adds what the context holds and
     /// answers with one [`Msg::Notice`].
     ContextReport(String),
+    /// `/btw`: ask the daemon the side question `question` (`rkat/btw`),
+    /// with the tool the agent is running and for how long; answered with
+    /// [`Msg::BtwAnswered`].
+    Btw {
+        /// The question.
+        question: String,
+        /// The running tool's name and its seconds so far.
+        running_tool: Option<(String, u64)>,
+        /// The running turn as this client shows it (its stored history
+        /// has the run only once it ended).
+        current_turn: Option<String>,
+    },
+    /// Esc on a pending `/btw`: cancel it (`rkat/btw_cancel`); the agent's
+    /// run is not touched.
+    CancelBtw,
     /// `/export [file]`: write `text` (the transcript as plain text) to
     /// `path` (relative to the workspace), or to a fresh file in the
     /// workspace's realm when `None`; answered with a notice.
@@ -987,6 +1006,8 @@ pub struct StatusInfo {
     asking_since: Option<Instant>,
     /// A classifier check's `(done, total)`, while one runs.
     check: Option<(usize, usize)>,
+    /// When the pending `/btw` was asked.
+    btw_since: Option<Instant>,
     /// Tokens in the last model call, `None` when unknown.
     context_used: Option<u64>,
     /// Model context window in tokens, `None` when unknown.
@@ -1371,6 +1392,8 @@ pub struct App {
     /// kept until its end puts them in the editor in the order they were
     /// typed, counted in its one line.
     returned: Vec<(PendingId, String)>,
+    /// The pending `/btw`'s block and question (one at a time).
+    btw: Option<(BlockId, String)>,
     viewport_height: usize,
     /// Text to put on the system clipboard (drained by the runtime).
     clipboard: Option<QueuedCopy>,
@@ -1455,6 +1478,7 @@ impl App {
             last_esc: None,
             last_interrupt: None,
             returned: Vec::new(),
+            btw: None,
             viewport_height: 20,
             clipboard: None,
             local: Vec::new(),
@@ -1805,6 +1829,7 @@ impl App {
             Msg::SteerDelivered(id) => self.pending.show_delivered(&mut self.transcript, id),
             Msg::Recalled { recalled, errors } => self.recalled(&recalled, &errors),
             Msg::Returned(ids) => self.returned(&ids),
+            Msg::BtwAnswered(answer) => self.btw_answered(answer),
             Msg::NotDelivered { id, why } => self.not_delivered(id, why.as_deref()),
             Msg::QuitDecided(decision) => self.quit_decided(decision, &mut fx),
             Msg::Rerooted { workspace, realm } => {

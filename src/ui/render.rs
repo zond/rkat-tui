@@ -958,6 +958,15 @@ pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
             Style::default().fg(Color::Magenta),
         ));
     }
+    if let Some(since) = status.btw_since {
+        segs.push(Span::styled(
+            format!(
+                "btw: asking… {}s (Esc cancels)",
+                now.saturating_duration_since(since).as_secs()
+            ),
+            Style::default().fg(Color::Magenta),
+        ));
+    }
     if status.queued > 0 {
         // A queued message joins once the model's reply is in: a long wait
         // says so, and for how long (unless the activity segment says what
@@ -1271,6 +1280,24 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
                 ]));
                 prefixed(text, w, "  ", "  ", style, &mut out);
             }
+        }
+        Block::Btw { question, answer } => {
+            // Dim and labelled: a side note, not the agent's turn.
+            let style = dim.add_modifier(Modifier::ITALIC);
+            prefixed(
+                &format!("btw: {question}"),
+                w,
+                "↳ ",
+                "  ",
+                style.add_modifier(Modifier::BOLD),
+                &mut out,
+            );
+            let body = match answer {
+                Some(Ok(text)) => text.clone(),
+                Some(Err(why)) => format!("(no answer: {why})"),
+                None => "(asking… Esc cancels)".to_string(),
+            };
+            prefixed(&body, w, "  ", "  ", style, &mut out);
         }
         Block::Triggered { label, text } => {
             let style = Style::default().fg(Color::Cyan);
@@ -1727,6 +1754,38 @@ mod tests {
         };
         let lines: Vec<String> = block_lines(&bare, 60).iter().map(line_text).collect();
         assert_eq!(lines, ["✉ from agent main-ab12", ""]);
+    }
+
+    /// A `/btw` is a dim, labelled side note: its question, then its
+    /// answer (or that it is pending, or why there is none).
+    #[test]
+    fn a_btw_block_is_a_labelled_dim_side_note() {
+        let block = |answer| Block::Btw {
+            question: "why?".into(),
+            answer,
+        };
+        let text =
+            |b: &Block| -> Vec<String> { block_lines(b, 40).iter().map(line_text).collect() };
+        assert_eq!(
+            text(&block(Some(Ok("because".into())))),
+            ["↳ btw: why?", "  because", ""]
+        );
+        assert_eq!(
+            text(&block(None)),
+            ["↳ btw: why?", "  (asking… Esc cancels)", ""]
+        );
+        assert_eq!(
+            text(&block(Some(Err("cancelled".into())))),
+            ["↳ btw: why?", "  (no answer: cancelled)", ""]
+        );
+        let lines = block_lines(&block(Some(Ok("because".into()))), 40);
+        assert!(
+            lines.iter().take(2).all(|line| line
+                .spans
+                .iter()
+                .all(|span| span.style.add_modifier.contains(Modifier::DIM))),
+            "{lines:?}"
+        );
     }
 
     /// A run a schedule fired is a block headed by what fired it.

@@ -329,6 +329,16 @@ pub enum Block {
         /// The engine's job id (the same outcome is shown once).
         job: Option<String>,
     },
+    /// A `/btw` side question and its answer: a note beside the agent's
+    /// turn, not part of the conversation (the agent never sees it, and a
+    /// conversation shown again from the daemon does not have it).
+    Btw {
+        /// The question.
+        question: String,
+        /// The answer (`Ok`), why there is none (`Err`), or `None` while
+        /// it is pending.
+        answer: Option<Result<String, String>>,
+    },
     /// A run nobody typed: a schedule fired it, or a file watch
     /// (`scheduled: <name>`, `files changed: …`), with its input.
     Triggered {
@@ -565,10 +575,26 @@ impl Transcript {
     /// screen.
     #[must_use]
     pub fn export_text(&self) -> String {
+        self.export_from(BlockId(0), true)
+    }
+
+    /// The blocks from `from` on as [`Self::export_text`] writes them,
+    /// without the `/btw` notes: what the screen shows of the running turn
+    /// (a `/btw` reads it; the session's stored history does not have the
+    /// run yet).
+    #[must_use]
+    pub fn turn_text(&self, from: BlockId) -> String {
+        self.export_from(from, false)
+    }
+
+    fn export_from(&self, from: BlockId, side_notes: bool) -> String {
         use std::fmt::Write as _;
         let mut out = String::new();
         for Entry { id, block, .. } in &self.entries {
-            if self.is_hidden(*id) {
+            if *id < from
+                || self.is_hidden(*id)
+                || (!side_notes && matches!(block, Block::Btw { .. }))
+            {
                 continue;
             }
             if !out.is_empty() {
@@ -655,6 +681,17 @@ impl Transcript {
                 Block::Triggered { label, text } => {
                     let _ = writeln!(out, "## {label}");
                     body(&mut out, text);
+                }
+                Block::Btw { question, answer } => {
+                    let _ = writeln!(
+                        out,
+                        "## btw (a side question, not part of the conversation): {question}"
+                    );
+                    match answer {
+                        Some(Ok(text)) => body(&mut out, text),
+                        Some(Err(why)) => body(&mut out, &format!("(no answer: {why})")),
+                        None => body(&mut out, "(no answer yet)"),
+                    }
                 }
                 Block::Outcome { header, md, .. } => {
                     let _ = writeln!(out, "## {header}");

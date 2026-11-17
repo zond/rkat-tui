@@ -401,6 +401,16 @@ methods! {
     /// already gave a follow-up run stops that run too: it belongs to the
     /// interrupted turn.
     Interrupt = "rkat/interrupt" (InterruptParams) -> Interrupted;
+    /// `/btw <question>`: a side question about the caller's agent's
+    /// session, answered by one model call of its own, on the agent's
+    /// model, with no tools (`crate::daemon::btw`). Nothing is written to
+    /// the session and the agent's run is untouched. Refused with
+    /// [`BTW_REFUSED`] (no conversation, no model client, the provider's
+    /// failure, the time bound, a cancel), in plain words.
+    Btw = "rkat/btw" (BtwParams) -> BtwAnswer;
+    /// Cancel the caller's pending [`method::Btw`] named `id` (Esc); one
+    /// that ended is no error.
+    BtwCancel = "rkat/btw_cancel" (BtwCancelParams) -> Empty;
     /// A top-level agent's card for a cross-workspace wire: its workspace,
     /// name, comms identity and the address of its Unix socket
     /// ([`crate::daemon::wires`]). A bound caller asks for its own agent;
@@ -425,7 +435,10 @@ methods! {
 /// The local methods whose run is dropped when the client that called
 /// them leaves (a check sends model calls the user pays for; nobody reads
 /// its answer then).
-pub const CANCELLED_ON_LEAVE: &[&str] = &[<method::ClassifierCheck as Method>::NAME];
+pub const CANCELLED_ON_LEAVE: &[&str] = &[
+    <method::ClassifierCheck as Method>::NAME,
+    <method::Btw as Method>::NAME,
+];
 
 /// [`method::ClassifierCheck`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -594,6 +607,11 @@ pub const CHECK_REFUSED: i32 = -32016;
 /// A helper stop ([`method::StopHelper`]) refused: no running helper of
 /// the caller's agent has that name. The message says what to do.
 pub const HELPER_REFUSED: i32 = -32017;
+
+/// A `/btw` side question ([`method::Btw`]) not answered: no conversation
+/// or model client, the provider's failure, the time bound, or a cancel.
+/// The message says which, in plain words.
+pub const BTW_REFUSED: i32 = -32018;
 
 /// A local method's refusal: a JSON-RPC error code and message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1003,6 +1021,37 @@ pub struct Recalled {
     /// The cancels the runtime refused, in words.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
+}
+
+/// [`method::Btw`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BtwParams {
+    /// The client's number for it ([`method::BtwCancel`] names it).
+    pub id: u64,
+    /// The user's question.
+    pub question: String,
+    /// The tool call the agent is running as the client saw it: its name
+    /// and how long it has run, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_tool: Option<(String, u64)>,
+    /// The running turn as the client shows it: the session's stored
+    /// history has a run only once it ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_turn: Option<String>,
+}
+
+/// [`method::Btw`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BtwAnswer {
+    /// The answer's text.
+    pub answer: String,
+}
+
+/// [`method::BtwCancel`]'s parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BtwCancelParams {
+    /// The [`BtwParams::id`] to cancel.
+    pub id: u64,
 }
 
 /// Which run an interrupt ([`method::Interrupt`]) is for.

@@ -285,6 +285,9 @@ pub enum Command {
     Remember(String),
     /// `/compact [now | status | <instructions>]`.
     Compact(CompactCommand),
+    /// `/btw <question>`: a side question about the session, answered
+    /// beside the agent's run (`crate::daemon::btw`).
+    Btw(String),
     /// `/cost`: the session's token cost by model.
     Cost,
     /// `/status`: version, model, session, workspace and trust state.
@@ -717,6 +720,17 @@ pub static COMMANDS: &[CommandSpec] = &[
         parse: |rest| (!rest.is_empty()).then(|| Command::Remember(rest.to_string())),
     },
     CommandSpec {
+        name: "btw",
+        aliases: &[],
+        usage: "<question>",
+        summary: "ask a side question about this session; the agent's run goes on",
+        help: &[(
+            "/btw <question>",
+            "a side question about this session, answered by one quick\nmodel call on the agent's model (no tools) while the agent\nworks; it is not added to the conversation and the agent\nnever sees it (Esc while it is pending cancels it only)",
+        )],
+        parse: |rest| (!rest.trim().is_empty()).then(|| Command::Btw(rest.trim().to_string())),
+    },
+    CommandSpec {
         name: "compact",
         aliases: &[],
         usage: "[now | status | prepare [at <N | Nk | N%>|default] [<text>|off|default] [--user] | <instructions>]",
@@ -1089,7 +1103,8 @@ Keys:
                                  (sends normally when idle; same as Ctrl-X Ctrl-S)
   Shift+Enter, Alt+Enter, Ctrl+J insert a newline (so does \\ right before Enter at a line end)
   Ctrl-C                         interrupt the turn (as Esc) · clear the input · press twice to quit
-  Esc                            interrupt the turn: your messages the agent has not read come back
+  Esc                            a pending /btw takes the first Esc: it cancels that question only.
+                                 Else interrupt the turn: your messages the agent has not read come back
                                  to the input, nothing starts from them (no turn shown: the client
                                  asks the daemon and says when nothing runs). Again within 1 s:
                                  says when the next forces it; after that: force that run. Presses
@@ -1356,6 +1371,7 @@ mod tests {
         // Sample arguments for the commands that need some.
         let args = |name: &str| match name {
             "remember" => " a note",
+            "btw" => " what now?",
             "daemon" => " stop",
             "set" => " ui.bell false",
             "unset" => " ui.bell",
@@ -1417,10 +1433,11 @@ mod tests {
             "audit",
             "rehome",
             "schedules",
+            "btw",
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 38);
+        assert_eq!(seen.len(), 39);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;

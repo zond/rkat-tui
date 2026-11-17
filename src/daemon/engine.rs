@@ -128,6 +128,32 @@ pub struct Composed {
     /// The mobs' definitions the customizer seats members by; followed
     /// once the workspace's mob is ensured ([`crate::mobs::profiles`]).
     pub profiles: Arc<crate::mobs::profiles::MobProfiles>,
+    /// Builds the model client of the agent's model for `/btw`.
+    pub side_clients: super::btw::SideClients,
+}
+
+/// How `/btw` builds the model client of a session's model identity: the
+/// daemon's factory and configuration, as the classifier's are built
+/// (`crate::bootstrap`'s classifier), or the client a test installed.
+fn side_clients(
+    factory: meerkat::AgentFactory,
+    config: meerkat_core::Config,
+    llm_override: Option<Arc<dyn meerkat::LlmClient>>,
+) -> super::btw::SideClients {
+    Arc::new(move |identity| {
+        let factory = factory.clone();
+        let config = config.clone();
+        let llm_override = llm_override.clone();
+        Box::pin(async move {
+            match llm_override {
+                Some(client) => Ok(client),
+                None => factory
+                    .build_llm_client_for_identity(&config, &identity)
+                    .await
+                    .map_err(|err| err.to_string()),
+            }
+        })
+    })
 }
 
 /// How the daemon composes its approval side (tests vary it).
@@ -212,6 +238,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     let skill_tools = Arc::new(crate::tools::SkillToolDispatcher::new(
         Arc::clone(&skills) as Arc<dyn crate::tools::SkillHost>
     ));
+    let side_clients = side_clients(factory.clone(), effective.clone(), llm_override.clone());
     let runtime = session_runtime(RuntimeParts {
         factory,
         effective: &effective,
@@ -437,6 +464,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         tasks_db,
         files: approval.files.take(),
         startup_notices,
+        side_clients,
         helper_max_depth,
         prepare,
         layers,

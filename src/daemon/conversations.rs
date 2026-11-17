@@ -674,6 +674,21 @@ impl Conversations {
         }
     }
 
+    /// The model identity `session` runs on now (its model, provider and
+    /// auth binding; `None`: unreadable).
+    pub async fn llm_identity(
+        &self,
+        session: &SessionId,
+    ) -> Option<meerkat_core::SessionLlmIdentity> {
+        let view = self
+            .state
+            .session_service()
+            .load_persisted_session_metadata(session)
+            .await
+            .ok()??;
+        Some(view.session_metadata?.llm_identity())
+    }
+
     /// The configured endpoint `session`'s durable auth binding names
     /// (`None`: a built-in endpoint, or unreadable).
     pub async fn endpoint_of(&self, session: &SessionId) -> Option<String> {

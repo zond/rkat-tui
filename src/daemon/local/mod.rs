@@ -43,6 +43,7 @@
 /// The longest a prompt waits for a mode change the same client sent
 /// before it ([`Local::observe`]).
 const MODE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+mod btw;
 mod inputs;
 mod interrupt;
 mod lifecycle;
@@ -98,6 +99,9 @@ pub struct Local {
     /// cannot interleave their check and their note.
     plan_noted: tokio::sync::Mutex<std::collections::HashMap<String, bool>>,
     inputs: AtomicU64,
+    /// The `/btw` side questions running, by the client's number
+    /// (`rkat/btw_cancel` aborts one).
+    btws: parking_lot::Mutex<std::collections::HashMap<u64, tokio::task::AbortHandle>>,
     /// The calls that may switch the mode ([`may_switch_mode`]) routed so
     /// far ([`Local::routing_local`]), counted when the proxy reads them,
     /// before their task runs.
@@ -144,6 +148,8 @@ pub struct LocalParts {
     pub startup_notices: Vec<StartupNotice>,
     /// The fixed part of `rkat/report`.
     pub report: ReportParts,
+    /// Builds the model client of the agent's model for `/btw`.
+    pub side_clients: crate::daemon::btw::SideClients,
 }
 
 /// The fixed part of [`protocol::method::Report`]'s answer.
@@ -202,6 +208,7 @@ impl Local {
             parts,
             plan_noted: tokio::sync::Mutex::new(noted),
             inputs: AtomicU64::new(0),
+            btws: parking_lot::Mutex::default(),
             modes_routed: AtomicU64::new(0),
             modes_done: tokio::sync::watch::Sender::new(0),
             #[cfg(any(test, feature = "test-support"))]
@@ -410,6 +417,8 @@ impl Local {
             method::Recall, protocol::RecallParams { input_ids } => self.recall(&caller, &input_ids).await;
             method::Inputs, protocol::RecallParams { input_ids } => self.input_fates(&caller, &input_ids).await;
             method::Interrupt, params => self.interrupt(&caller, params).await;
+            method::Btw, params => self.btw(&caller, params).await;
+            method::BtwCancel, protocol::BtwCancelParams { id } => Ok(self.btw_cancel(id));
             method::Schedules, Empty {} => self.schedules(&caller).await;
             method::Schedule, protocol::ScheduleAction { op, schedule } => self.schedule(&caller, op, &schedule).await;
             method::Report, Empty {} => Ok(self.report(self.agent_of(&caller).ok().as_deref()));

@@ -53,6 +53,16 @@
   in bright bold text, so they stand out when you scroll quickly (as in
   Claude Code). A queued message keeps its look until it is sent.
 
+### Added
+
+- `/btw <question>`: a side question about the session that does not
+  touch the agent's run, while it works or when it is idle. One quick
+  model call on the agent's model, with no tools, reads the conversation,
+  the running turn and the tool that is running, and answers in a dim
+  `btw:` note under your question; the agent never sees either, and the
+  note is not part of the conversation (`/export` keeps it). Esc while it
+  is pending cancels the question only; its tokens show in `/cost`.
+
 ## [0.0.14] - 2026-11-17
 
 ### Added

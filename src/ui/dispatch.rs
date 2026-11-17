@@ -121,6 +121,7 @@ impl App {
             }
             Command::Copy(n) => self.copy_answer(n),
             Command::Context => fx.push(Effect::ContextReport(self.context_header())),
+            Command::Btw(question) => self.ask_btw(question, now, fx),
             Command::Status => fx.push(Effect::StatusReport),
             Command::DaemonStop => fx.push(Effect::DaemonStop),
             Command::DaemonStart => fx.push(Effect::DaemonStart),
