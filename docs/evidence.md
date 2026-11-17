@@ -11944,3 +11944,47 @@ disk-full reload (`storage::reload`) runs only on
 nothing an operator can call repairs it on this release. Goes when a
 release fixes it. Tests: `peer_requests::a_request_and_a_result_less_response_are_refused_and_the_helper_runs_on`,
 `approval::policy::tests::a_peer_request_and_a_result_less_response_are_unavailable`.
+
+## The engine moves to crates.io 0.9.16 (2026-11-17)
+
+Every `meerkat-*` line names `version = "0.9.16"`; `cargo update -p
+meerkat` moved the 38 engine crates of the lock together and nothing
+else (no new dependency; `rmcp` stays 1.8, `chrono`, `chrono-tz` and
+`humantime` stay in the graph, so the four ignores of `deny.toml` all
+still match; their reasons name 0.9.16). `cargo check --all-targets
+--all-features` was clean with no change of ours: no API drift reaches
+this crate. The breaking items of upstream's changelog are new variants
+of `RuntimeApplyFailureCause` and the kernel's `TransitionId`, which
+rkat-tui does not match, and refusals in the MCP profile and spawn tools
+of `meerkat-mob-mcp`'s public surface, which rkat-tui does not serve to
+its agents (it composes `AgentMobToolSurfaceFactory` and the host
+methods). `ToolVocabularySource::HostTools` is new and unused here.
+
+What 0.9.16 changes for us, read from the diff of the fetched sources
+(only `meerkat`, `meerkat-core`, `meerkat-contracts`, the machine crates,
+`meerkat-mob-mcp`, `meerkat-rpc` (tests only), `meerkat-runtime`,
+`meerkat-store` and `meerkat-tools` changed; `meerkat-mob`,
+`meerkat-comms`, `meerkat-openai`, `meerkat-anthropic` and
+`meerkat-sandbox` are the same source as 0.9.15):
+- The hint of a turn that used up `max_tokens` while thinking now names
+  every step that works (raise `max_tokens`, or lower the reasoning
+  effort or the thinking budget); a user may read it.
+- A turn refused for its reasoning-effort level ends alone; rkat-tui sets
+  no level, so it is not reached.
+- `shell_job_status` and `shell_job_cancel` answer only for the calling
+  session's jobs; rkat-tui withholds the shell job tools
+  (`SHELL_JOB_TOOLS`), so nothing changes.
+- `ask_user`'s bounded key, `rkat-rest`'s context directory, Windows'
+  first realm open: not reached.
+- The contract version reads 0.9.16; nothing of ours pins it.
+
+What it did not fix (every upstream entry of CLAUDE.md stays): #2180
+(`meerkat-mob` unchanged; `tool_costs` passes as before, so the search
+and reveal stays), the rest of #2184, #2126, #2231, #2232, #2233, #2234
+and #2388 (`meerkat-openai` unchanged, so `schema_compat` and
+`blank_text` stay), #2235, #2300 (`meerkat-tools` changed only in the
+shell job manager), #2350, #2374, #2384, and the result-less peer
+response limitation (`meerkat-comms` unchanged, nothing in the runtime
+diff touches peer responses), so `PEER_REQUEST_TOOLS` and
+`RESULT_LESS_RESPONSE` stay. No test was re-pinned; the stored-state
+guard opens `tests/fixtures/state-0.0.1/` unchanged.

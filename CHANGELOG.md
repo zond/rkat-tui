@@ -96,6 +96,13 @@
 
 ### Changed
 
+- The engine is Meerkat 0.9.16 (from 0.9.15). What it brings that you can
+  notice: a turn that runs out of `max_tokens` while thinking, before any
+  answer, says to raise `max_tokens` or lower the reasoning effort or the
+  thinking budget where the model takes one, instead of advising a
+  thinking budget a model may not take. Nothing else of the release reaches rkat-tui (its other fixes
+  are in tools and servers rkat-tui does not use), and none of the engine
+  limitations rkat-tui works around is lifted by it.
 - The agent is told to give a command likely to run longer than about 30
   seconds to an `assign` helper, so it stays able to answer you while it
   runs (unless you asked it to run the command itself).
