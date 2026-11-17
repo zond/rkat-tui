@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-11-17
+
 ### Fixed
 
 - In auto mode the classifier blocked the forge's command-line tool
