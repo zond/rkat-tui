@@ -222,7 +222,6 @@ pub const REVIEWED_BUILTINS: &[&str] = &[
     "generate_image",
     "send_message",
     "reply_to_peer",
-    "send_response",
     // Mob tools beyond `delegate`: a temporary council of helpers, and a
     // member concluding its kickoff objective.
     "council",
@@ -251,8 +250,9 @@ pub const BLOB_SAVE_FILE: &str = "blob_save_file";
 
 /// The comms sends that name their recipient (`peer_id`): to another
 /// agent of the workspace they are tier 1 (`ApprovalEngine`'s agent
-/// peers), to anything else reviewed.
-pub const AGENT_SEND_TOOLS: &[&str] = &["send_message", "send_request", "send_response"];
+/// peers), to anything else reviewed. (`reply_to_peer` names none: it
+/// answers the turn's sender, and is reviewed.)
+pub const AGENT_SEND_TOOLS: &[&str] = &["send_message"];
 
 /// Tools that hand work to a helper (a mob member, see [`crate::mobs`]).
 /// Delegating does nothing by itself: every call the helper makes passes
@@ -270,41 +270,20 @@ pub const WITHDRAWN_TOOLS: [&str; 1] = ["delegate"];
 /// Why `delegate` is refused, with what to use instead.
 pub const DELEGATE_UNAVAILABLE: &str = "`delegate` is not available here: start a helper with `assign` (it runs alongside you and you are told when it finishes), or `fork_off` when the task needs this conversation";
 
-/// The engine's comms tool rkat-tui withdraws, as [`WITHDRAWN_TOOLS`] are:
-/// on the engine release in use a session that sent a peer request stops
-/// for good when a response to it arrives without a result
-/// (lukacf/meerkat PR #2402's changelog entry, `docs/evidence.md`), and
-/// the engine's own instruction to a responder shows exactly such a
-/// response. With no request sent, no response can stop one of ours.
-/// Goes when a release fixes it.
-pub const PEER_REQUEST_TOOLS: [&str; 1] = ["send_request"];
+/// The engine's peer request and response tools rkat-tui withdraws, as
+/// [`WITHDRAWN_TOOLS`] are: on the engine release in use a session that
+/// sent a peer request stops for good when a response to it arrives
+/// without a result (lukacf/meerkat PR #2402's changelog entry,
+/// `docs/evidence.md`), and the engine's own instruction to a responder
+/// shows exactly such a response. Agents and helpers ask and answer with
+/// `send_message`; no flow of the engine needs a model to answer a
+/// request (the runtime answers its own). Not brought back when a release
+/// fixes it: messages suffice.
+pub const PEER_REQUEST_TOOLS: [&str; 2] = ["send_request", "send_response"];
 
-/// Why `send_request` is refused, with what to use instead.
-pub const SEND_REQUEST_UNAVAILABLE: &str = "`send_request` is not available here (on this engine release a response without a result stops the requesting session for good): ask with `send_message` instead; the peer answers with `send_message` or `reply_to_peer`";
-
-/// The comms tool whose result-less call [`Action::parse`] refuses.
-pub const SEND_RESPONSE: &str = "send_response";
-
-/// Why a `send_response` without a `result` is refused, and how to fix it.
-pub const RESULT_LESS_RESPONSE: &str = "this `send_response` was not sent: it has no `result`, and on this engine release a response without one stops the requesting session for good. Give `result` as the request's contract asks (for a `checksum_token` request {\"request_intent\":\"checksum_token\",\"request_subject\":\"<subject>\",\"token\":\"<token>\"}), or, when you have no such result, answer with `send_message` (or `reply_to_peer`) instead";
-
-/// Whether a `send_response` call's arguments carry a result: `result`
-/// present and neither null, an empty string, an empty object nor an
-/// empty array.
-#[must_use]
-pub fn response_has_result(args: &RawValue) -> bool {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(args.get()) else {
-        // Arguments that do not parse fail the tool itself.
-        return true;
-    };
-    match value.get("result") {
-        None | Some(serde_json::Value::Null) => false,
-        Some(serde_json::Value::String(text)) => !text.trim().is_empty(),
-        Some(serde_json::Value::Object(map)) => !map.is_empty(),
-        Some(serde_json::Value::Array(items)) => !items.is_empty(),
-        Some(_) => true,
-    }
-}
+/// Why a call of a [`PEER_REQUEST_TOOLS`] tool is refused, with what to
+/// use instead.
+pub const PEER_REQUEST_UNAVAILABLE: &str = "this was not sent: `send_request` and `send_response` are not available here. Ask and answer peers with `send_message` (or `reply_to_peer` for a message this turn received); to answer a peer's request, `send_message` the answer to the peer_id the request came from";
 
 /// What a tool call does, as far as the policy is concerned.
 ///
@@ -352,9 +331,6 @@ pub enum ActionKind {
     /// A tool from [`WITHDRAWN_TOOLS`] or [`PEER_REQUEST_TOOLS`]:
     /// withdrawn, and unavailable.
     Withdrawn,
-    /// The engine's `send_response` without a result
-    /// ([`response_has_result`]): unavailable, saying how to fix it.
-    ResultLessResponse,
     /// A tool from [`DELEGATION_TOOLS`].
     Delegation,
     /// `note_list` / `note_read`.
@@ -426,8 +402,6 @@ impl<'a> Action<'a> {
             && engine_s
         {
             ActionKind::Withdrawn
-        } else if name == SEND_RESPONSE && engine_s && !response_has_result(args) {
-            ActionKind::ResultLessResponse
         } else {
             Self::kind(name, args, family, mutation)
         };
@@ -547,7 +521,6 @@ impl<'a> Action<'a> {
             | ActionKind::Withheld
             | ActionKind::ShellJob
             | ActionKind::Withdrawn
-            | ActionKind::ResultLessResponse
             | ActionKind::Delegation
             | ActionKind::NoteRead
             | ActionKind::Other => vec![pretty_args(self.args)],
@@ -734,14 +707,11 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
         ActionKind::Withdrawn => Ok(TierDecision::new(
             Tier::Unavailable,
             if PEER_REQUEST_TOOLS.contains(&action.name) {
-                SEND_REQUEST_UNAVAILABLE
+                PEER_REQUEST_UNAVAILABLE
             } else {
                 DELEGATE_UNAVAILABLE
             },
         )),
-        ActionKind::ResultLessResponse => {
-            Ok(TierDecision::new(Tier::Unavailable, RESULT_LESS_RESPONSE))
-        }
         ActionKind::Delegation => Ok(TierDecision::new(
             Tier::AlwaysAllow,
             "delegation (the helper's own calls pass this gate)",
@@ -1739,13 +1709,7 @@ mod tests {
             assert_eq!(tier, Tier::AlwaysAllow, "{name}");
         }
         for name in REVIEWED_BUILTINS {
-            // A response is reviewed only with a result (without one it is
-            // unavailable, `a_peer_request_and_a_result_less_response_are_unavailable`).
-            let args = if *name == SEND_RESPONSE {
-                json!({"result": {"token": "t"}})
-            } else {
-                json!({})
-            };
+            let args = json!({});
             let tier = classify_tier(&parse(name, &raw(&args)), &rules, &ctx).tier;
             assert_eq!(tier, Tier::Classifier, "{name}");
         }
@@ -1799,11 +1763,14 @@ mod tests {
         assert_ne!(foreign.tier, Tier::Unavailable);
     }
 
-    /// `send_request` is withdrawn, and a `send_response` without a result
-    /// (absent, null, empty) is refused saying how to fix it, past any
-    /// allow rule; one with a result goes on to review.
+    /// `send_request` and `send_response` are both withdrawn: a call of
+    /// either, with a result or without, is refused saying to use
+    /// `send_message`, past any allow rule and also when the session
+    /// offers no tool of the name; an MCP server's tool of that name is
+    /// judged as any foreign tool. Every member's tool policy denies both,
+    /// and a message to an agent stays a send the gate knows.
     #[test]
-    fn a_peer_request_and_a_result_less_response_are_unavailable() {
+    fn the_peer_request_and_response_tools_are_unavailable() {
         let (_dir, root) = project();
         let ctx = PolicyContext {
             root: &root,
@@ -1813,53 +1780,49 @@ mod tests {
         };
         let native = ToolOrigin::native(meerkat_core::ToolSourceKind::Builtin);
         let mut allow = RuleSet::default();
-        for tool in ["send_request", "send_response"] {
+        for tool in PEER_REQUEST_TOOLS {
             allow.push(Rule::new(RuleKind::Allow, tool, Some("*"), RuleOrigin::Realm).unwrap());
         }
-        let request = raw(&json!({"peer_id": "p", "intent": "checksum_token", "params": {}}));
-        let decision = classify_tier(
-            &Action::parse("send_request", &request, Some(&native)),
-            &allow,
-            &ctx,
-        );
-        assert_eq!(decision.tier, Tier::Unavailable);
-        assert_eq!(decision.detail, SEND_REQUEST_UNAVAILABLE);
-        assert!(SEND_REQUEST_UNAVAILABLE.contains("`send_message`"));
-        for result in [
-            None,
-            Some(json!(null)),
-            Some(json!({})),
-            Some(json!("  ")),
-            Some(json!([])),
-        ] {
-            let mut args = json!({"peer_id": "p", "in_reply_to": "r", "status": "completed"});
-            if let Some(result) = result {
-                args["result"] = result;
+        let calls = [
+            (
+                "send_request",
+                json!({"peer_id": "p", "intent": "checksum_token", "params": {"subject": "s"}}),
+            ),
+            (
+                "send_response",
+                json!({"peer_id": "p", "in_reply_to": "r", "status": "completed"}),
+            ),
+            (
+                "send_response",
+                json!({"peer_id": "p", "in_reply_to": "r", "status": "completed", "result": {"request_intent": "checksum_token", "request_subject": "s", "token": "t"}}),
+            ),
+        ];
+        for (name, args) in &calls {
+            let args = raw(args);
+            for origin in [Some(&native), None] {
+                for rules in [&RuleSet::default(), &allow] {
+                    let decision = classify_tier(&Action::parse(name, &args, origin), rules, &ctx);
+                    assert_eq!(decision.tier, Tier::Unavailable, "{name} {origin:?}");
+                    assert_eq!(decision.detail, PEER_REQUEST_UNAVAILABLE);
+                }
             }
-            let decision = classify_tier(
-                &Action::parse("send_response", &raw(&args), Some(&native)),
-                &allow,
-                &ctx,
-            );
-            assert_eq!(decision.tier, Tier::Unavailable, "{args}");
-            assert_eq!(decision.detail, RESULT_LESS_RESPONSE);
+            let mcp = ToolOrigin::mcp("other");
+            let foreign = classify_tier(&Action::parse(name, &args, Some(&mcp)), &allow, &ctx);
+            assert_ne!(foreign.tier, Tier::Unavailable, "{name}");
         }
         assert!(
-            RESULT_LESS_RESPONSE.contains("Give `result`")
-                && RESULT_LESS_RESPONSE.contains("answer with `send_message`"),
-            "{RESULT_LESS_RESPONSE}"
+            PEER_REQUEST_UNAVAILABLE.contains("Ask and answer peers with `send_message`")
+                && PEER_REQUEST_UNAVAILABLE.contains(
+                    "to answer a peer's request, `send_message` the answer to the peer_id"
+                ),
+            "{PEER_REQUEST_UNAVAILABLE}"
         );
-        let with = raw(
-            &json!({"peer_id": "p", "in_reply_to": "r", "status": "completed", "result": {"request_intent": "checksum_token", "request_subject": "s", "token": "t"}}),
-        );
-        let decision = classify_tier(
-            &Action::parse("send_response", &with, Some(&native)),
-            &RuleSet::default(),
-            &ctx,
-        );
-        assert_ne!(decision.tier, Tier::Unavailable);
-        let tools = crate::mobs::customizer::tool_access_policy();
-        assert!(format!("{tools:?}").contains("send_request"));
+        let tools = format!("{:?}", crate::mobs::customizer::tool_access_policy());
+        for tool in PEER_REQUEST_TOOLS {
+            assert!(tools.contains(tool), "{tool}: {tools}");
+            assert!(!AGENT_SEND_TOOLS.contains(&tool), "{tool}");
+        }
+        assert_eq!(AGENT_SEND_TOOLS, ["send_message"]);
     }
 
     #[test]

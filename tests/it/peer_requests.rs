@@ -4,9 +4,10 @@
 //! shown on this rig before the guard: the requester's next input was
 //! refused "has no committed runtime attachment … (unregister_not_started)"
 //! and the daemon's clean stop failed "terminal completion finalization
-//! lost the exact durable CAS"). So `send_request` is withdrawn and a
-//! result-less `send_response` refused, each saying what to do; the helper
-//! goes on taking messages.
+//! lost the exact durable CAS"). So neither `send_request` nor
+//! `send_response` is offered to an agent or a helper: they ask and answer
+//! with `send_message`. A call of either is refused; the helper goes on
+//! taking messages.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -34,12 +35,20 @@ fn result_of(messages: &[Message], id: &str) -> Option<(String, bool)> {
     })
 }
 
-/// The helper `w` tries a request to its parent (the tool is not offered;
-/// the call is refused saying to ask with `send_message`); the parent
-/// answers `w` with a result-less response (refused saying to give a
-/// result or answer with `send_message`); then `w` takes a next message.
+/// Whether `text` is the refusal of a call of `name`: the members' tool
+/// policy's (the tool is not offered) or the gate's, which says to use
+/// `send_message`.
+fn refused(text: &str, name: &str) -> bool {
+    text.contains(&format!("'{name}' is not allowed by policy"))
+        || text.contains(rkat_tui::approval::policy::PEER_REQUEST_UNAVAILABLE)
+}
+
+/// The helper `w` tries a request to its parent, and the parent answers
+/// `w` with a well-formed response (a result per the contract): neither
+/// tool is offered to either, and both calls are refused; then `w` takes a
+/// next message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_request_and_a_result_less_response_are_refused_and_the_helper_runs_on() {
+async fn neither_peer_request_tool_is_offered_and_the_helper_runs_on() {
     let ws = Workspace::new();
     let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
         let user = common::user_texts(messages).concat();
@@ -72,7 +81,7 @@ async fn a_request_and_a_result_less_response_are_refused_and_the_helper_runs_on
             return tool(
                 "x1",
                 "send_response",
-                json!({"peer_id": w, "in_reply_to": "01a1ea66-0000-7000-8000-000000000000", "status": "completed"}),
+                json!({"peer_id": w, "in_reply_to": "01a1ea66-0000-7000-8000-000000000000", "status": "completed", "result": {"request_intent": "checksum_token", "request_subject": "s", "token": "t"}}),
             );
         }
         tool(
@@ -99,36 +108,33 @@ async fn a_request_and_a_result_less_response_are_refused_and_the_helper_runs_on
             .await
         }
     };
-    // A call of the tool not offered is refused by the members' tool
-    // policy before the gate (the gate's own refusal is the unit test's).
     let (request, error) = found("r1").await;
-    assert!(error, "{request}");
-    assert!(
-        request.contains("'send_request' is not allowed by policy")
-            || request.contains("`send_request` is not available here"),
-        "{request}"
-    );
+    assert!(error && refused(&request, "send_request"), "{request}");
     let (response, error) = found("x1").await;
-    assert!(error, "{response}");
-    assert!(
-        response.contains("has no `result`")
-            && response.contains("Give `result`")
-            && response.contains("answer with `send_message`"),
-        "{response}"
-    );
-    // Neither the agent nor its helper is offered the tool.
-    let offered: Vec<String> = llm
-        .recorded()
-        .iter()
-        .flat_map(|r| {
-            r.defs
-                .iter()
-                .map(|d| d.name.to_string())
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    assert!(offered.iter().any(|n| n == "send_message"), "{offered:?}");
-    assert!(!offered.iter().any(|n| n == "send_request"), "{offered:?}");
+    assert!(error && refused(&response, "send_response"), "{response}");
+    // Neither the agent nor its helper is offered either tool; both are
+    // offered `send_message`.
+    let recorded = llm.recorded();
+    for (who, is_helper) in [("the agent", false), ("the helper", true)] {
+        let requests: Vec<_> = recorded
+            .iter()
+            .filter(|r| r.user().contains("TASK-OF-W") == is_helper)
+            .collect();
+        assert!(!requests.is_empty(), "no request of {who}");
+        for r in requests {
+            let offered: Vec<String> = r.defs.iter().map(|d| d.name.to_string()).collect();
+            assert!(
+                offered.iter().any(|n| n == "send_message"),
+                "{who}: {offered:?}"
+            );
+            assert!(
+                !offered
+                    .iter()
+                    .any(|n| n == "send_request" || n == "send_response"),
+                "{who}: {offered:?}"
+            );
+        }
+    }
     // Nothing reached the classifier: both were refused before review.
     assert!(
         !classifier

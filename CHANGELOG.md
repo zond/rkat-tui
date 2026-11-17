@@ -18,11 +18,14 @@
 - One agent or helper could stop another's conversation for good by
   answering its request the way the engine's own instructions show
   (a response without a result, which this engine release cannot finish
-  recording). Agents and helpers no longer have `send_request`; a
-  response without a result is refused, saying to give one or to answer
-  with `send_message`. A conversation that was already stopped this way
-  stays stopped (its next message is refused with "has no committed
-  runtime attachment"); the engine has no repair for it yet.
+  recording). Agents and helpers no longer have `send_request` or
+  `send_response`: they ask and answer each other with `send_message`,
+  and answer a request that still arrives (from an agent of another
+  workspace whose daemon runs an earlier build) the same way; a call of
+  either tool is refused, saying to use `send_message`. A conversation
+  that was already stopped this way stays stopped (its next message is
+  refused with "has no committed runtime attachment"); the engine has no
+  repair for it yet.
 
 - An agent restored on a conversation an earlier build began kept that
   build's instructions about its tools and helpers (one said a `fork_off`

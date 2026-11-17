@@ -3165,7 +3165,12 @@ move, Esc or `q` closes it, and:
 
 **Wired.** Every agent is wired to every other one as a peer, so each has
 the engine's peer tools (`peers` lists the other agents, `send_message`
-and the request and reply tools reach them). An agent's helpers are wired
+and `reply_to_peer` reach them). The engine's request and response tools
+(`send_request`, `send_response`) are not offered to agents or helpers: on
+this engine release a response without a result stops the requesting
+conversation for good, so they ask and answer with messages, and answer a
+request that still reaches them (from an agent of another workspace whose
+daemon runs an earlier build) with `send_message` too. An agent's helpers are wired
 to it, not to the workspace's other agents: an `assign` helper and a member
 seated with `spawn_member` or `spawn_many_members` (rkat-tui sets
 `auto_wire_parent` on every helper it shapes) and a `fork_off` child (the

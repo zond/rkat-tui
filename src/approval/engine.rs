@@ -668,8 +668,8 @@ impl ApprovalEngine {
         self.agent_peers.set(peers).is_ok()
     }
 
-    /// Whether `facts` is a comms send (`send_message`, `send_request`,
-    /// `send_response`) to another agent of the workspace.
+    /// Whether `facts` is a comms send ([`super::policy::AGENT_SEND_TOOLS`]:
+    /// `send_message`) to another agent of the workspace.
     async fn to_agent_peer(&self, session_id: &SessionId, facts: &Facts<'_>) -> AgentSend {
         let Some(peers) = self.agent_peers.get() else {
             return AgentSend::No;

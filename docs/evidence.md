@@ -11945,6 +11945,49 @@ nothing an operator can call repairs it on this release. Goes when a
 release fixes it. Tests: `peer_requests::a_request_and_a_result_less_response_are_refused_and_the_helper_runs_on`,
 `approval::policy::tests::a_peer_request_and_a_result_less_response_are_unavailable`.
 
+Both tools withdrawn (owner's decision, 2026-11-17, before 0.0.15 was
+tagged). Read first, in the 0.9.16 sources, whether anything needs a
+member's model to answer a request with `send_response`:
+- The supervisor bridge (`supervisor.bridge` requests: bind, observe,
+  materialize, retire) is classified auth-exempt and delivered as
+  volatile control (`meerkat-comms` `classify.rs`), and answered by the
+  runtime (`meerkat-mob` `upcall_responder.rs`, `host_actor.rs`
+  `send_reply`), never by a model.
+- The mob's topology notices (`mob.peer_added` is still sent as a
+  request by `delegation.rs` `notify_peer_added` and `actor.rs`
+  `peer_event_command`; retired, unwired and the kickoff states as
+  lifecycle notices) classify as `PeerLifecycle*`, not actionable
+  requests: status, no reply expected.
+- `fork_off`, `spawn_member`, `assign` (ours), wiring and trust, and the
+  schedules send no peer request (the only other non-test senders are
+  the `send_request` tool itself and the generic dispatch under it).
+- `checksum_token` is only a contract the `send_request` tool describes
+  for a model-to-model check; `live_delegation/peer_replies.rs` (the
+  withdrawn `delegate`'s worker) only reads such requests a worker sent.
+An unanswered request blocks nothing: the tool says "There is no
+built-in timeout"; the requester's `pending_peer_requests` entry (and
+the receiver's `inbound_peer_requests`) stay, and no machine guard reads
+them outside the request's own transitions. A request still reaches one
+of ours only from an agent of another workspace wired with `/wire` whose
+daemon runs an earlier build: our agent sees the engine's projection
+("Peer request from peer_id … This is a correlated peer request. Reply
+with send_response … Do not answer this request with send_message"),
+which the persona overrides (answer it with `send_message`); with no
+response the sender just goes on.
+So `PEER_REQUEST_TOOLS` is both tools, denied in every member's tool
+access policy (agents and every helper kind, `tool_access_policy`) and
+refused at the gate (`PEER_REQUEST_UNAVAILABLE`, saying to use
+`send_message`). The result-less guard (`RESULT_LESS_RESPONSE`,
+`response_has_result`) went: an engine `send_response` is now refused
+whatever its arguments, and an MCP server's tool of the name is not the
+engine's, so no path reached it. `AGENT_SEND_TOOLS` is `send_message`
+alone. The comms definitions shrank by `send_response`'s 7.6 KB;
+`tool_costs` asserts the comms tools by name. Not brought back when a
+release fixes the limitation: messages suffice. Tests:
+`peer_requests::neither_peer_request_tool_is_offered_and_the_helper_runs_on`,
+`approval::policy::tests::the_peer_request_and_response_tools_are_unavailable`,
+`tool_costs::an_agent_s_request_carries_every_tool_definition`.
+
 ## The engine moves to crates.io 0.9.16 (2026-11-17)
 
 Every `meerkat-*` line names `version = "0.9.16"`; `cargo update -p

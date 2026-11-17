@@ -204,10 +204,12 @@ repository). Open upstream issues this code waits on:
 - The engine's known limitation on result-less peer responses (upstream
   PR #2402's changelog entry for 0.9.15 and 0.9.16; no issue of ours): on
   a realm on disk a session that sent `send_request` stops for good when a
-  response without a `result` arrives. `send_request` is withdrawn
-  (`approval::policy::PEER_REQUEST_TOOLS`) and a result-less
-  `send_response` refused (`RESULT_LESS_RESPONSE`), with the persona's
-  line; all go when a release fixes it.
+  response without a `result` arrives. Both `send_request` and
+  `send_response` are withdrawn (`approval::policy::PEER_REQUEST_TOOLS`,
+  `PEER_REQUEST_UNAVAILABLE`); agents and helpers ask and answer with
+  `send_message` (the persona's line). Nothing of ours goes when a
+  release fixes it: the tools do not come back, messages suffice; the
+  entry only records the limitation.
 
 ## Stored state
 

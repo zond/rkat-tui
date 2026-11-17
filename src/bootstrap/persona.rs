@@ -72,9 +72,8 @@ you with (you are told when it does): message one when your task needs what it \
 knows or does. Each message wakes its receiver, so keep to what is needed.
 - If you start helpers yourself, `connect_helpers` wires two or more of them to \
 each other when they must coordinate directly.
-- Ask and answer peers with `send_message` (`send_request` is not available). \
-Should a peer's request reach you, answer it with `send_response` only with a \
-`result`; with no result to give, answer with `send_message`.
+- Ask and answer peers with `send_message`; if a peer's request reaches you, \
+answer it with `send_message` too.
 ";
 
 /// The section every agent's instructions carry about the other agents of
@@ -135,9 +134,8 @@ can message them, and is told so. Every message wakes its receiver and costs it 
 model call, so connect only helpers that need to talk, and relay through you when \
 that is enough. (`wire_members` is refused in the workspace's mob: only the host \
 wires it.)
-- Ask and answer other agents and helpers with `send_message` (`send_request` is \
-not available). Should a peer's request reach you, answer it with `send_response` \
-only with a `result`; with no result to give, answer with `send_message`.
+- Ask and answer other agents and helpers with `send_message`; if a peer's request \
+reaches you, answer it with `send_message` too.
 - When your user interrupts you, your helpers keep working. When one of them ends \
 (finished, failed, stopped by the user) or goes idle, you are told in a note at \
 once; do not poll for it.
@@ -220,8 +218,8 @@ mod tests {
             "any command you want run while you keep working",
             "long-lived processes such as servers are not possible yet",
             "`wire_members` is refused in the workspace's mob",
-            "(`send_request` is not available)",
-            "only with a `result`; with no result to give, answer with `send_message`",
+            "Ask and answer other agents and helpers with `send_message`; if a peer's \
+             request reaches you, answer it with `send_message` too.",
             "When your user interrupts you, your helpers keep working.",
             "you are told in a note at once",
             "do not poll for it",
@@ -239,10 +237,15 @@ mod tests {
             "announces your file changes for you",
             "other helpers the agent that started you connected",
             "`connect_helpers` wires two or more of them",
-            "(`send_request` is not available)",
-            "answer it with `send_response` only with a `result`",
+            "Ask and answer peers with `send_message`; if a peer's request reaches you, \
+             answer it with `send_message` too.",
         ] {
             assert!(HELPER_PERSONA.contains(line), "{line}");
+        }
+        // Neither peer request tool is named: both are withdrawn.
+        for gone in ["`send_request`", "`send_response`"] {
+            assert!(!section.contains(gone), "{gone}: {section}");
+            assert!(!HELPER_PERSONA.contains(gone), "{gone}");
         }
     }
 

@@ -76,17 +76,18 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     );
     assert!(main.tools.iter().any(|name| name == "assign"), "{report}");
     assert!(bytes["mob"] < 12_000, "{report}");
-    // The engine's comms tools, but `send_request` (withdrawn: a
-    // result-less response to it stops the requester on this release).
-    assert!(bytes["comms"] > 12_000, "{report}");
-    assert!(
-        !main.tools.iter().any(|name| name == "send_request"),
+    // The engine's comms tools, but `send_request` and `send_response`
+    // (withdrawn: a result-less response stops the requester on this
+    // release, and messages suffice).
+    let mut comms = main.tools_of("comms");
+    comms.sort();
+    assert_eq!(
+        comms,
+        ["peers", "reply_to_peer", "send_message"],
         "{report}"
     );
-    assert!(
-        main.tools.iter().any(|name| name == "send_response"),
-        "{report}"
-    );
+    // 9,364 bytes on 0.9.16 (it was above 12,000 with `send_response`).
+    assert!(bytes["comms"] < 10_000, "{report}");
     // rkat-tui's own: small, and kept so. The skill tool is one short
     // definition.
     assert_eq!(main.tools_of("skills"), ["skill_read"], "{report}");
@@ -161,6 +162,14 @@ async fn an_agent_s_request_carries_every_tool_definition() {
         !helper_bytes.contains_key("schedule")
             && !helper_bytes.contains_key("mob")
             && !helper_bytes.contains_key("catalog"),
+        "{helper_bytes:?}"
+    );
+    // A helper has the same comms tools as its parent.
+    let mut helper_comms = helper.tools_of("comms");
+    helper_comms.sort();
+    assert_eq!(
+        helper_comms,
+        ["peers", "reply_to_peer", "send_message"],
         "{helper_bytes:?}"
     );
     // A helper reads skills too.
