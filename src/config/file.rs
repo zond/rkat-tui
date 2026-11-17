@@ -52,6 +52,13 @@ pub struct AutoSettings {
     /// file's. A section, not a scalar setting: the layering adds them.
     #[serde(skip)]
     pub allow: Vec<(crate::approval::statements::StatementOrigin, String)>,
+    /// The hosts the user trusts with the project's data (`[auto]
+    /// trusted_hosts`), from the user-level file, the realm's and the
+    /// command line, each checked
+    /// ([`crate::approval::hosts::HostPattern::parse`]); never a project
+    /// file's. A section, not a scalar setting: the layering adds them.
+    #[serde(skip)]
+    pub trusted_hosts: Vec<String>,
 }
 
 impl AutoSettings {
@@ -102,6 +109,10 @@ pub struct AutoSection {
     /// file's are ignored with a notice).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
+    /// See [`AutoSettings::trusted_hosts`]: added to the lower layers' (a
+    /// project file's are ignored with a notice).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_hosts: Vec<String>,
     /// What the agents are asked to do before an automatic compaction
     /// (an empty text is none; see
     /// [`PrepareSetting`](super::settings::PrepareSetting); `/compact prepare` writes the

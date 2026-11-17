@@ -52,6 +52,7 @@ pub mod desk;
 pub mod engine;
 pub mod escalation;
 pub mod grants;
+pub mod hosts;
 pub mod mode;
 pub mod policy;
 pub mod prompts;

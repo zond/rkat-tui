@@ -668,8 +668,8 @@ environment, beside the directories you allow, under "The user allows
 these kinds of action (statements in their own words)". A statement
 clears the block rules for actions of the kind it describes, read
 narrowly (it covers what it says, not a neighbouring action of another
-kind), and it never clears sending data to a host you have not listed as
-trusted. It is judged, not matched: a weak classifier model may apply it
+kind), and it never clears sending data to a host that is neither the
+project's own nor one you trust (below). It is judged, not matched: a weak classifier model may apply it
 too widely or not at all (`/auto check statements` measures that).
 
 - **for this session**: held in the daemon for the agent's conversation;
@@ -691,6 +691,47 @@ allows: …"). `/permissions` lists them with their origin (`session`,
 `always`, `config`); `d` removes a session or always one (the realm file
 too) and one of your own file from that file; one given on the daemon's
 command line ends when the daemon stops, as the refusal says.
+
+### The project's hosts and the hosts you trust
+
+Rule D5 blocks sending project data to a host you did not name. Two
+kinds of host are not "unnamed", and the classifier is told both in its
+environment:
+
+- **The project's own.** The hosts of the workspace's git remotes
+  (`url` and `pushurl` of each `[remote "…"]`, read from `.git/config`,
+  or the repository's when the workspace is a worktree; `https://`,
+  `ssh://user@host:port/` and `user@host:path` forms; a local path names
+  none). Only the host is used: the user and a token in a remote's URL
+  never leave the daemon. Fetching from them and sending the project's
+  own content to them with git or the forge's command-line tool (`git
+  push`, `glab`, `gh`, aimed at that host) is ordinary work, not D5.
+- **The ones you trust.** `[auto] trusted_hosts = ["ci.example.net",
+  "*.corp.example"]` in your own `tui.toml` (every workspace) or the
+  realm's (this workspace), or `--set 'auto.trusted_hosts=["<host>"]'`
+  for one run; there is no `/set` for a list. An entry is a host name, or
+  `*.` and a domain of at least two labels for any subdomain of it
+  (`*.corp.example` takes `git.corp.example`, never `corp.example`
+  itself, `evilcorp.example` or `corp.example.evil.example`); a scheme,
+  user, port or path is refused with a notice. A project's own
+  `.rkat/tui.toml` cannot set it (ignored with a start-up notice: a cloned
+  repository could name its own server). A change of either file applies
+  at once, as the rules do.
+
+Neither list is a blanket allow: credentials and secrets are D5 at any
+host, and every other rule still judges what is done there (pushing to
+the default branch, publishing, a merge request, issue or comment you did
+not ask for, history rewrites). When a block names a host, its reason
+says which host is neither the project's nor trusted, and how to trust it
+(the setting and both files).
+
+The remotes are read once, when the daemon starts for the workspace,
+and never again while it runs: the agent's confined shell can write
+`.git/` (an engine limit), so a remote the agent adds or changes during
+the session is not stated, and the classifier is told to judge adding a
+remote or changing its URL as sending the project to that host (it
+would be stated from the next start). Restarting the daemon is how you
+refresh the list after changing the remotes yourself.
 
 ### Permission modes
 
@@ -1723,6 +1764,7 @@ it may only lower a value, its lowering applies over every layer).
 | `daemon.principal`: The person every attached client decides approval requests as. | text (at most 200 characters) | the login name ($USER, else $LOGNAME, else owner) | may not set it | at the next start | — |
 | `[[allow]] / [[deny]]`: Rules: `tool`, then `arg` (a glob) or `literal`. | a section | none | may only add deny rules | at once from your own and the workspace's file (a project file's at the next start) | `--allow` / `--deny <tool>[=<glob>]`; /permissions, /approve |
 | `auto.allow`: Statements: kinds of action you allow, which the classifier reads. | a section | none | may not set it | at once | —; /approve, /permissions |
+| `auto.trusted_hosts`: Hosts you trust with the project's data (`host` or `*.domain`), which the classifier reads beside the hosts of the project's git remotes; other rules still apply there. | a section | none | may not set it | at once | `--set 'auto.trusted_hosts=["<host>"]'`; — (edit the file) |
 | `confinement.extra_read / extra_write`: Extra directories for the confined shell, which the approval gate is told too. | a section | none | may not set it | the gate and the file tools at once; a confined shell at the next start | `--confinement-read` / `--confinement-write <dir>`; /approve |
 | `endpoints.<name>`: `dialect`, `base_url`, `api_key_env`, `priority`, `api_style` (an inline `api_key` is refused). | a section | none | may not set it | at the next start | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]`; — |
 | `pricing."<model id>"`: `input`, `output`, `cached_input`, `cache_write` in USD per million tokens. | a section | none | may not set it | at the next start | `--set 'pricing."<id>".input=15'`; — |

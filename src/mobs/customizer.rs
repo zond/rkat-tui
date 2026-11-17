@@ -45,8 +45,9 @@ pub const DENIED_SPAWN_TOOLS: [&str; 1] = ["fork_off"];
 /// The tool access policy every member's is merged with:
 /// [`crate::approval::policy::TUI_OWNED_BUILTINS`], the shell's job controls
 /// ([`crate::approval::policy::SHELL_JOB_TOOLS`]), the withdrawn mob tools
-/// ([`crate::approval::policy::WITHDRAWN_TOOLS`]: `delegate`) and
-/// [`DENIED_SPAWN_TOOLS`] denied.
+/// ([`crate::approval::policy::WITHDRAWN_TOOLS`]: `delegate`), the peer
+/// request ([`crate::approval::policy::PEER_REQUEST_TOOLS`]:
+/// `send_request`) and [`DENIED_SPAWN_TOOLS`] denied.
 #[must_use]
 pub fn tool_access_policy() -> meerkat_core::ops::ToolAccessPolicy {
     meerkat_core::ops::ToolAccessPolicy::DenyList(
@@ -54,6 +55,7 @@ pub fn tool_access_policy() -> meerkat_core::ops::ToolAccessPolicy {
             .into_iter()
             .chain(crate::approval::policy::SHELL_JOB_TOOLS)
             .chain(crate::approval::policy::WITHDRAWN_TOOLS)
+            .chain(crate::approval::policy::PEER_REQUEST_TOOLS)
             .chain(DENIED_SPAWN_TOOLS)
             .collect::<meerkat_core::ToolNameSet>(),
     )

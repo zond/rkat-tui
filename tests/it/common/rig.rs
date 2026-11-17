@@ -918,6 +918,8 @@ pub async fn stored_session(root: &Path, id: &meerkat_core::SessionId) -> meerka
 pub struct ScriptedClassifier {
     verdicts: parking_lot::Mutex<Vec<Result<ClassifierVerdict, ClassifierError>>>,
     seen: parking_lot::Mutex<Vec<(String, serde_json::Value, String)>>,
+    /// The environment of every review.
+    environments: parking_lot::Mutex<Vec<rkat_tui::approval::classifier::Environment>>,
     allow_when_done: bool,
     /// A review of a call whose arguments hold this text times out.
     fail_on: Option<String>,
@@ -956,6 +958,12 @@ impl ScriptedClassifier {
         self.seen.lock().clone()
     }
 
+    /// The environment of every review.
+    #[allow(dead_code)]
+    pub fn environments(&self) -> Vec<rkat_tui::approval::classifier::Environment> {
+        self.environments.lock().clone()
+    }
+
     /// The transcript of every review.
     pub fn transcripts(&self) -> Vec<String> {
         self.seen().into_iter().map(|(_, _, t)| t).collect()
@@ -978,6 +986,7 @@ impl ActionClassifier for ScriptedClassifier {
             input.args.clone(),
             input.transcript.render(),
         ));
+        self.environments.lock().push(input.environment.clone());
         if let Some(text) = &self.fail_on
             && input.args.to_string().contains(text.as_str())
         {

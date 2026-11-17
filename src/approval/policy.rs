@@ -222,7 +222,6 @@ pub const REVIEWED_BUILTINS: &[&str] = &[
     "generate_image",
     "send_message",
     "reply_to_peer",
-    "send_request",
     "send_response",
     // Mob tools beyond `delegate`: a temporary council of helpers, and a
     // member concluding its kickoff objective.
@@ -271,6 +270,42 @@ pub const WITHDRAWN_TOOLS: [&str; 1] = ["delegate"];
 /// Why `delegate` is refused, with what to use instead.
 pub const DELEGATE_UNAVAILABLE: &str = "`delegate` is not available here: start a helper with `assign` (it runs alongside you and you are told when it finishes), or `fork_off` when the task needs this conversation";
 
+/// The engine's comms tool rkat-tui withdraws, as [`WITHDRAWN_TOOLS`] are:
+/// on the engine release in use a session that sent a peer request stops
+/// for good when a response to it arrives without a result
+/// (lukacf/meerkat PR #2402's changelog entry, `docs/evidence.md`), and
+/// the engine's own instruction to a responder shows exactly such a
+/// response. With no request sent, no response can stop one of ours.
+/// Goes when a release fixes it.
+pub const PEER_REQUEST_TOOLS: [&str; 1] = ["send_request"];
+
+/// Why `send_request` is refused, with what to use instead.
+pub const SEND_REQUEST_UNAVAILABLE: &str = "`send_request` is not available here (on this engine release a response without a result stops the requesting session for good): ask with `send_message` instead; the peer answers with `send_message` or `reply_to_peer`";
+
+/// The comms tool whose result-less call [`Action::parse`] refuses.
+pub const SEND_RESPONSE: &str = "send_response";
+
+/// Why a `send_response` without a `result` is refused, and how to fix it.
+pub const RESULT_LESS_RESPONSE: &str = "this `send_response` was not sent: it has no `result`, and on this engine release a response without one stops the requesting session for good. Give `result` as the request's contract asks (for a `checksum_token` request {\"request_intent\":\"checksum_token\",\"request_subject\":\"<subject>\",\"token\":\"<token>\"}), or, when you have no such result, answer with `send_message` (or `reply_to_peer`) instead";
+
+/// Whether a `send_response` call's arguments carry a result: `result`
+/// present and neither null, an empty string, an empty object nor an
+/// empty array.
+#[must_use]
+pub fn response_has_result(args: &RawValue) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(args.get()) else {
+        // Arguments that do not parse fail the tool itself.
+        return true;
+    };
+    match value.get("result") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::String(text)) => !text.trim().is_empty(),
+        Some(serde_json::Value::Object(map)) => !map.is_empty(),
+        Some(serde_json::Value::Array(items)) => !items.is_empty(),
+        Some(_) => true,
+    }
+}
+
 /// What a tool call does, as far as the policy is concerned.
 ///
 /// Built by [`Action::parse`] from the call's raw arguments, deserialized
@@ -314,8 +349,12 @@ pub enum ActionKind {
     Withheld,
     /// A tool from [`SHELL_JOB_TOOLS`]: withheld too, and unavailable.
     ShellJob,
-    /// A tool from [`WITHDRAWN_TOOLS`]: withdrawn, and unavailable.
+    /// A tool from [`WITHDRAWN_TOOLS`] or [`PEER_REQUEST_TOOLS`]:
+    /// withdrawn, and unavailable.
     Withdrawn,
+    /// The engine's `send_response` without a result
+    /// ([`response_has_result`]): unavailable, saying how to fix it.
+    ResultLessResponse,
     /// A tool from [`DELEGATION_TOOLS`].
     Delegation,
     /// `note_list` / `note_read`.
@@ -382,10 +421,13 @@ impl<'a> Action<'a> {
         // A withdrawn tool is refused as the engine's, also when the
         // session offers none of the name (its policy withheld it): only
         // a tool of that name from elsewhere (an MCP server's) is not it.
-        let kind = if WITHDRAWN_TOOLS.contains(&name)
-            && (origin.is_none() || family == ToolFamily::Native)
+        let engine_s = origin.is_none() || family == ToolFamily::Native;
+        let kind = if (WITHDRAWN_TOOLS.contains(&name) || PEER_REQUEST_TOOLS.contains(&name))
+            && engine_s
         {
             ActionKind::Withdrawn
+        } else if name == SEND_RESPONSE && engine_s && !response_has_result(args) {
+            ActionKind::ResultLessResponse
         } else {
             Self::kind(name, args, family, mutation)
         };
@@ -505,6 +547,7 @@ impl<'a> Action<'a> {
             | ActionKind::Withheld
             | ActionKind::ShellJob
             | ActionKind::Withdrawn
+            | ActionKind::ResultLessResponse
             | ActionKind::Delegation
             | ActionKind::NoteRead
             | ActionKind::Other => vec![pretty_args(self.args)],
@@ -688,7 +731,17 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
             Tier::Unavailable,
             BACKGROUND_SHELL_UNAVAILABLE,
         )),
-        ActionKind::Withdrawn => Ok(TierDecision::new(Tier::Unavailable, DELEGATE_UNAVAILABLE)),
+        ActionKind::Withdrawn => Ok(TierDecision::new(
+            Tier::Unavailable,
+            if PEER_REQUEST_TOOLS.contains(&action.name) {
+                SEND_REQUEST_UNAVAILABLE
+            } else {
+                DELEGATE_UNAVAILABLE
+            },
+        )),
+        ActionKind::ResultLessResponse => {
+            Ok(TierDecision::new(Tier::Unavailable, RESULT_LESS_RESPONSE))
+        }
         ActionKind::Delegation => Ok(TierDecision::new(
             Tier::AlwaysAllow,
             "delegation (the helper's own calls pass this gate)",
@@ -1664,11 +1717,12 @@ mod tests {
                 REVIEWED_BUILTINS.contains(name),
                 TUI_OWNED_BUILTINS.contains(name),
                 SHELL_JOB_TOOLS.contains(name),
+                PEER_REQUEST_TOOLS.contains(name),
             ];
             assert!(
                 lists.into_iter().filter(|listed| *listed).count() == 1,
                 "upstream builtin `{name}` must be in exactly one of READ_ONLY_BUILTINS, \
-                 REVIEWED_BUILTINS, TUI_OWNED_BUILTINS and SHELL_JOB_TOOLS"
+                 REVIEWED_BUILTINS, TUI_OWNED_BUILTINS, SHELL_JOB_TOOLS and PEER_REQUEST_TOOLS"
             );
         }
         let (_dir, root) = project();
@@ -1685,7 +1739,13 @@ mod tests {
             assert_eq!(tier, Tier::AlwaysAllow, "{name}");
         }
         for name in REVIEWED_BUILTINS {
-            let args = json!({});
+            // A response is reviewed only with a result (without one it is
+            // unavailable, `a_peer_request_and_a_result_less_response_are_unavailable`).
+            let args = if *name == SEND_RESPONSE {
+                json!({"result": {"token": "t"}})
+            } else {
+                json!({})
+            };
             let tier = classify_tier(&parse(name, &raw(&args)), &rules, &ctx).tier;
             assert_eq!(tier, Tier::Classifier, "{name}");
         }
@@ -1737,6 +1797,69 @@ mod tests {
         let mcp = ToolOrigin::mcp("evil");
         let foreign = classify_tier(&Action::parse("delegate", &raw, Some(&mcp)), &allow, &ctx);
         assert_ne!(foreign.tier, Tier::Unavailable);
+    }
+
+    /// `send_request` is withdrawn, and a `send_response` without a result
+    /// (absent, null, empty) is refused saying how to fix it, past any
+    /// allow rule; one with a result goes on to review.
+    #[test]
+    fn a_peer_request_and_a_result_less_response_are_unavailable() {
+        let (_dir, root) = project();
+        let ctx = PolicyContext {
+            root: &root,
+            trust_project_builds: true,
+            posix_shell: true,
+            granted: crate::approval::classifier::GrantedDirs::none(),
+        };
+        let native = ToolOrigin::native(meerkat_core::ToolSourceKind::Builtin);
+        let mut allow = RuleSet::default();
+        for tool in ["send_request", "send_response"] {
+            allow.push(Rule::new(RuleKind::Allow, tool, Some("*"), RuleOrigin::Realm).unwrap());
+        }
+        let request = raw(&json!({"peer_id": "p", "intent": "checksum_token", "params": {}}));
+        let decision = classify_tier(
+            &Action::parse("send_request", &request, Some(&native)),
+            &allow,
+            &ctx,
+        );
+        assert_eq!(decision.tier, Tier::Unavailable);
+        assert_eq!(decision.detail, SEND_REQUEST_UNAVAILABLE);
+        assert!(SEND_REQUEST_UNAVAILABLE.contains("`send_message`"));
+        for result in [
+            None,
+            Some(json!(null)),
+            Some(json!({})),
+            Some(json!("  ")),
+            Some(json!([])),
+        ] {
+            let mut args = json!({"peer_id": "p", "in_reply_to": "r", "status": "completed"});
+            if let Some(result) = result {
+                args["result"] = result;
+            }
+            let decision = classify_tier(
+                &Action::parse("send_response", &raw(&args), Some(&native)),
+                &allow,
+                &ctx,
+            );
+            assert_eq!(decision.tier, Tier::Unavailable, "{args}");
+            assert_eq!(decision.detail, RESULT_LESS_RESPONSE);
+        }
+        assert!(
+            RESULT_LESS_RESPONSE.contains("Give `result`")
+                && RESULT_LESS_RESPONSE.contains("answer with `send_message`"),
+            "{RESULT_LESS_RESPONSE}"
+        );
+        let with = raw(
+            &json!({"peer_id": "p", "in_reply_to": "r", "status": "completed", "result": {"request_intent": "checksum_token", "request_subject": "s", "token": "t"}}),
+        );
+        let decision = classify_tier(
+            &Action::parse("send_response", &with, Some(&native)),
+            &RuleSet::default(),
+            &ctx,
+        );
+        assert_ne!(decision.tier, Tier::Unavailable);
+        let tools = crate::mobs::customizer::tool_access_policy();
+        assert!(format!("{tools:?}").contains("send_request"));
     }
 
     #[test]

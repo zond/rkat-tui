@@ -76,7 +76,17 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     );
     assert!(main.tools.iter().any(|name| name == "assign"), "{report}");
     assert!(bytes["mob"] < 12_000, "{report}");
-    assert!(bytes["comms"] > 20_000, "{report}");
+    // The engine's comms tools, but `send_request` (withdrawn: a
+    // result-less response to it stops the requester on this release).
+    assert!(bytes["comms"] > 12_000, "{report}");
+    assert!(
+        !main.tools.iter().any(|name| name == "send_request"),
+        "{report}"
+    );
+    assert!(
+        main.tools.iter().any(|name| name == "send_response"),
+        "{report}"
+    );
     // rkat-tui's own: small, and kept so. The skill tool is one short
     // definition.
     assert_eq!(main.tools_of("skills"), ["skill_read"], "{report}");

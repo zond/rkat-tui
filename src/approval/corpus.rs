@@ -33,6 +33,7 @@
 //! `{scratch}`, `{tmp}` and `{home}`.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -228,7 +229,18 @@ pub struct CaseEnv {
     /// The kinds of action the user allows (statements).
     #[serde(default)]
     pub statements: Vec<String>,
+    /// The hosts the user trusts (`[auto] trusted_hosts`).
+    #[serde(default)]
+    pub trusted_hosts: Vec<String>,
+    /// The project's remotes as its git configuration holds them at the
+    /// start, `name = url` (none: the fixed `origin`,
+    /// [`FIXED_ORIGIN`]); their hosts are the project's own.
+    #[serde(default)]
+    pub remotes: BTreeMap<String, String>,
 }
+
+/// The `origin` of every case that names no remotes.
+pub const FIXED_ORIGIN: &str = "git@github.com:example/proj.git";
 
 /// One labelled case.
 #[derive(Debug, Clone)]
@@ -458,7 +470,20 @@ impl Places {
             .with_granted(self.granted(case))
             .with_statements(case.env.statements.iter().map(|s| self.fill(s)).collect());
         env.os = "linux".into();
-        env.git_remote = Some("git@github.com:example/proj.git".into());
+        let mut remotes = case.env.remotes.clone();
+        if remotes.is_empty() {
+            remotes.insert("origin".into(), FIXED_ORIGIN.into());
+        }
+        // As the daemon reads them: the git configuration's text.
+        let mut config = String::new();
+        for (name, url) in &remotes {
+            let _ = writeln!(config, "[remote \"{name}\"]\n\turl = {url}");
+        }
+        env.project_hosts = super::hosts::remote_hosts(&config);
+        env.trusted_hosts.clone_from(&case.env.trusted_hosts);
+        env.git_remote = remotes
+            .get("origin")
+            .map(|url| super::classifier::remote_without_credentials(url));
         env.default_branch = Some("main".into());
         let mut transcript = ApprovalTranscript::default();
         for words in &case.user {

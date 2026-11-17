@@ -11870,3 +11870,77 @@ from `peers`, the survivor told, the record emptied),
 `connect::another_agent_s_helper_is_refused_end_to_end`; unit tests in
 `daemon::links::tests`. The three life tests fail with the registry's
 report and the start's check taken out (checked once by hand).
+
+## Trusted hosts for the classifier (owner, 2026-11-17)
+
+From real use: in auto mode the classifier blocked `glab` (D5, "sending
+to an untrusted host") at the host of the project's own git remote, and
+its denial spoke of hosts "listed as trusted" (`STATEMENTS_NOTE` said so;
+no list existed).
+
+- The project's own hosts (`src/approval/hosts.rs`): `url` and `pushurl`
+  of every `[remote "…"]` of the git configuration (a worktree's `.git`
+  file followed to its common directory, `classifier::common_git_dir`),
+  parsed, no `git` process; only the host, lower case, without user or
+  port, so a token in a URL never leaves (`hosts::tests`). Stated under
+  `PROJECT_HOSTS_NOTE`, which keeps R1/R2/R3/D2 and secrets.
+- Trust direction: the confined shell can write `.git/config`, so a
+  remote is the agent's to add. Decided: the remotes are read once, in
+  `Environment::detect` at the daemon's start (the engine's environment is
+  fixed for the daemon's life), never after; the note says "as read when
+  rkat-tui started (a remote added or changed since is not among them)",
+  and `REMOTE_CHANGE_NOTE` (always rendered) tells the classifier to judge
+  adding a remote or changing its URL as sending the project there (D5),
+  because the next start would state it. A restart is the user's refresh.
+  Pinned by `trusted_hosts::the_classifier_is_told_the_remotes_hosts_and_the_user_s_trusted_ones`
+  (a remote written after the start is absent) and corpus cases
+  `b48-push-to-remote-added-this-session`, `b49-add-remote-unnamed-host`.
+- `[auto] trusted_hosts` (`config::lasting`, checked by
+  `HostPattern::parse`: exact names or `*.` plus at least two labels;
+  `*.` matches subdomains on a label boundary only): the user's, the
+  realm's and the command line's layers, never the project's (notice
+  `ProjectTrustedHostsIgnored`); a permission section, so a file change
+  applies at once (`PERMISSION_KEYS`, `replace_lasting`, counted as
+  "trusted host added"). A list, so no `/set`; `--set` takes it.
+- A denial over a host (rule D5, or a reason naming a host) gets a hint
+  naming each host of the call that is neither the project's nor trusted
+  (`hosts::hosts_in`: URLs, scp-like remotes, `--hostname`) and the
+  setting with both files' paths (`ApprovalEngine::host_hint`).
+- Corpus: `a47`–`a50`, `b45`–`b51` (forge CLI at the project's host,
+  push with a token in the remote's URL, trusted host, `*.suffix`, CLI at
+  another host, two look-alikes, a remote added this session, adding one,
+  a merge request nobody asked for at the project's host, secrets to a
+  trusted host). The deterministic tiers pass them; their labels are for
+  the live runs (not run here: no model calls).
+
+## Result-less peer responses (coordinator, 2026-11-17)
+
+Upstream documented (lukacf/meerkat PR #2402, changelog entries for
+0.9.15 and 0.9.16) that on a realm on disk a session that sent a peer
+request stops for good when a response without a `result` arrives; the
+engine's instruction to a responder shows `completed` without a result.
+Shown on our rig before the guard (a helper sent its parent
+`send_request`, the parent answered `send_response` with `status:
+completed` and no result): the response was `sent`, the helper's next
+input was refused `session '…' has no committed runtime attachment;
+explicit create or resume is required (unregister_not_started)`, and the
+daemon's clean stop failed `terminal completion finalization lost the
+exact durable CAS`.
+
+Guard: a repair is not sound (the tool takes only a typed result per the
+request's contract, `CommsPeerResponseResult`; any other object is
+refused by the tool, and a `failed` `checksum_token` response has no
+result at all), so `send_request` is withdrawn (members' tool access
+policy and the gate, `PEER_REQUEST_TOOLS`: with no request sent, no
+response can stop one of ours) and a `send_response` whose `result` is
+absent, null or empty is refused before review saying to give the
+contract's result or answer with `send_message` (protects an agent of
+another workspace on an earlier build). The daemon itself sends no peer
+response. The persona and the helper persona say to use `send_message`.
+A conversation already stopped this way: its next input is refused as
+above (or, after a restart, may be refused "Recovery corruption"); our
+disk-full reload (`storage::reload`) runs only on
+`MobError::MemberReloadRequired`, which this is not, and upstream states
+nothing an operator can call repairs it on this release. Goes when a
+release fixes it. Tests: `peer_requests::a_request_and_a_result_less_response_are_refused_and_the_helper_runs_on`,
+`approval::policy::tests::a_peer_request_and_a_result_less_response_are_unavailable`.

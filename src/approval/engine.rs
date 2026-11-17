@@ -291,6 +291,10 @@ pub struct LastingChange {
     pub dirs_added: Vec<super::grants::NamedDir>,
     /// Named directories removed.
     pub dirs_removed: Vec<super::grants::NamedDir>,
+    /// Trusted hosts added (`[auto] trusted_hosts`).
+    pub hosts_added: Vec<String>,
+    /// Trusted hosts removed.
+    pub hosts_removed: Vec<String>,
     /// The entries not taken, each with why.
     pub skipped: Vec<String>,
 }
@@ -302,6 +306,7 @@ impl LastingChange {
         self.rules_added.is_empty()
             && self.statements_added.is_empty()
             && self.dirs_added.is_empty()
+            && self.hosts_added.is_empty()
             && !self.removed()
     }
 
@@ -310,7 +315,8 @@ impl LastingChange {
     pub fn removed(&self) -> bool {
         !(self.rules_removed.is_empty()
             && self.statements_removed.is_empty()
-            && self.dirs_removed.is_empty())
+            && self.dirs_removed.is_empty()
+            && self.hosts_removed.is_empty())
     }
 
     /// What changed, with counts: "1 statement added, 1 granted directory
@@ -326,6 +332,18 @@ impl LastingChange {
         [
             count(self.rules_added.len(), "rule", "rules", "added"),
             count(self.rules_removed.len(), "rule", "rules", "removed"),
+            count(
+                self.hosts_added.len(),
+                "trusted host",
+                "trusted hosts",
+                "added",
+            ),
+            count(
+                self.hosts_removed.len(),
+                "trusted host",
+                "trusted hosts",
+                "removed",
+            ),
             count(
                 self.statements_added.len(),
                 "statement",
@@ -443,6 +461,9 @@ pub struct ApprovalEngine {
     reviewer: Reviewer,
     grants: Grants,
     statements: Statements,
+    /// The hosts the user trusts with the project's data (`[auto]
+    /// trusted_hosts`, checked), told to the classifier per review.
+    trusted_hosts: RwLock<Vec<String>>,
     blocks: Blocks,
     builds: Builds,
     stats: Stats,
@@ -551,6 +572,7 @@ impl ApprovalEngine {
             next_id: AtomicU64::new(first_id),
             grants,
             statements,
+            trusted_hosts: RwLock::new(settings.trusted_hosts),
             blocks: Blocks::default(),
             builds,
             stats: Stats::default(),
@@ -1702,6 +1724,10 @@ impl ApprovalEngine {
                     self.emit(ApprovalEvent::Paused(cause));
                 }
                 let hint = self.scope_hint(session_id, facts, path.as_deref());
+                let hint = match (hint, self.host_hint(facts, rule.as_deref(), &reason)) {
+                    (Some(scope), Some(host)) => Some(format!("{scope}. {host}")),
+                    (scope, host) => scope.or(host),
+                };
                 Evaluated {
                     blocked_path: path,
                     blocked_effect: effect,
@@ -1757,6 +1783,38 @@ impl ApprovalEngine {
         ))
     }
 
+    /// How the user could trust the hosts a blocked call names, when a host
+    /// is why (rule D5, or a reason that names a host): the hosts of the
+    /// call that are neither the project's own nor trusted, the setting
+    /// and its files ([`super::hosts::trust_hint`]). `None` when the call
+    /// names no such host.
+    fn host_hint(&self, facts: &Facts<'_>, rule: Option<&str>, reason: &str) -> Option<String> {
+        let about_host = rule == Some("D5") || reason.to_ascii_lowercase().contains("host");
+        if !about_host {
+            return None;
+        }
+        let trusted = self.trusted_hosts.read().clone();
+        let untrusted: Vec<String> = super::hosts::hosts_in(facts.action.args.get())
+            .into_iter()
+            .filter(|host| {
+                !self
+                    .environment
+                    .project_hosts
+                    .iter()
+                    .any(|own| &own.host == host)
+                    && !super::hosts::is_trusted(&trusted, host)
+            })
+            .collect();
+        if untrusted.is_empty() {
+            return None;
+        }
+        let files = self
+            .files
+            .as_ref()
+            .map(|files| (files.user.path(), files.workspace.path()));
+        Some(super::hosts::trust_hint(&untrusted, files))
+    }
+
     /// A file tool's own target outside the project and the directories
     /// the user allows (with whether it is written), if the call has one.
     fn outside_target(&self, session_id: &SessionId, facts: &Facts<'_>) -> Option<(PathBuf, bool)> {
@@ -1808,6 +1866,7 @@ impl ApprovalEngine {
         let environment = Environment {
             granted: self.grants.dirs_for(session_id),
             statements: self.statements_for(session_id),
+            trusted_hosts: self.trusted_hosts.read().clone(),
             ..self.environment.clone()
         };
         let input = ClassifierInput {

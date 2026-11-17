@@ -462,7 +462,13 @@ pub fn sections_of(table: &Table) -> Table {
 /// The dotted keys of the permission sections: the rules, the statements
 /// and the named directories (what a change of the user's or the
 /// workspace's file applies at once).
-pub const PERMISSION_KEYS: &[&str] = &["allow", "deny", "auto.allow", "confinement"];
+pub const PERMISSION_KEYS: &[&str] = &[
+    "allow",
+    "deny",
+    "auto.allow",
+    "auto.trusted_hosts",
+    "confinement",
+];
 
 /// `table`'s permission sections ([`PERMISSION_KEYS`]).
 #[must_use]
@@ -1124,6 +1130,14 @@ pub static SECTIONS: &[Section] = &[
         applies: "at once",
         flags: "—",
         commands: "/approve, /permissions",
+    },
+    Section {
+        key: "auto.trusted_hosts",
+        about: "Hosts you trust with the project's data (`host` or `*.domain`), which the classifier reads beside the hosts of the project's git remotes; other rules still apply there.",
+        project: "may not set it",
+        applies: "at once",
+        flags: "`--set 'auto.trusted_hosts=[\"<host>\"]'`",
+        commands: "— (edit the file)",
     },
     Section {
         key: "confinement.extra_read / extra_write",

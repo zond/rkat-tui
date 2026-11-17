@@ -50,6 +50,21 @@ pub enum Notice {
         /// Why.
         reason: String,
     },
+    /// The project-level file listed `[auto] trusted_hosts`; only the
+    /// user's own layers say which hosts they trust with the project.
+    ProjectTrustedHostsIgnored {
+        /// Project rules file.
+        path: PathBuf,
+        /// Number of ignored hosts.
+        count: usize,
+    },
+    /// An `[auto] trusted_hosts` entry of a user layer was not taken.
+    TrustedHostIgnored {
+        /// The entry as written.
+        text: String,
+        /// Why.
+        reason: String,
+    },
     /// A configured endpoint is invalid and was skipped.
     EndpointSkipped {
         /// Endpoint name.
@@ -142,6 +157,15 @@ impl fmt::Display for Notice {
             ),
             Self::StatementIgnored { text, reason } => {
                 write!(f, "ignored [auto] allow statement {text:?}: {reason}")
+            }
+            Self::ProjectTrustedHostsIgnored { path, count } => write!(
+                f,
+                "ignored {count} [auto] trusted_hosts entr{} in {}: only your own tui.toml or this workspace's says which hosts you trust with the project",
+                if *count == 1 { "y" } else { "ies" },
+                path.display()
+            ),
+            Self::TrustedHostIgnored { text, reason } => {
+                write!(f, "ignored [auto] trusted_hosts entry {text:?}: {reason}")
             }
             Self::EndpointSkipped { name, reason } => {
                 write!(f, "endpoint `{name}` skipped: {reason}")
@@ -465,12 +489,17 @@ impl Layered {
                         reason: refusal.to_string(),
                     });
                 }
+                Skipped::TrustedHost { text, why, .. } => {
+                    self.notices
+                        .push(Notice::TrustedHostIgnored { text, reason: why });
+                }
             }
         }
         for rule in lasting.rules {
             self.rules.push(rule);
         }
         self.settings.allow = lasting.statements;
+        self.settings.trusted_hosts = lasting.trusted_hosts;
         self.confinement = lasting.confinement;
         Ok(())
     }
@@ -583,6 +612,14 @@ impl Layered {
                     count: auto.allow.len(),
                 });
             }
+            // Nor the hosts the project's data may go to: a cloned
+            // repository could name its own.
+            if !auto.trusted_hosts.is_empty() {
+                self.notices.push(Notice::ProjectTrustedHostsIgnored {
+                    path: project_path.clone(),
+                    count: auto.trusted_hosts.len(),
+                });
+            }
             // It can only lower trust (`false` applies).
             if auto.trust_project_builds == Some(true) {
                 self.notices.push(Notice::ProjectTrustIgnored {
@@ -624,7 +661,12 @@ impl Layered {
             daemon_principal,
         } = Typed::of(&self.layers)?;
         let allow = std::mem::take(&mut self.settings.allow);
-        self.settings = AutoSettings { allow, ..settings };
+        let trusted_hosts = std::mem::take(&mut self.settings.trusted_hosts);
+        self.settings = AutoSettings {
+            allow,
+            trusted_hosts,
+            ..settings
+        };
         self.mode = mode;
         self.helpers = helpers;
         self.shell = shell;

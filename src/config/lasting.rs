@@ -25,6 +25,10 @@ pub struct Lasting {
     /// The `[confinement]` directories, in layer order, not yet validated
     /// (`crate::bootstrap::confinement` checks them).
     pub confinement: ConfinementSection,
+    /// The `[auto] trusted_hosts`, checked
+    /// ([`crate::approval::hosts::HostPattern::parse`]), none twice, at
+    /// most [`crate::approval::hosts::MAX_TRUSTED_HOSTS`].
+    pub trusted_hosts: Vec<String>,
     /// The entries not taken, with why.
     pub skipped: Vec<Skipped>,
 }
@@ -48,6 +52,15 @@ pub enum Skipped {
         /// Why.
         refusal: StatementRefusal,
     },
+    /// A trusted host refused (no host name, too broad, one too many).
+    TrustedHost {
+        /// Its layer.
+        origin: RuleOrigin,
+        /// The entry as written, cut at 80 characters.
+        text: String,
+        /// Why.
+        why: String,
+    },
 }
 
 impl Skipped {
@@ -55,7 +68,9 @@ impl Skipped {
     #[must_use]
     pub fn origin(&self) -> RuleOrigin {
         match self {
-            Self::Rule { origin, .. } | Self::Statement { origin, .. } => *origin,
+            Self::Rule { origin, .. }
+            | Self::Statement { origin, .. }
+            | Self::TrustedHost { origin, .. } => *origin,
         }
     }
 
@@ -73,6 +88,9 @@ impl Skipped {
             ),
             Self::Statement { text, refusal, .. } => {
                 format!("the statement {text:?} of {file} ({refusal})")
+            }
+            Self::TrustedHost { text, why, .. } => {
+                format!("the trusted host {text:?} of {file} ({why})")
             }
         }
     }
@@ -112,6 +130,27 @@ impl Lasting {
         let Some(auto) = &file.auto else {
             return;
         };
+        for raw in &auto.trusted_hosts {
+            let taken = crate::approval::hosts::HostPattern::parse(raw).and_then(|pattern| {
+                if self.trusted_hosts.len() >= crate::approval::hosts::MAX_TRUSTED_HOSTS {
+                    Err(format!(
+                        "more than {} trusted hosts",
+                        crate::approval::hosts::MAX_TRUSTED_HOSTS
+                    ))
+                } else {
+                    Ok(pattern)
+                }
+            });
+            match taken {
+                Ok(pattern) if self.trusted_hosts.iter().any(|h| h == pattern.as_str()) => {}
+                Ok(pattern) => self.trusted_hosts.push(pattern.as_str().to_string()),
+                Err(why) => self.skipped.push(Skipped::TrustedHost {
+                    origin,
+                    text: raw.chars().take(80).collect(),
+                    why,
+                }),
+            }
+        }
         let statement_origin = if origin == RuleOrigin::Realm {
             StatementOrigin::Always
         } else {
@@ -215,6 +254,28 @@ mod tests {
             words[1].starts_with(
                 "the statement \"anything\" of your tui.toml (the statement allows anything"
             ),
+            "{words:?}"
+        );
+    }
+
+    /// Trusted hosts accumulate over the user's layers, normalized and
+    /// none twice; one that is no host is skipped, named with its layer.
+    #[test]
+    fn trusted_hosts_accumulate_checked() {
+        let user = file("[auto]\ntrusted_hosts = [\"GitLab.Example.com\", \"*.com\"]\n");
+        let realm = file("[auto]\ntrusted_hosts = [\"gitlab.example.com\", \"*.corp.example\"]\n");
+        let lasting = Lasting::of(&[(RuleOrigin::Global, &user), (RuleOrigin::Realm, &realm)]);
+        assert_eq!(
+            lasting.trusted_hosts,
+            vec![
+                "gitlab.example.com".to_string(),
+                "*.corp.example".to_string()
+            ]
+        );
+        let words: Vec<String> = lasting.skipped.iter().map(Skipped::describe).collect();
+        assert_eq!(words.len(), 1, "{words:?}");
+        assert!(
+            words[0].starts_with("the trusted host \"*.com\" of your tui.toml"),
             "{words:?}"
         );
     }

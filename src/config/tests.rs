@@ -942,6 +942,51 @@ fn confinement_grants_come_from_user_layers_only() {
     assert!(load_layered_with(&realm, None, &project, None).is_err());
 }
 
+/// `[auto] trusted_hosts` come from the user's own layers only: the
+/// user-level file's and the realm's add up, checked; a project file's
+/// are ignored with a start-up notice that says why.
+#[test]
+fn trusted_hosts_come_from_the_user_s_layers_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let realm = tmp.path().join("realm");
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(&realm).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    let global = tmp.path().join("global.toml");
+    std::fs::write(&global, "[auto]\ntrusted_hosts = [\"ci.example.net\"]\n").unwrap();
+    std::fs::write(
+        realm.join(RULES_FILE_NAME),
+        "[auto]\ntrusted_hosts = [\"*.corp.example\", \"*.com\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join(RULES_FILE_NAME),
+        "[auto]\ntrusted_hosts = [\"evil.example\"]\n",
+    )
+    .unwrap();
+    let (_, settings, notices) = load_layered(&realm, Some(&global), &project).unwrap();
+    assert_eq!(
+        settings.trusted_hosts,
+        vec!["ci.example.net".to_string(), "*.corp.example".to_string()]
+    );
+    assert!(
+        notices
+            .iter()
+            .any(|n| matches!(n, Notice::ProjectTrustedHostsIgnored { count: 1, .. })),
+        "{notices:?}"
+    );
+    assert!(
+        notices
+            .iter()
+            .any(|n| matches!(n, Notice::TrustedHostIgnored { text, .. } if text == "*.com")),
+        "{notices:?}"
+    );
+    assert!(notices.iter().any(|n| {
+        n.to_string()
+            .contains("only your own tui.toml or this workspace's says which hosts you trust")
+    }));
+}
+
 /// `[auto] allow` statements come from the user's own layers only: the
 /// user-level file's are `config`, the realm's `always`; a project file's
 /// are ignored with a start-up notice, and a statement that says only

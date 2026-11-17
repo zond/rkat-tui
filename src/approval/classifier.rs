@@ -65,6 +65,12 @@ pub struct Environment {
     /// ([`super::statements`]): the session's and the lasting ones, set
     /// per call.
     pub statements: Vec<String>,
+    /// The hosts of the project's git remotes, read once when the daemon
+    /// started ([`super::hosts`]: never after the agent's own writes).
+    pub project_hosts: Vec<super::hosts::ProjectHost>,
+    /// The hosts the user trusts (`[auto] trusted_hosts`, checked
+    /// patterns), set per call.
+    pub trusted_hosts: Vec<String>,
 }
 
 /// What contains the agent's shell: rkat-tui's own sandbox, one the user
@@ -218,6 +224,8 @@ impl Environment {
             granted: GrantedDirs::default(),
             containment: Containment::None,
             statements: Vec::new(),
+            project_hosts: Vec::new(),
+            trusted_hosts: Vec::new(),
         }
     }
 
@@ -256,6 +264,7 @@ impl Environment {
             .unwrap_or_default();
         env.git_remote = facts.origin_url;
         env.default_branch = facts.default_branch;
+        env.project_hosts = facts.remote_hosts;
         env
     }
 }
@@ -265,6 +274,7 @@ impl Environment {
 struct GitFacts {
     origin_url: Option<String>,
     default_branch: Option<String>,
+    remote_hosts: Vec<super::hosts::ProjectHost>,
 }
 
 impl GitFacts {
@@ -274,9 +284,12 @@ impl GitFacts {
         let Some(common) = common_git_dir(root) else {
             return Self::default();
         };
-        let origin_url = std::fs::read_to_string(common.join("config"))
-            .ok()
-            .and_then(|config| origin_url(&config));
+        let config = std::fs::read_to_string(common.join("config")).ok();
+        let origin_url = config.as_deref().and_then(origin_url);
+        let remote_hosts = config
+            .as_deref()
+            .map(super::hosts::remote_hosts)
+            .unwrap_or_default();
         let default_branch = std::fs::read_to_string(common.join("refs/remotes/origin/HEAD"))
             .ok()
             .and_then(|head| {
@@ -288,12 +301,13 @@ impl GitFacts {
         Self {
             origin_url,
             default_branch,
+            remote_hosts,
         }
     }
 }
 
 /// The git directory holding `config` and `refs` for the work tree at `root`.
-fn common_git_dir(root: &Path) -> Option<PathBuf> {
+pub(crate) fn common_git_dir(root: &Path) -> Option<PathBuf> {
     let dot_git = root.join(".git");
     let git_dir = if dot_git.is_dir() {
         dot_git

@@ -4,6 +4,24 @@
 
 ### Fixed
 
+- In auto mode the classifier blocked the forge's command-line tool
+  (`glab`, likewise `gh`) as "sending to an untrusted host" although the
+  host was the one the project's own git remote points at, and its
+  denial spoke of hosts "listed as trusted" though no such list existed.
+  It is now told the hosts of the workspace's git remotes, as read when
+  the daemon started, as the project's own, and the hosts you trust
+  (`[auto] trusted_hosts`, below); no text speaks of a list that is not
+  there, and a denial over a host names the host and says how to trust
+  it.
+- One agent or helper could stop another's conversation for good by
+  answering its request the way the engine's own instructions show
+  (a response without a result, which this engine release cannot finish
+  recording). Agents and helpers no longer have `send_request`; a
+  response without a result is refused, saying to give one or to answer
+  with `send_message`. A conversation that was already stopped this way
+  stays stopped (its next message is refused with "has no committed
+  runtime attachment"); the engine has no repair for it yet.
+
 - An agent restored on a conversation an earlier build began kept that
   build's instructions about its tools and helpers (one said a `fork_off`
   child is wired to no one, as it had been told). Now the daemon replaces
@@ -96,6 +114,14 @@
   stay in the view); the view's title says `Esc back · Ctrl-C stop`.
 
 ### Added
+
+- `[auto] trusted_hosts`: hosts you trust with the project's data
+  (`host` or `*.domain`), in your own `tui.toml` or the workspace's (a
+  project's file cannot set it), applied at once; the classifier reads
+  them beside the hosts of the project's git remotes. Sending the
+  project's content there is no longer blocked as exfiltration; every
+  other rule (the default branch, publishing, merge requests and comments
+  you did not ask for, secrets) still applies there.
 
 - `connect_helpers`: an agent (or a helper with helpers of its own) wires
   two or more of the helpers it started to each other, every pair both

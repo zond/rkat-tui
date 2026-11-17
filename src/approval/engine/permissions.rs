@@ -539,6 +539,22 @@ impl ApprovalEngine {
         });
         change.statements_added = added;
         change.statements_removed = removed;
+        // Trusted hosts.
+        {
+            let mut held = self.trusted_hosts.write();
+            change.hosts_added = lasting
+                .trusted_hosts
+                .iter()
+                .filter(|host| !held.contains(host))
+                .cloned()
+                .collect();
+            change.hosts_removed = held
+                .iter()
+                .filter(|host| !lasting.trusted_hosts.contains(host))
+                .cloned()
+                .collect();
+            held.clone_from(&lasting.trusted_hosts);
+        }
         // Directories: checked as the start's plan checks them.
         let (write, read) = self.grants.flag_dirs();
         let extra = crate::bootstrap::confinement::ExtraGrants {
@@ -594,6 +610,8 @@ impl ApprovalEngine {
             ("rule_removed", &change.rules_removed),
             ("statement_added", &change.statements_added),
             ("statement_removed", &change.statements_removed),
+            ("trusted_host_added", &change.hosts_added),
+            ("trusted_host_removed", &change.hosts_removed),
         ] {
             for item in items {
                 self.audit_event(event, format!("{item} ({why})"));
