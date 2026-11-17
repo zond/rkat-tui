@@ -194,6 +194,13 @@ impl HelperFold {
         }
         match self.ended.as_deref().filter(|_| !self.state.is_running()) {
             Some(how) => out.push_str(how),
+            // A kept member or a fork whose run ended is seated still,
+            // idle, until it is retired (the daemon says so).
+            None if self.state == HelperState::Done
+                && matches!(self.kind, Some(HelperKind::Member | HelperKind::Fork)) =>
+            {
+                out.push_str("idle");
+            }
             None => out.push_str(self.state.text()),
         }
         let _ = write!(out, " · {}", crate::text::count(self.calls, "tool call"));
@@ -509,6 +516,13 @@ pub struct Transcript {
     detail: bool,
     /// What each helper is (by label), from the call that started it.
     helper_kinds: IndexMap<String, HelperKind>,
+    /// The members of the workspace's mob as the daemon last listed them,
+    /// with every helper seen live since (`None`: not listed yet): a
+    /// helper of the agent's own mob it does not name has left it.
+    seated_helpers: Option<std::collections::HashSet<String>>,
+    /// The helpers spawned into a mob of the agent's own making
+    /// (`mob_spawn_member`), whose seat that listing does not say.
+    elsewhere: std::collections::HashSet<String>,
     /// Notes for tool calls whose block has not arrived yet, by tool-use id
     /// (at most [`MAX_PENDING_NOTES`], oldest dropped first).
     pending_notes: IndexMap<String, String>,
@@ -868,11 +882,14 @@ impl Transcript {
         let agent_name = self.agent_name.take();
         let paths = std::mem::take(&mut self.paths);
         let detail = self.detail;
+        // The mob's members are no conversation's.
+        let seated = self.seated_helpers.take();
         *self = Self::default();
         self.helper_view = helper_view;
         self.agent_name = agent_name;
         self.paths = paths;
         self.detail = detail;
+        self.seated_helpers = seated;
     }
 
     /// Replace the whole transcript with `blocks` (e.g. after resuming a
@@ -1613,7 +1630,12 @@ impl Transcript {
                         f.state,
                         HelperState::Done | HelperState::Failed | HelperState::Cancelled
                     ) {
+                        // A seated helper's later run (a message woke it):
+                        // the same header, in the panel until the turn
+                        // after its end, as a new helper's.
                         f.state = HelperState::Running;
+                        f.this_turn = true;
+                        f.ended = None;
                     }
                 });
             }

@@ -146,13 +146,14 @@ pub struct HelperFold {
 impl HelperFold {
     /// The full view's title text after the tag: its kind, state and
     /// progress (`delegate · finished · 3 tool calls · 2.1k tokens`). A
-    /// spawned member whose task is done is idle: it stays.
+    /// spawned member or a fork whose run is done is idle: it stays until
+    /// it is retired.
     #[must_use]
     pub fn view_status_text(&self) -> String {
         let status = self.status_text();
         let state = self.state.text();
         let shown = match (self.state, self.kind) {
-            (HelperState::Done, Some(HelperKind::Member)) => "idle",
+            (HelperState::Done, Some(HelperKind::Member | HelperKind::Fork)) => "idle",
             (HelperState::Done, _) => "finished",
             _ => state,
         };
@@ -222,6 +223,9 @@ impl Transcript {
         let mut now_live = Vec::new();
         for (label, model, depth) in live {
             self.note_helper_model(label, model);
+            if let Some(seated) = &mut self.seated_helpers {
+                seated.insert(label.to_string());
+            }
             let fresh = !self.live_helpers.iter().any(|l| l == label);
             if fresh
                 && let Some(id) = self.helper_folds.get(label).copied()
@@ -508,6 +512,37 @@ impl Transcript {
         self.agent_name = name;
     }
 
+    /// The daemon listed the workspace's mob: `members` are seated in it
+    /// now (agents and helpers, any agent's).
+    pub fn seated_helpers(&mut self, members: impl IntoIterator<Item = String>) {
+        self.seated_helpers = Some(members.into_iter().collect());
+    }
+
+    /// Whether the helper `fold` is live, from what the daemon knows of
+    /// it: running, or seated and idle (a message reaches it). One the
+    /// daemon said ended (finished, failed, stopped, retired) is not, nor
+    /// one of the agent's own mob that the mob's last listing does not
+    /// name (and that was not seen live since). How its run ended says
+    /// nothing of it.
+    #[must_use]
+    pub fn helper_live(&self, fold: &HelperFold) -> bool {
+        if fold.state.is_running() {
+            return true;
+        }
+        if fold.ended.is_some() {
+            return false;
+        }
+        let own_mob = matches!(
+            fold.kind,
+            Some(HelperKind::Assigned | HelperKind::Fork | HelperKind::Member)
+        ) && !self.elsewhere.contains(&fold.label);
+        !(own_mob
+            && self
+                .seated_helpers
+                .as_ref()
+                .is_some_and(|seated| !seated.contains(&fold.label)))
+    }
+
     /// A tool call of the agent or of a helper: one that starts helpers
     /// says what they are (by the `member_id` of its arguments, or of each
     /// of their entries; an `assign`'s `name`).
@@ -531,6 +566,9 @@ impl Transcript {
             }
         }
         for label in labels {
+            if tool == "mob_spawn_member" {
+                self.elsewhere.insert(label.to_string());
+            }
             self.helper_kinds.insert(label.to_string(), kind);
             if let Some(id) = self.helper_folds.get(label).copied() {
                 self.update_fold(id, |fold| fold.kind = Some(kind));
@@ -593,6 +631,24 @@ impl Transcript {
         let Some(label) = path.last() else {
             return;
         };
+        if how == crate::daemon::protocol::HELPER_RETIRED {
+            if let Some(seated) = &mut self.seated_helpers {
+                seated.remove(label.as_str());
+            }
+            // It left its mob: shown on its line, unless its line says how
+            // it ended already (`finished`, `stopped by you`).
+            if let Some(id) = self.helper_folds.get(label.as_str()).copied() {
+                self.update_fold(id, |fold| {
+                    if fold.ended.is_none() {
+                        fold.ended = Some(how.to_string());
+                    }
+                    if fold.state.is_running() {
+                        fold.state = HelperState::Done;
+                    }
+                });
+            }
+            return;
+        }
         let state = if how == "finished" {
             HelperState::Done
         } else if how.starts_with("failed") {

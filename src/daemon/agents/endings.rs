@@ -87,14 +87,14 @@ fn item_text(item: &NoteItem) -> String {
             bounded(answer, item.rest.as_deref())
         ),
         How::Done { answer } => format!(
-            "Your helper `{label}` finished its task. Its answer:\n\n{}\n\nIt is retired: it takes no more messages (start another with `assign` for more work).",
+            "Your helper `{label}` finished its task. Its answer:\n\n{}\n\nIt is retired: it takes no more messages (start another helper for more work).",
             bounded(answer, item.rest.as_deref())
         ),
         How::WentIdle {
             answer,
             failed: None,
         } => format!(
-            "Your helper `{label}` went idle. Its last message:\n\n{}\n\nIt is still seated: message it with `send_message` for more work, or retire it with `retire_member` when you are done with it.",
+            "Your helper `{label}` went idle. Its last message:\n\n{}\n\nIt is still seated, idle: a message to it starts another run of it, so message it with `send_message` only to give it more work, and retire it with `retire_member` when you are done with it.",
             bounded(answer, item.rest.as_deref())
         ),
         How::WentIdle {
@@ -819,7 +819,7 @@ mod tests {
         )]);
         assert_eq!(
             done,
-            "Your helper `scout` finished its task. Its answer:\n\nthe bug is in parse()\n\nIt is retired: it takes no more messages (start another with `assign` for more work)."
+            "Your helper `scout` finished its task. Its answer:\n\nthe bug is in parse()\n\nIt is retired: it takes no more messages (start another helper for more work)."
         );
         let idle = note_text(&[item(
             "w1",
@@ -830,7 +830,7 @@ mod tests {
         )]);
         assert_eq!(
             idle,
-            "Your helper `w1` went idle. Its last message:\n\nwaiting for more\n\nIt is still seated: message it with `send_message` for more work, or retire it with `retire_member` when you are done with it."
+            "Your helper `w1` went idle. Its last message:\n\nwaiting for more\n\nIt is still seated, idle: a message to it starts another run of it, so message it with `send_message` only to give it more work, and retire it with `retire_member` when you are done with it."
         );
         let idle_failed = note_text(&[item(
             "w1",

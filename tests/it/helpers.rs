@@ -286,7 +286,10 @@ async fn an_interrupt_leaves_the_helper_running_and_its_answer_comes_with_the_ne
     // It finished: the client is told how, and that the agent hears of it
     // with the next message; the agent was not woken.
     let ended = client
-        .saw(|m| matches!(m, Msg::HelperEnded { path, .. } if path == &["slow".to_string()]))
+        .saw(|m| {
+            matches!(m, Msg::HelperEnded { path, how, .. }
+            if path == &["slow".to_string()] && how != rkat_tui::daemon::protocol::HELPER_RETIRED)
+        })
         .await;
     let Msg::HelperEnded { how, told, .. } = ended else {
         unreachable!()

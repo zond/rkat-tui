@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- An agent alone in its workspace took its own idle helpers for other
+  agents of the workspace and sent every one of them a note of each file
+  change, waking each into a model turn (and itself into another for the
+  helper's answer). The engine's `peers` lists agents and helpers alike
+  (`tui/main/<name>`, no kind), no note said that there were no other
+  agents, and the instructions told it to announce file changes to "the
+  other agents". An agent alone is now told so, and that every peer it
+  has is a helper; the roster note says the same of any peer it does not
+  name; the instructions say how to tell an agent (`main-` and four
+  letters or digits) from a helper, that helpers are never told about
+  file changes and are messaged only to give them work or to answer them,
+  and that a message to an idle helper starts a model turn of it.
+- A completed `fork_off` child stayed seated, idle and wakeable, so a
+  long session piled them up. A fork now runs one task: once the engine
+  has recorded its outcome for its parent, the daemon retires it (after
+  one more run when its parent's message was waiting for it, told as an
+  `assign` helper's ending). A message to it afterwards is refused saying
+  it finished and was retired. Forks an earlier build kept seated stay
+  until they are retired.
+
+### Changed
+
+- Announcing file changes to the workspace's other agents: only to the
+  agents shown working, once when a task starts and once when it is done,
+  not for each change, and an idle agent is not messaged only to inform
+  it (before: also to idle agents with a client attached).
+- The note that a kept helper went idle says that a message to it starts
+  another run of it, so to message it only with more work and to retire
+  it when done.
+- `/helpers` lists the live helpers only (running, or seated and idle),
+  each with its kind (`assigned`, `fork`, `spawned member`) and state; `a`
+  shows the ended ones too (finished, retired, failed, stopped), dim,
+  after them, and the hint counts them (`a: show 14 ended`). With only
+  ended ones it says `no live helpers; a shows N ended`. Whether a helper
+  is live comes from the daemon (its endings, a new notice that a helper
+  was retired, and the mob's members on attach), not from its run's end.
+  `/helpers list` lists the live ones and counts the ended ones; `/helpers
+  list all` lists all.
+- A kept member or a fork whose run ended says `idle` (was `done`) until
+  it is retired; one that a message wakes again stays in the panel under
+  the input until the next turn starts, as a new helper does.
+
 ## [0.0.15] - 2026-11-17
 
 ### Fixed

@@ -1071,6 +1071,11 @@ impl Runner {
                     for event in self.orphans.take(&stream) {
                         actions.extend(self.followers.event(&stream, event));
                     }
+                    if mob == crate::daemon::MOB_ID {
+                        self.send(Msg::SeatedHelpers(
+                            members.iter().map(|(label, _)| label.clone()).collect(),
+                        ));
+                    }
                     for (label, session) in members {
                         actions.extend(self.followers.member(&mob, &label, session));
                     }

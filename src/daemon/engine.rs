@@ -774,7 +774,32 @@ fn follow_helpers(
                 }
             },
         )
-        .with_revisions(Arc::clone(revisions)),
+        .with_revisions(Arc::clone(revisions))
+        .with_retired({
+            let decisions = Arc::downgrade(decisions);
+            let registry = Arc::downgrade(registry);
+            move |tag: &crate::mobs::HelperTag| {
+                // The agent at the top of its nesting: its clients show it.
+                let (Some(decisions), Some(agent)) = (
+                    decisions.upgrade(),
+                    registry
+                        .upgrade()
+                        .and_then(|registry| registry.root_of_session(&tag.owner)),
+                ) else {
+                    return;
+                };
+                decisions.broadcast(
+                    super::protocol::HELPER_ENDED,
+                    &super::protocol::HelperEnded {
+                        agent: agent.member.to_string(),
+                        session_id: tag.owner.clone(),
+                        path: tag.path.clone(),
+                        how: super::protocol::HELPER_RETIRED.to_string(),
+                        told: None,
+                    },
+                );
+            }
+        }),
     );
     let mut destroyed = registry.destroyed_mobs();
     let destroyed_task = tokio::spawn({

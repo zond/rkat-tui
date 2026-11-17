@@ -1130,9 +1130,21 @@ pub struct HelperEvents {
     /// The bring-ups of helpers' instructions that wait for a run's end
     /// ([`super::instructions`]).
     revisions: Option<Arc<super::instructions::Instructions>>,
+    /// Tells the clients a helper was retired.
+    retired: Option<Box<dyn Fn(&crate::mobs::HelperTag) + Send + Sync>>,
 }
 
 impl HelperEvents {
+    /// Tell the clients of each helper retired through `retired`.
+    #[must_use]
+    pub fn with_retired(
+        mut self,
+        retired: impl Fn(&crate::mobs::HelperTag) + Send + Sync + 'static,
+    ) -> Self {
+        self.retired = Some(Box::new(retired));
+        self
+    }
+
     /// Make a helper's bring-up that waits for its run's end through
     /// `revisions`.
     #[must_use]
@@ -1154,6 +1166,7 @@ impl HelperEvents {
             announce: Box::new(announce),
             hosting: Mutex::default(),
             revisions: None,
+            retired: None,
         }
     }
 
@@ -1195,6 +1208,12 @@ impl crate::mobs::follow::HelperWatch for HelperEvents {
     fn mob_hosts(&self, mob: &MobId) {
         if self.hosting.lock().insert(mob.clone()) {
             (self.announce)(mob, super::protocol::MobChange::Hosts);
+        }
+    }
+
+    fn retired(&self, tag: &crate::mobs::HelperTag) {
+        if let Some(retired) = &self.retired {
+            retired(tag);
         }
     }
 }

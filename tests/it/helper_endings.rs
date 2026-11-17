@@ -86,7 +86,12 @@ async fn members(connection: &Connection, mob: &str) -> Vec<String> {
 async fn ended(client: &mut Client, label: &str) -> (String, Option<String>) {
     let label = label.to_string();
     match client
-        .saw(|m| matches!(m, Msg::HelperEnded { path, .. } if path.last() == Some(&label)))
+        // How it ended, not the notice that it left its mob (which may come
+        // first: its note goes after the endings' batch wait).
+        .saw(|m| {
+            matches!(m, Msg::HelperEnded { path, how, .. }
+            if path.last() == Some(&label) && how != rkat_tui::daemon::protocol::HELPER_RETIRED)
+        })
         .await
     {
         Msg::HelperEnded { how, told, .. } => (how, told),

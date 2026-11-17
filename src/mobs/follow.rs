@@ -42,6 +42,9 @@ pub trait HelperWatch: Send + Sync {
     /// `mob` hosts a helper the follower subscribed to (its stream can be
     /// opened now).
     fn mob_hosts(&self, mob: &MobId);
+    /// The helper `tag` left its mob for good (it was retired): the clients
+    /// show it retired, not idle.
+    fn retired(&self, tag: &HelperTag);
 }
 
 /// Hand `event` of the helper `tag` to `watch`, if it wants it.
@@ -183,7 +186,12 @@ async fn follow(
                         }
                         observe(&*observer, &tag, &envelope.payload).await;
                     }
-                    event = recv(&mut mob_events) => match event.map(|event| left(&event.kind, &key.member)) {
+                    event = recv(&mut mob_events) => match event.map(|event| {
+                        if outcome_recorded(&event.kind, &key.member) {
+                            registry.endings().fork_outcome_recorded(&key);
+                        }
+                        left(&event.kind, &key.member)
+                    }) {
                         Some(Some(gone)) => {
                             // Deliver what it published before it left.
                             while let Some(Some(envelope)) = futures::FutureExt::now_or_never(stream.next()) {
@@ -224,6 +232,7 @@ async fn follow(
     };
     if retired {
         registry.retired(&key);
+        observer.retired(&tag);
     } else {
         registry.finished(&key);
     }
@@ -405,6 +414,15 @@ fn left(kind: &MobEventKind, identity: &AgentIdentity) -> Option<bool> {
         }
         _ => None,
     }
+}
+
+/// Whether `kind` is the engine's record of a completed `fork_off` outcome
+/// of the fork `identity` (`ForkJobTerminal`, written before the outcome is
+/// handed to its parent, which a restart hands over again from it).
+fn outcome_recorded(kind: &MobEventKind, identity: &AgentIdentity) -> bool {
+    matches!(kind, MobEventKind::ForkJobTerminal(terminal)
+        if &terminal.child == identity
+            && terminal.status == meerkat_core::event::BackgroundJobTerminalStatus::Completed)
 }
 
 /// Whether `identity` left `handle`'s mob for good: the mob still runs and

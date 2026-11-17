@@ -152,7 +152,10 @@ async fn an_assigned_helper_runs_beside_its_parent_talks_both_ways_and_retires_w
     let result = llm
         .recorded()
         .iter()
-        .find(|r| !r.user().contains("HELPER-TASK") && r.messages.len() > 2)
+        .find(|r| {
+            !r.user().contains("HELPER-TASK")
+                && matches!(r.messages.last(), Some(Message::ToolResults { .. }))
+        })
         .map(|r| last(&r.messages))
         .unwrap();
     assert!(
@@ -269,7 +272,7 @@ async fn a_message_to_a_finished_helper_says_it_was_retired() {
         .unwrap();
     assert!(
         result.contains(
-            "helper `scout` finished its task and was retired; start another with `assign` for more work"
+            "helper `scout` finished its task and was retired; start another helper for more work"
         ),
         "{result}"
     );

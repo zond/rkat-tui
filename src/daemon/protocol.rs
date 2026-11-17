@@ -69,6 +69,11 @@ pub const AGENT_NOTICE: &str = "rkat/agent_notice";
 /// [`HelperEnded`].
 pub const HELPER_ENDED: &str = "rkat/helper_ended";
 
+/// The `how` of a [`HELPER_ENDED`] that says only that a helper left its
+/// mob (it was retired; how it ended, if it was told, came before): its
+/// line shows it retired, and nothing else is shown.
+pub const HELPER_RETIRED: &str = "retired";
+
 /// What [`HELPER_ENDED`] carries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelperEnded {

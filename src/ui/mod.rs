@@ -501,6 +501,9 @@ pub enum Msg {
         /// The run's input.
         prompt: String,
     },
+    /// The daemon listed the workspace's mob: these members are seated in
+    /// it (a helper of the agent's own mob it does not name has ended).
+    SeatedHelpers(Vec<String>),
     /// A helper of this conversation ended: its line says how, and a notice
     /// says who was told and when.
     HelperEnded {
@@ -1404,6 +1407,8 @@ pub struct App {
     /// The helper header selected in the helper panel (Ctrl+Up/Down; Enter
     /// on an empty input opens its full view).
     panel_selected: Option<BlockId>,
+    /// `/helpers` lists the ended helpers too (its `a`).
+    helpers_all: bool,
     /// The helper whose full view replaces the transcript, if one is open.
     helper_view: Option<OpenHelperView>,
     /// An [`Effect::RecallQueued`] is waiting for its [`Msg::Recalled`].
@@ -1483,6 +1488,7 @@ impl App {
             clipboard: None,
             local: Vec::new(),
             panel_selected: None,
+            helpers_all: false,
             helper_view: None,
             recalling: false,
             reached: Vec::new(),
@@ -1948,6 +1954,7 @@ impl App {
                     .label_triggered(self.run_first_block, label, prompt);
                 self.scroll.bottom();
             }
+            Msg::SeatedHelpers(members) => self.transcript.seated_helpers(members),
             Msg::HelperEnded { path, how, told } => {
                 self.transcript.helper_ended(&path, &how, told.as_deref());
                 self.scroll.bottom();

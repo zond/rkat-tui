@@ -46,31 +46,39 @@ impl PeerState {
 }
 
 /// The note telling an agent which other agents work in its workspace
-/// and what each was doing when it was sent (`None`: none do). It is sent
-/// when the roster or an agent's attachment changes, never for a run's
-/// start or end, so the note says its states are a snapshot.
+/// and what each was doing when it was sent, or that none does (then
+/// every peer it has but the agents of other workspaces the note may name
+/// is a helper: the engine's `peers` gives no kind, and an agent alone
+/// took its helpers for agents of its workspace). It is sent when the
+/// roster or an agent's attachment changes, never for a run's start or
+/// end, so the note says its states are a snapshot.
 #[must_use]
-pub fn roster_note(others: &[(String, PeerState)]) -> Option<String> {
+pub fn roster_note(others: &[(String, PeerState)]) -> String {
     if others.is_empty() {
-        return None;
+        return NO_OTHER_AGENTS.to_string();
     }
     let names = others
         .iter()
         .map(|(name, state)| format!("`{name}` ({})", state.describe()))
         .collect::<Vec<_>>()
         .join(", ");
-    Some(format!(
+    format!(
         "Other agents in this workspace now: {names}. You are wired to each of them as a peer. \
          These states are as of this note: a new one replaces it when an agent joins, or a client \
-         attaches to an agent or leaves it; none comes when an agent starts or ends a run."
-    ))
+         attaches to an agent or leaves it; none comes when an agent starts or ends a run. Any \
+         other peer in your `peers` is a helper, not an agent of this workspace."
+    )
 }
 
-/// `roster` (the note about this workspace's agents, when there are
-/// others) with a line naming the agents of other workspaces `wired`
-/// lists; `None` when both are empty.
+/// The roster note of an agent alone in its workspace.
+pub const NO_OTHER_AGENTS: &str = "No other agent works in this workspace now: every peer in \
+     your `peers` that this note does not name is a helper (one you started, or one you were \
+     connected with), not an agent of this workspace. A new note comes when an agent joins.";
+
+/// `roster` (the note about this workspace's agents) with a line naming
+/// the agents of other workspaces `wired` lists.
 #[must_use]
-pub fn with_wired(roster: Option<String>, wired: &[String]) -> Option<String> {
+pub fn with_wired(roster: String, wired: &[String]) -> String {
     if wired.is_empty() {
         return roster;
     }
@@ -82,10 +90,7 @@ pub fn with_wired(roster: Option<String>, wired: &[String]) -> Option<String> {
     let line = format!(
         "Agents of other workspaces you are wired to: {names} (each another project's agent; its state is not known here, and a message starts a model turn there when it is idle)."
     );
-    Some(match roster {
-        Some(roster) => format!("{roster} {line}"),
-        None => line,
-    })
+    format!("{roster} {line}")
 }
 
 /// Why an agent leaves the workspace, as the others are told.
@@ -391,7 +396,7 @@ impl Agents {
 
     /// The roster note for `name`: every other agent of `states`, then
     /// the agents of other workspaces it is wired to.
-    fn roster_for(&self, name: &str, states: &[(String, PeerState)]) -> Option<String> {
+    fn roster_for(&self, name: &str, states: &[(String, PeerState)]) -> String {
         let others: Vec<(String, PeerState)> = states
             .iter()
             .filter(|(other, _)| other != name)
@@ -401,11 +406,10 @@ impl Agents {
     }
 
     /// Tell `name` which other agents work here now and what each is
-    /// doing (its fresh conversation knows none).
+    /// doing, or that none does (its fresh conversation knows none).
     pub(super) async fn note_roster(&self, name: &str) {
-        if let Some(text) = self.roster_for(name, &self.states().await) {
-            self.send_notes(vec![(name.to_string(), text)]).await;
-        }
+        let text = self.roster_for(name, &self.states().await);
+        self.send_notes(vec![(name.to_string(), text)]).await;
     }
 
     /// Tell every agent of `names` the roster as it is now, each its own
@@ -415,7 +419,7 @@ impl Agents {
         let states = self.states().await;
         let notes = names
             .iter()
-            .filter_map(|name| Some((name.clone(), self.roster_for(name, &states)?)))
+            .map(|name| (name.clone(), self.roster_for(name, &states)))
             .collect();
         self.send_notes(notes).await;
     }
@@ -428,14 +432,14 @@ impl Agents {
         let notes = states
             .iter()
             .filter(|(other, _)| other != name)
-            .filter_map(|(other, _)| {
-                let roster = self.roster_for(other, &states)?;
+            .map(|(other, _)| {
+                let roster = self.roster_for(other, &states);
                 let text = if joined {
                     format!("{} {roster}", membership_note(name, None))
                 } else {
                     roster
                 };
-                Some((other.clone(), text))
+                (other.clone(), text)
             })
             .collect();
         self.send_notes(notes).await;
@@ -520,20 +524,27 @@ mod tests {
 
     #[test]
     fn the_notes_name_the_agents() {
-        assert_eq!(roster_note(&[]), None);
+        // Alone: said so, and every peer is a helper.
+        let alone = roster_note(&[]);
+        assert!(
+            alone.starts_with("No other agent works in this workspace now")
+                && alone.contains("is a helper")
+                && alone.contains("not an agent of this workspace"),
+            "{alone}"
+        );
         let state = |run, attached| PeerState { run, attached };
         let roster = roster_note(&[
             ("main-aaaa".into(), state(RunState::Running, false)),
             ("main-bbbb".into(), state(RunState::Idle, true)),
             ("main-cccc".into(), state(RunState::Idle, false)),
             ("main-dddd".into(), state(RunState::Unknown, false)),
-        ])
-        .unwrap();
+        ]);
         assert!(
             roster.contains(
                 "`main-aaaa` (working), `main-bbbb` (idle, a client attached), \
                  `main-cccc` (idle, no client attached), `main-dddd` (no client attached)."
-            ) && roster.contains("wired"),
+            ) && roster.contains("wired")
+                && roster.contains("Any other peer in your `peers` is a helper"),
             "{roster}"
         );
         // A snapshot, and the note says so.
@@ -568,15 +579,15 @@ mod tests {
 
     #[test]
     fn the_roster_names_the_agents_of_other_workspaces_it_is_wired_to() {
-        assert_eq!(with_wired(None, &[]), None);
-        assert_eq!(with_wired(Some("r".into()), &[]).as_deref(), Some("r"));
-        let alone = with_wired(None, &["api/main-ab12".into()]).unwrap();
+        assert_eq!(with_wired("r".into(), &[]), "r");
+        let alone = with_wired(roster_note(&[]), &["api/main-ab12".into()]);
         assert!(
-            alone.starts_with("Agents of other workspaces you are wired to: `api/main-ab12`")
+            alone.starts_with(NO_OTHER_AGENTS)
+                && alone.contains("Agents of other workspaces you are wired to: `api/main-ab12`")
                 && alone.contains("not known here"),
             "{alone}"
         );
-        let both = with_wired(Some("Other agents.".into()), &["api/main-ab12".into()]).unwrap();
+        let both = with_wired("Other agents.".into(), &["api/main-ab12".into()]);
         assert!(
             both.starts_with("Other agents. Agents of other workspaces"),
             "{both}"

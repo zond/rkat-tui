@@ -313,8 +313,18 @@ fn the_helper_picker_stops_a_running_helper_after_a_confirmation() {
         how: "stopped by you".into(),
         told: None,
     });
+    // (Ended, it is listed with `a`, after the live ones.)
     type_str(&mut app, "/helpers");
     app.update(key(KeyCode::Enter));
+    app.update(key(KeyCode::Char('a')));
+    let at = match &app.modal {
+        Some(Modal::List(p)) => p.rows.iter().position(|r| r.text.contains("[scout")),
+        _ => None,
+    }
+    .unwrap();
+    for _ in 0..at {
+        app.update(key(KeyCode::Down));
+    }
     assert!(app.update(key(KeyCode::Char('s'))).is_empty());
     assert!(
         matches!(line(&app), Some(crate::ui::picker::PickerLine::Refused(why))
@@ -724,8 +734,9 @@ fn a_fork_s_view_says_it_was_forked_and_shows_only_its_own_task() {
         },
     ));
     let rows = view_rows(&mut app, "forky");
+    // Seated, idle, until the daemon says it was retired.
     assert!(
-        rows[0].starts_with("◂ [forky · m] fork · finished"),
+        rows[0].starts_with("◂ [forky · m] fork · idle"),
         "{rows:#?}"
     );
     assert_eq!(
@@ -957,4 +968,254 @@ fn a_helper_s_ending_note_is_one_folded_line() {
         "{export}"
     );
     assert!(export.contains("found it"), "{export}");
+}
+
+/// A helper run's end.
+fn run_completed() -> AgentEvent {
+    AgentEvent::RunCompleted {
+        session_id: meerkat_core::SessionId::new(),
+        identity: Default::default(),
+        result: "ok".into(),
+        structured_output: None,
+        extraction_required: false,
+        usage: Default::default(),
+        terminal_cause_kind: None,
+        assistant_message_id: None,
+    }
+}
+
+/// The line `/helpers` shows for `label` (with the ended ones shown too).
+fn picker_line(app: &mut App, label: &str) -> String {
+    type_str(app, "/helpers");
+    app.update(key(KeyCode::Enter));
+    if matches!(&app.modal, Some(Modal::List(p)) if p.footer.contains("a: show")) {
+        app.update(key(KeyCode::Char('a')));
+    }
+    let line = match &app.modal {
+        Some(Modal::List(p)) => p
+            .rows
+            .iter()
+            .map(|r| r.text.clone())
+            .find(|r| r.contains(&format!("[{label}")))
+            .unwrap(),
+        other => panic!("{other:?}"),
+    };
+    app.update(key(KeyCode::Esc));
+    line
+}
+
+/// A kept helper that a message wakes again keeps its one header (it is
+/// the same helper, not a new one), shows in the panel as any helper does
+/// (running, then until the next turn starts), says `idle` while seated
+/// and `retired` once the daemon says it left its mob.
+#[test]
+fn a_woken_kept_helper_keeps_its_header_and_says_idle_until_retired() {
+    let mut app = App::new(StatusInfo::default());
+    app.update(agent(AgentEvent::ToolCallRequested {
+        id: "s1".into(),
+        name: "spawn_member".into(),
+        args: test_args(json!({"profile": "main", "member_id": "w1"})),
+    }));
+    app.update(live(&["w1"]));
+    app.update(helper_msg("w1", run_started("index the repo")));
+    let w1 = app.transcript.helper_header("w1").unwrap();
+    app.update(helper_msg("w1", run_completed()));
+    app.update(live(&[]));
+    assert!(picker_line(&mut app, "w1").contains("[w1 · m] spawned member · idle · 0 tool calls"));
+    // The next turn: it drops off the panel.
+    type_str(&mut app, "next");
+    app.update(key(KeyCode::Enter));
+    app.update(Msg::TurnFinished(Ok(summary())));
+    assert!(app.helper_panel().is_empty());
+    // A message wakes it: the same header, running, in the panel.
+    app.update(helper_msg("w1", run_started("UPDATE")));
+    app.update(live(&["w1"]));
+    assert_eq!(app.transcript.helper_header("w1"), Some(w1));
+    assert_eq!(app.transcript.helper_headers().count(), 1);
+    assert_eq!(app.helper_panel(), vec![w1]);
+    // Its run ends: still listed until the next turn starts, idle.
+    app.update(helper_msg("w1", run_completed()));
+    app.update(live(&[]));
+    assert_eq!(app.helper_panel(), vec![w1]);
+    let rows = screen(&mut app, 14);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("[w1 · m] idle · 0 tool calls")),
+        "{rows:#?}"
+    );
+    type_str(&mut app, "again");
+    app.update(key(KeyCode::Enter));
+    assert!(app.helper_panel().is_empty());
+    assert_eq!(app.transcript.helper_headers().count(), 1);
+    // Retired: said so on its line, and nothing else is shown.
+    let before = app.transcript.len();
+    app.update(Msg::HelperEnded {
+        path: vec!["w1".into()],
+        how: crate::daemon::protocol::HELPER_RETIRED.into(),
+        told: None,
+    });
+    assert_eq!(app.transcript.len(), before);
+    assert!(
+        picker_line(&mut app, "w1").contains("[w1 · m] spawned member · retired · 0 tool calls")
+    );
+    // A helper whose line says how it ended keeps those words.
+    let (mut app, _, _) = helper_app();
+    app.update(Msg::HelperEnded {
+        path: vec!["scout".into()],
+        how: "finished".into(),
+        told: Some("main-ab12 was told".into()),
+    });
+    app.update(Msg::HelperEnded {
+        path: vec!["scout".into()],
+        how: crate::daemon::protocol::HELPER_RETIRED.into(),
+        told: None,
+    });
+    assert!(picker_line(&mut app, "scout").contains("[scout · m] finished · 1 tool call"));
+}
+
+/// A fork whose run ended is idle until the daemon retires it (it does
+/// once its outcome reached its parent).
+#[test]
+fn a_fork_s_line_says_idle_then_retired() {
+    let mut app = App::new(StatusInfo::default());
+    app.update(agent(AgentEvent::ToolCallRequested {
+        id: "f1".into(),
+        name: "fork_off".into(),
+        args: test_args(json!({"member_id": "kid", "task": "look"})),
+    }));
+    app.update(live(&["kid"]));
+    app.update(helper_msg(
+        "kid",
+        run_started("DELEGATED DURABLE FORK\n\nTask:\nlook"),
+    ));
+    app.update(helper_msg("kid", run_completed()));
+    app.update(live(&[]));
+    assert!(picker_line(&mut app, "kid").contains("[kid · m] fork · idle"));
+    app.update(Msg::HelperEnded {
+        path: vec!["kid".into()],
+        how: crate::daemon::protocol::HELPER_RETIRED.into(),
+        told: None,
+    });
+    assert!(picker_line(&mut app, "kid").contains("[kid · m] fork · retired"));
+}
+
+/// `/helpers` lists the live helpers (running, or seated and idle) by
+/// default; the ended ones (the daemon said how, or the mob's listing no
+/// longer names them) come with `a`, dim, after the live ones, and the
+/// hint counts them. `/helpers list` counts them, `/helpers list all`
+/// lists them.
+#[test]
+fn helpers_lists_the_live_helpers_and_shows_the_ended_ones_on_a() {
+    let mut app = App::new(StatusInfo::default());
+    for (tool, args) in [
+        ("assign", json!({"name": "done1", "task": "t"})),
+        (
+            "spawn_member",
+            json!({"profile": "main", "member_id": "w1"}),
+        ),
+        ("fork_off", json!({"member_id": "kid", "task": "t"})),
+    ] {
+        app.update(agent(AgentEvent::ToolCallRequested {
+            id: tool.into(),
+            name: tool.into(),
+            args: test_args(args),
+        }));
+    }
+    app.update(live(&["done1", "w1", "kid"]));
+    for label in ["done1", "w1", "kid"] {
+        app.update(helper_msg(label, run_started("work")));
+        app.update(helper_msg(label, run_completed()));
+    }
+    app.update(live(&[]));
+    // done1 finished (the daemon says so); kid is no longer in the mob.
+    app.update(Msg::HelperEnded {
+        path: vec!["done1".into()],
+        how: "finished".into(),
+        told: Some("main-ab12 was told".into()),
+    });
+    app.update(Msg::SeatedHelpers(vec!["main-ab12".into(), "w1".into()]));
+    type_str(&mut app, "/helpers");
+    app.update(key(KeyCode::Enter));
+    let rows = |app: &App| match &app.modal {
+        Some(Modal::List(p)) => (
+            p.rows
+                .iter()
+                .map(|r| (r.text.clone(), r.dim))
+                .collect::<Vec<_>>(),
+            p.footer.clone(),
+        ),
+        other => panic!("{other:?}"),
+    };
+    let (shown, footer) = rows(&app);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert!(
+        shown[0].0.contains("[w1 · m] spawned member · idle"),
+        "{shown:?}"
+    );
+    assert!(footer.contains("a: show 2 ended"), "{footer}");
+    app.update(key(KeyCode::Char('a')));
+    let (shown, footer) = rows(&app);
+    assert_eq!(shown.len(), 3, "{shown:?}");
+    assert!(!shown[0].1 && shown[1].1 && shown[2].1, "{shown:?}");
+    assert!(
+        shown[1].0.contains("[done1 · m] assigned · finished"),
+        "{shown:?}"
+    );
+    assert!(shown[2].0.contains("[kid · m] fork · idle"), "{shown:?}");
+    assert!(footer.contains("a: hide the ended"), "{footer}");
+    // An ended one's full view is still reachable.
+    app.update(key(KeyCode::Down));
+    app.update(key(KeyCode::Enter));
+    assert_eq!(app.helper_view(), app.transcript.helper_header("done1"));
+    app.update(key(KeyCode::Esc));
+    // Only ended ones: the empty line says how to see them.
+    app.update(Msg::HelperEnded {
+        path: vec!["w1".into()],
+        how: crate::daemon::protocol::HELPER_RETIRED.into(),
+        told: None,
+    });
+    type_str(&mut app, "/helpers");
+    app.update(key(KeyCode::Enter));
+    assert!(matches!(&app.modal, Some(Modal::List(p))
+        if p.rows.is_empty() && p.empty == "no live helpers; a shows 3 ended"));
+    app.update(key(KeyCode::Char('a')));
+    assert_eq!(rows(&app).0.len(), 3);
+    app.update(key(KeyCode::Esc));
+    // The listings.
+    type_str(&mut app, "/helpers list");
+    app.update(key(KeyCode::Enter));
+    let text = screen(&mut app, 30).join("\n");
+    assert!(
+        text.contains("no live helpers") && text.contains("3 ended helpers (/helpers list all"),
+        "{text}"
+    );
+    type_str(&mut app, "/helpers list all");
+    app.update(key(KeyCode::Enter));
+    let text = screen(&mut app, 40).join("\n");
+    assert!(text.contains("[kid · m] fork"), "{text}");
+}
+
+/// `/helpers` with more helpers than fit on the screen scrolls to keep
+/// the selection in sight.
+#[test]
+fn the_helper_picker_scrolls_through_more_helpers_than_a_page() {
+    let mut app = App::new(StatusInfo::default());
+    let labels: Vec<String> = (0..40).map(|i| format!("h{i:02}")).collect();
+    let names: Vec<&str> = labels.iter().map(String::as_str).collect();
+    app.update(live(&names));
+    type_str(&mut app, "/helpers");
+    app.update(key(KeyCode::Enter));
+    let rows = screen(&mut app, 20).join("\n");
+    assert!(
+        rows.contains("[h00 · m]") && !rows.contains("[h39 · m]"),
+        "{rows}"
+    );
+    for _ in 0..39 {
+        app.update(key(KeyCode::Down));
+    }
+    let rows = screen(&mut app, 20).join("\n");
+    assert!(
+        rows.contains("[h39 · m]") && !rows.contains("[h00 · m]"),
+        "{rows}"
+    );
 }

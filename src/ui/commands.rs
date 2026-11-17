@@ -232,8 +232,12 @@ pub enum HelperTarget {
 pub enum HelpersCommand {
     /// Open the helper picker (`/helpers`).
     Pick,
-    /// List the helpers with their state (`/helpers list`).
-    List,
+    /// List the live helpers with their state and count the ended ones
+    /// (`/helpers list`), or list every helper (`/helpers list all`).
+    List {
+        /// The ended helpers too.
+        all: bool,
+    },
     /// Show the helpers' nested blocks.
     Expand(HelperTarget),
     /// Fold the helpers to one line.
@@ -919,16 +923,16 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "helpers",
         aliases: &["tasks"],
-        usage: "[list | expand|fold <label>|all]",
+        usage: "[list [all] | expand|fold <label>|all]",
         summary: "pick a helper (sub-agent): open its full view, fold its work, or stop it",
         help: &[
             (
                 "/helpers, /tasks",
-                "open a list of this conversation's helpers (sub-agents): label,\nmodel, state (or how it ended), calls and tokens, nested ones\nindented; Enter opens one's full view, f folds or expands its\nblock, s stops a running one after a y/n question (the helpers\nit started keep running; its parent is told)",
+                "open a list of this conversation's live helpers (sub-agents:\nrunning, or seated and idle): label, model, kind, state, calls\nand tokens, nested ones indented; a shows the ended ones too\n(finished, retired, failed, stopped), dim, after the live ones;\nEnter opens one's full view, f folds or expands its block, s\nstops a running one after a y/n question (the helpers it\nstarted keep running; its parent is told)",
             ),
             (
-                "/helpers list",
-                "list the helpers and their state as a notice",
+                "/helpers list [all]",
+                "list the live helpers and their state as a notice, and count\nthe ended ones (all: list those too)",
             ),
             (
                 "/helpers expand|fold <label>|all",
@@ -1083,7 +1087,8 @@ fn parse_helpers(rest: &str) -> Option<Command> {
     };
     match words(rest).as_slice() {
         [] => Some(Command::Helpers(HelpersCommand::Pick)),
-        ["list"] => Some(Command::Helpers(HelpersCommand::List)),
+        ["list"] => Some(Command::Helpers(HelpersCommand::List { all: false })),
+        ["list", "all"] => Some(Command::Helpers(HelpersCommand::List { all: true })),
         ["expand", t] => Some(Command::Helpers(HelpersCommand::Expand(target(t)))),
         ["fold", t] => Some(Command::Helpers(HelpersCommand::Fold(target(t)))),
         _ => None,
@@ -2019,7 +2024,14 @@ mod tests {
     #[test]
     fn helpers_commands() {
         assert_eq!(ok("/helpers"), Command::Helpers(HelpersCommand::Pick));
-        assert_eq!(ok("/helpers list"), Command::Helpers(HelpersCommand::List));
+        assert_eq!(
+            ok("/helpers list"),
+            Command::Helpers(HelpersCommand::List { all: false })
+        );
+        assert_eq!(
+            ok("/helpers list all"),
+            Command::Helpers(HelpersCommand::List { all: true })
+        );
         assert_eq!(
             ok("/helpers expand scout"),
             Command::Helpers(HelpersCommand::Expand(HelperTarget::Label("scout".into())))
@@ -2030,7 +2042,7 @@ mod tests {
         );
         assert_eq!(
             usage_of("/helpers expand"),
-            "/helpers [list | expand|fold <label>|all]"
+            "/helpers [list [all] | expand|fold <label>|all]"
         );
     }
 

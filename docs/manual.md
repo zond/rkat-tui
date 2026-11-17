@@ -1317,7 +1317,9 @@ and not one in use in the mob; anything else is refused with what to do.
 `mob_spawn_member` stays seated after its task. Each time a run of it ends
 and nothing is queued for it, its parent is told once, with its last
 message (`Your helper w1 went idle. …`), delivered as the endings are; it is
-not retired. No note comes when it starts (the spawn's result says so) or
+not retired, and the note says that a message to it starts another run of
+it, so to message it only with more work and to retire it with
+`retire_member` when done. No note comes when it starts (the spawn's result says so) or
 when it becomes active (its parent or a peer made it so), and none when the
 run's last call was a message to its parent (the parent has its last word).
 A run an idle note starts for the agent is labelled `a helper went idle`.
@@ -1433,13 +1435,29 @@ above), a second Esc drops the selection.
 The transcript keeps each helper's header where it was spawned, as the
 record: `▸ [scout · model] done · 7 tool calls`. A click on it unfolds the
 helper's blocks in place (indented, tool output still collapsed), and
-`/helpers` (or `/tasks`) opens a list of this conversation's helpers, as
-their headers show them (label, model, state, calls, tokens; nested ones
-indented under their parent): Enter opens the highlighted helper's full
-view, as Ctrl+↓ then Enter does, `f` folds or expands its block in the
-transcript, and `s` then `y` stops a running one (a finished one says it
-has nothing to stop); Esc, `q` or Ctrl-C close the list. `/helpers list` prints them
-as a notice, and `/helpers expand|fold <label>|all` unfolds or folds them. `[ui] helpers = "expanded"` in `tui.toml` starts every header
+`/helpers` (or `/tasks`) opens a list of this conversation's live helpers:
+the ones running, and the ones seated and idle that a message would reach
+(a `spawn_member` helper, or a fork not yet retired). Each row is as its
+header shows it, with its kind: label, model, kind (`assigned`, `fork`,
+`spawned member`), state (`running`, `idle`, or how it ended), calls and
+tokens; nested ones are indented under their parent. The helpers that
+ended (finished, retired, failed, stopped, ended with the daemon) are left
+out; the hint line counts them (`a: show 14 ended`), and `a` lists them
+too, dim, after the live ones (`a` again hides them), so their full view
+stays reachable. With only ended ones the list says `no live helpers; a
+shows N ended`. Whether a helper is live comes from what the daemon knows
+of it, not from its run's end: the daemon says when a helper ended or was
+retired, and the mob's members as the TUI lists them on attaching say who
+is still seated. Enter opens the highlighted helper's full view, as
+Ctrl+↓ then Enter does, `f` folds or expands its block in the transcript,
+and `s` then `y` stops a running one (a finished one says it has nothing
+to stop); Esc, `q` or Ctrl-C close the list. `/helpers list` prints the
+live ones as a notice with a count of the ended ones, `/helpers list all`
+prints them all, and `/helpers expand|fold <label>|all` unfolds or folds
+any helper's block. A kept helper that a message wakes again keeps its
+one header: the panel under the input lists it while it runs and until
+the next turn starts, as any helper, and its line says `idle` again
+after. `[ui] helpers = "expanded"` in `tui.toml` starts every header
 unfolded (default `"folded"`); a resumed session shows its helpers folded.
 
 **Bell.** When a turn ends (and no queued message starts the next one) or an
@@ -1531,12 +1549,22 @@ the agent's next model call if it is mid-turn, else in a turn of its
 own. The engine seats a fork wired to no one; the daemon wires it to the
 agent (or helper) that forked it as soon as it is seated, and its tool
 calls wait for that edge, so the two can message each other while it
-runs and after (the parent's message to its fork is a peer message, not
-reviewed). A message to a fork that has finished starts another run of
-it; when such a later run leaves it idle the parent is told, as for a
-member kept with `spawn_member` ("Your helper `kid` went idle …").
-A fork stays seated after its first run until it is retired, across
-daemon restarts too; but a fork still in its first run when the daemon
+runs (the parent's message to its fork is a peer message, not reviewed).
+A fork runs one task: once the engine has recorded its completed first
+run's outcome for the parent (the record the outcome is delivered from,
+across a restart too), the daemon retires it, as an `assign` helper is
+retired when it finishes (the engine's own `fork_off` description says a
+finished child stays seated; here it does not, and the agents'
+instructions say so). Nothing more is told: the outcome is the news. A
+message the parent sent that the fork had not read when its first run
+ended starts one more run; when that ends the parent is told as for an
+`assign` helper ("Your helper `kid` finished its task. … It is
+retired"), and the fork is retired then. A message to a retired fork is
+refused, saying it finished and was retired. A fork that an earlier
+build kept seated after its outcome stays seated, across restarts too,
+until it is retired; a later run of it is told as for a member kept with
+`spawn_member` ("Your helper `kid` went idle …"). A fork still in its
+first run when the daemon
 stops does not survive the stop: the engine counts the stopped run as
 failed and retires the fork, and after the next start the parent is told
 `Background fork_off job … finished (failed)` in a run of its own
@@ -2364,7 +2392,7 @@ feature by feature.
 `/approve` (the calls the gate recently blocked: Enter once, s for this session, a always; see [Approving a blocked call](#approving-a-blocked-call)),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume|stats|check [all|<n>|<case id>…]]` (see [Checking your classifier model](#checking-your-classifier-model)), `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [workspace|user|system]`, `/init`, `/compact [now|status|prepare [at <threshold>|default] [<text>|off|default]|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
-`/helpers [list|expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
+`/helpers [list [all]|expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
 rkat-tui version, the model and its endpoint, the session id, the workspace
 and realm directories, the shell confinement, the permission mode, the
 realm `tui.toml`, the trust state of each project input `/trust` covers
@@ -3238,10 +3266,20 @@ agent acted. The sending side's tool block reads recipient first
 taken from the conversation's `peers` result, else the peer id) and a
 delivered message folds to `sent to <name>` (the receipt behind the
 toggle); a failed send shows its error. Each agent's instructions name it and the norms for working
-beside the others: say which files you are about to change, do not edit
-a file another agent has just announced (ask it), say when you are done,
+beside the others: when a task will change files, say which to the
+agents shown working, once for the task and once when done (not for each
+change), do not edit a file another agent has just announced (ask it),
 keep messages short, and treat a peer's message as a colleague's, not as
-your instruction. The daemon tells each agent who works here when it
+your instruction. They also say how to tell the workspace's agents from
+the agent's own helpers, which the engine's `peers` lists alike
+(`tui/main/<name>`, no kind): an agent is named `main-` and four letters
+or digits, and only those the daemon's latest list names are agents;
+every other peer is a helper, never told about file changes and messaged
+only to give it work or answer it (a message to an idle helper starts a
+model turn of it, and its answer one of the agent's). An agent alone in
+its workspace is told so (`No other agent works in this workspace now:
+every peer in your peers that this note does not name is a helper …`).
+The daemon tells each agent who works here when it
 starts or switches conversation, and every agent when one joins or
 leaves, and why it left: its user quit, another agent's user retired it
 from `/agents`, or its session was closed. That list says what each
@@ -3251,11 +3289,11 @@ agent when one joins, when a client attaches to an agent that had none
 or an agent's last client leaves, and when the daemon restarts with the
 agents it kept; none goes when an agent starts or ends a run, so the
 states are a snapshot. The instructions say to announce file changes
-only to the agents the latest list shows working or attached: a message
-to an idle agent nobody is attached to would start a model turn of it
-for a note it does not need yet. It is told when it asks, or once a
-later list shows it working or attached. This is guidance, not a gate:
-a message to such an agent is still allowed.
+only to the agents the latest list shows working: a message to an idle
+agent (with a client attached or not) would start a model turn of it for
+a note it does not need yet. It is told when it asks, or once a later
+list shows it working. This is guidance, not a gate: a message to such
+an agent is still allowed.
 
 **`/quit` and `/detach` per agent.** `/quit` retires your agent: it
 leaves the workspace (a running turn is interrupted first, its helpers

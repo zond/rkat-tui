@@ -106,12 +106,13 @@ impl App {
     pub(super) fn helpers_command(&mut self, cmd: HelpersCommand) {
         let (target, expand) = match cmd {
             HelpersCommand::Pick => {
+                self.helpers_all = false;
                 let picker = self.helper_picker();
                 self.show_modal(Modal::List(picker));
                 return;
             }
-            HelpersCommand::List => {
-                let text = self.helpers_listing();
+            HelpersCommand::List { all } => {
+                let text = self.helpers_listing(all);
                 self.transcript.push_notice(NoticeLevel::Info, text);
                 return;
             }
@@ -138,36 +139,65 @@ impl App {
         }
     }
 
-    /// The `/helpers` listing: one line per helper header.
-    pub(super) fn helpers_listing(&self) -> String {
+    /// The helper headers of this conversation, the live ones first (in
+    /// transcript order), then the ended ones; and how many are ended.
+    fn helpers_live_first(&self) -> (Vec<(BlockId, &HelperFold, bool)>, usize) {
+        let (mut live, ended): (Vec<_>, Vec<_>) = self
+            .transcript
+            .helper_headers()
+            .map(|(id, fold)| (id, fold, self.transcript.helper_live(fold)))
+            .partition(|(_, _, live)| *live);
+        let count = ended.len();
+        live.extend(ended);
+        (live, count)
+    }
+
+    /// The `/helpers list` listing: one line per live helper, then the
+    /// count of the ended ones (`all`: a line for each of them too).
+    pub(super) fn helpers_listing(&self, all: bool) -> String {
         use std::fmt::Write as _;
+        let (helpers, ended) = self.helpers_live_first();
+        if helpers.is_empty() {
+            return "helpers: none yet".to_string();
+        }
         let mut text = String::from("helpers:");
+        let shown = helpers.iter().filter(|(_, _, live)| all || *live);
         let mut any = false;
-        for (_, fold) in self.transcript.helper_headers() {
+        for (_, fold, _) in shown {
             any = true;
             let _ = write!(text, "\n{}", helper_line(fold));
         }
-        if any {
-            text.push_str(
-                "\n(/helpers picks one; /helpers expand|fold <label>|all; Ctrl+Up/Down then Enter opens one in full)",
-            );
-        } else {
-            text.push_str(" none yet");
+        if !any {
+            text.push_str(" no live helpers");
         }
+        if ended > 0 && !all {
+            let _ = write!(
+                text,
+                "\n{} (/helpers list all lists them)",
+                crate::text::count(ended, "ended helper")
+            );
+        }
+        text.push_str(
+            "\n(/helpers picks one; /helpers expand|fold <label>|all; Ctrl+Up/Down then Enter opens one in full)",
+        );
         text
     }
 
-    /// The `/helpers` picker: the helpers of this conversation in
-    /// transcript order, nested ones indented under their parent, each
-    /// as the transcript's header shows it (label, model, state, calls,
-    /// tokens); Enter opens its full view, `f` folds or expands its block,
-    /// `s` stops a running one after a confirmation.
+    /// The `/helpers` picker: the live helpers of this conversation
+    /// (running, or seated and idle) in transcript order, nested ones
+    /// indented under their parent, each as the transcript's header shows
+    /// it (label, model, kind, state, calls, tokens); `a` shows the ended
+    /// ones too, dim, after them. Enter opens a helper's full view, `f`
+    /// folds or expands its block, `s` stops a running one after a
+    /// confirmation.
     pub(super) fn helper_picker(&self) -> ListPicker {
         use ratatui::crossterm::event::KeyCode;
-        let rows = self
-            .transcript
-            .helper_headers()
-            .map(|(id, fold)| {
+        let all = self.helpers_all;
+        let (helpers, ended) = self.helpers_live_first();
+        let rows = helpers
+            .into_iter()
+            .filter(|(_, _, live)| all || *live)
+            .map(|(id, fold, live)| {
                 let stop = if fold.state.is_running() {
                     PickKey::confirmed(
                         KeyCode::Char('s'),
@@ -180,22 +210,43 @@ impl App {
                         format!("helper {} is not running: nothing to stop", fold.label),
                     )
                 };
-                PickRow::new(
+                let row = PickRow::new(
                     helper_line(fold),
                     vec![
                         PickKey::now(KeyCode::Enter, PickAct::ViewHelper(id)),
                         PickKey::now(KeyCode::Char('f'), PickAct::FoldHelper(id)),
                         stop,
                     ],
-                )
+                );
+                if live { row } else { row.dimmed() }
             })
             .collect();
-        ListPicker::new(
+        let toggle = match (all, ended) {
+            (_, 0) => String::new(),
+            (false, n) => format!(" · a: show {n} ended"),
+            (true, _) => " · a: hide the ended".to_string(),
+        };
+        let empty = if ended == 0 {
+            "no helpers in this conversation yet (the agent starts them with assign, fork_off or spawn_member)".to_string()
+        } else {
+            format!("no live helpers; a shows {ended} ended")
+        };
+        let picker = ListPicker::new(
             PickerKind::Helpers,
             rows,
-            "no helpers in this conversation yet (the agent starts them with assign, fork_off or spawn_member)",
-            "↑/↓ move · Enter full view · f fold/expand in the transcript · s stop · Esc close",
-        )
+            empty,
+            format!(
+                "↑/↓ move · Enter full view · f fold/expand in the transcript · s stop{toggle} · Esc close"
+            ),
+        );
+        if ended == 0 {
+            picker
+        } else {
+            picker.with_keys(vec![PickKey::now(
+                KeyCode::Char('a'),
+                PickAct::ShowEndedHelpers(!all),
+            )])
+        }
     }
 
     /// Stop the helper `header` (its labels from the transcript): the
@@ -293,5 +344,8 @@ fn helper_line(fold: &HelperFold) -> String {
     } else {
         status.as_str()
     };
-    format!("{indent}{marker} {} {status}", fold.tag())
+    match fold.kind {
+        Some(kind) => format!("{indent}{marker} {} {} · {status}", fold.tag(), kind.text()),
+        None => format!("{indent}{marker} {} {status}", fold.tag()),
+    }
 }

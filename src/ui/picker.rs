@@ -130,6 +130,9 @@ pub enum PickAct {
     /// Stop the running helper (its run is cancelled and it is retired;
     /// the helpers it started keep running).
     StopHelper(BlockId),
+    /// `/helpers`: list the ended helpers too (`true`), or only the live
+    /// ones.
+    ShowEndedHelpers(bool),
     /// `/wire <workspace>/<agent>`.
     Wire {
         /// The other agent's workspace.
@@ -168,6 +171,7 @@ impl PickAct {
                 | Self::Withdraw(_)
                 | Self::AllowEffect { .. }
                 | Self::FoldHelper(_)
+                | Self::ShowEndedHelpers(_)
                 | Self::Wire { .. }
                 | Self::Unwire { .. }
                 | Self::RetireAgent(_)
@@ -362,6 +366,8 @@ pub struct PickRow {
     pub note: Option<String>,
     /// What the keys do on it.
     pub keys: Vec<PickKey>,
+    /// Shown dim (an ended helper among live ones).
+    pub dim: bool,
 }
 
 impl PickRow {
@@ -372,7 +378,15 @@ impl PickRow {
             text: text.into(),
             note: None,
             keys,
+            dim: false,
         }
+    }
+
+    /// The row shown dim.
+    #[must_use]
+    pub fn dimmed(mut self) -> Self {
+        self.dim = true;
+        self
     }
 
     /// The row with `note` under it.
@@ -428,6 +442,9 @@ pub struct ListPicker {
     /// `/agents` picker's "new agent" row): a refresh that drops the
     /// highlighted item lands on the last item, not on them.
     pub actions: usize,
+    /// Keys of the picker itself, on any row and with none (a row's own
+    /// key of the same code wins).
+    pub keys: Vec<PickKey>,
 }
 
 impl ListPicker {
@@ -448,7 +465,15 @@ impl ListPicker {
             empty: empty.into(),
             footer: footer.into(),
             actions: 0,
+            keys: Vec::new(),
         }
+    }
+
+    /// The picker with `keys` of its own ([`Self::keys`]).
+    #[must_use]
+    pub fn with_keys(mut self, keys: Vec<PickKey>) -> Self {
+        self.keys = keys;
+        self
     }
 
     /// The picker with row `index` highlighted (the last when past it).
@@ -544,6 +569,7 @@ impl ListPicker {
             code => match self
                 .selected()
                 .and_then(|row| row.key(code))
+                .or_else(|| self.keys.iter().find(|key| key.code == code))
                 .map(|key| key.does.clone())
             {
                 Some(Does::Act(act)) => return ModalKey::Choose(act),
@@ -666,10 +692,10 @@ pub(super) fn list_picker_lines(
         .enumerate()
         .map(|(i, row)| {
             let full = i == selected;
-            let text_style = if full {
-                Style::default().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::default()
+            let text_style = match (full, row.dim) {
+                (true, _) => Style::default().add_modifier(Modifier::REVERSED),
+                (false, true) => dim,
+                (false, false) => Style::default(),
             };
             let mut lines: Vec<Line<'static>> = capped(wrap_text(&row.text, width), full, width)
                 .into_iter()
@@ -1150,6 +1176,11 @@ impl App {
                 self.show_picker(picker, true);
             }
             PickAct::StopHelper(header) => self.stop_helper(header, fx),
+            PickAct::ShowEndedHelpers(all) => {
+                self.helpers_all = all;
+                let picker = self.helper_picker();
+                self.show_picker(picker, true);
+            }
         }
     }
 }

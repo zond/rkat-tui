@@ -12031,3 +12031,76 @@ response limitation (`meerkat-comms` unchanged, nothing in the runtime
 diff touches peer responses), so `PEER_REQUEST_TOOLS` and
 `RESULT_LESS_RESPONSE` stay. No test was re-pinned; the stored-state
 guard opens `tests/fixtures/state-0.0.1/` unchanged.
+
+## Idle helpers taken for workspace agents (owner's report, 2026-11-17)
+
+Report: an agent alone in its workspace (`/agents` one row, `/helpers`
+more than a page) sent "update" messages after every change to helpers
+that looked idle, said they were "separate workspace sessions", and they
+"disappeared" after it called `tool_search "session"`, `list_members`
+and `peers`. It had been encouraged to use `fork_off`.
+
+- **Probe** (a rig test, removed after; engine 0.9.16): one agent, a
+  completed fork `kid`, an idle `spawn_member` helper `w1`.
+  - `peers`: `{"name":"tui/main/w1",…,"meta":{}}`,
+    `{"name":"tui/main/kid",…,"meta":{}}`: the same shape as an agent's
+    (`tui/main/main-xxxx`), no kind, role or label.
+  - `list_members`: only `kid` (`"role":"main"`, `"status":"active"`,
+    `"wired_to":["main-…"]`); `w1` not listed (the owner view of the
+    engine's `list_members` keeps it out). `role` is the profile: `main`
+    for agents and helpers alike.
+  - The roster note: none at all when an agent is alone
+    (`roster_note(&[])` was `None`, and the first agent was never sent
+    one), while the persona said "A system note names the other agents
+    when you start".
+  - The fork's outcome, the engine's: `Background fork_off job <id>
+    finished (completed):` and its JSON; nothing says the child stays
+    seated (the `fork_off` description does: "a finished child stays
+    seated until you retire it").
+  - A `send_message` to the completed fork: a model turn of it
+    (`FORK-ACK`), then a run of the parent for the note "2 notes about
+    your helpers: Your helper `kid` went idle … still seated" (the same
+    for `w1`): two model turns per announcement per helper.
+  - The UI: the woken helper's events reuse its header (the run's
+    `RunStarted` comes before the live list, so no second header); it
+    shows in the panel while running and drops as soon as that run ends
+    (its "this turn" flag was cleared at the turn's start). So the
+    "disappearance" was the agent no longer waking them; nothing retired
+    them (the probe's roster kept both).
+- **Fixes.** The agent alone is told so (`NO_OTHER_AGENTS`, also at the
+  first seat), and every roster note says any peer it does not name is a
+  helper. The persona: how to tell an agent (`main-` and four letters or
+  digits, named by the note) from a helper, never announce file changes
+  to helpers, message a helper only for work or an answer, a message to
+  an idle helper costs a model turn of it and one of yours; files are
+  announced only to agents shown working, once per task and once when
+  done. The idle note says a message starts another run, so only with
+  more work. `upgrades::` brings restored conversations to the new text
+  (`agent_sections` includes `agents_persona`).
+- **Forks retired.** The engine's custodian records a fork's outcome as
+  the mob event `ForkJobTerminal` before it hands it to the parent, and a
+  restart's re-link delivers from that record; the record "outlives the
+  child's retirement" (`meerkat-mob` 0.9.16 `record_fork_job_terminal`,
+  `fork_job_terminal`), and the engine itself retires a failed fork
+  before its outcome is recorded. So retiring a completed fork once that
+  record exists loses nothing: the follower sees the record on the
+  fork's mob events (`follow::outcome_recorded`) and
+  `HelperEndings::fork_outcome_recorded` retires the fork when it is
+  idle with nothing queued (under the same `deciding` lock and input
+  probe as an `assign` helper's end), or after the one more run a waiting
+  message starts (told as `How::Done`). Owner's decision: talking to a
+  fork while it works is wanted, after was a by-product. A fork an
+  earlier build kept, or whose record came while the daemon was stopping,
+  stays seated (no live record comes for it; a restored fork's later
+  runs are told as a kept member's). Tests:
+  `forks::a_completed_fork_is_retired_once_its_outcome_is_recorded`,
+  `forks::a_fork_and_its_parent_talk_both_ways_while_it_works`,
+  `forks::a_helper_s_fork_is_wired_to_the_helper` (a helper's fork too),
+  `forks::a_restored_fork_is_wired_and_a_retired_one_is_not` (with
+  `HelperEndings::keep_forks`, an earlier build's fork).
+- **`/helpers`.** Live (running, or seated and idle) by default, with
+  kind and state; ended ones behind `a`, dim. Live comes from the daemon:
+  its endings, a new `rkat/helper_ended` with `how: "retired"` when the
+  follower sees a helper leave its mob (`HELPER_RETIRED`), and the
+  workspace mob's members the client lists when it opens the mob's
+  stream (`Msg::SeatedHelpers`). Tests in `ui::tests::helpers`.

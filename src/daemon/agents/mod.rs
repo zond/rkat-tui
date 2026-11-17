@@ -385,6 +385,8 @@ impl Agents {
                 .await
                 .map_err(|err| super::DaemonError::FirstAgent(err.to_string()))?;
             self.admit(&name, true, false);
+            // Alone: told so, and that every peer it gets is a helper.
+            self.note_roster(&name).await;
             tracing::info!(agent = %name, %session, "seated the workspace's first agent");
             return Ok((name, session, true));
         }
@@ -1158,7 +1160,7 @@ impl crate::approval::AgentPeers for AgentAttendance {
         let agents = self.0.upgrade()?;
         if let Some(helper) = agents.core.registry.endings().retired_peer(peer_id) {
             return Some(format!(
-                "helper `{helper}` finished its task and was retired; start another with `assign` for more work"
+                "helper `{helper}` finished its task and was retired; start another helper for more work"
             ));
         }
         let caller = agents.core.conversations.agent_of(session)?;

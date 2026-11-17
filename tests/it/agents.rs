@@ -576,7 +576,7 @@ fn roster_notes(messages: &[Message]) -> usize {
 
 /// The owner's decision (2026-11-13): an agent is shown which of the others
 /// are working, idle with a client, or idle with none, and told to announce
-/// only to the first two. A joins working (its turn held at the model), B
+/// only to the working ones (the owner's narrowing of 2026-11-17). A joins working (its turn held at the model), B
 /// idle with its client, C idle after its client detached: D, joining, is
 /// told exactly that, and its instructions say whom to announce to. The
 /// note is a snapshot sent on roster and attachment changes, never for a
@@ -630,8 +630,8 @@ async fn the_roster_note_shows_who_works_and_is_not_sent_for_runs() {
         "{told}"
     );
     for line in [
-        "that the latest such note shows working or with a client attached",
-        "Do not message an agent it shows idle with no client attached",
+        "to the other agents that the latest note shows working, once for the task",
+        "Do not message an idle agent (with a client attached or not) only to tell it",
     ] {
         assert!(told.contains(line), "{line}: {told}");
     }

@@ -231,6 +231,13 @@ struct Tracked {
     messaged_parent: bool,
     /// Its first run's end is told by the engine (a fresh fork's outcome).
     first_told_elsewhere: bool,
+    /// A fork whose completed outcome the engine recorded for its parent
+    /// (`ForkJobTerminal`, [`HelperEndings::fork_outcome_recorded`]): it is
+    /// single-use from then on, retired once it is idle.
+    outcome_recorded: bool,
+    /// The run whose end left it idle with nothing queued for it (`None`:
+    /// no such end decided yet).
+    idle_after: Option<u64>,
     /// The ends of its runs up to this one are its checkpoint's (the run
     /// at its limit and the status run after it): no ending of it (0: no
     /// checkpoint yet).
@@ -317,6 +324,10 @@ pub struct HelperEndings {
     /// Tests: awaited before a finished `assign` helper is retired.
     #[cfg(any(test, feature = "test-support"))]
     before_retiring: OnceLock<DecidingHook>,
+    /// Tests: forks are kept seated after their outcome, as builds up to
+    /// 0.0.15 kept them ([`Self::keep_forks`]).
+    #[cfg(any(test, feature = "test-support"))]
+    keeps_forks: std::sync::atomic::AtomicBool,
 }
 
 /// Tests: what [`HelperEndings::before_deciding`] awaits for a helper.
@@ -452,6 +463,60 @@ impl HelperEndings {
         if let Some(tracked) = self.tracked.lock().get_mut(key) {
             tracked.first_told_elsewhere = true;
         }
+    }
+
+    /// The engine recorded the fork `key`'s completed outcome for its
+    /// parent (its mob's `ForkJobTerminal`, which outlives the fork and from
+    /// which a restart delivers it again): the fork is single-use from now
+    /// on, as an `assign` helper is. One idle already, with nothing queued
+    /// for it, is retired now; one still running (or with a message
+    /// queued) when its run ends.
+    pub fn fork_outcome_recorded(self: &Arc<Self>, key: &HelperKey) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.keeps_forks.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let idle_after = {
+            let mut tracked = self.tracked.lock();
+            let Some(entry) = tracked.get_mut(key) else {
+                return;
+            };
+            entry.outcome_recorded = true;
+            entry.idle_after.filter(|after| *after == entry.runs)
+        };
+        let Some(runs) = idle_after else { return };
+        let probe = self.probe.get().map(|probe| Arc::clone(&probe.0));
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let endings = Arc::clone(self);
+        let key = key.clone();
+        runtime.spawn(async move {
+            // As a run's end is decided: no note to it in flight, and
+            // nothing it has not read.
+            let _deciding = endings.deciding.lock().await;
+            let still_idle =
+                endings.tracked.lock().get(&key).is_some_and(|tracked| {
+                    tracked.runs == runs && tracked.idle_after == Some(runs)
+                });
+            let queued = match &probe {
+                Some(probe) => matches!(probe(key.clone()).await, Some(n) if n > 0),
+                None => false,
+            };
+            if still_idle && !queued {
+                endings.retire_fork(&key);
+            }
+        });
+    }
+
+    /// Retire the fork `key`, whose first run's outcome reached its parent
+    /// from the engine: nobody is told here (that outcome is the parent's
+    /// news), and a message to it from now on is refused saying it
+    /// finished ([`Self::retired_peer`]).
+    fn retire_fork(&self, key: &HelperKey) {
+        tracing::info!(helper = %key, "the fork's outcome reached its parent: it is retired");
+        self.settle(key);
+        self.retire_done(key);
     }
 
     /// `key` is a `delegate` helper an earlier build left, still seated:
@@ -630,6 +695,14 @@ impl HelperEndings {
         let _ = self.before_deciding.set(DecidingHook(hook));
     }
 
+    /// Tests: keep every fork seated after its outcome, as builds up to
+    /// 0.0.15 did (a realm such a build used holds forks seated so).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn keep_forks(&self) {
+        self.keeps_forks
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Tests: await `hook` (with the helper's key) before a finished
     /// `assign` helper is retired (once).
     #[cfg(any(test, feature = "test-support"))]
@@ -647,14 +720,18 @@ impl HelperEndings {
     /// parent is told, and it is retired) and a long-lived member went idle
     /// (its parent is told, unless the run's last call was a message to it).
     fn went_idle(&self, key: &HelperKey, runs: u64, terminal: Terminal) {
-        let (tag, messaged_parent, first_told_elsewhere) = {
-            let tracked = self.tracked.lock();
-            match tracked.get(key) {
-                Some(tracked) if tracked.runs == runs => (
-                    tracked.tag.clone(),
-                    tracked.messaged_parent,
-                    tracked.first_told_elsewhere && runs <= 1,
-                ),
+        let (tag, messaged_parent, first_told_elsewhere, outcome_recorded) = {
+            let mut tracked = self.tracked.lock();
+            match tracked.get_mut(key) {
+                Some(tracked) if tracked.runs == runs => {
+                    tracked.idle_after = Some(runs);
+                    (
+                        tracked.tag.clone(),
+                        tracked.messaged_parent,
+                        tracked.first_told_elsewhere && runs <= 1,
+                        tracked.outcome_recorded,
+                    )
+                }
                 _ => return,
             }
         };
@@ -678,10 +755,32 @@ impl HelperEndings {
                 }
                 self.retire_done(key);
             }
-            super::HelperKind::Member | super::HelperKind::Fork => {
-                if first_told_elsewhere {
-                    return;
+            super::HelperKind::Fork if first_told_elsewhere => {
+                // The engine tells its first run's end; once its outcome is
+                // recorded for the parent it is retired.
+                if outcome_recorded && matches!(terminal, Terminal::Completed(_)) {
+                    self.retire_fork(key);
                 }
+            }
+            super::HelperKind::Fork if outcome_recorded => {
+                // A later run (a message read before its first run ended)
+                // of a fork whose outcome reached its parent: it is done,
+                // told as an `assign` helper is, and retired.
+                let how = match terminal {
+                    Terminal::Completed(answer) => How::Done { answer },
+                    Terminal::Failed(reason) => How::Failed { reason },
+                    Terminal::Cancelled | Terminal::Limit { .. } => return,
+                };
+                if let Some(tag) = self.settle(key) {
+                    self.tell(Ended {
+                        key: key.clone(),
+                        tag,
+                        how,
+                    });
+                }
+                self.retire_done(key);
+            }
+            super::HelperKind::Member | super::HelperKind::Fork => {
                 let how = match terminal {
                     Terminal::Completed(_) if messaged_parent => return,
                     Terminal::Completed(answer) => How::WentIdle {
