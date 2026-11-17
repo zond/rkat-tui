@@ -58,6 +58,13 @@ pub struct Core {
     /// Every `tui.toml` layer's values now and the one path a change of a
     /// setting takes.
     pub settings: Arc<super::settings::Settings>,
+    /// The realm's directory (what a storage failure names,
+    /// [`super::storage`]).
+    pub realm: std::path::PathBuf,
+    /// Tests: how many of the next member reloads fail
+    /// ([`super::storage::reload`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub reload_faults: std::sync::atomic::AtomicU32,
 }
 
 impl std::fmt::Debug for Core {

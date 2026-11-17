@@ -121,8 +121,10 @@ nix = { version = "0.29", features = ["signal", "process", "fs", "user", "hostna
 
 [features]
 # Makes the internal modules public and adds `harness` (the headless
-# runner) for this crate's own integration tests. Not a stable API.
-test-support = []
+# runner) for this crate's own integration tests. Not a stable API. The
+# engine's runtime test hooks come with it (a session left needing a
+# reload, `daemon::storage`).
+test-support = ["meerkat-runtime/test-support"]
 
 [dev-dependencies]
 # The integration tests drive the internal modules through `test-support`.

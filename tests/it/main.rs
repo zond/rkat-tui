@@ -63,6 +63,7 @@ mod semantic_recall;
 mod settings;
 mod shell_jobs;
 mod skills;
+mod storage;
 mod tool_costs;
 mod usage;
 mod watches;

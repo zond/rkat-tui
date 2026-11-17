@@ -613,6 +613,18 @@ pub const HELPER_REFUSED: i32 = -32017;
 /// The message says which, in plain words.
 pub const BTW_REFUSED: i32 = -32018;
 
+/// An input refused because a storage failure left its agent needing a
+/// reload, which the daemon then did ([`crate::daemon::storage`]): the
+/// input was not taken. The agent's event stream ended with its old
+/// registration, so the client opens it again ([`RELOADED`]) and then
+/// sends the input once more.
+pub const AGENT_RELOADED: i32 = -32019;
+
+/// The notification that an agent was reloaded after a storage failure
+/// ([`SwitchedNote`]: the agent and its conversation, the same one): its
+/// clients open its event stream again.
+pub const RELOADED: &str = "rkat/reloaded";
+
 /// A local method's refusal: a JSON-RPC error code and message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {

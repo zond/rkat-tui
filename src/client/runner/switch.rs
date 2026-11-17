@@ -85,6 +85,11 @@ impl Runner {
             identity,
             usage,
         } = adopted;
+        let why = if std::mem::take(&mut self.reloaded) && why == Shown::Reseated {
+            Shown::Reloaded
+        } else {
+            why
+        };
         let Some(link) = self.conn.link_mut() else {
             return;
         };
@@ -92,7 +97,7 @@ impl Runner {
         link.stream = stream;
         // The old conversation's turn and dialogs are over (the same
         // conversation, seated again, keeps them).
-        if why != Shown::Reseated {
+        if !matches!(why, Shown::Reseated | Shown::Reloaded) {
             if self.turn.active {
                 self.turn.record(Err(TurnFailure::Interrupted));
                 self.finish_turn();
@@ -149,6 +154,7 @@ impl Runner {
                 format!("a new conversation ({short}); the previous one stays in /resume")
             }
             Shown::Resumed => format!("resumed conversation {short}"),
+            Shown::Reloaded => crate::daemon::storage::RELOADED_LINE.to_string(),
             Shown::Others => {
                 format!("another client switched the agent to conversation {short}")
             }

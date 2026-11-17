@@ -2652,6 +2652,35 @@ Past 50 MB it is renamed `audit.1.jsonl` (one older generation is kept).
 `/audit [n]` shows its last lines for your agent; `rkat-tui --audit`
 prints the whole log, the older generation first.
 
+**When the disk fills.** The workspace's state directory holds the agent's
+conversation databases, so a full (or failing) filesystem under it stops
+the agent from saving its work:
+
+- The turn that hits it fails with one line: `the disk that holds
+  rkat-tui's state (<the state directory>) is full or failing, so the
+  agent's step was not saved; free space on that filesystem, then send
+  your message again`. The engine's own error text goes to the daemon's
+  log and the audit log (`storage_failure`), not the transcript. The
+  step the agent was on when the write failed is lost; what it committed
+  before stays.
+- The engine then refuses the agent's input until its registration is
+  reloaded. The daemon does that itself on your next message (and on its
+  own notes to the agent), with the same conversation, and sends the
+  message once more; you see `the agent was reloaded after a storage
+  failure; the step it was on when the failure came was not saved`. No
+  daemon restart is needed.
+- If the reload fails too (the disk is still full), the turn says so:
+  `the agent could not be reloaded after a storage failure (the disk may
+  still be full) …; free space on the filesystem that holds <the state
+  directory>, then send again`.
+- The daemon reads the free space at its start and every 5 minutes; when
+  it falls below 200 MB each agent's clients get a warning, once per
+  crossing.
+
+A helper refused the same way (a daemon note to it) is reloaded the same
+way; the reload is in the daemon's log and the audit log
+(`storage_reload`).
+
 ## The workspace daemon
 
 `rkat-tui` runs the agent in the workspace's `rkat-tui-mob` daemon and is

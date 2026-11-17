@@ -484,6 +484,21 @@ impl Runner {
                     self.adopt_switch(moved.session_id, Shown::Others, None);
                 }
             }
+            // The agent was reloaded after a storage failure: its stream
+            // ended with the old registration; open it again (once: a
+            // send of this client's that the reload turned back reopens
+            // it itself, `send_after_reload`).
+            Push::Reloaded(reloaded)
+                if reloaded.agent == link.connection.agent()
+                    && reloaded.session_id == link.session =>
+            {
+                if self.switching {
+                    self.reloaded = true;
+                } else {
+                    let session = link.session.clone();
+                    self.rerender(session, Shown::Reloaded);
+                }
+            }
             Push::Mode(status) => self.push_mode(status),
             Push::Setting(note) => {
                 if let Some(notice) = note.notice {
@@ -524,6 +539,7 @@ impl Runner {
             Push::Triggered(_)
             | Push::Cost(_)
             | Push::Switched(_)
+            | Push::Reloaded(_)
             | Push::Idle(_)
             | Push::Running(_)
             | Push::AgentNotice(_)

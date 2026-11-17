@@ -53,6 +53,7 @@ pub mod schema_compat;
 pub mod serve;
 pub mod settings;
 pub mod settings_watch;
+pub mod storage;
 pub mod tasks;
 pub mod usage;
 pub mod watches;
@@ -612,6 +613,9 @@ impl Daemon {
                         .join(crate::config::RULES_FILE_NAME),
                 ),
             )),
+            realm: composed.scope.realm_root(),
+            #[cfg(any(test, feature = "test-support"))]
+            reload_faults: std::sync::atomic::AtomicU32::new(0),
         });
         let agents = agents::Agents::new(
             Arc::clone(&core),
@@ -629,6 +633,7 @@ impl Daemon {
         )
         .await?;
         let watch_task = deliver_watches(&agents, composed.watch_batches);
+        let agents_for_space = Arc::clone(&agents);
         let local = Arc::new(local::Local::new(
             agents,
             local::LocalParts {
@@ -677,14 +682,19 @@ impl Daemon {
                 engine: Arc::clone(&core.engine),
                 compact_threshold: composed.root.compact_threshold,
             },
-            tasks: [watch_task, endings_task, checkpoints_task]
-                .into_iter()
-                .chain(settings_watch::spawn(
-                    Arc::downgrade(&local),
-                    core.settings.watched(),
-                ))
-                .chain(composed.tasks)
-                .collect(),
+            tasks: [
+                watch_task,
+                endings_task,
+                checkpoints_task,
+                storage::watch_free_space(Arc::downgrade(&agents_for_space)),
+            ]
+            .into_iter()
+            .chain(settings_watch::spawn(
+                Arc::downgrade(&local),
+                core.settings.watched(),
+            ))
+            .chain(composed.tasks)
+            .collect(),
             local,
         })
     }

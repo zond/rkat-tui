@@ -71,6 +71,45 @@ impl Runner {
         });
     }
 
+    /// The daemon reloaded the agent after a storage failure and turned
+    /// back `text` (the prompt of turn `turn`, or the steer `steer`): the
+    /// agent's stream is opened again (its old one ended with the old
+    /// registration), then the input goes once more ([`Self::send_again`]).
+    pub(super) fn send_after_reload(&mut self, turn: u64, steer: Option<PendingId>, text: String) {
+        self.again = Some((turn, steer, text));
+        // A reopen under way (the daemon's [`protocol::RELOADED`], or the
+        // old stream's end) is the reload's; else one starts here.
+        if self.switching {
+            self.reloaded = true;
+        } else if let Some(link) = self.conn.link() {
+            let session = link.session.clone();
+            self.rerender(session, Shown::Reloaded);
+        }
+    }
+
+    /// Send `text` of turn `turn` once more after the agent's reload (a
+    /// turn that ended meanwhile, or a steer no longer followed, is not).
+    pub(super) fn send_again(&mut self, turn: u64, steer: Option<PendingId>, text: String) {
+        if !self.turn.active || self.turn.id != turn {
+            if let Some(id) = steer {
+                self.steers.forget(id);
+            }
+            return;
+        }
+        let Some(connection) = self.connection() else {
+            return;
+        };
+        self.outbound(Outbound {
+            connection,
+            text,
+            steer,
+            retry: None,
+            turn,
+            reports: self.reporter(),
+            ui_tx: self.ui_tx.clone(),
+        });
+    }
+
     /// Other agents' messages a run input carried, each to the UI with its
     /// sender's short name.
     fn peer_messages(&self, messages: Vec<(String, String)>) {
@@ -212,6 +251,7 @@ impl Runner {
                 turn: outbound.turn,
                 steer: outbound.steer,
                 result: Err("the client could not send it".to_string()),
+                again: None,
             });
         }
     }
@@ -465,7 +505,11 @@ impl Runner {
     /// turn. A stream that reports it lost events the member no longer
     /// retains (the cursor was older than its window) is rendered again
     /// from the conversation's start.
-    pub(super) fn on_event(&mut self, envelope: EventEnvelope<AgentEvent>, epoch: Option<&str>) {
+    pub(super) fn on_event(
+        &mut self,
+        mut envelope: EventEnvelope<AgentEvent>,
+        epoch: Option<&str>,
+    ) {
         if matches!(envelope.payload, AgentEvent::StreamTruncated { .. }) {
             if let Some(link) = self.conn.link()
                 && !self.switching
@@ -496,6 +540,15 @@ impl Runner {
         if self.turn.quiet {
             self.on_quiet_event(envelope);
             return;
+        }
+        // A run that failed because the realm's storage did is told in
+        // plain words (`crate::daemon::storage`; the daemon logs and
+        // audits the engine's).
+        if let AgentEvent::RunFailed { error_report, .. } = &mut envelope.payload
+            && crate::daemon::storage::is_storage_failure(&error_report.message)
+        {
+            error_report.message =
+                crate::daemon::storage::failed_line(&self.config.scope.realm_root());
         }
         let mut terminal = false;
         // A run already going when this client attached (its start was shown
@@ -1229,12 +1282,35 @@ pub(super) async fn send_outbound(outbound: Outbound) {
         CALL_TIMEOUT,
         remote::send(&connection, sent, steer.is_some()),
     )
-    .await
-    .map_err(|err| err.to_string());
+    .await;
+    // The daemon reloaded the agent after a storage failure; the input was
+    // not taken and goes once more when the agent's stream is open again.
+    if let Err(CallFailure::Failed(crate::client::ClientError::Rpc { code, .. })) = &result
+        && *code == protocol::AGENT_RELOADED
+    {
+        reports.send(Report::Sent {
+            turn,
+            steer,
+            result: Err(String::new()),
+            again: Some(sent.to_string()),
+        });
+        return;
+    }
+    let result = result.map_err(|err| match err {
+        // The daemon's plain words for an agent its storage failure left
+        // unable to take input (`crate::daemon::storage`).
+        CallFailure::Failed(crate::client::ClientError::Rpc { code, message, .. })
+            if code == crate::daemon::storage::reload_required_code() =>
+        {
+            message
+        }
+        other => other.to_string(),
+    });
     reports.send(Report::Sent {
         turn,
         steer,
         result,
+        again: None,
     });
 }
 

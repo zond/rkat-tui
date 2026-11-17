@@ -572,6 +572,22 @@ pub trait LocalMethods: Send + Sync {
     fn destroyed_mobs(&self) -> Option<tokio::sync::broadcast::Receiver<meerkat_mob::MobId>> {
         None
     }
+    /// The engine refused `caller`'s input with `MemberReloadRequired`
+    /// (`reason`, its words): reload the caller's agent
+    /// ([`super::storage::reload`]). The error is what the client is told
+    /// instead of the engine's words.
+    ///
+    /// # Errors
+    ///
+    /// The reload failed (or this host cannot reload).
+    async fn reload_agent(&self, _caller: &Caller, _reason: &str) -> Result<(), String> {
+        Err(self.storage_failed_text())
+    }
+    /// What the client is told when its agent still refuses input for a
+    /// storage failure.
+    fn storage_failed_text(&self) -> String {
+        "the agent's storage failed and it takes no messages until it is reloaded; free space on the disk that holds rkat-tui's state, then send again".to_string()
+    }
 }
 
 #[async_trait::async_trait]
@@ -609,6 +625,25 @@ impl LocalMethods for Local {
 
     fn destroyed_mobs(&self) -> Option<tokio::sync::broadcast::Receiver<meerkat_mob::MobId>> {
         Some(self.registry().destroyed_mobs())
+    }
+
+    async fn reload_agent(&self, caller: &Caller, reason: &str) -> Result<(), String> {
+        let Some(agent) = caller.agent.as_deref() else {
+            return Err(self.storage_failed_text());
+        };
+        super::storage::reload(
+            self.core(),
+            &meerkat_mob::MobId::from(super::MOB_ID),
+            &meerkat_mob::AgentIdentity::from(agent),
+            reason,
+            false,
+        )
+        .await
+        .map_err(|_| self.storage_failed_text())
+    }
+
+    fn storage_failed_text(&self) -> String {
+        super::storage::reload_failed_line(&self.core().realm)
     }
 }
 
@@ -749,6 +784,8 @@ async fn proxy_with<R, W, E, L>(
     let mut from_engine = AbortOnDrop(tokio::spawn({
         let out_tx = out_tx.clone();
         let pending = Arc::clone(&pending);
+        let local = Arc::clone(&local);
+        let caller = caller.clone();
         async move {
             let mut lines = BufReader::new(engine_read);
             let mut line = String::new();
@@ -779,7 +816,47 @@ async fn proxy_with<R, W, E, L>(
                                     forward = format!("{answer}\n");
                                 }
                             }
-                            Some((Awaiting::Input(input), _)) => held = Some(input),
+                            // Refused for a storage failure: the agent is
+                            // reloaded, and the client is answered that it
+                            // was (it opens the agent's stream again, whose
+                            // old one ended with the old registration, and
+                            // sends once more), or in plain words why not.
+                            Some((
+                                Awaiting::Input {
+                                    sending,
+                                    send: true,
+                                },
+                                mut answer,
+                            )) if reload_required(&answer) => {
+                                let reason = answer
+                                    .pointer("/error/message")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string();
+                                let local = Arc::clone(&local);
+                                let caller = caller.clone();
+                                let out_tx = out_tx.downgrade();
+                                tokio::spawn(async move {
+                                    match local.reload_agent(&caller, &reason).await {
+                                        Ok(()) => {
+                                            answer["error"]["code"] =
+                                                Value::from(protocol::AGENT_RELOADED);
+                                            answer["error"]["message"] = Value::String(
+                                                super::storage::RELOADED_LINE.to_string(),
+                                            );
+                                        }
+                                        Err(plain) => {
+                                            answer["error"]["message"] = Value::String(plain);
+                                        }
+                                    }
+                                    if let Some(out_tx) = out_tx.upgrade() {
+                                        let _ = out_tx.send(Outgoing::line(format!("{answer}\n")));
+                                    }
+                                    drop(sending);
+                                });
+                                continue;
+                            }
+                            Some((Awaiting::Input { sending, .. }, _)) => held = Some(sending),
                             Some((Awaiting::StreamOpen(_), _)) | None => {}
                         }
                         let sent = out_tx
@@ -963,8 +1040,14 @@ pub enum Awaiting {
     Initialize,
     /// An input to an agent: it holds the agent busy
     /// ([`super::activity::Sending`]) until its answer passes (or the
-    /// connection ends).
-    Input(super::activity::Sending),
+    /// connection ends). `send` marks a `mob/member_send`, whose refusal
+    /// for a storage failure the proxy repairs ([`super::storage`]).
+    Input {
+        /// The agent held busy.
+        sending: super::activity::Sending,
+        /// Whether it is a `mob/member_send`.
+        send: bool,
+    },
     /// A mob-wide stream open (`mob/stream_open` with a `mob_id` and no
     /// `agent_identity`) of this mob: its answer names the stream.
     StreamOpen(String),
@@ -1045,7 +1128,10 @@ fn awaits(
     let id = request.get("id")?.to_string();
     let params = request.get("params");
     let awaiting = match (input, method) {
-        (Some(input), _) => Awaiting::Input(input),
+        (Some(sending), method) => Awaiting::Input {
+            sending,
+            send: method == protocol::engine::MEMBER_SEND,
+        },
         (None, protocol::engine::INITIALIZE) => Awaiting::Initialize,
         (None, protocol::engine::STREAM_OPEN)
             if params.and_then(|p| p.get("agent_identity")).is_none() =>
@@ -1060,6 +1146,13 @@ fn awaits(
         _ => return None,
     };
     Some((id, awaiting))
+}
+
+/// Whether the engine's `answer` refuses the request with
+/// `MemberReloadRequired` ([`super::storage`]).
+fn reload_required(answer: &Value) -> bool {
+    answer.pointer("/error/code").and_then(Value::as_i64)
+        == Some(i64::from(super::storage::reload_required_code()))
 }
 
 /// The id (as JSON text) and the parsed answer, when the engine's `line`

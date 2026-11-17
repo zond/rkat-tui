@@ -15,6 +15,7 @@ use meerkat_mob_mcp::MobMcpState;
 
 use super::super::MOB_ID;
 use super::super::conversations::RunState;
+use super::super::core::Core;
 use super::Agents;
 
 /// The source the daemon's notes about the other agents carry.
@@ -185,25 +186,35 @@ pub(crate) async fn note_compacted(state: Arc<MobMcpState>, agent: String, note:
 /// change, a watch's batch, the smart compaction's request). It returns
 /// once the engine took the input, not when a run ends.
 ///
+/// A member the engine refuses with `MemberReloadRequired` (a storage
+/// write of it failed, [`crate::daemon::storage`]) is reloaded once and
+/// sent to once more.
+///
 /// # Errors
 ///
-/// The engine's refusal of the send.
+/// The engine's refusal of the send (or of the reload it needed).
 pub(crate) async fn steer_member(
-    state: &MobMcpState,
+    core: &Core,
     mob: &MobId,
     member: AgentIdentity,
     text: String,
 ) -> Result<(), meerkat_mob::MobError> {
-    state
-        .mob_member_send(
+    let send = |text: String| {
+        core.state.mob_member_send(
             mob,
-            member,
+            member.clone(),
             meerkat_core::types::ContentInput::from(text),
             meerkat_core::types::HandlingMode::Steer,
             None,
         )
-        .await
-        .map(drop)
+    };
+    match send(text.clone()).await {
+        Err(meerkat_mob::MobError::MemberReloadRequired { reason, .. }) => {
+            crate::daemon::storage::reload(core, mob, &member, &reason, true).await?;
+            send(text).await.map(drop)
+        }
+        other => other.map(drop),
+    }
 }
 
 /// Why the daemon steers a message into one of its agents
@@ -251,7 +262,7 @@ impl Agents {
         }
         let _sending = self.core.activity.sending(name);
         let steered = steer_member(
-            &self.core.state,
+            &self.core,
             &MobId::from(MOB_ID),
             AgentIdentity::from(name),
             text,

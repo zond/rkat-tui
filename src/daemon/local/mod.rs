@@ -276,6 +276,50 @@ impl Local {
         &self.core
     }
 
+    /// Tests: leave `agent`'s session as a failed durable commit does
+    /// (the engine's own test hook: its registration needs a reload, so
+    /// the next send is refused with `MemberReloadRequired`). Whether it
+    /// did. Meant for an agent with no run behind it: applied while a
+    /// run's terminal is still being written, it fails that write too
+    /// (`tests/it/storage.rs`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn degrade_for_test(&self, agent: &str) -> bool {
+        let Some(session) = self.core.conversations.current(agent) else {
+            return false;
+        };
+        self.parts
+            .machine
+            .force_session_durability_reload_required_for_test(&session)
+            .await
+    }
+
+    /// Tests: the next `count` member reloads fail
+    /// ([`crate::daemon::storage::reload`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fail_reloads_for_test(&self, count: u32) {
+        self.core
+            .reload_faults
+            .store(count, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests: a message of the daemon's own to `agent`, as its notes go
+    /// ([`crate::daemon::agents::steer_member`]).
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal, as text.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn steer_for_test(&self, agent: &str, text: &str) -> Result<(), String> {
+        crate::daemon::agents::steer_member(
+            &self.core,
+            &meerkat_mob::MobId::from(crate::daemon::MOB_ID),
+            meerkat_mob::AgentIdentity::from(agent),
+            text.to_string(),
+        )
+        .await
+        .map_err(|err| err.to_string())
+    }
+
     /// How many requests of the engine method `method` the clients sent
     /// through the proxy (tests: what a client polls).
     #[must_use]

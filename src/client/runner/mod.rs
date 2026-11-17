@@ -376,6 +376,10 @@ enum Report {
         turn: u64,
         steer: Option<PendingId>,
         result: Result<Option<InputId>, String>,
+        /// The text to send once more: the daemon reloaded the agent
+        /// after a storage failure and the input was not taken
+        /// ([`protocol::AGENT_RELOADED`]).
+        again: Option<String>,
     },
     /// `rkat/recall` answered (or failed, in words).
     Recalled(Result<protocol::Recalled, String>),
@@ -455,6 +459,10 @@ enum Shown {
     /// The daemon ended the conversation's stream: it seated the agent
     /// again (a model switch to a model it had no profile for).
     Reseated,
+    /// The daemon reloaded the agent after a storage failure
+    /// ([`protocol::RELOADED`]): the same conversation, its stream ended
+    /// with the old registration.
+    Reloaded,
 }
 
 impl Shown {
@@ -722,6 +730,13 @@ pub struct Runner {
     pushed_session: Option<SessionId>,
     /// A conversation switch (this client's, or adopting another's) runs.
     switching: bool,
+    /// An input to send once more once the agent's stream is open again
+    /// after its reload ([`Shown::Reloaded`]): its turn, steer and text.
+    again: Option<(u64, Option<PendingId>, String)>,
+    /// The daemon said it reloaded the agent while a reopen of its stream
+    /// was under way (the engine may end the old stream first, which
+    /// reads as [`Shown::Reseated`]): that reopen is the reload's.
+    reloaded: bool,
     /// The last `/model` switch (carried to a `/new` conversation).
     last_switch: Option<ModelSwitch>,
     /// The dialect of the current model's provider.
@@ -837,6 +852,8 @@ impl Runner {
             known_mobs: HashSet::new(),
             pushed_session: None,
             switching: false,
+            again: None,
+            reloaded: false,
             last_switch: None,
             current_dialect: None,
             bench,
@@ -981,7 +998,14 @@ impl Runner {
             Report::Sent {
                 turn,
                 steer,
+                again: Some(text),
+                ..
+            } => self.send_after_reload(turn, steer, text),
+            Report::Sent {
+                turn,
+                steer,
                 result,
+                again: None,
             } => self.sent(turn, steer, result),
             Report::Recalled(result) => self.recalled(result),
             Report::InputFates(result) => self.input_fates(result),
@@ -1077,6 +1101,11 @@ impl Runner {
                     Ok(adopted) => {
                         self.adopted(adopted, shown, warning);
                         self.follow_pushed_session();
+                        // The stream is open again: the input the reload
+                        // turned back goes once more.
+                        if let Some((turn, steer, text)) = self.again.take() {
+                            self.send_again(turn, steer, text);
+                        }
                     }
                     Err(why) if shown.own() => {
                         self.notice(

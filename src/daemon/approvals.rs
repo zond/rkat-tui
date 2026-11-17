@@ -850,6 +850,23 @@ impl Watcher {
                 ..
             } => {
                 self.run_ended(session_id, identity.run_id.as_ref());
+                // A write to the realm's stores failed: the engine's words
+                // go to the log and the audit log (the client says it
+                // plainly, `super::storage`).
+                if super::storage::is_storage_failure(&error_report.message) {
+                    tracing::warn!(agent = %self.name, %session_id, error = %error_report.message, "a run failed because a storage write failed");
+                    if let Some(agents) = self.watched.agents.upgrade()
+                        && let Some(audit) = &agents.core().audit
+                    {
+                        audit.write(
+                            &super::audit::Line::event(
+                                "storage_failure",
+                                error_report.message.clone(),
+                            )
+                            .of_agent(&self.name),
+                        );
+                    }
+                }
                 // At its turn limit: its checkpoint, never for another
                 // failure (`super::checkpoint`). A replayed end of a run
                 // seen before (a resubscribe) is no new one.

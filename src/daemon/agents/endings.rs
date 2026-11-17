@@ -544,7 +544,7 @@ impl Agents {
                 .while_unsettled(
                     &key,
                     super::notes::steer_member(
-                        &self.core.state,
+                        &self.core,
                         &key.mob,
                         key.member.clone(),
                         text.clone(),

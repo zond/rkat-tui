@@ -344,7 +344,7 @@ impl Local {
         let told = if self.core.activity.running(agent) {
             let _sending = self.core.activity.sending(agent);
             crate::daemon::agents::steer_member(
-                &self.core.state,
+                &self.core,
                 &meerkat_mob::MobId::from(crate::daemon::MOB_ID),
                 meerkat_mob::AgentIdentity::from(agent),
                 note.to_string(),

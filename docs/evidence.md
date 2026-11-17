@@ -11603,3 +11603,106 @@ against the old code.
   form, both orders of notice and note, the click, the steered case,
   `/export`), `ui::transcript::restore::tests::a_stored_helper_ending_note_restores_folded`.
   New behaviour: these were not run against the old code.
+
+## A full disk: the engine's degraded member and its repair (2026-11-17)
+
+- Seen in real use: the disk holding the realm filled; a turn failed with
+  the engine's text (`Internal error: failed to load head-canonical
+  runtime authority … SQLite operation failed: disk I/O error;
+  primary_code=10; extended_code=4874 …`), and after space was freed
+  every message was refused (`mob/member_send failed (-32029): member …
+  requires a runtime reload before it can accept work: durability reload
+  required after lifecycle_commit: … database or disk is full`) until the
+  daemon was restarted.
+- Engine 0.9.15, read: `MobError::MemberReloadRequired` (JSON-RPC
+  -32029, `ErrorCode::MemberReloadRequired`) is the member's runtime
+  registration left durability-degraded: a durable commit (a boundary,
+  lifecycle or settlement write) failed after the live shell moved, so
+  the runtime refuses every ordinary input (the runtime's typed
+  `RecoveryRepairBlocked`) until a reload. `MobHandle::reload_member_registration`
+  (only on the handle: `MobMcpState::handle_for(mob)`, nothing on the
+  state itself) is the non-destructive repair: it quiesces and discards
+  the degraded registration, re-registers the executor for the same
+  session (same session id and continuity generation) from durable
+  truth, and re-arms readiness; it shares the member's admission lane
+  (one at a time with delivery), is bounded by 45 s, and refuses typed
+  (`MemberReloadRefused`) while the durable store is unreadable, leaving
+  the member degraded rather than broken. The turn in flight when the
+  write failed is not committed: reloading from durable truth loses it.
+- No typed class reaches a client for "disk full": the runtime's
+  `RuntimeStoreError::SqliteOperationFailed { primary_code, extended_code,
+  path, … }` is flattened into the run's error text (`AgentErrorClass::Internal`
+  or `Store`) and into `MemberReloadRequired`'s `reason` string. rkat-tui
+  recognises it from the fields that typed error writes
+  (`primary_code=13;` SQLITE_FULL, `primary_code=10;` SQLITE_IOERR) and
+  SQLite's fixed words for those codes (`database or disk is full`,
+  `disk I/O error`): `daemon::storage::is_storage_failure`.
+- Now (`daemon::storage`): a send refused with `MemberReloadRequired` is
+  reloaded once and sent once more. The client's prompt or steer: the
+  proxy (`serve.rs`) holds the refused `mob/member_send` answer, reloads
+  the agent and answers `AGENT_RELOADED` (or, when the reload fails, the
+  plain words); the client opens the agent's stream again and only then
+  sends the input once more (`client::runner::turn` `send_after_reload`).
+  A first try resent the line from the proxy: the model was called and the
+  run ended, but the client saw none of its events, because the agent's
+  event stream ended with the old registration (sometimes with a
+  `stream_end`, sometimes silently); only the client can order "reopen,
+  then send". Every client of the agent is told (`rkat/reloaded`) and
+  opens its stream again. Every daemon send (`agents::steer_member`: helpers' endings and
+  `assign` results, `/approve` notes, checkpoints, watch batches, the
+  plan-mode note, the compaction request) is resent by the daemon at
+  once. An agent's clients get `RELOADED_LINE` or
+  `reload_failed_line(realm)`; the engine's reason
+  goes to the log and the audit log (`storage_reload`). A helper refused
+  this way is reloaded the same way (the repair is per member and
+  non-destructive for any member of a mob the daemon owns); its reload is
+  logged and audited only, and a send that still fails goes on as any
+  refused send to a helper does (the note passes up to the next parent).
+  A run that failed this way is rewritten in the client to
+  `failed_line(realm)`; the daemon logs and audits the engine's text
+  (`storage_failure`). Free space: `nix::sys::statvfs` (nix is a direct
+  dependency already, with `fs`), read at the daemon's start and every
+  5 minutes; below 200 MB every agent's clients are warned once per
+  crossing.
+- Tests (the engine's own hook `force_session_durability_reload_required_for_test`,
+  enabled by our `test-support` feature, on a fresh agent with no run
+  behind it): `storage::the_next_message_reloads_the_agent_and_is_answered`
+  (the model answers the message after the reload, one plain line, the
+  next message needs nothing), `storage::a_failed_reload_is_said_plainly_and_the_next_message_retries`,
+  `storage::a_daemon_note_reloads_the_agent_and_reaches_it`; none shows the
+  engine's words. Applied right after a run (one test of all three cases
+  on one agent), under load the hook fell inside that run's terminal
+  write and the engine's own reload then failed ("durability-reload
+  disposal failed … Recovery corruption: … ambiguous non-directed
+  terminal"), 4 and 7 of 8 loaded rounds even after waiting for
+  `wait_current_run_settled`: the run is no longer current before its
+  terminal receipt is written. Whether a real write failure at that
+  point leaves the same unrepairable state was not tested; if it does,
+  the user gets the plain reload failure and a daemon restart is still
+  the way out. Fresh agents: 0 of 8 loaded rounds failed. These are
+  tests of new behaviour, not run against the old code,
+  `daemon::storage::tests::*` (recognition, the plain lines, the
+  low-space crossing). Not run on the rig: a real `SQLITE_FULL` (the rig
+  cannot fill a disk), and the client's rewrite of a failed run's text
+  (unit-tested recognition only).
+
+## `chrono` and the unmaintained notices of 2026-11-17
+
+- `cargo deny` reports RUSTSEC-2026-0543 (`chrono` unmaintained),
+  RUSTSEC-2026-0555 (`chrono-tz`) and RUSTSEC-2026-0542 (`humantime`):
+  unmaintained notices, no vulnerability, no fixed version. All three
+  come in through the engine (`deny.toml` names the crates); they are
+  ignored there, dated, until a Meerkat release moves off them.
+- rkat-tui also uses `chrono` directly, only for UTC timestamps as
+  RFC 3339 text and their parsing: the endpoint file's start time
+  (`daemon/endpoint.rs`), the realm manifest's time
+  (`bootstrap/realm_home.rs`), the audit log's line time
+  (`daemon/audit.rs`), the checklist's task times (`ui/checklist.rs`),
+  `--list`'s ages (`client/list.rs`) and the schedules' occurrence times,
+  which are the engine's `chrono` types (`daemon/schedules.rs`).
+  Dropping our own use would not take `chrono` out of the graph while
+  the engine depends on it. The replacement, when the engine moves:
+  `jiff` (`Timestamp` formats and parses RFC 3339) or `time` with its
+  `formatting`/`parsing` features, whichever the engine takes, so the
+  graph keeps one date crate; the schedules' times follow the engine's
+  type.

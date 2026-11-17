@@ -27,6 +27,9 @@ pub enum Push {
     Cost(protocol::CostNote),
     /// An agent moved to another conversation ([`protocol::SWITCHED`]).
     Switched(protocol::SwitchedNote),
+    /// An agent was reloaded after a storage failure
+    /// ([`protocol::RELOADED`]).
+    Reloaded(protocol::SwitchedNote),
     /// A mob hosts helpers now, or was destroyed ([`protocol::MOB`]).
     Mob(protocol::MobNote),
     /// The permission mode and the denial counters ([`protocol::MODE`]).
@@ -83,6 +86,7 @@ impl Push {
             protocol::TRIGGERED => Self::Triggered(read(note)?),
             protocol::COST => Self::Cost(read(note)?),
             protocol::SWITCHED => Self::Switched(read(note)?),
+            protocol::RELOADED => Self::Reloaded(read(note)?),
             protocol::MOB => Self::Mob(read(note)?),
             protocol::IDLE => Self::Idle(read(note)?),
             protocol::RUNNING => Self::Running(read(note)?),

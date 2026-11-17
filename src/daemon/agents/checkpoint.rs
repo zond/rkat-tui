@@ -124,7 +124,7 @@ impl Agents {
                 CONTINUE_INSTRUCTION.to_string(),
             );
             let sent = steer_member(
-                &self.core.state,
+                &self.core,
                 &MobId::from(MOB_ID),
                 AgentIdentity::from(name),
                 CONTINUE_INSTRUCTION.to_string(),
@@ -337,7 +337,7 @@ impl Agents {
         self.checkpoints.end(&subject, id);
         if let Outcome::Continuing(_) = outcome
             && let Err(err) = steer_member(
-                &self.core.state,
+                &self.core,
                 &key.mob,
                 key.member.clone(),
                 CONTINUE_INSTRUCTION.to_string(),

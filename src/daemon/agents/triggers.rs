@@ -204,7 +204,7 @@ impl Agents {
         self.watch_sent.lock().insert(name.clone(), text.clone());
         let _sending = self.core.activity.sending(&name);
         let sent = steer_member(
-            &self.core.state,
+            &self.core,
             &MobId::from(MOB_ID),
             AgentIdentity::from(name.as_str()),
             text.clone(),
@@ -237,7 +237,7 @@ impl Agents {
         tokio::spawn(async move {
             let _sending = agents.core.activity.sending(&name);
             let sent = steer_member(
-                &agents.core.state,
+                &agents.core,
                 &MobId::from(MOB_ID),
                 AgentIdentity::from(name.as_str()),
                 text.clone(),

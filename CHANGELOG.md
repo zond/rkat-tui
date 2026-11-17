@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- When the disk holding rkat-tui's state filled up, the agent showed the
+  engine's internal error, and after space was freed it refused every
+  message until the daemon was restarted. Now the failed turn says in one
+  line that the disk holding rkat-tui's state (its directory named) is
+  full or failing and that the step was not saved; your next message
+  reloads the agent (no restart) and goes through, with one line saying
+  so; if the reload fails too you are told to free space and send again.
+  The daemon also warns when that disk has less than 200 MB free.
+
 - A long answer could be drawn as several pieces, cut in the middle of a
   word, each continuation starting with a new `•` and losing its Markdown
   (a quote's bar, a table) at the cut. Seen behind an OpenAI-compatible
