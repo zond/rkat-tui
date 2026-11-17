@@ -114,6 +114,11 @@ async fn an_assigned_helper_is_followed_with_its_result_and_cost() {
     client
         .saw(|m| matches!(m, Msg::Agent(env) if matches!(&env.payload, AgentEvent::TextComplete { content, .. } if content == "parent done")))
         .await;
+    // The run's end: the usage of its call comes after its text, and the
+    // cost below counts it.
+    client
+        .saw(|m| matches!(m, Msg::TurnFinished(Ok(summary)) if summary.text == "parent done"))
+        .await;
 
     let recorded = llm.recorded();
     assert!(recorded[0].tools.iter().any(|t| t == "assign"));
