@@ -17,6 +17,46 @@ pub(super) fn retry_notice(retry: &LlmRetrySchedule) -> String {
     )
 }
 
+/// A change of the agent's tools in plain words, or `None` when it adds
+/// nothing to what the transcript shows: the tool list taking in a
+/// `tool_search`'s reveal (its call's line says what was revealed), and the
+/// engine's bookkeeping of hidden tools, draw nothing; a server's tools
+/// coming, going or failing, and tools closed by a failure, are said.
+fn tool_change_notice(
+    payload: &meerkat_core::event::ToolConfigChangedPayload,
+) -> Option<(NoticeLevel, String)> {
+    use meerkat_core::event::{
+        ExternalToolDeltaPhase, ToolConfigChangeOperation, ToolConfigChangeStatus,
+    };
+    let target = &payload.target;
+    match payload.status_info() {
+        ToolConfigChangeStatus::BoundaryApplied { .. }
+        | ToolConfigChangeStatus::DeferredCatalogDelta { .. } => None,
+        ToolConfigChangeStatus::WarningFailedClosed { error } => Some((
+            NoticeLevel::Warn,
+            format!("some tools are unavailable: {error}"),
+        )),
+        ToolConfigChangeStatus::ExternalToolDelta { phase, detail, .. } => match phase {
+            ExternalToolDeltaPhase::Pending | ExternalToolDeltaPhase::Draining => None,
+            ExternalToolDeltaPhase::Failed => Some((
+                NoticeLevel::Warn,
+                match detail {
+                    Some(detail) => format!("the tools of `{target}` failed: {detail}"),
+                    None => format!("the tools of `{target}` failed"),
+                },
+            )),
+            ExternalToolDeltaPhase::Applied | ExternalToolDeltaPhase::Forced => {
+                let what = match payload.operation {
+                    ToolConfigChangeOperation::Add => "are available",
+                    ToolConfigChangeOperation::Remove => "were removed",
+                    ToolConfigChangeOperation::Reload => "were reloaded",
+                };
+                Some((NoticeLevel::Info, format!("the tools of `{target}` {what}")))
+            }
+        },
+    }
+}
+
 /// Notices for the upstream events the transcript has no dedicated block for.
 ///
 /// Model fallback, background jobs, tool-config changes, peer content, run
@@ -66,10 +106,7 @@ pub(super) fn upstream_notice(event: &AgentEvent) -> Option<(NoticeLevel, String
             }
             (level, text)
         }
-        AgentEvent::ToolConfigChanged { payload } => (
-            NoticeLevel::Info,
-            format!("tools: {:?} {}", payload.operation, payload.target),
-        ),
+        AgentEvent::ToolConfigChanged { payload } => return tool_change_notice(payload),
         AgentEvent::PeerContentIngested { kind, .. } => (
             NoticeLevel::Info,
             format!("✉ peer content received ({kind:?})"),
@@ -113,4 +150,84 @@ pub(super) fn compaction_skipped(reason: meerkat_core::RequestedCompactionSkipRe
         _ => "the engine found nothing to fold",
     };
     format!("/compact: nothing was compacted ({why})")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use meerkat_core::event::{
+        ExternalToolDeltaPhase, ToolConfigChangeOperation as Op, ToolConfigChangeStatus as Status,
+        ToolConfigChangedPayload as Payload,
+    };
+
+    fn notice(payload: Payload) -> Option<(NoticeLevel, String)> {
+        upstream_notice(&AgentEvent::ToolConfigChanged { payload })
+    }
+
+    /// The tool list taking in a search's reveal draws nothing (the
+    /// search's own line says what it revealed), and no notice speaks the
+    /// engine's words (`Reload tool_scope`).
+    #[test]
+    fn a_tool_change_is_said_plainly_or_not_at_all() {
+        assert_eq!(
+            notice(Payload::new(
+                Op::Reload,
+                "tool_scope",
+                Status::boundary_applied(true, true, 3)
+            )),
+            None
+        );
+        assert_eq!(
+            notice(Payload::new(
+                Op::Reload,
+                "tool_scope",
+                Status::deferred_catalog_delta(1, 0, 0)
+            )),
+            None
+        );
+        assert_eq!(
+            notice(Payload::new(
+                Op::Add,
+                "docs",
+                Status::external_tool_delta(ExternalToolDeltaPhase::Pending, None)
+            )),
+            None
+        );
+        assert_eq!(
+            notice(Payload::new(
+                Op::Add,
+                "docs",
+                Status::external_tool_delta(ExternalToolDeltaPhase::Applied, None)
+            )),
+            Some((
+                NoticeLevel::Info,
+                "the tools of `docs` are available".to_string()
+            ))
+        );
+        assert_eq!(
+            notice(Payload::new(
+                Op::Add,
+                "docs",
+                Status::external_tool_delta(
+                    ExternalToolDeltaPhase::Failed,
+                    Some("refused".to_string())
+                )
+            )),
+            Some((
+                NoticeLevel::Warn,
+                "the tools of `docs` failed: refused".to_string()
+            ))
+        );
+        assert_eq!(
+            notice(Payload::new(
+                Op::Reload,
+                "tool_scope",
+                Status::warning_failed_closed("no grants")
+            )),
+            Some((
+                NoticeLevel::Warn,
+                "some tools are unavailable: no grants".to_string()
+            ))
+        );
+    }
 }

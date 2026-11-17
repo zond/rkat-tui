@@ -310,14 +310,21 @@ impl Runner {
         });
     }
 
-    /// Show what this client's agent was denied in turns no user started
-    /// while no client was attached (`rkat/missed`).
+    /// Show what this client's agent was told, or denied in turns no user
+    /// started, while no client was attached (`rkat/missed`).
     pub(super) fn missed_notices(&self) {
         self.ask_if_attached::<protocol::method::Missed>(protocol::Empty {}, |read| match read {
             Ok(read) => read
                 .notices
                 .into_iter()
-                .map(|notice| (NoticeLevel::Warn, notice.text))
+                .map(|notice| {
+                    let level = if notice.warn {
+                        NoticeLevel::Warn
+                    } else {
+                        NoticeLevel::Info
+                    };
+                    (level, notice.text)
+                })
                 .collect(),
             Err(err) => {
                 tracing::debug!(error = %err, "cannot read what the agent was denied unattended");

@@ -176,6 +176,8 @@ pub struct HelperCustomizer {
     /// The mobs' definitions: a member seated by a profile's name gets
     /// that profile inline, with its model, provider and server replaced.
     profiles: Arc<super::profiles::MobProfiles>,
+    /// The section every helper's instructions carry ([`HELPER_PERSONA`]).
+    helper_persona: String,
 }
 
 impl std::fmt::Debug for HelperCustomizer {
@@ -211,7 +213,16 @@ impl HelperCustomizer {
             models: crate::config::helper_models::SharedHelperModels::default(),
             realm_config: None,
             profiles: Arc::default(),
+            helper_persona: HELPER_PERSONA.to_string(),
         }
+    }
+
+    /// Give helpers `persona` as their instructions section instead of
+    /// [`HELPER_PERSONA`] (the daemon's, which tests make an older build's).
+    #[must_use]
+    pub fn with_helper_persona(mut self, persona: String) -> Self {
+        self.helper_persona = persona;
+        self
     }
 
     /// Read the profiles members are seated by from `profiles` (the
@@ -731,6 +742,8 @@ struct Shaping<'a> {
     shell_env: Option<&'a HashMap<String, String>>,
     /// A fresh fork's latch ([`ApprovalGate::waiting_for`]).
     wired: Option<tokio::sync::watch::Receiver<bool>>,
+    /// The helper's instructions section ([`HELPER_PERSONA`]).
+    persona: &'a str,
 }
 
 /// Apply the owner's gate, tools, instructions and the shell's environment
@@ -742,6 +755,7 @@ fn shape(spec: &mut SpawnMemberSpec, owner: &Owner, key: &HelperKey, shaping: Sh
         tools,
         shell_env,
         wired,
+        persona,
     } = shaping;
     // A Stop answer to one of the helper's dialogs stops this helper only.
     let on_stop: crate::approval::admission::OnStop = {
@@ -769,7 +783,7 @@ fn shape(spec: &mut SpawnMemberSpec, owner: &Owner, key: &HelperKey, shaping: Sh
     inherit_shell_env(spec, shell_env);
     spec.additional_instructions
         .get_or_insert_with(Vec::new)
-        .push(HELPER_PERSONA.to_string());
+        .push(persona.to_string());
 }
 
 /// A helper is a seated member, so the engine would let it `fork_off`; its
@@ -990,6 +1004,7 @@ impl HelperCustomizer {
                 tools: &self.tools,
                 shell_env: self.shell_env.as_ref(),
                 wired: wired.as_ref().map(|wired| wired.subscribe()),
+                persona: &self.helper_persona,
             },
         );
         // The helper shares its agent's scratch directory; its persona is

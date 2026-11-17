@@ -70,7 +70,7 @@ pub use approval::{ApprovalOverrides, ApprovalParts};
 pub use confinement::{ConfinementPlan, HostPaths};
 pub use dirs::GlobalDirs;
 pub use instructions::InstructionSources;
-pub use persona::{CODING_PERSONA, HELPER_PERSONA};
+pub use persona::HELPER_PERSONA;
 pub use realm_config::RealmConfigStore;
 pub use scope::{RuntimeScope, load_config, resolve_scope};
 

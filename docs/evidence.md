@@ -11706,3 +11706,51 @@ against the old code.
   `formatting`/`parsing` features, whichever the engine takes, so the
   graph keeps one date crate; the schedules' times follow the engine's
   type.
+
+## An earlier build's instructions on a restored conversation (2026-11-17)
+
+Seen on 0.0.14: an agent whose conversation began on an older build
+quoted that build's sentence that a `fork_off` child is wired to no one.
+
+- How the instructions are kept: the daemon gives them as the spawn's
+  `additional_instructions` on a fresh seat only; the engine's factory
+  assembles them into the session's first System row (one row: base
+  prompt, skills, the sections, the tools' instructions) and records the
+  sections in the session's build state. A resume writes no prompt
+  (`should_apply_system_prompt` is false without an explicit prompt
+  decision), so the row stays as the first build wrote it, whatever later
+  builds pass. An explicit prompt decision on resume appends a second
+  whole prompt as an ordinary System row: the old one would stay beside it.
+- The route: the engine's keyed system-prompt update
+  (`SessionRuntime::update_system_prompt`, a `SystemPromptUpdateRequest`).
+  The first update adopts the unkeyed row (`target_message_index`, no
+  expected version) and replaces it; a later one supersedes the latest
+  version of the key (`rkat-tui-instructions`). Materialization and
+  compaction keep only the latest version of a key
+  (`materialize_latest_system_prompt_versions`; `Compactor::rebuild_history`
+  keeps unkeyed and latest-version System rows verbatim). Through the mob's
+  session service (`MobMcpState::session_service`, `RpcMobSessionService`)
+  the call is `Unsupported` (it does not override the trait's default), so
+  the daemon calls the runtime's. It needs the session live and idle: the
+  agent is woken through `Conversations::while_idle`, a helper through
+  `MobHandle::ensure_member_live`; a busy one is updated at its run's end.
+- What is replaced: rkat-tui's own sections, known by their headings
+  (`daemon::instructions::agent_sections`, `helper_sections`); an earlier
+  build's section under a heading runs to the next line that begins another
+  section (a `# ` heading, a `<` tag, the scratch-directory or helper-models
+  line). The rest of the row stays. The row itself is the revision record:
+  it holds this build's sections word for word, or it is older; nothing new
+  is stored.
+- When: an agent seated on a stored conversation (`Agents::start`,
+  `Agents::seat` with a `Resume` target, `Agents::switch` to one). A
+  helper: the engine restores a helper dormant and runs its customizer only
+  when something wakes it, so a hook on its rebuild would run that first
+  turn on the old text; the daemon goes through the bound helpers at its
+  start instead and wakes only the ones whose row is older
+  (`Agents::bring_up_helpers`).
+- Tests: `upgrades::an_agent_s_older_instructions_are_replaced_once`,
+  `upgrades::a_compaction_keeps_the_replaced_instructions`,
+  `upgrades::a_restored_helper_s_older_instructions_are_replaced` (each
+  fails with the bring-up switched off); the earlier build is
+  `DaemonOptions::with_stale_instructions`. Unit tests in
+  `daemon::instructions::tests`.

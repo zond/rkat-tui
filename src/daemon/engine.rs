@@ -32,7 +32,7 @@ use super::approvals::{DaemonToolOrigins, Desk, RootGate};
 use super::decisions::{Decisions, Principal};
 use super::{AGENT_PROFILE, DaemonError, MOB_ID};
 use crate::approval::ApprovalEngine;
-use crate::bootstrap::{Assembled, CODING_PERSONA, RuntimeScope};
+use crate::bootstrap::{Assembled, RuntimeScope};
 use crate::error::TuiError;
 use crate::memory::{NoteStore, NoteToolDispatcher, Scope, prompt_index};
 use crate::mobs::customizer::{HelperCustomizer, HelperTools, RootMember};
@@ -130,6 +130,8 @@ pub struct Composed {
     pub profiles: Arc<crate::mobs::profiles::MobProfiles>,
     /// Builds the model client of the agent's model for `/btw`.
     pub side_clients: super::btw::SideClients,
+    /// This build's instructions on conversations earlier builds began.
+    pub revisions: Arc<super::instructions::Instructions>,
 }
 
 /// How `/btw` builds the model client of a session's model identity: the
@@ -162,6 +164,10 @@ pub struct PolicyOptions {
     /// Leave the consequence-policy registry out (tests: what the engine
     /// does with a member whose durable binding names it).
     pub without_registry: bool,
+    /// Tests: seat the agents and helpers with an earlier build's
+    /// instructions ([`super::instructions::stale`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub stale_instructions: bool,
 }
 
 /// Compose the runtime and the mob host over `parts`.
@@ -249,6 +255,15 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         llm_override,
     })?;
 
+    // This build's instructions on a conversation an earlier one began.
+    #[cfg(any(test, feature = "test-support"))]
+    let revisions = if policy.stale_instructions {
+        super::instructions::Instructions::stale(&runtime)
+    } else {
+        super::instructions::Instructions::new(&runtime)
+    };
+    #[cfg(not(any(test, feature = "test-support")))]
+    let revisions = super::instructions::Instructions::new(&runtime);
     let realm_root = scope.realm_root();
     let registry = helper_registry(&realm_root, &approval.engine);
     let (diff_tx, diff_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -294,6 +309,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         search_limits,
         prepare: Arc::clone(&prepare),
         helper_models: Arc::clone(&helper_models),
+        revisions: Arc::clone(&revisions),
     });
     let root_plan = RootPlan {
         model: choice.engine_model.clone(),
@@ -341,6 +357,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     .with_models(Arc::clone(&helper_models))
     .with_profiles(Arc::clone(&profiles))
     .with_realm_config(realm_config.path().to_path_buf())
+    .with_helper_persona(revisions.seated(crate::bootstrap::persona::HELPER_PERSONA.to_string()))
     .with_gated_fork_off();
     // The members' tool policy from the engine's deny rules (tests may
     // leave it out).
@@ -404,7 +421,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         &origins,
         &ledger,
         &decisions,
-        spawning_rx,
+        (spawning_rx, &revisions),
     );
     let notes_task = forward_approval_notes(
         &decisions,
@@ -470,6 +487,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         layers,
         helper_models,
         profiles,
+        revisions,
     })
 }
 
@@ -716,26 +734,32 @@ fn follow_helpers(
     origins: &Arc<DaemonToolOrigins>,
     ledger: &Arc<super::usage::Ledger>,
     decisions: &Arc<Decisions>,
-    spawning: mpsc::UnboundedReceiver<crate::mobs::customizer::Spawning>,
+    (spawning, revisions): (
+        mpsc::UnboundedReceiver<crate::mobs::customizer::Spawning>,
+        &Arc<super::instructions::Instructions>,
+    ),
 ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
-    let helper_events = Arc::new(super::approvals::HelperEvents::new(
-        super::approvals::CatalogReads::of(origins),
-        Arc::clone(ledger),
-        {
-            let decisions = Arc::downgrade(decisions);
-            move |mob: &meerkat_mob::MobId, change| {
-                if let Some(decisions) = decisions.upgrade() {
-                    decisions.broadcast(
-                        super::protocol::MOB,
-                        &super::protocol::MobNote {
-                            mob_id: mob.clone(),
-                            change,
-                        },
-                    );
+    let helper_events = Arc::new(
+        super::approvals::HelperEvents::new(
+            super::approvals::CatalogReads::of(origins),
+            Arc::clone(ledger),
+            {
+                let decisions = Arc::downgrade(decisions);
+                move |mob: &meerkat_mob::MobId, change| {
+                    if let Some(decisions) = decisions.upgrade() {
+                        decisions.broadcast(
+                            super::protocol::MOB,
+                            &super::protocol::MobNote {
+                                mob_id: mob.clone(),
+                                change,
+                            },
+                        );
+                    }
                 }
-            }
-        },
-    ));
+            },
+        )
+        .with_revisions(Arc::clone(revisions)),
+    );
     let mut destroyed = registry.destroyed_mobs();
     let destroyed_task = tokio::spawn({
         let helper_events = Arc::clone(&helper_events);
@@ -790,6 +814,9 @@ struct AgentHost {
     prepare: Arc<super::prepare::Prepare>,
     /// What the agents are told of their helpers' models.
     helper_models: crate::config::helper_models::SharedHelperModels,
+    /// How this build's own sections are seated (tests: an earlier
+    /// build's).
+    revisions: Arc<super::instructions::Instructions>,
 }
 
 impl crate::mobs::customizer::RootHost for AgentHost {
@@ -841,11 +868,10 @@ impl crate::mobs::customizer::RootHost for AgentHost {
     /// The persona, the agents' and the deferral's notes, the instruction
     /// files and the notes index.
     fn instructions(&self, identity: &meerkat_mob::AgentIdentity) -> Vec<String> {
-        let mut sections = vec![
-            CODING_PERSONA.to_string(),
-            crate::bootstrap::persona::agents_persona(identity.as_str()),
-            super::deferral::PERSONA.to_string(),
-        ];
+        let mut sections: Vec<String> = super::instructions::agent_sections(identity.as_str())
+            .into_iter()
+            .map(|section| self.revisions.seated(section))
+            .collect();
         // One line; a change of the settings later reaches a live agent as
         // a note.
         sections.push(self.helper_models.read().instruction());

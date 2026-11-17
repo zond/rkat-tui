@@ -65,5 +65,6 @@ mod shell_jobs;
 mod skills;
 mod storage;
 mod tool_costs;
+mod upgrades;
 mod usage;
 mod watches;

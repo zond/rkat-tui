@@ -42,6 +42,7 @@ pub mod deferral;
 pub mod endpoint;
 pub mod engine;
 pub mod handshake;
+pub mod instructions;
 pub mod lifecycle;
 pub mod local;
 pub mod mob;
@@ -404,6 +405,16 @@ impl DaemonOptions {
         self.policy.without_registry = true;
         self
     }
+
+    /// Seat the agents and helpers with an earlier build's instructions
+    /// and leave every conversation's as it is (the first start of a
+    /// test of the upgrade, [`instructions`]).
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn with_stale_instructions(mut self) -> Self {
+        self.policy.stale_instructions = true;
+        self
+    }
 }
 
 /// The endpoint file of the workspace at `context_root`, in the user's
@@ -546,6 +557,7 @@ impl Daemon {
         let file = places.choose(&parts.confinement)?;
         let mut composed = engine::compose(parts, options.policy)?;
         let audit = open_audit(&mut composed);
+        composed.revisions.set_audit(audit.clone());
         // Bound before any spawn: a spawn by a profile's name the follower
         // has not read yet is read for at once. A spawn by an agent's tool
         // call reaches the customizer only after the engine's restore, so
@@ -614,6 +626,7 @@ impl Daemon {
                 ),
             )),
             realm: composed.scope.realm_root(),
+            revisions: Arc::clone(&composed.revisions),
             #[cfg(any(test, feature = "test-support"))]
             reload_faults: std::sync::atomic::AtomicU32::new(0),
         });

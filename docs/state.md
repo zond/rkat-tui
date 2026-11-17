@@ -95,7 +95,7 @@ generation check).
 |---|---|
 | `realm_manifest.json` | the engine's realm manifest (backend, origin) |
 | `config.toml`, `config_state.json`, `config_state.lock` | the realm's config document and its generation sidecar and writer lock. rkat-tui writes the configured endpoints' connections (`[realm.rkat-tui-endpoints]`), the self-hosted servers and their model aliases (`[self_hosted]`). Holds endpoint settings, never a key |
-| `sessions.sqlite3` | every conversation (the transcripts) |
+| `sessions.sqlite3` | every conversation (the transcripts). A conversation an earlier build began may hold a keyed system-prompt version (key `rkat-tui-instructions`): the daemon's replacement of that build's instruction sections with its own (`daemon::instructions`, through the engine's `update_system_prompt`); the earlier version stays in the transcript's history, the model reads the latest |
 | `runtime.sqlite3`, `jobs.sqlite3` | runtime state (inputs, decisions), detached jobs; the schedules are a domain of the engine's SQLite stores |
 | `mobs/mob--<id>.db`, `mobs/realm_profiles.db`, `mobs/realm_forked_participants.db` | the mobs: the agents (members), helpers, councils |
 | `tasks.db` | the checklist (`SqliteTaskStore`) |

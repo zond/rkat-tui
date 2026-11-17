@@ -169,17 +169,12 @@ impl Local {
         Ok(Tasks { tasks })
     }
 
-    /// `rkat/missed`: what the caller's agent was denied while no client
-    /// was attached, emptied.
+    /// `rkat/missed`: what the caller's agent was told or denied while no
+    /// client was attached, emptied.
     pub(super) fn missed(&self, caller: &Caller) -> Result<Notices, Refusal> {
         let agent = self.agent_of(caller)?;
         Ok(Notices {
-            notices: self
-                .agents
-                .take_missed(&agent)
-                .into_iter()
-                .map(StartupNotice::warn)
-                .collect(),
+            notices: self.agents.take_missed(&agent),
         })
     }
 

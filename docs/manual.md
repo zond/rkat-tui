@@ -1962,6 +1962,21 @@ session's persisted instructions back unchanged (the persona appears once).
 Edited instruction files apply from the next new session; `/remember`
 and `/memory` reach the live one.
 
+**After an upgrade.** rkat-tui's own sections (the coding persona, what
+an agent is told of the other agents and of its helpers, the tools it can
+reveal, and a helper's instructions) are a build's text. When the daemon
+seats an agent on a conversation an earlier build began (at its start,
+`/resume`, an attach to a conversation whose agent quit) and before
+anything reaches a helper restored from an earlier build, it compares
+those sections in the conversation's system prompt with this build's and,
+when they differ, replaces them in place (the rest of the prompt, your
+instruction files included, stays as it was). The agent's view shows one
+line, "the agent's instructions were brought up to this build's" (to the
+next client to attach when none is), and the audit log an
+`instructions_updated` line. It happens once per upgrade: a later start
+finds them current and changes nothing. The earlier text does not stay
+beside the new one, and a compaction keeps the new one.
+
 **`/memory`** opens a list of the three instruction files, each with its
 path and its size (or "not written yet"); Enter edits the highlighted one
 as the typed forms do, and a file that cannot be edited from here (the

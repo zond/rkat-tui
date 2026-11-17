@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- An agent restored on a conversation an earlier build began kept that
+  build's instructions about its tools and helpers (one said a `fork_off`
+  child is wired to no one, as it had been told). Now the daemon replaces
+  rkat-tui's own sections of such a conversation's instructions with this
+  build's once, when it seats the agent and before anything reaches a
+  restored helper; the rest of the instructions stays, and the agent's
+  view says "the agent's instructions were brought up to this build's".
+- After a tool search the transcript showed the engine's
+  `tools: Reload tool_scope`. That line is gone (the search's own line
+  says what it revealed); a server's tools coming, going or failing are
+  said in words.
+
 - When the disk holding rkat-tui's state filled up, the agent showed the
   engine's internal error, and after space was freed it refused every
   message until the daemon was restarted. Now the failed turn says in one

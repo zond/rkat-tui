@@ -102,6 +102,9 @@ struct Agent {
     missed: Vec<String>,
     /// How many more were denied than `missed` keeps.
     missed_dropped: usize,
+    /// What its next client is told besides (its instructions were
+    /// brought up to this build's while no client was attached).
+    told: Vec<String>,
 }
 
 impl Drop for Agent {
@@ -162,6 +165,23 @@ impl Agents {
     /// the notes of helpers' endings held for them.
     #[must_use]
     pub fn new(core: Arc<Core>, held: endings::HeldNotes) -> Arc<Self> {
+        let agents = Self::built(core, held);
+        // A bring-up made at a run's end is told as one made at a seat.
+        let weak = Arc::downgrade(&agents);
+        agents
+            .core
+            .revisions
+            .on_updated(Arc::new(move |session, _whose| {
+                if let Some(agents) = weak.upgrade()
+                    && let Some(name) = agents.agent_running_as(session)
+                {
+                    agents.tell_upgraded(&name);
+                }
+            }));
+        agents
+    }
+
+    fn built(core: Arc<Core>, held: endings::HeldNotes) -> Arc<Self> {
         Arc::new(Self {
             core,
             watch_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
@@ -249,6 +269,12 @@ impl Agents {
     /// `name`'s run ended: its watches that live for a turn go.
     pub fn run_ended(&self, name: &str) {
         self.core.watches.end_turn(name);
+        if let Some(session) = self.session_of(name)
+            && self.core.revisions.is_waiting(&session)
+        {
+            let revisions = Arc::clone(&self.core.revisions);
+            tokio::spawn(async move { revisions.run_ended(&session).await });
+        }
     }
 
     /// The conversation `name` runs as now.
@@ -321,6 +347,7 @@ impl Agents {
             .map(|entry| entry.session_id)
             .collect();
         restored.sort_by_key(|(_, session)| order.iter().position(|s| s == session));
+        self.bring_up_helpers().await;
         if restored.is_empty() {
             let _one = self.seating.lock().await;
             let name = new_name(|name| self.taken(name));
@@ -341,6 +368,7 @@ impl Agents {
                 .conversations
                 .seed(&self.core.engine, session)
                 .await;
+            self.bring_up_instructions(name, session).await;
         }
         let names: Vec<String> = restored.iter().map(|(name, _)| name.clone()).collect();
         // The mob keeps its wiring across a restart; an edge it lost is
@@ -395,6 +423,7 @@ impl Agents {
                 watcher: Some(watcher),
                 missed: Vec::new(),
                 missed_dropped: 0,
+                told: Vec::new(),
             },
         );
         // Its socket for agents of other workspaces (a failure is kept for
@@ -514,20 +543,136 @@ impl Agents {
         }
     }
 
-    /// The unattended denials `name` kept for its client, emptied.
-    pub fn take_missed(&self, name: &str) -> Vec<String> {
+    /// What `name` kept for its client, emptied: what it was told while
+    /// no client was attached, then the unattended denials (warnings).
+    pub fn take_missed(&self, name: &str) -> Vec<super::protocol::StartupNotice> {
+        use super::protocol::StartupNotice;
         let mut table = self.table.lock();
         let Some(agent) = table.get_mut(name) else {
             return Vec::new();
         };
-        let mut missed = std::mem::take(&mut agent.missed);
+        let mut missed: Vec<StartupNotice> = std::mem::take(&mut agent.told)
+            .into_iter()
+            .map(StartupNotice::info)
+            .collect();
+        missed.extend(
+            std::mem::take(&mut agent.missed)
+                .into_iter()
+                .map(StartupNotice::warn),
+        );
         let dropped = std::mem::take(&mut agent.missed_dropped);
         if dropped > 0 {
-            missed.push(format!(
+            missed.push(StartupNotice::warn(format!(
                 "and {dropped} more actions denied while no client was attached (the daemon's log names them)"
-            ));
+            )));
         }
         missed
+    }
+
+    /// Bring the instructions of `name`, seated on its stored conversation
+    /// `session`, up to this build's ([`super::instructions`]); its
+    /// clients are told when they were (once: the next seat finds them
+    /// current).
+    async fn bring_up_instructions(&self, name: &str, session: &SessionId) {
+        use super::instructions::{Outcome, Whose};
+        let whose = Whose {
+            name: name.to_string(),
+            agent: Some(name.to_string()),
+            sections: super::instructions::agent_sections(name),
+        };
+        let revisions = Arc::clone(&self.core.revisions);
+        if !revisions.needs(session, &whose).await {
+            return;
+        }
+        let outcome = {
+            let whose = whose.clone();
+            self.core
+                .conversations
+                .while_idle(name, |session| async move {
+                    revisions.bring_up(&session, &whose).await
+                })
+                .await
+        };
+        match outcome {
+            Ok(Outcome::Updated) => self.tell_upgraded(name),
+            Ok(_) => {}
+            // Restored running (a pending input): made when the run ends.
+            Err(SwitchError::Running) => self.core.revisions.wait(session, whose),
+            Err(err) => {
+                tracing::warn!(agent = %name, error = %err, "cannot bring the agent's instructions up to this build's");
+            }
+        }
+    }
+
+    /// Bring the instructions of the helpers the last daemon left up to
+    /// this build's, before anything reaches them: the engine restores a
+    /// helper dormant and builds it only when something wakes it, which
+    /// would run that first turn on the old instructions. Only a helper
+    /// whose instructions are an earlier build's is woken for it (waking
+    /// runs no turn).
+    async fn bring_up_helpers(&self) {
+        use super::instructions::{Whose, helper_sections};
+        for (key, tag) in self.core.registry.bound_members() {
+            let Ok(handle) = self.core.state.handle_for(&key.mob).await else {
+                continue;
+            };
+            if !handle
+                .list_members()
+                .await
+                .iter()
+                .any(|member| member.agent_identity == key.member)
+            {
+                continue;
+            }
+            let session = match self.core.registry.member_session(&key) {
+                Some(session) => session,
+                None => match handle.resolve_bridge_session_id(&key.member).await {
+                    Some(session) => session,
+                    None => continue,
+                },
+            };
+            let whose = Whose {
+                name: tag.label().to_string(),
+                agent: self
+                    .core
+                    .registry
+                    .root_of_session(&tag.owner)
+                    .map(|root| root.member.to_string()),
+                sections: helper_sections(),
+            };
+            if !self.core.revisions.needs(&session, &whose).await {
+                continue;
+            }
+            if let Err(err) = handle.ensure_member_live(&key.member).await {
+                tracing::warn!(helper = %key, error = %err, "cannot wake a restored helper to bring its instructions up to this build's");
+                continue;
+            }
+            self.core.revisions.bring_up(&session, &whose).await;
+        }
+    }
+
+    /// Tell `name`'s clients its instructions were brought up to this
+    /// build's: at once to those attached, else kept for the next one.
+    fn tell_upgraded(&self, name: &str) {
+        let text = super::instructions::UPGRADED_NOTICE.to_string();
+        {
+            let mut table = self.table.lock();
+            let Some(agent) = table.get_mut(name) else {
+                return;
+            };
+            if agent.clients == 0 {
+                agent.told.push(text);
+                return;
+            }
+        }
+        self.core.decisions.broadcast(
+            super::protocol::AGENT_NOTICE,
+            &super::protocol::AgentNotice {
+                agent: name.to_string(),
+                warn: false,
+                text,
+            },
+        );
     }
 
     /// The most recently active live agent (spares last).
@@ -701,6 +846,9 @@ impl Agents {
                 .await;
         }
         self.admit(&name, false, false);
+        if matches!(target, Target::Resume(_)) {
+            self.bring_up_instructions(&name, &session).await;
+        }
         self.wire_up(std::slice::from_ref(&name)).await;
         // The others are told it joined once its client is bound
         // ([`Self::bind`]), so the one note says it has one.
@@ -719,9 +867,13 @@ impl Agents {
         // its conversation when the switch failed): its wiring went with
         // it, and the conversation it runs as now may know none of the
         // agents working here.
+        let resumed = matches!(target, Target::Resume(_));
         let switched = self.core.conversations.switch(name, target).await;
         if self.lost(name, &switched).await {
             return switched;
+        }
+        if resumed && let Ok(session) = &switched {
+            self.bring_up_instructions(name, session).await;
         }
         // Every client of the agent follows it there (the one that asked
         // too: it reads the answer).

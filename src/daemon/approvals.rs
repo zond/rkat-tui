@@ -1127,9 +1127,20 @@ pub struct HelperEvents {
     announce: Box<dyn Fn(&MobId, super::protocol::MobChange) + Send + Sync>,
     /// The mobs announced as hosting helpers (each once, until destroyed).
     hosting: Mutex<std::collections::HashSet<MobId>>,
+    /// The bring-ups of helpers' instructions that wait for a run's end
+    /// ([`super::instructions`]).
+    revisions: Option<Arc<super::instructions::Instructions>>,
 }
 
 impl HelperEvents {
+    /// Make a helper's bring-up that waits for its run's end through
+    /// `revisions`.
+    #[must_use]
+    pub fn with_revisions(mut self, revisions: Arc<super::instructions::Instructions>) -> Self {
+        self.revisions = Some(revisions);
+        self
+    }
+
     /// Over `catalogs` and `ledger`; `announce` tells the clients of mobs.
     #[must_use]
     pub fn new(
@@ -1142,6 +1153,7 @@ impl HelperEvents {
             ledger,
             announce: Box::new(announce),
             hosting: Mutex::default(),
+            revisions: None,
         }
     }
 
@@ -1171,6 +1183,13 @@ impl crate::mobs::follow::HelperWatch for HelperEvents {
     fn run_ended(&self, session: &SessionId) {
         self.catalogs.run_ended(session);
         self.ledger.persist();
+        if let Some(revisions) = &self.revisions
+            && revisions.is_waiting(session)
+        {
+            let revisions = Arc::clone(revisions);
+            let session = session.clone();
+            tokio::spawn(async move { revisions.run_ended(&session).await });
+        }
     }
 
     fn mob_hosts(&self, mob: &MobId) {
