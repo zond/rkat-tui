@@ -1038,6 +1038,286 @@ async fn blank_text_before_a_tool_call_is_never_sent_back() {
     }
 }
 
+/// One answer in Markdown (prose, a table, a quote with nested bullets and
+/// a table inside it), cut in the middle of a word inside the quote.
+const SPLIT_ANSWER: &str = "Here is the plan.\n\n| step | state |\n|---|---|\n| parse | done |\n\n\
+> The old reader was removed; the new one\n> - keeps the format\n>   - and the errors\n>\n\
+> | file | change |\n> |---|---|\n> | a.rs | moved |\n\nThat is all.";
+
+/// [`SPLIT_ANSWER`] cut after "remov".
+fn split_answer() -> (&'static str, &'static str) {
+    let at = SPLIT_ANSWER.find("removed").unwrap() + "remov".len();
+    SPLIT_ANSWER.split_at(at)
+}
+
+/// The streamed events of a model call as one compact line: `t'…'` a
+/// text delta, `r'…'` a reasoning delta, `rc'…'` a reasoning completion,
+/// `tc` the text's completion (with its content's length).
+fn event_order(msgs: &[Msg]) -> String {
+    use meerkat_core::AgentEvent;
+    let short = |s: &str| {
+        if s.len() > 8 {
+            format!(
+                "{}…",
+                &s[..s.char_indices().nth(6).map_or(s.len(), |(i, _)| i)]
+            )
+        } else {
+            s.to_string()
+        }
+    };
+    msgs.iter()
+        .filter_map(|msg| match msg {
+            Msg::Agent(env) => match &env.payload {
+                AgentEvent::TextDelta { delta, .. } => Some(format!("t{:?}", short(delta))),
+                AgentEvent::ReasoningDelta { delta, .. } => Some(format!("r{:?}", short(delta))),
+                AgentEvent::ReasoningComplete { content, .. } => {
+                    Some(format!("rc{:?}", short(content)))
+                }
+                AgentEvent::TextComplete { content, .. } => Some(format!("tc{}", content.len())),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The rows `app` draws from the one holding "Here is the plan." to the
+/// one holding "That is all.".
+fn answer_rows(app: &mut rkat_tui::ui::App) -> Vec<String> {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 120)).unwrap();
+    terminal
+        .draw(|f| rkat_tui::ui::render::draw_at(f, app, std::time::Instant::now()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let rows: Vec<String> = (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect();
+    let first = rows.iter().position(|r| r.contains("Here is the plan."));
+    let last = rows.iter().position(|r| r.contains("That is all."));
+    match (first, last) {
+        (Some(first), Some(last)) => rows[first..=last].to_vec(),
+        _ => panic!("the answer is not drawn: {rows:#?}"),
+    }
+}
+
+/// The owner's report behind a proxy: one long answer drawn as several
+/// blocks, the text cut in the middle of a word and each continuation a
+/// new bullet. On both API styles, the answer streams through the real
+/// engine client in each shape a provider or proxy may cut it: (a) two
+/// text parts of one message (Responses) or two content chunks (Chat
+/// Completions), (b) two message items, (c) an empty or whitespace-only
+/// reasoning summary between two text deltas, (d) an empty text delta.
+/// The events the client gets are pinned (`event_order`), the answer is
+/// one assistant block holding the whole text, and it draws row for row
+/// as the same text in one piece. A non-blank reasoning between still
+/// parts the prose.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_answer_cut_across_parts_and_blank_reasoning_is_one_block() {
+    use rkat_tui::ui::{App, Block, StatusInfo};
+    let (a, b) = split_answer();
+    let item = |id: &str, parts: &[&str]| {
+        json!({"type": "message", "id": id, "role": "assistant", "status": "completed",
+            "content": parts.iter().map(|text| json!({"type": "output_text", "text": text, "annotations": []})).collect::<Vec<_>>()})
+    };
+    let delta = |id: &str, index: u64, part: u64, text: &str| json!({"type": "response.output_text.delta", "item_id": id, "output_index": index, "content_index": part, "delta": text});
+    let added = |id: &str, index: u64| {
+        json!({"type": "response.output_item.added", "output_index": index,
+            "item": {"type": "message", "id": id, "role": "assistant", "status": "in_progress", "content": []}})
+    };
+    let part_event = |kind: &str, id: &str, index: u64, part: u64, text: &str| {
+        json!({"type": kind, "item_id": id, "output_index": index, "content_index": part,
+            "part": {"type": "output_text", "text": text, "annotations": []}})
+    };
+    let bare = |text: &str| json!({"type": "response.output_text.delta", "delta": text});
+    let summary =
+        |text: &str| json!({"type": "response.reasoning_summary_text.delta", "delta": text});
+    let responses: Vec<(&str, Vec<serde_json::Value>, &str)> = vec![
+        (
+            "(a) two text parts of one message",
+            vec![
+                added("msg_a", 0),
+                part_event("response.content_part.added", "msg_a", 0, 0, ""),
+                delta("msg_a", 0, 0, a),
+                part_event("response.content_part.done", "msg_a", 0, 0, a),
+                part_event("response.content_part.added", "msg_a", 0, 1, ""),
+                delta("msg_a", 0, 1, b),
+                part_event("response.content_part.done", "msg_a", 0, 1, b),
+                json!({"type": "response.output_item.done", "output_index": 0, "item": item("msg_a", &[a, b])}),
+            ],
+            r#"t"Here i…" t"ed; th…" tc214"#,
+        ),
+        (
+            "(b) two message items",
+            vec![
+                added("msg_b1", 0),
+                delta("msg_b1", 0, 0, a),
+                json!({"type": "response.output_item.done", "output_index": 0, "item": item("msg_b1", &[a])}),
+                added("msg_b2", 1),
+                delta("msg_b2", 1, 0, b),
+                json!({"type": "response.output_item.done", "output_index": 1, "item": item("msg_b2", &[b])}),
+            ],
+            r#"t"Here i…" t"ed; th…" tc214"#,
+        ),
+        (
+            "(c) an empty reasoning summary",
+            vec![bare(a), summary(""), bare(b)],
+            r#"t"Here i…" r"" t"ed; th…" rc"" tc214"#,
+        ),
+        (
+            "(c) a blank reasoning summary",
+            vec![bare(a), summary(" "), summary("\n\n"), bare(b)],
+            r#"t"Here i…" r" " r"\n\n" t"ed; th…" rc" \n\n" tc214"#,
+        ),
+        (
+            "(d) an empty text delta",
+            vec![bare(""), bare(a), bare(""), bare(b)],
+            r#"t"" t"Here i…" t"" t"ed; th…" tc214"#,
+        ),
+    ];
+    // The engine drops an empty reasoning or content chunk here.
+    let chat: Vec<(&str, Vec<serde_json::Value>, &str)> = vec![
+        (
+            "(a) two content chunks",
+            vec![
+                json!({"role": "assistant", "content": a}),
+                json!({"content": b}),
+            ],
+            r#"t"Here i…" t"ed; th…" tc214"#,
+        ),
+        (
+            "(c) an empty reasoning chunk",
+            vec![
+                json!({"role": "assistant", "content": a}),
+                json!({"reasoning_content": ""}),
+                json!({"content": b}),
+            ],
+            r#"t"Here i…" t"ed; th…" tc214"#,
+        ),
+        (
+            "(c) a blank reasoning chunk",
+            vec![
+                json!({"role": "assistant", "content": a}),
+                json!({"reasoning_content": " "}),
+                json!({"reasoning_content": "\n"}),
+                json!({"content": b}),
+            ],
+            r#"t"Here i…" r" " r"\n" t"ed; th…" rc" \n" tc214"#,
+        ),
+        (
+            "(d) an empty content chunk",
+            vec![
+                json!({"role": "assistant", "content": a}),
+                json!({"content": ""}),
+                json!({"content": b}),
+            ],
+            r#"t"Here i…" t"ed; th…" tc214"#,
+        ),
+    ];
+    let mut whole = App::new(StatusInfo::default());
+    whole.transcript.push(Block::Assistant {
+        md: SPLIT_ANSWER.to_string(),
+    });
+    let whole_rows = answer_rows(&mut whole);
+    let mut failures = Vec::new();
+    for (style, extra, cases) in [
+        ("responses", &[][..], responses),
+        (
+            "chat_completions",
+            &["--set", "endpoints.litellm.api_style=chat_completions"][..],
+            chat,
+        ),
+    ] {
+        let mut replies: Vec<Reply> = cases
+            .iter()
+            .map(|(_, events, _)| Reply::Events(events.clone()))
+            .collect();
+        // A reasoning with words between still parts the prose.
+        replies.push(match style {
+            "responses" => Reply::Events(vec![
+                bare("First."),
+                summary("weighing it"),
+                bare("Second."),
+            ]),
+            _ => Reply::Events(vec![
+                json!({"role": "assistant", "content": "First."}),
+                json!({"reasoning_content": "weighing it"}),
+                json!({"content": "Second."}),
+            ]),
+        });
+        let fake = FakeEndpoint::start(models(), replies).await;
+        let ws = Workspace::new();
+        let llm = ScriptedLlmClient::new(Vec::new());
+        let mut rig = Attached::start_with(&ws.root, &llm, setup(&fake, CLAUDE, extra)).await;
+        rig.saw(|m| is_model(m, "litellm", CLAUDE)).await;
+        for (case, _, expected_order) in &cases {
+            let from = rig.seen.len();
+            rig.send(Effect::StartTurn("answer".into()));
+            let outcome = rig.turn_finished().await.unwrap();
+            assert_eq!(
+                outcome.text, SPLIT_ANSWER,
+                "{style} {case}: the engine's text"
+            );
+            let seen = &rig.seen[from..];
+            let order = event_order(seen);
+            assert_eq!(&order, expected_order, "{style} {case}: the events");
+            let mut app = App::new(StatusInfo::default());
+            for msg in seen {
+                if matches!(msg, Msg::Agent(_)) {
+                    app.update(msg.clone());
+                }
+            }
+            let blocks = app.transcript.blocks();
+            let prose: Vec<&str> = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    Block::Assistant { md } => Some(md.as_str()),
+                    _ => None,
+                })
+                .collect();
+            if prose != [SPLIT_ANSWER]
+                || blocks.iter().any(|b| matches!(b, Block::Reasoning { .. }))
+                || answer_rows(&mut app) != whole_rows
+            {
+                failures.push(format!("{style} {case}: {order}: {blocks:#?}"));
+            }
+        }
+        let from = rig.seen.len();
+        rig.send(Effect::StartTurn("answer".into()));
+        rig.turn_finished().await.unwrap();
+        let mut app = App::new(StatusInfo::default());
+        for msg in &rig.seen[from..] {
+            if matches!(msg, Msg::Agent(_)) {
+                app.update(msg.clone());
+            }
+        }
+        let shown: Vec<String> = app
+            .transcript
+            .blocks()
+            .iter()
+            .filter_map(|b| match b {
+                Block::Assistant { md } => Some(md.clone()),
+                Block::Reasoning { text, .. } => Some(format!("reasoning: {text}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            ["First.", "reasoning: weighing it", "Second."],
+            "{style}: {}",
+            event_order(&rig.seen[from..])
+        );
+        rig.quit().await;
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// X2: an unknown `api_style` in a `tui.toml` is refused, naming the key
 /// and the values it takes; on another dialect the endpoint is skipped
 /// with a notice saying why.

@@ -11523,3 +11523,54 @@ order, one at a time, the usage error) and
 `ui::render::tests::a_btw_block_is_a_labelled_dim_side_note`. These are
 tests of a new feature: they do not compile without it, so none was run
 against the old code.
+
+## One answer, one block: what the OpenAI dialect streams between text deltas (2026-11-17)
+
+- Seen in real use behind an OpenAI-compatible proxy: one long Markdown
+  answer drawn as several assistant blocks, cut inside a word, each piece
+  a new `•`, the quote's bar lost on the continuation. The transcript made
+  one block per run of text deltas and closed it on `TextComplete` and on
+  any reasoning delta.
+- Engine 0.9.15, read: `TextComplete` is emitted once per model step,
+  after the whole response, with the step's text (`agent/state.rs`); the
+  text is `BlockAssistantMessage`'s `Display`, its text blocks joined
+  with no separator. The block assembler starts a new text block when a
+  delta's provider meta changes (a Responses message item's id), but every
+  live `TextDelta` carries only the step's core-minted
+  `assistant_message_id`: the events do not say where a provider's text
+  part or message item ends. Responses API: every
+  `response.output_text.delta` is a `TextDelta` (an empty one too);
+  every `response.reasoning_summary_text.delta` is a `ReasoningDelta`,
+  empty or blank included; the reasoning completes when the stream ends
+  (`ReasoningComplete` with the joined text, blank too). Chat
+  Completions: empty `content` and empty `reasoning_content` are dropped,
+  whitespace-only `reasoning_content` is a `ReasoningDelta`.
+- Probe on the rig (fake endpoint, `Reply::Events`), the client's events
+  for an answer cut after "remov":
+  - Responses (a) two `output_text` parts of one message, (b) two message
+    items: `t t tc` (did not split).
+  - Responses (c) an empty summary delta: `t r"" t rc"" tc`; blank
+    summary deltas: `t r" " r"\n\n" t rc" \n\n" tc` (split: a reasoning
+    block with no words, and the answer in two blocks).
+  - Responses (d) empty text deltas: `t"" t t"" t tc` (did not split).
+  - Chat Completions (a) two content chunks, (c) an empty reasoning chunk,
+    (d) an empty content chunk: `t t tc` (did not split); (c) blank
+    reasoning chunks: `t r" " r"\n" t rc" \n" tc` (split).
+- Rule now (module doc of `ui::transcript`): one model step's text is one
+  block unless a tool call, a notice or reasoning with non-blank text sits
+  between; blank reasoning opens no block and closes none; an empty text
+  delta changes nothing; `TextComplete` closes nothing (the next step's
+  `TurnStarted` does). Text is joined as it arrives, with no separator,
+  because the events cannot tell parts from items and the engine joins
+  them as they are. A stored conversation (`restore.rs`): an assistant
+  message's text blocks are joined as they are into one block (reasoning
+  is not restored, so nothing visible parts them), blank text is no
+  block. A helper's view takes the same code path, scoped to its header.
+- Tests: `litellm::an_answer_cut_across_parts_and_blank_reasoning_is_one_block`
+  (both styles, every case above, the event orders pinned, one block,
+  rows drawn equal to the whole text's; a reasoning with words still
+  parts the prose; failed before on the three blank-reasoning cases),
+  `ui::transcript::tests::one_step_s_text_is_one_block_across_blank_reasoning_and_empty_deltas`,
+  `only_something_visible_parts_the_prose`,
+  `a_helper_s_text_is_one_block_across_blank_reasoning`,
+  `ui::transcript::restore::tests::a_stored_answer_cut_into_parts_restores_as_one_block`.

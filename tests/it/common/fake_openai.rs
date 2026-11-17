@@ -48,6 +48,12 @@ pub enum Reply {
     /// actors call the model and their order is not known). Every model
     /// call takes it, and it is never used up.
     Dynamic(Arc<dyn Fn(&Value) -> Reply + Send + Sync>),
+    /// A stream given event by event, for the shapes the other replies do
+    /// not make (text split across parts or items, events between its
+    /// deltas). On the Responses API each value is one event sent between
+    /// `response.created` and `response.completed`; on Chat Completions
+    /// each is one chunk's `delta`, the answer ending with `stop`.
+    Events(Vec<Value>),
 }
 
 impl std::fmt::Debug for Reply {
@@ -71,6 +77,7 @@ impl std::fmt::Debug for Reply {
                 .field("args", args)
                 .finish(),
             Self::Dynamic(_) => f.write_str("Dynamic"),
+            Self::Events(events) => f.debug_tuple("Events").field(events).finish(),
         }
     }
 }
@@ -316,6 +323,7 @@ fn responses_sse(reply: &Reply, n: u64) -> String {
             text(&mut events, answer);
         }
         Reply::Tool { name, args } => function_call_item(&mut events, 0, n, name, args),
+        Reply::Events(given) => events.extend(given.iter().cloned()),
         Reply::TextAndTool { text, name, args } => {
             events.push(json!({
                 "type": "response.output_item.added",
@@ -405,6 +413,10 @@ fn chat_sse(reply: &Reply, n: u64) -> String {
                 None,
             ));
             "tool_calls"
+        }
+        Reply::Events(deltas) => {
+            events.extend(deltas.iter().map(|delta| chunk(delta.clone(), None)));
+            "stop"
         }
         Reply::Tool { name, args } => {
             events.push(chunk(

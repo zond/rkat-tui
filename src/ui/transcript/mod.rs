@@ -3,6 +3,21 @@
 //! The mapping mirrors `meerkat-cli/src/stream_renderer.rs` but produces structured
 //! blocks instead of ANSI text. Each block has a per-width layout cache that is
 //! invalidated whenever the block mutates.
+//!
+//! Prose: the text of one model step is one [`Block::Assistant`] unless
+//! something visible sits between two of its deltas: a tool call, a
+//! notice, or a reasoning block with non-blank text. Reasoning that is
+//! empty or only whitespace never closes a prose block and never becomes a
+//! block of its own; an empty text delta changes nothing; the step's
+//! `TextComplete` closes nothing (the next step's `TurnStarted` does).
+//! Text that continues with nothing visible between is appended as it
+//! arrives, with no separator: the engine's events name one assistant
+//! message per step and do not say where a provider's text parts or
+//! message items end, and the engine itself joins them as they are (its
+//! `TextComplete` and the run's text), so a cut inside a word or a quote
+//! stays invisible. A stored conversation follows the same rule
+//! ([`blocks_from_messages`]), and so does a helper's view (the same
+//! code path, scoped to its header).
 
 use std::time::Instant;
 
@@ -1391,7 +1406,6 @@ impl Transcript {
                 if stream.assistant.is_none() && !stream.text_seen && !content.is_empty() {
                     self.append_text(scope, content);
                 }
-                self.stream(scope).assistant = None;
                 if let Some(h) = helper
                     && let Some(line) = content.lines().find(|l| !l.trim().is_empty())
                 {
@@ -1402,7 +1416,10 @@ impl Transcript {
             AgentEvent::ReasoningDelta { delta, .. } => self.append_reasoning(scope, delta),
             AgentEvent::ReasoningComplete { content, .. } => {
                 let stream = *self.stream(scope);
-                if stream.reasoning.is_none() && !stream.reasoning_seen && !content.is_empty() {
+                if stream.reasoning.is_none()
+                    && !stream.reasoning_seen
+                    && !content.trim().is_empty()
+                {
                     self.append_reasoning(scope, content);
                 }
                 self.stream(scope).reasoning = None;
@@ -1662,7 +1679,11 @@ impl Transcript {
 
     /// Append prose to `scope`'s open prose block (made, owned by the
     /// helper's header, when none is open); its reasoning block closes.
+    /// An empty delta changes nothing.
     fn append_text(&mut self, scope: Option<BlockId>, delta: &str) {
+        if delta.is_empty() {
+            return;
+        }
         let stream = *self.stream(scope);
         if let Some(id) = stream.assistant
             && let Some(Block::Assistant { md }) = self.block_mut(id)
@@ -1682,9 +1703,13 @@ impl Transcript {
 
     /// Append reasoning to `scope`'s open reasoning block (made collapsed,
     /// owned by the helper's header, when none is open); its prose block
-    /// closes.
+    /// closes. Blank reasoning with no reasoning block open is dropped: it
+    /// shows nothing, so it neither opens a block nor parts the prose.
     fn append_reasoning(&mut self, scope: Option<BlockId>, delta: &str) {
         let stream = *self.stream(scope);
+        if stream.reasoning.is_none() && delta.trim().is_empty() {
+            return;
+        }
         if let Some(id) = stream.reasoning
             && let Some(Block::Reasoning { text, .. }) = self.block_mut(id)
         {
@@ -2153,6 +2178,153 @@ mod tests {
             assistant_message_id: None,
         });
         assert_eq!(t.blocks(), &[Block::Assistant { md: "whole".into() }]);
+    }
+
+    fn reasoning(d: &str) -> AgentEvent {
+        AgentEvent::ReasoningDelta {
+            delta: d.into(),
+            assistant_message_id: None,
+        }
+    }
+
+    fn reasoning_done(content: &str) -> AgentEvent {
+        AgentEvent::ReasoningComplete {
+            content: content.into(),
+            assistant_message_id: None,
+        }
+    }
+
+    fn text_done(content: &str) -> AgentEvent {
+        AgentEvent::TextComplete {
+            content: content.into(),
+            assistant_message_id: None,
+        }
+    }
+
+    fn turn_started() -> AgentEvent {
+        AgentEvent::TurnStarted {
+            turn_number: 0,
+            assistant_message_id: None,
+        }
+    }
+
+    /// The event orders the engine's OpenAI dialect sends for one answer
+    /// cut in a word (`litellm::an_answer_cut_across_parts_and_blank_reasoning_is_one_block`
+    /// pins them on the wire): two text parts or message items (two text
+    /// deltas), a blank or empty reasoning summary between (reasoning
+    /// deltas, completed after the text), empty text deltas. Each is one
+    /// prose block with the text joined as it came, and no reasoning block.
+    #[test]
+    fn one_step_s_text_is_one_block_across_blank_reasoning_and_empty_deltas() {
+        let whole = "> the reader was removed; the new one";
+        let orders: [&[AgentEvent]; 5] = [
+            &[text("> the reader was remov"), text("ed; the new one")],
+            &[
+                text("> the reader was remov"),
+                reasoning(""),
+                text("ed; the new one"),
+                reasoning_done(""),
+            ],
+            &[
+                text("> the reader was remov"),
+                reasoning(" "),
+                reasoning("\n\n"),
+                text("ed; the new one"),
+                reasoning_done(" \n\n"),
+            ],
+            &[
+                text(""),
+                text("> the reader was remov"),
+                text(""),
+                text("ed; the new one"),
+            ],
+            &[
+                reasoning_done("\n"),
+                text("> the reader was remov"),
+                text("ed; the new one"),
+            ],
+        ];
+        for events in orders {
+            let mut t = Transcript::new();
+            t.apply_agent_event(&turn_started());
+            for event in events {
+                t.apply_agent_event(event);
+            }
+            t.apply_agent_event(&text_done(whole));
+            assert_eq!(
+                t.blocks(),
+                &[Block::Assistant { md: whole.into() }],
+                "{events:?}"
+            );
+        }
+    }
+
+    /// Something visible between two deltas parts the prose: a reasoning
+    /// with words (it opens its block, and blank reasoning inside an open
+    /// one is kept), a tool call, a notice. A `TextComplete` does not.
+    #[test]
+    fn only_something_visible_parts_the_prose() {
+        let mut t = Transcript::new();
+        t.apply_agent_event(&turn_started());
+        t.apply_agent_event(&text("First."));
+        t.apply_agent_event(&reasoning("weighing"));
+        t.apply_agent_event(&reasoning("\n\n"));
+        t.apply_agent_event(&reasoning("it"));
+        t.apply_agent_event(&text("Second."));
+        t.apply_agent_event(&text_done("First.Second."));
+        t.apply_agent_event(&text(" still second"));
+        assert_eq!(
+            t.blocks(),
+            &[
+                Block::Assistant {
+                    md: "First.".into()
+                },
+                Block::Reasoning {
+                    text: "weighing\n\nit".into(),
+                    collapsed: true,
+                },
+                Block::Assistant {
+                    md: "Second. still second".into()
+                },
+            ]
+        );
+        t.push_notice(NoticeLevel::Warn, "retrying");
+        t.apply_agent_event(&text("Third."));
+        assert_eq!(t.blocks().len(), 5);
+        // The next model step is a block of its own.
+        t.apply_agent_event(&turn_started());
+        t.apply_agent_event(&text("Fourth."));
+        assert_eq!(t.blocks().len(), 6);
+    }
+
+    /// A helper's view takes the same path: its text cut by a blank
+    /// reasoning is one prose block of its own, in its view.
+    #[test]
+    fn a_helper_s_text_is_one_block_across_blank_reasoning() {
+        let mut t = Transcript::new();
+        t.push(Block::User { text: "go".into() });
+        t.apply_scoped_event(&helper_event(&["scout"], turn_started()));
+        t.apply_scoped_event(&helper_event(&["scout"], text("found the remov")));
+        t.apply_scoped_event(&helper_event(&["scout"], reasoning(" ")));
+        t.apply_scoped_event(&helper_event(&["scout"], text("ed reader")));
+        t.apply_scoped_event(&helper_event(&["scout"], reasoning_done(" ")));
+        t.apply_scoped_event(&helper_event(
+            &["scout"],
+            text_done("found the removed reader"),
+        ));
+        let header = t.helper_header("scout").expect("helper header");
+        let prose: Vec<&Block> = t
+            .helper_view_blocks(header)
+            .into_iter()
+            .filter_map(|id| t.block(id))
+            .filter(|b| matches!(b, Block::Assistant { .. } | Block::Reasoning { .. }))
+            .collect();
+        assert_eq!(
+            prose,
+            [&Block::Assistant {
+                md: "found the removed reader".into()
+            }]
+        );
     }
 
     #[test]

@@ -182,10 +182,9 @@ repository). Open upstream issues this code waits on:
   pins the engine's behaviour and the manual's sentence on it changes then.
 - #2234: the OpenAI dialect lowering nested tool schemas. The client
   wrapper `src/daemon/schema_compat.rs` goes when it ships.
-- Not filed yet (draft `.handover/upstream-empty-text-parts.md`): the
-  dialect clients replaying an assistant's empty or whitespace-only text
-  (a proxy turns it into a placeholder sentence). `src/daemon/blank_text.rs`
-  goes when the engine leaves it out itself.
+- #2388 (filed 2026-11-17): the dialect clients replaying an assistant's
+  empty or whitespace-only text (a proxy turns it into a placeholder
+  sentence). Our filter `src/daemon/blank_text.rs` goes when it ships.
 - #2235: a peer message that waits for an idle receiver's next run. The
   roster note's states and "do not message an idle agent with no client"
   (`src/daemon/agents/notes.rs`, the persona) go then.

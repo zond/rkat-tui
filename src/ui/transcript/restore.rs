@@ -24,13 +24,7 @@ pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
             }
             Message::BlockAssistant(_) if compact_reply => compact_reply = false,
             Message::BlockAssistant(assistant) => {
-                for block in &assistant.blocks {
-                    if let AssistantBlock::Text { text, .. } = block
-                        && !text.is_empty()
-                    {
-                        blocks.push(Block::Assistant { md: text.clone() });
-                    }
-                }
+                blocks.extend(prose_block(&assistant.blocks));
                 for call in assistant.tool_calls() {
                     let args = serde_json::from_str(call.args.get())
                         .unwrap_or_else(|_| serde_json::Value::String(call.args.get().to_string()));
@@ -45,6 +39,22 @@ pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
         }
     }
     blocks
+}
+
+/// The prose of one stored assistant message (one model step), by the
+/// module's rule ([`super`]): its text blocks joined as they are, as the
+/// engine joins them, whatever provider parts or items they were; a
+/// restored conversation shows no reasoning, so nothing visible parts
+/// them. Text that is only whitespace shows nothing and is no block.
+fn prose_block(blocks: &[AssistantBlock]) -> Option<Block> {
+    let md: String = blocks
+        .iter()
+        .filter_map(|block| match block {
+            AssistantBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    (!md.trim().is_empty()).then_some(Block::Assistant { md })
 }
 
 /// The peer messages another agent sent, of a committed system notice
@@ -222,6 +232,60 @@ mod tests {
                 .unwrap()
                 .block();
         assert_eq!(restored, vec![live]);
+    }
+
+    /// The stored shape of an answer a provider cut into two message items
+    /// (each text block with its own item's meta) with a blank reasoning
+    /// and a blank text between, before a tool call: one prose block, the
+    /// parts joined as they are, then the call; a message of blank text
+    /// only is no block.
+    #[test]
+    fn a_stored_answer_cut_into_parts_restores_as_one_block() {
+        use meerkat_core::{BlockAssistantMessage, ProviderMeta, StopReason};
+        let item = |id: &str| {
+            Some(Box::new(ProviderMeta::OpenAi {
+                id: id.into(),
+                encrypted_content: None,
+                phase: None,
+                response_id: Some("resp_1".into()),
+            }))
+        };
+        let text = |text: &str, id: &str| AssistantBlock::Text {
+            text: text.into(),
+            meta: item(id),
+        };
+        let answer = BlockAssistantMessage::new(
+            vec![
+                text("> The old reader was remov", "msg_1"),
+                AssistantBlock::Reasoning {
+                    text: " \n".into(),
+                    meta: None,
+                },
+                text("", "msg_2"),
+                text("ed; the new one stays.", "msg_3"),
+                AssistantBlock::ToolUse {
+                    id: "call_1".into(),
+                    name: "read_file".into(),
+                    args: serde_json::value::RawValue::from_string(r#"{"path":"a"}"#.into())
+                        .unwrap(),
+                    meta: None,
+                },
+            ],
+            StopReason::ToolUse,
+        );
+        let blank = BlockAssistantMessage::new(vec![text(" \n", "msg_4")], StopReason::EndTurn);
+        let restored = blocks_from_messages(&[
+            Message::BlockAssistant(answer),
+            Message::BlockAssistant(blank),
+        ]);
+        assert_eq!(restored.len(), 2, "{restored:#?}");
+        assert_eq!(
+            restored[0],
+            Block::Assistant {
+                md: "> The old reader was removed; the new one stays.".into()
+            }
+        );
+        assert!(matches!(&restored[1], Block::Tool { name, .. } if name == "read_file"));
     }
 
     #[test]

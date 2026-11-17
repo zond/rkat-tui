@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- A long answer could be drawn as several pieces, cut in the middle of a
+  word, each continuation starting with a new `•` and losing its Markdown
+  (a quote's bar, a table) at the cut. Seen behind an OpenAI-compatible
+  proxy that streams an empty or whitespace-only reasoning summary in the
+  middle of the answer. The text of one model step is now one block unless
+  something you can see sits between (a tool call, a notice, reasoning
+  with words); blank reasoning is never drawn. A re-opened conversation
+  shows such an answer in one piece too.
 - Pressing Esc several times while the agent ran a long shell command,
   with a message typed meanwhile, could stop the wrong run: the first
   press stopped the command, the typed message then started a new run,
@@ -12,6 +20,9 @@
   An interrupt is now bound to the run it was started for: later presses
   never touch a run that started after it ended, and say once that the
   turn is already stopped.
+- On a busy machine, a message typed during a turn that you then
+  interrupted could be reported as "not delivered: it was cancelled"
+  instead of coming back to the input. It now always comes back.
 - An interrupt now gives back every message you typed during the turn
   that the agent has not read: it returns to the input, in the order you
   typed it, and nothing starts from it until you send it. (Before, such a
