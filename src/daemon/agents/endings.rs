@@ -151,6 +151,120 @@ pub fn note_text(items: &[NoteItem]) -> String {
     }
 }
 
+/// A helper's ending note as a client folds it to one line: [`note_text`]'s
+/// words read back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteSummary {
+    /// What happened, in a few words: `helper review-x finished`,
+    /// `helper review-x failed: <reason>`, `2 helpers ended`.
+    pub title: String,
+    /// The first line of the answer (or of the endings, for several).
+    pub first: String,
+    /// The helpers the note is about.
+    pub helpers: Vec<String>,
+    /// Whether one of them failed.
+    pub failed: bool,
+}
+
+/// The [`NoteSummary`] of `text` when it is a whole note [`note_text`]
+/// wrote (a held note that travels with the user's words is not one).
+#[must_use]
+pub fn note_summary(text: &str) -> Option<NoteSummary> {
+    if text.contains(crate::daemon::local::HELD_NOTE_SEPARATOR) {
+        return None;
+    }
+    let Some((count, list)) = text.split_once(" notes about your helpers:\n") else {
+        return item_summary(text);
+    };
+    let count: usize = count.parse().ok()?;
+    let items: Vec<NoteSummary> = list
+        .split("\n- ")
+        .map(|item| {
+            item.strip_prefix("- ")
+                .unwrap_or(item)
+                .replace("\n  ", "\n")
+        })
+        .map(|item| item_summary(&item))
+        .collect::<Option<_>>()?;
+    Some(NoteSummary {
+        title: format!("{count} helpers ended"),
+        first: items
+            .iter()
+            .map(|item| item.title.strip_prefix("helper ").unwrap_or(&item.title))
+            .collect::<Vec<_>>()
+            .join("; "),
+        helpers: items.iter().flat_map(|item| item.helpers.clone()).collect(),
+        failed: items.iter().any(|item| item.failed),
+    })
+}
+
+/// [`note_summary`] of one ending's words ([`item_text`]).
+fn item_summary(text: &str) -> Option<NoteSummary> {
+    let first_of = |body: &str| {
+        body.split_once("\n\n")
+            .and_then(|(_, answer)| answer.lines().find(|line| !line.trim().is_empty()))
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let summary = |label: &str, what: String, first: String, failed: bool| NoteSummary {
+        title: format!("helper {label} {what}"),
+        first,
+        helpers: vec![label.to_string()],
+        failed,
+    };
+    if let Some(rest) = text.strip_prefix("The user stopped your helper `") {
+        let (label, _) = rest.split_once('`')?;
+        return Some(summary(
+            label,
+            "stopped by you".into(),
+            String::new(),
+            false,
+        ));
+    }
+    let (label, rest) = text.strip_prefix("Your helper `")?.split_once("` ")?;
+    let reason = |after: &str, until: &str| {
+        rest.strip_prefix(after)
+            .and_then(|r| r.split_once(until))
+            .map(|(reason, _)| reason.to_string())
+    };
+    if rest.starts_with("finished") {
+        Some(summary(label, "finished".into(), first_of(rest), false))
+    } else if let Some(why) = reason("went idle after its run failed: ", ". It is still seated") {
+        Some(summary(
+            label,
+            format!("went idle: {why}"),
+            String::new(),
+            true,
+        ))
+    } else if rest.starts_with("went idle") {
+        Some(summary(label, "went idle".into(), first_of(rest), false))
+    } else if let Some(why) = reason("failed: ", ". Its file changes") {
+        Some(summary(
+            label,
+            format!("failed: {why}"),
+            String::new(),
+            true,
+        ))
+    } else if rest.starts_with("ended when the rkat-tui daemon stopped") {
+        Some(summary(
+            label,
+            "ended when the daemon stopped".into(),
+            String::new(),
+            false,
+        ))
+    } else if rest.starts_with("stopped at its checkpoint") {
+        Some(summary(
+            label,
+            "stopped at its checkpoint".into(),
+            first_of(rest),
+            false,
+        ))
+    } else {
+        None
+    }
+}
+
 /// What the clients are told of a note's delivery, `told`, naming the
 /// helpers it passed over because they ended first.
 fn with_passed(told: String, passed: &[String]) -> String {
@@ -581,6 +695,106 @@ mod tests {
             how,
             rest: None,
         }
+    }
+
+    /// Every note [`note_text`] writes reads back as its one line: what
+    /// happened, the answer's first line, the helpers, whether one failed;
+    /// a held note with the user's words after it, and other text, do not.
+    #[test]
+    fn every_note_reads_back_as_one_line() {
+        let answer = "\n  The parser drops the last token.\nSecond line.".to_string();
+        let one = |how: How| note_summary(&note_text(&[item("review-x", how)])).unwrap();
+        let line = |s: &NoteSummary| (s.title.clone(), s.first.clone(), s.failed);
+        let first = "The parser drops the last token.".to_string();
+        assert_eq!(
+            line(&one(How::Done {
+                answer: answer.clone()
+            })),
+            ("helper review-x finished".into(), first.clone(), false)
+        );
+        assert_eq!(
+            line(&one(How::Finished {
+                answer: answer.clone()
+            })),
+            ("helper review-x finished".into(), first.clone(), false)
+        );
+        assert_eq!(
+            line(&one(How::WentIdle {
+                answer: answer.clone(),
+                failed: None
+            })),
+            ("helper review-x went idle".into(), first.clone(), false)
+        );
+        assert_eq!(
+            line(&one(How::WentIdle {
+                answer: String::new(),
+                failed: Some("the model refused".into())
+            })),
+            (
+                "helper review-x went idle: the model refused".into(),
+                String::new(),
+                true
+            )
+        );
+        assert_eq!(
+            line(&one(How::Failed {
+                reason: "the model refused".into()
+            })),
+            (
+                "helper review-x failed: the model refused".into(),
+                String::new(),
+                true
+            )
+        );
+        assert_eq!(
+            one(How::StoppedByUser).title,
+            "helper review-x stopped by you"
+        );
+        assert_eq!(
+            one(How::DaemonStopped).title,
+            "helper review-x ended when the daemon stopped"
+        );
+        for retired in [true, false] {
+            assert_eq!(
+                line(&one(How::CheckpointStopped {
+                    steps: 40,
+                    reason: "no progress".into(),
+                    status: answer.clone(),
+                    retired,
+                })),
+                (
+                    "helper review-x stopped at its checkpoint".into(),
+                    first.clone(),
+                    false
+                )
+            );
+        }
+        let two = note_text(&[
+            item(
+                "review-x",
+                How::Done {
+                    answer: "line one\n- a list item\nmore".into(),
+                },
+            ),
+            item(
+                "lint-y",
+                How::Failed {
+                    reason: "it timed out".into(),
+                },
+            ),
+        ]);
+        let both = note_summary(&two).unwrap();
+        assert_eq!(both.title, "2 helpers ended");
+        assert_eq!(both.first, "review-x finished; lint-y failed: it timed out");
+        assert_eq!(both.helpers, ["review-x", "lint-y"]);
+        assert!(both.failed);
+        let held = format!(
+            "{two}\n\n{}\n\nnow fix it",
+            crate::daemon::local::HELD_NOTE_SEPARATOR
+        );
+        assert_eq!(note_summary(&held), None);
+        assert_eq!(note_summary("Your helper is great"), None);
+        assert_eq!(note_summary("please review the parser"), None);
     }
 
     #[test]

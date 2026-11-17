@@ -1299,6 +1299,47 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
             };
             prefixed(&body, w, "  ", "  ", style, &mut out);
         }
+        Block::HelperNote {
+            title,
+            first,
+            text,
+            failed,
+            collapsed,
+            ..
+        } => {
+            // How the helper ended, then (folded) its answer's first line,
+            // as a tool call's line is; a click or Ctrl-O shows the note.
+            let style = Style::default().fg(Color::Magenta);
+            let icon = if *failed {
+                "✗"
+            } else if title.contains("stopped") {
+                "■"
+            } else {
+                "✓"
+            };
+            let head = format!("{icon} {}", sanitize(title));
+            let bold = style.add_modifier(Modifier::BOLD);
+            if *collapsed {
+                let first = first.split_whitespace().collect::<Vec<_>>().join(" ");
+                let head = truncate_to_width(&head, w.saturating_sub(2));
+                let room = w.saturating_sub(display_width(&head) + 4);
+                let mut spans = vec![Span::styled(head, bold)];
+                if !first.is_empty() && room > 1 {
+                    spans.push(Span::styled(
+                        format!(": {}", truncate_to_width(&sanitize(&first), room)),
+                        style,
+                    ));
+                }
+                spans.push(Span::styled(" ▸", dim));
+                out.push(Line::from(spans));
+            } else {
+                out.push(Line::from(vec![
+                    Span::styled(truncate_to_width(&head, w.saturating_sub(2)), bold),
+                    Span::styled(" ▾", dim),
+                ]));
+                prefixed(text, w, "  ", "  ", style, &mut out);
+            }
+        }
         Block::Triggered { label, text } => {
             let style = Style::default().fg(Color::Cyan);
             let icon = if label.starts_with("files changed") {

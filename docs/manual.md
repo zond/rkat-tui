@@ -1310,8 +1310,23 @@ agent, before your words. A held note survives detaching and the daemon's
 restart (`held-notes.json` in the realm). Endings that come within a
 quarter second go as one note. The helper's line and its full view's
 title say how it ended in plain words (`stopped by you`, `failed: …`,
-`ended when the daemon stopped`), and a transcript notice says who was
-told and when. A helper the daemon's stop left is run on by the engine at
+`ended when the daemon stopped`). What the transcript shows of the note
+depends on how it reached the agent:
+
+- **It started a run** (the agent was idle): one folded line, `✓ helper
+  review-x finished: <the answer's first line> ▸` (`✗ helper review-x
+  failed: <reason>`, `✓ 2 helpers ended: review-x finished; lint-y
+  failed: …`, `✓ helper review-x went idle: …`, `■` for one stopped). A
+  click or Ctrl-O opens the whole note as the agent got it; the answer in
+  full is in the helper's own view, and the agent's reply follows. No
+  separate notice is drawn for the same ending.
+- **It went into a running turn**: a notice says who was told
+  (`helper [review-x · model] finished; main-ab12 was told`).
+- **It was held after your interrupt**: a notice says it goes with your
+  next message (`… is told with your next message to it`).
+
+A conversation opened again shows such a note as the same folded line,
+and `/export` writes it in full under its heading. A helper the daemon's stop left is run on by the engine at
 the next start (its answer then comes as a note); one the engine did not
 keep is told as `ended when the daemon stopped`.
 

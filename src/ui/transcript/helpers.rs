@@ -606,6 +606,13 @@ impl Transcript {
                 fold.state = state;
             });
         }
+        // A run the note started shows it folded already: that line says
+        // the same.
+        if let Some(told) = told
+            && self.ending_shown(label, told)
+        {
+            return;
+        }
         let told = told.map_or_else(
             || "; nobody is told (its parent is gone)".to_string(),
             |told| format!("; {told}"),

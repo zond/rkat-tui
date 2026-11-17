@@ -63,6 +63,12 @@
 - Your own messages in the transcript are a grey band across the width,
   in bright bold text, so they stand out when you scroll quickly (as in
   Claude Code). A queued message keeps its look until it is sent.
+- When a helper's ending starts a run of the idle agent, the transcript
+  shows one folded line (how it ended and the first line of its answer,
+  `✓ helper review-x finished: …`) instead of the whole note of up to 4000
+  characters under `⏰ a helper ended`, and no second notice saying the
+  same. A click or Ctrl-O opens the note; a re-opened conversation shows
+  the same line, and `/export` keeps the note in full.
 
 ### Added
 

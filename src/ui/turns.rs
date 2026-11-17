@@ -155,7 +155,8 @@ impl App {
             // is shown labelled already.
             let announced = matches!(
                 self.transcript.last(),
-                Some(Block::Triggered { text: shown, .. }) if *shown == text
+                Some(Block::Triggered { text: shown, .. } | Block::HelperNote { text: shown, .. })
+                    if *shown == text
             );
             if !announced {
                 self.transcript.push(Block::User { text });

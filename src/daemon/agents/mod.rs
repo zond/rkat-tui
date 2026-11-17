@@ -33,6 +33,7 @@ pub use names::is_agent;
 use names::new_name;
 pub use notes::Leave;
 pub(crate) use notes::{append_note, note_compacted, steer_member};
+pub use triggers::{HELPER_ENDED_LABEL, HELPER_IDLE_LABEL};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

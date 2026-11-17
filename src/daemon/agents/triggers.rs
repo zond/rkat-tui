@@ -11,6 +11,12 @@ use super::super::MOB_ID;
 use super::Agents;
 use super::notes::{note_agent, steer_member};
 
+/// The label of a run a note of helpers' endings started.
+pub const HELPER_ENDED_LABEL: &str = "a helper ended";
+
+/// The label of a run a note of a helper's going idle started.
+pub const HELPER_IDLE_LABEL: &str = "a helper went idle";
+
 /// What an agent is told when it makes a profile read-only with comms.
 pub const READ_ONLY_COMMS_NOTE: &str = "A mob profile you just wrote has `read_only: true` and `comms: true`: its members can read messages, but they cannot send any (`read_only` blocks every mutating tool, `send_message` and the other comms sends included). Drop `read_only` (and narrow the tools another way) if they must answer.";
 
@@ -74,9 +80,9 @@ impl Agents {
             // A note of one member's going idle (the daemon's own words,
             // `super::endings`) is no ending.
             let label = if prompt.starts_with("Your helper `") && prompt.contains("` went idle") {
-                "a helper went idle"
+                HELPER_IDLE_LABEL
             } else {
-                "a helper ended"
+                HELPER_ENDED_LABEL
             };
             self.announce(
                 name,

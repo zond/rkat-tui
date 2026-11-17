@@ -655,7 +655,7 @@ fn prepend_note(content: &mut Value, note: &str) {
 }
 
 /// What separates held notes from the user's message they travel with.
-const HELD_NOTE_SEPARATOR: &str =
+pub(crate) const HELD_NOTE_SEPARATOR: &str =
     "(rkat-tui noted the above while you were stopped; the user's message follows)";
 
 /// The text of a wire content input: a string, or the text blocks of a

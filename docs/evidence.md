@@ -11574,3 +11574,32 @@ against the old code.
   `only_something_visible_parts_the_prose`,
   `a_helper_s_text_is_one_block_across_blank_reasoning`,
   `ui::transcript::restore::tests::a_stored_answer_cut_into_parts_restores_as_one_block`.
+
+## A helper's ending note folded to one line (owner, 2026-11-17)
+
+- Seen in real use: a run the daemon started with an `assign` helper's
+  ending note was drawn as `⏰ a helper ended` and the whole note (up to
+  4000 characters of the answer and the framing sentences), right under
+  the notice `helper [name · model] finished; <agent> was told`.
+- The daemon's labels over runs it starts (`rkat/triggered`): `a helper
+  ended` and `a helper went idle` (helper notes, now constants
+  `HELPER_ENDED_LABEL` / `HELPER_IDLE_LABEL`), `scheduled: <name>`,
+  `files changed` (a watch's batch: bounded, at most the tracked paths
+  then "and N more", so it keeps its look), the approval's and the
+  checkpoint's (one fixed sentence each: kept).
+- Now: the two helper labels make a `Block::HelperNote`, folded to one
+  line by `daemon::agents::endings::note_summary`, which reads the
+  daemon's own words back (`note_text`'s; the two sit side by side and a
+  test round-trips every `How`). The notice of the same ending is removed
+  when the note's run is announced after it, or not drawn when it comes
+  after the note (the note is then "paired", so a later notice of the same
+  helper, another ending, is drawn). The three delivery cases: a run
+  started, the folded line only; steered into a running turn, the notice
+  only; held after an interrupt, the notice only ("is told with your next
+  message"). A stored user message that is a whole note (no held-note
+  separator after it) restores as the same folded line.
+- Tests: `daemon::agents::endings::tests::every_note_reads_back_as_one_line`,
+  `ui::tests::helpers::a_helper_s_ending_note_is_one_folded_line` (each
+  form, both orders of notice and note, the click, the steered case,
+  `/export`), `ui::transcript::restore::tests::a_stored_helper_ending_note_restores_folded`.
+  New behaviour: these were not run against the old code.

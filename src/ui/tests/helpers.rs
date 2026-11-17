@@ -739,3 +739,168 @@ fn the_view_title_names_a_member_idle_and_a_nested_task_s_giver() {
         other => panic!("{other:?}"),
     }
 }
+
+/// The note of one ending as the daemon words it.
+fn ending_note(label: &str, how: crate::mobs::endings::How) -> String {
+    crate::daemon::agents::endings::note_text(&[crate::daemon::agents::endings::NoteItem {
+        label: label.into(),
+        how,
+        rest: None,
+    }])
+}
+
+/// A run the daemon started with a helper's ending note is one folded line
+/// (how it ended and the answer's first line), not the whole note under a
+/// clock; a click opens the note. The daemon's notice of the same ending
+/// is not drawn as well, whichever of the two comes first; a note steered
+/// into a running turn (no run started for it) leaves the notice alone.
+#[test]
+fn a_helper_s_ending_note_is_one_folded_line() {
+    use crate::daemon::agents::{HELPER_ENDED_LABEL, HELPER_IDLE_LABEL};
+    use crate::mobs::endings::How;
+    let long = format!(
+        "The parser drops the last token.\n\n{}",
+        "More of the answer. ".repeat(200)
+    );
+    let ended = |app: &mut App, label: &str, how: &str| {
+        app.update(Msg::HelperEnded {
+            path: vec![label.into()],
+            how: how.into(),
+            told: Some("main-ab12 was told".into()),
+        });
+    };
+    // The notice first, then the run the note started.
+    let (mut app, _, _) = helper_app();
+    ended(&mut app, "scout", "finished");
+    app.update(Msg::Triggered {
+        label: HELPER_ENDED_LABEL.into(),
+        prompt: ending_note("scout", How::Done { answer: long }),
+    });
+    let kinds: Vec<String> = app
+        .transcript
+        .blocks()
+        .iter()
+        .map(|b| format!("{b:?}").chars().take(60).collect())
+        .collect();
+    assert!(
+        matches!(
+            app.transcript.last(),
+            Some(Block::HelperNote {
+                collapsed: true,
+                ..
+            })
+        ),
+        "{kinds:#?}"
+    );
+    let rows = screen(&mut app, 30);
+    let text = rows.join("\n");
+    assert!(
+        rows.iter().any(|r| r
+            .starts_with("✓ helper scout finished: The parser drops the last token.")
+            && r.ends_with('▸')),
+        "{text}"
+    );
+    assert!(!text.contains("More of the answer"), "{text}");
+    assert!(!text.contains("was told"), "{text}");
+    assert!(!text.contains('⏰'), "{text}");
+    // A click opens the whole note.
+    let row = rows
+        .iter()
+        .position(|r| r.starts_with("✓ helper scout"))
+        .unwrap();
+    click_at(&mut app, u16::try_from(row).unwrap());
+    assert!(matches!(
+        app.transcript.last(),
+        Some(Block::HelperNote {
+            collapsed: false,
+            ..
+        })
+    ));
+    let open = screen(&mut app, 120).join("\n");
+    assert!(open.contains("✓ helper scout finished ▾"), "{open}");
+    assert!(open.contains("More of the answer"), "{open}");
+
+    // The run first, then the notice: still one line, no notice.
+    let (mut app, _, _) = helper_app();
+    app.update(Msg::Triggered {
+        label: HELPER_ENDED_LABEL.into(),
+        prompt: ending_note(
+            "scout",
+            How::Failed {
+                reason: "the model refused".into(),
+            },
+        ),
+    });
+    ended(&mut app, "scout", "failed: the model refused");
+    let text = screen(&mut app, 30).join("\n");
+    assert!(
+        text.contains("✗ helper scout failed: the model refused ▸"),
+        "{text}"
+    );
+    assert!(!text.contains("was told"), "{text}");
+
+    // Several endings in one note, and a helper going idle.
+    let (mut app, _, _) = helper_app();
+    app.update(Msg::Triggered {
+        label: HELPER_ENDED_LABEL.into(),
+        prompt: crate::daemon::agents::endings::note_text(&[
+            crate::daemon::agents::endings::NoteItem {
+                label: "scout".into(),
+                how: How::Done {
+                    answer: "found it".into(),
+                },
+                rest: None,
+            },
+            crate::daemon::agents::endings::NoteItem {
+                label: "fork-1".into(),
+                how: How::StoppedByUser,
+                rest: None,
+            },
+        ]),
+    });
+    app.update(Msg::Triggered {
+        label: HELPER_IDLE_LABEL.into(),
+        prompt: ending_note(
+            "scout",
+            How::WentIdle {
+                answer: "waiting for more".into(),
+                failed: None,
+            },
+        ),
+    });
+    let text = screen(&mut app, 30).join("\n");
+    assert!(
+        text.contains("✓ 2 helpers ended: scout finished; fork-1 stopped by you ▸"),
+        "{text}"
+    );
+    assert!(
+        text.contains("✓ helper scout went idle: waiting for more ▸"),
+        "{text}"
+    );
+
+    // Steered into a running turn: no run started, so only the notice.
+    let (mut app, _, _) = helper_app();
+    ended(&mut app, "scout", "finished");
+    let text = screen(&mut app, 30).join("\n");
+    assert!(
+        text.contains("helper [scout · m] finished; main-ab12 was told"),
+        "{text}"
+    );
+    // `/export` has the whole note under a heading.
+    let (mut app, _, _) = helper_app();
+    app.update(Msg::Triggered {
+        label: HELPER_ENDED_LABEL.into(),
+        prompt: ending_note(
+            "scout",
+            How::Done {
+                answer: "found it".into(),
+            },
+        ),
+    });
+    let export = app.transcript.export_text();
+    assert!(
+        export.contains("## helper scout finished (the note the agent was given)\n"),
+        "{export}"
+    );
+    assert!(export.contains("found it"), "{export}");
+}

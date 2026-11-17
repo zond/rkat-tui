@@ -362,6 +362,27 @@ pub enum Block {
         /// The run's input.
         text: String,
     },
+    /// A run the daemon started with a note of a helper's ending (or its
+    /// going idle): one folded line by default (what happened and the
+    /// answer's first line), the whole note when opened.
+    HelperNote {
+        /// What happened (`helper review-x finished`, `2 helpers ended`).
+        title: String,
+        /// The answer's first line.
+        first: String,
+        /// The whole note.
+        text: String,
+        /// The helpers it is about.
+        helpers: Vec<String>,
+        /// Whether one of them failed.
+        failed: bool,
+        /// Whether only the one line shows.
+        collapsed: bool,
+        /// Whether the daemon's notice of the same ending was left out for
+        /// it (the two say the same thing): a later notice of one of its
+        /// helpers is another ending.
+        paired: bool,
+    },
     /// A command the user ran with `!`, and its output.
     Shell {
         /// The command line.
@@ -697,6 +718,10 @@ impl Transcript {
                     let _ = writeln!(out, "## {label}");
                     body(&mut out, text);
                 }
+                Block::HelperNote { title, text, .. } => {
+                    let _ = writeln!(out, "## {title} (the note the agent was given)");
+                    body(&mut out, text);
+                }
                 Block::Btw { question, answer } => {
                     let _ = writeln!(
                         out,
@@ -893,9 +918,22 @@ impl Transcript {
             .take_while(|(id, _)| *id >= run_first)
             .find(|(_, block)| matches!(block, Block::User { text } if *text == prompt))
             .map(|(id, _)| id);
-        let block = Block::Triggered {
-            label,
-            text: prompt,
+        let block = match helper_note(&label, &prompt, !self.detail) {
+            Some(mut note) => {
+                // The notice of the same ending says what the line says:
+                // it goes (or, coming later, is not drawn).
+                if let Block::HelperNote {
+                    helpers, paired, ..
+                } = &mut note
+                {
+                    *paired = self.drop_ending_notices(helpers);
+                }
+                note
+            }
+            None => Block::Triggered {
+                label,
+                text: prompt,
+            },
         };
         match at {
             Some(id) => {
@@ -905,6 +943,61 @@ impl Transcript {
                 self.push(block);
             }
         }
+    }
+
+    /// Remove the daemon's notices of how `helpers` ended and who was told
+    /// (`helper [review-x · m] finished; main was told`) since the user's
+    /// last message: a [`Block::HelperNote`] says it. Whether one went.
+    fn drop_ending_notices(&mut self, helpers: &[String]) -> bool {
+        let heads: Vec<String> = helpers
+            .iter()
+            .map(|label| format!("helper {} ", self.helper_tag(label)))
+            .collect();
+        // The newest such notice of each helper: an earlier one was of
+        // another ending (a kept helper goes idle more than once).
+        let gone: Vec<BlockId> = heads
+            .iter()
+            .filter_map(|head| {
+                self.iter()
+                    .rev()
+                    .take_while(|(_, block)| !matches!(block, Block::User { .. }))
+                    .find(|(_, block)| {
+                        matches!(block, Block::Notice { text, .. }
+                            if text.ends_with(" was told") && text.starts_with(head.as_str()))
+                    })
+                    .map(|(id, _)| id)
+            })
+            .collect();
+        for id in &gone {
+            self.remove_block(*id);
+        }
+        !gone.is_empty()
+    }
+
+    /// Whether the daemon's notice that `label` ended, told as `told`, is
+    /// said already by a folded note of the run it started (since the
+    /// user's last message, not yet paired with a notice); that note is
+    /// paired with it then.
+    pub(super) fn ending_shown(&mut self, label: &str, told: &str) -> bool {
+        if !told.ends_with(" was told") {
+            return false;
+        }
+        let note = self
+            .iter()
+            .rev()
+            .take_while(|(_, block)| !matches!(block, Block::User { .. }))
+            .find(|(_, block)| {
+                matches!(block, Block::HelperNote { helpers, paired: false, .. }
+                    if helpers.iter().any(|h| h == label))
+            })
+            .map(|(id, _)| id);
+        let Some(id) = note else {
+            return false;
+        };
+        if let Some(Block::HelperNote { paired, .. }) = self.block_mut(id) {
+            *paired = true;
+        }
+        true
     }
 
     /// A message from the agent `from`: with its `text`, it fills in the
@@ -1022,6 +1115,7 @@ impl Transcript {
                 | Block::Tool { collapsed, .. }
                 | Block::Shell { collapsed, .. }
                 | Block::Peer { collapsed, .. }
+                | Block::HelperNote { collapsed, .. }
                 | Block::Outcome { collapsed, .. } => {
                     let changed = *collapsed != collapse;
                     *collapsed = collapse;
@@ -1145,6 +1239,7 @@ impl Transcript {
                 | Block::Reasoning { collapsed, .. }
                 | Block::Shell { collapsed, .. }
                 | Block::Peer { collapsed, .. }
+                | Block::HelperNote { collapsed, .. }
                 | Block::Outcome { collapsed, .. },
             ) => {
                 *collapsed = !*collapsed;
@@ -1652,6 +1747,7 @@ impl Transcript {
             && let Block::Reasoning { collapsed, .. }
             | Block::Tool { collapsed, .. }
             | Block::Shell { collapsed, .. }
+            | Block::HelperNote { collapsed, .. }
             | Block::Outcome { collapsed, .. } = &mut block
         {
             *collapsed = false;
@@ -1983,6 +2079,37 @@ fn recipient(args: &Value) -> String {
 
 /// Whether `block` has something to fold: its line ends in `▸`/`▾`.
 #[must_use]
+/// The folded [`Block::HelperNote`] for a run the daemon started with a
+/// note of helpers' endings (`label` is one of its helper labels): what
+/// the note reads back as, or, for words this build does not know, the
+/// label and the note's first line.
+pub(crate) fn helper_note(label: &str, prompt: &str, collapsed: bool) -> Option<Block> {
+    use crate::daemon::agents::{HELPER_ENDED_LABEL, HELPER_IDLE_LABEL, endings};
+    if label != HELPER_ENDED_LABEL && label != HELPER_IDLE_LABEL {
+        return None;
+    }
+    let summary = endings::note_summary(prompt).unwrap_or_else(|| endings::NoteSummary {
+        title: label.to_string(),
+        first: prompt
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        helpers: Vec::new(),
+        failed: false,
+    });
+    Some(Block::HelperNote {
+        title: summary.title,
+        first: summary.first,
+        text: prompt.to_string(),
+        helpers: summary.helpers,
+        failed: summary.failed,
+        collapsed,
+        paired: false,
+    })
+}
+
 pub fn foldable(block: &Block) -> bool {
     tool_has_output(block)
 }
@@ -2007,6 +2134,7 @@ fn tool_has_output(block: &Block) -> bool {
         )
         || matches!(block, Block::Outcome { md, .. } if !md.is_empty())
         || matches!(block, Block::Peer { text, .. } if !text.is_empty())
+        || matches!(block, Block::HelperNote { .. })
 }
 
 /// A `!` command's state as the export and the header say it.

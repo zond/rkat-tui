@@ -19,7 +19,9 @@ pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
                 let text = user.text_content();
                 compact_reply = text == crate::ui::COMPACT_PROMPT;
                 if !text.is_empty() && !compact_reply {
-                    blocks.push(Block::User { text });
+                    // A note of helpers' endings the daemon started a run
+                    // with is folded as the live view shows it.
+                    blocks.push(restored_note(&text).unwrap_or(Block::User { text }));
                 }
             }
             Message::BlockAssistant(_) if compact_reply => compact_reply = false,
@@ -39,6 +41,14 @@ pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
         }
     }
     blocks
+}
+
+/// A stored user message that is a whole note of helpers' endings (the
+/// daemon's words, [`crate::daemon::agents::endings::note_summary`]), as
+/// its folded block.
+fn restored_note(text: &str) -> Option<Block> {
+    crate::daemon::agents::endings::note_summary(text)?;
+    super::helper_note(crate::daemon::agents::HELPER_ENDED_LABEL, text, true)
 }
 
 /// The prose of one stored assistant message (one model step), by the
@@ -286,6 +296,45 @@ mod tests {
             }
         );
         assert!(matches!(&restored[1], Block::Tool { name, .. } if name == "read_file"));
+    }
+
+    /// A conversation re-opened shows a note of a helper's ending the daemon
+    /// started a run with as the live view does, folded, not as a prompt
+    /// of the user's; a note that travelled with the user's words stays
+    /// the user's message.
+    #[test]
+    fn a_stored_helper_ending_note_restores_folded() {
+        use crate::daemon::agents::endings::{NoteItem, note_text};
+        let note = note_text(&[NoteItem {
+            label: "review-x".into(),
+            how: crate::mobs::endings::How::Done {
+                answer: "All good.\nDetails follow.".into(),
+            },
+            rest: None,
+        }]);
+        let held = format!(
+            "{note}\n\n{}\n\nnow fix it",
+            crate::daemon::local::HELD_NOTE_SEPARATOR
+        );
+        let restored = blocks_from_messages(&[
+            Message::User(UserMessage::text(note.clone())),
+            Message::User(UserMessage::text(held.clone())),
+        ]);
+        assert_eq!(
+            restored,
+            vec![
+                Block::HelperNote {
+                    title: "helper review-x finished".into(),
+                    first: "All good.".into(),
+                    text: note,
+                    helpers: vec!["review-x".into()],
+                    failed: false,
+                    collapsed: true,
+                    paired: false,
+                },
+                Block::User { text: held },
+            ]
+        );
     }
 
     #[test]
