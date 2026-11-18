@@ -496,6 +496,8 @@ pub async fn run(
             None
         }
     };
+    // `ui.mouse` over the layers; `--no-mouse` is its command-line layer.
+    let mouse = config.ui.mouse;
     let runner = Runner::new(config, ui_tx, effect_rx);
     let farewells = runner.farewells();
     // The runner leaves the daemon as `/quit` decided (stopped, or running
@@ -505,7 +507,7 @@ pub async fn run(
         opened,
         UiChannels { ui_rx },
         effect_tx,
-        args.mouse_capture(),
+        mouse,
         tokio::spawn(runner.run()),
         Duration::from_secs(5),
     )

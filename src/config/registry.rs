@@ -1053,6 +1053,21 @@ pub static SETTINGS: &[Setting] = &[
         hook: Hook::Ui,
     },
     Setting {
+        key: "ui.mouse",
+        kind: Kind::Bool,
+        default: Fallback::Bool(true),
+        project: ProjectRule::Takes,
+        applies: Applies::NextStart,
+        about: "Capture the mouse (wheel scrolling, click to expand, drag to copy); `false` leaves selection to the terminal.",
+        flags: &[Flag {
+            flag: "--no-mouse",
+            value: FlagValue::Fixed("false"),
+            given: |args| args.no_mouse.then(String::new),
+        }],
+        command: None,
+        hook: Hook::None,
+    },
+    Setting {
         key: "ui.checklist",
         kind: Kind::Choice(&["hidden", "shown"]),
         default: Fallback::Text("hidden"),

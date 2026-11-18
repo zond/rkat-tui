@@ -1823,6 +1823,7 @@ it may only lower a value, its lowering applies over every layer).
 | `search.max_entries`: How many files and directories one `glob` or `grep` may examine. | a whole number from 1 | 500000 | may only lower it | at the next start | — |
 | `ui.helpers`: How helper headers start in the transcript. | `folded`, `expanded` | folded | may set it (the command line wins) | at once | — |
 | `ui.bell`: Ring the bell when a turn ends or a prompt opens while the terminal is not focused. | `true` or `false` | true | may set it (the command line wins) | at once | — |
+| `ui.mouse`: Capture the mouse (wheel scrolling, click to expand, drag to copy); `false` leaves selection to the terminal. | `true` or `false` | true | may set it (the command line wins) | at the next start | `--no-mouse` |
 | `ui.checklist`: Whether the task checklist shows under the input. | `hidden`, `shown` | hidden | may set it (the command line wins) | at once | Ctrl+T |
 | `pricing.fetch`: Whether the community price list is fetched for the cost readout. | `true` or `false` | true | may only set `false` | at the next start | `--no-pricing-fetch` |
 | `daemon.principal`: The person every attached client decides approval requests as. | text (at most 200 characters) | the login name ($USER, else $LOGNAME, else owner) | may not set it | at the next start | — |
@@ -2667,16 +2668,44 @@ The mouse is captured by default: the wheel scrolls and a click expands or
 collapses one tool call (Ctrl-O does all of them). Dragging selects text
 and copies it on release (double click: a word, triple click: a line;
 `/copy` copies the latest answer, `/copy N` the Nth latest). Hold Shift for native
-selection, or start with `--no-mouse`.
+selection (the terminal's own, past rkat-tui and tmux alike), start with
+`--no-mouse` for one run, or set `ui.mouse = false` in `tui.toml` (`[ui]`
+section; read when the TUI starts) to leave the mouse to the terminal for
+good; `--no-mouse` wins over every file.
 
 Copying uses OSC 52 only, so the terminal must support it: kitty, foot,
 WezTerm, Alacritty, iTerm2 and xterm (with `allowWindowOps`) do; GNOME
-Terminal and other VTE-based terminals do not. The sequence sets both the
-clipboard and the primary selection (middle-click paste), where the
-terminal supports each. Inside
-tmux it is passed through, and tmux needs `set -g set-clipboard on`. The
-notice says `copied N chars (terminal must support OSC 52)` once the
-sequence is written, or `copy failed: <error>` when it could not be.
+Terminal and other VTE-based terminals do not. rkat-tui writes one
+sequence for the clipboard (`52;c`) and one for the primary selection
+(`52;p`, middle-click paste), so a terminal without a primary selection
+still gets the clipboard. Over ssh the sequences travel back to your
+terminal like any other output; nothing on the remote side needs to know
+about the clipboard.
+
+Inside tmux (`$TMUX` set) rkat-tui writes the clipboard sequence to tmux
+itself, then both sequences again in tmux's passthrough:
+
+- With `set -g set-clipboard on` tmux makes the copy a paste buffer
+  (`prefix ]` pastes it) and sets your terminal's clipboard the way its own
+  copy mode does. This is the setting to use, and it is what works when
+  tmux's own mouse selection already reaches your clipboard. tmux's
+  default, `external`, ignores a program's clipboard sequence.
+- With `set -g allow-passthrough on` (tmux 3.3 or later) the passthrough
+  copies reach your terminal directly, also under `set-clipboard
+  external`; tmux's buffer is not set then.
+- A tmux on your own machine with rkat-tui on a remote host behind ssh
+  (no `$TMUX` on the remote side) gets the plain sequences, which
+  `set-clipboard on` handles the same way.
+
+The first copy inside tmux says what tmux needs (``copied N chars (inside
+tmux this needs `set -g set-clipboard on` (or `allow-passthrough on`) in
+tmux.conf; Shift-drag selects with the terminal instead)``), later ones
+`copied N chars (through tmux)`; rkat-tui cannot read tmux's options, so the
+notice says the copy was written, not that it arrived. Outside tmux it says
+`copied N chars (terminal must support OSC 52)`, and `copy failed:
+<error>` when the sequence could not be written. Under GNU screen (`$STY`)
+the sequences go out in the small pieces screen passes through. A copy is
+cut at 100 KiB of encoded text (the notice says so).
 
 ### Task checklist
 

@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 
 use super::editor::{edit_draft, editor_from_env, run_editor};
 use super::render::draw;
-use super::selection::{copy_notice, osc52};
+use super::selection::{Multiplexer, copy_notice, osc52};
 use super::{App, EditorClosed, EditorTarget, Effect, History, LocalEffect, Msg, QueuedCopy};
 
 /// Render tick interval (~30 fps), while something animates
@@ -305,7 +305,13 @@ pub async fn run_ui(
         Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
 
-    let tmux = std::env::var_os("TMUX").is_some();
+    let via = Multiplexer::from_env(
+        std::env::var_os("TMUX").as_deref(),
+        std::env::var_os("STY").as_deref(),
+    );
+    // Whether a copy was made yet (the first one inside tmux says what
+    // tmux needs).
+    let mut copied_before = false;
     // Copies queued by the last batch: written after the next frame, on the
     // handle ratatui renders to, so the OSC 52 sequence cannot interleave
     // with a frame.
@@ -365,8 +371,11 @@ pub async fn run_ui(
             let (level, text) = copy_notice(
                 copy.text.chars().count(),
                 copy.truncated,
-                write_clipboard(&copy.text, tmux, terminal.backend_mut()).as_ref(),
+                via,
+                !copied_before,
+                write_clipboard(&copy.text, via, terminal.backend_mut()).as_ref(),
             );
+            copied_before = true;
             // A notice produces no effects.
             let _ = app.update(Msg::Notice { level, text });
         }
@@ -414,10 +423,10 @@ fn ring_bell(out: &mut impl Write) -> io::Result<()> {
 }
 
 /// Write `text` to `out` (the terminal backend, after a frame) as an OSC 52
-/// sequence for the clipboard and the primary selection (wrapped for tmux),
-/// and flush it.
-fn write_clipboard(text: &str, tmux: bool, out: &mut impl Write) -> io::Result<()> {
-    let seq = osc52(text, tmux);
+/// sequences for the clipboard and the primary selection (written for the
+/// multiplexer `via`), and flush them.
+fn write_clipboard(text: &str, via: Multiplexer, out: &mut impl Write) -> io::Result<()> {
+    let seq = osc52(text, via);
     out.write_all(seq.as_bytes())?;
     out.flush()
 }

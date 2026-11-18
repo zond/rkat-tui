@@ -147,7 +147,8 @@ pub struct Args {
 
     /// Do not capture mouse events. The mouse is captured by default for wheel
     /// scrolling and click-to-expand tool output; most terminals still allow
-    /// native text selection with Shift held. This flag restores plain selection.
+    /// native text selection with Shift held. This flag restores plain selection
+    /// for this start (`ui.mouse = false` in `tui.toml` does it for every start).
     #[arg(long)]
     pub no_mouse: bool,
 
@@ -267,12 +268,6 @@ pub fn parse_check_limit(value: &str) -> Result<crate::approval::corpus::Limit, 
 }
 
 impl Args {
-    /// Whether the UI captures mouse events (on unless `--no-mouse`).
-    #[must_use]
-    pub fn mouse_capture(&self) -> bool {
-        !self.no_mouse
-    }
-
     /// The daemon `--attach` names; without it, the workspace's
     /// ([`AttachTarget::Auto`]: the running one, else a started one).
     #[must_use]

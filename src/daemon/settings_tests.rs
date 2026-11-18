@@ -120,7 +120,7 @@ fn bad_changes_are_refused_and_nothing_is_written() {
     assert_eq!(err, "ui.bell takes `true` or `false`");
     let err = settings.write("ui.nope", Some("1"), false).unwrap_err();
     assert!(
-        err.contains("did you mean ui.helpers, ui.bell, ui.checklist"),
+        err.contains("did you mean ui.helpers, ui.bell, ui.mouse, ui.checklist"),
         "{err}"
     );
     let err = settings

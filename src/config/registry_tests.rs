@@ -111,6 +111,7 @@ fn typed_value(key: &str, layered: &Layered) -> Option<Value> {
         "search.max_entries" => int(layered.search.max_entries),
         "ui.helpers" => to(Value::try_from(layered.ui.helpers).unwrap()),
         "ui.bell" => to(Value::Boolean(layered.ui.bell)),
+        "ui.mouse" => to(Value::Boolean(layered.ui.mouse)),
         "ui.checklist" => to(Value::try_from(layered.ui.checklist).unwrap()),
         "pricing.fetch" => to(Value::Boolean(layered.pricing_fetch)),
         "daemon.principal" => layered.daemon_principal.clone().map(Value::String),

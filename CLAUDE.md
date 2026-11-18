@@ -188,6 +188,10 @@ repository). Open upstream issues this code waits on:
 - #2388 (filed 2026-11-17): the dialect clients replaying an assistant's
   empty or whitespace-only text (a proxy turns it into a placeholder
   sentence). Our filter `src/daemon/blank_text.rs` goes when it ships.
+- #2411 (filed 2026-11-18): an empty completion fails a run nobody waits
+  on (a peer's message, a daemon-started input), after three retries.
+  Our recognition of it by the engine's wording and its quiet line
+  (`src/ui/failures.rs`) goes or simplifies when it ships.
 - #2235: a peer message that waits for an idle receiver's next run. The
   roster note's states and "do not message an idle agent with no client"
   (`src/daemon/agents/notes.rs`, the persona) go then.

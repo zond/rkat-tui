@@ -325,36 +325,140 @@ pub fn cap_clipboard(text: &str) -> (&str, bool) {
     (text.get(..end).unwrap_or(""), true)
 }
 
-/// The OSC 52 "set clipboard" sequence for `text` (callers cap it first with
-/// [`cap_clipboard`]), for the clipboard and the primary selection (`cp`:
-/// terminals ignore selection letters they do not support). With `tmux`,
-/// wrapped in a DCS passthrough (every ESC doubled) so tmux forwards it to
-/// the outer terminal.
-pub fn osc52(text: &str, tmux: bool) -> String {
-    let seq = format!("\x1b]52;cp;{}\x07", base64_encode(text.as_bytes()));
-    if tmux {
-        format!("\x1bPtmux;{}\x1b\\", seq.replace('\x1b', "\x1b\x1b"))
-    } else {
-        seq
+/// The terminal multiplexer the UI runs in, as its environment says: what
+/// the clipboard sequences are written for ([`osc52`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Multiplexer {
+    /// None here (`$TMUX` and `$STY` unset): the sequences go to the
+    /// terminal, or over ssh to whatever runs on the other side, a tmux
+    /// there included.
+    None,
+    /// tmux (`$TMUX` set).
+    Tmux,
+    /// GNU screen (`$STY` set, `$TMUX` not).
+    Screen,
+}
+
+impl Multiplexer {
+    /// The multiplexer the variables `tmux` (`$TMUX`) and `sty` (`$STY`)
+    /// say. With both set the order of nesting is unknown; tmux wins, as
+    /// its sequence also reaches a screen outside it as plain OSC 52.
+    #[must_use]
+    pub fn from_env(tmux: Option<&std::ffi::OsStr>, sty: Option<&std::ffi::OsStr>) -> Self {
+        match (tmux, sty) {
+            (Some(_), _) => Self::Tmux,
+            (None, Some(_)) => Self::Screen,
+            (None, None) => Self::None,
+        }
     }
 }
 
+/// One OSC 52 "set selection" sequence for `selection` (`c` the
+/// clipboard, `p` the primary selection) holding `b64`, ended with BEL
+/// (what tmux's own `Ms` capability sends; xterm and tmux take BEL and ST
+/// alike).
+fn osc52_one(selection: char, b64: &str) -> String {
+    format!("\x1b]52;{selection};{b64}\x07")
+}
+
+/// `seq` wrapped in tmux's DCS passthrough (`ESC P tmux; … ESC \`, every
+/// ESC inside doubled), which tmux writes to the outer terminal as it is
+/// when `allow-passthrough` is on and drops when it is off.
+fn tmux_passthrough(seq: &str) -> String {
+    format!("\x1bPtmux;{}\x1b\\", seq.replace('\x1b', "\x1b\x1b"))
+}
+
+/// `seq` wrapped for GNU screen: screen writes a DCS string's body to the
+/// terminal as it is but holds at most a few hundred bytes of one, so the
+/// sequence goes out in pieces of 76 bytes, each its own `ESC P … ESC \`.
+fn screen_passthrough(seq: &str) -> String {
+    let mut out = String::with_capacity(seq.len() + seq.len() / 76 * 4 + 4);
+    let mut rest = seq;
+    while !rest.is_empty() {
+        // The sequence is ASCII (escape codes and base64), so every byte
+        // is a char boundary.
+        let mut end = rest.len().min(76);
+        while !rest.is_char_boundary(end) {
+            end -= 1;
+        }
+        let (piece, tail) = rest.split_at(end);
+        out.push_str("\x1bP");
+        out.push_str(piece);
+        out.push_str("\x1b\\");
+        rest = tail;
+    }
+    out
+}
+
+/// The OSC 52 sequences that set the clipboard (and, where the terminal
+/// has one, the primary selection) to `text` (callers cap it first with
+/// [`cap_clipboard`]), written for `via`.
+///
+/// Every form names one selection per sequence: `c` first, the parameter
+/// every OSC 52 terminal takes for the clipboard (an empty one means
+/// xterm's `s 0`, not the clipboard, and some terminals refuse a sequence
+/// that names `cp` together), then `p` on its own, which a terminal
+/// without a primary selection ignores or takes as the clipboard again
+/// with the same text, so a refused `p` never loses the clipboard.
+///
+/// - [`Multiplexer::None`]: the two plain sequences. Over ssh they reach a
+///   tmux on the local side as plain OSC 52, which is what it reads.
+/// - [`Multiplexer::Tmux`]: first the plain `c` sequence to tmux itself:
+///   with `set-clipboard on` tmux makes it a paste buffer and sets the
+///   outer terminal's clipboard with its own `Ms` sequence (the route its
+///   copy mode takes). Then `c` and `p` in tmux's DCS passthrough, for
+///   `set-clipboard external` or `off` with `allow-passthrough on` (with
+///   both on the outer terminal is set twice with the same text). No
+///   plain `p`: tmux would make a second paste buffer of it.
+/// - [`Multiplexer::Screen`]: the two sequences in screen's pieces.
+#[must_use]
+pub fn osc52(text: &str, via: Multiplexer) -> String {
+    let b64 = base64_encode(text.as_bytes());
+    let clipboard = osc52_one('c', &b64);
+    let primary = osc52_one('p', &b64);
+    match via {
+        Multiplexer::None => format!("{clipboard}{primary}"),
+        Multiplexer::Tmux => format!(
+            "{clipboard}{}{}",
+            tmux_passthrough(&clipboard),
+            tmux_passthrough(&primary)
+        ),
+        Multiplexer::Screen => {
+            format!(
+                "{}{}",
+                screen_passthrough(&clipboard),
+                screen_passthrough(&primary)
+            )
+        }
+    }
+}
+
+/// What a copy inside tmux needs of tmux, said with the first copy of a
+/// session (tmux's options cannot be read without starting a process).
+pub const TMUX_CLIPBOARD_HINT: &str = "inside tmux this needs `set -g set-clipboard on` \
+     (or `allow-passthrough on`) in tmux.conf; Shift-drag selects with the terminal instead";
+
 /// The notice for a copy of `chars` characters (`truncated`: cut to the
-/// clipboard cap) whose OSC 52 write had `written` as its result.
+/// clipboard cap) written for `via` (`first`: the first copy of this
+/// session) whose OSC 52 write had `written` as its result.
 pub fn copy_notice(
     chars: usize,
     truncated: bool,
+    via: Multiplexer,
+    first: bool,
     written: Result<&(), &std::io::Error>,
 ) -> (NoticeLevel, String) {
+    let needs = match via {
+        Multiplexer::Tmux if first => TMUX_CLIPBOARD_HINT,
+        Multiplexer::Tmux => "through tmux",
+        Multiplexer::None | Multiplexer::Screen => "terminal must support OSC 52",
+    };
     match written {
         Ok(()) if truncated => (
             NoticeLevel::Info,
-            format!("copied {chars} chars (truncated to 100 KiB; terminal must support OSC 52)"),
+            format!("copied {chars} chars (truncated to 100 KiB; {needs})"),
         ),
-        Ok(()) => (
-            NoticeLevel::Info,
-            format!("copied {chars} chars (terminal must support OSC 52)"),
-        ),
+        Ok(()) => (NoticeLevel::Info, format!("copied {chars} chars ({needs})")),
         Err(err) => (NoticeLevel::Warn, format!("copy failed: {err}")),
     }
 }
@@ -488,31 +592,99 @@ mod tests {
 
     #[test]
     fn copy_notice_wording() {
+        use Multiplexer::{None as Bare, Screen, Tmux};
         assert_eq!(
-            copy_notice(21, false, Ok(&())),
+            copy_notice(21, false, Bare, true, Ok(&())),
             (
                 NoticeLevel::Info,
                 "copied 21 chars (terminal must support OSC 52)".into()
             )
         );
         assert_eq!(
-            copy_notice(21, true, Ok(&())),
+            copy_notice(21, true, Bare, false, Ok(&())),
             (
                 NoticeLevel::Info,
                 "copied 21 chars (truncated to 100 KiB; terminal must support OSC 52)".into()
             )
         );
+        assert_eq!(
+            copy_notice(21, false, Screen, true, Ok(&())).1,
+            "copied 21 chars (terminal must support OSC 52)"
+        );
+        // Inside tmux the first copy says what tmux needs, the rest do not.
+        assert_eq!(
+            copy_notice(21, false, Tmux, true, Ok(&())).1,
+            "copied 21 chars (inside tmux this needs `set -g set-clipboard on` \
+             (or `allow-passthrough on`) in tmux.conf; Shift-drag selects with \
+             the terminal instead)"
+        );
+        assert_eq!(
+            copy_notice(21, false, Tmux, false, Ok(&())).1,
+            "copied 21 chars (through tmux)"
+        );
         let err = std::io::Error::other("broken pipe");
         assert_eq!(
-            copy_notice(21, false, Err(&err)),
+            copy_notice(21, false, Tmux, true, Err(&err)),
             (NoticeLevel::Warn, "copy failed: broken pipe".into())
         );
     }
 
     #[test]
-    fn osc52_plain_and_tmux() {
-        assert_eq!(osc52("hi", false), "\x1b]52;cp;aGk=\x07");
-        assert_eq!(osc52("hi", true), "\x1bPtmux;\x1b\x1b]52;cp;aGk=\x07\x1b\\");
+    fn osc52_without_a_multiplexer_sets_the_clipboard_then_the_primary() {
+        assert_eq!(
+            osc52("hi", Multiplexer::None),
+            "\x1b]52;c;aGk=\x07\x1b]52;p;aGk=\x07"
+        );
+    }
+
+    #[test]
+    fn osc52_in_tmux_goes_to_tmux_plain_first_then_through_its_passthrough() {
+        assert_eq!(
+            osc52("hi", Multiplexer::Tmux),
+            concat!(
+                // Plain, to tmux: its buffer, and its own `Ms` outward.
+                "\x1b]52;c;aGk=\x07",
+                // Passthrough, for `set-clipboard external` with
+                // `allow-passthrough on`.
+                "\x1bPtmux;\x1b\x1b]52;c;aGk=\x07\x1b\\",
+                "\x1bPtmux;\x1b\x1b]52;p;aGk=\x07\x1b\\",
+            )
+        );
+    }
+
+    #[test]
+    fn osc52_in_screen_goes_out_in_pieces_screen_holds() {
+        assert_eq!(
+            osc52("hi", Multiplexer::Screen),
+            "\x1bP\x1b]52;c;aGk=\x07\x1b\\\x1bP\x1b]52;p;aGk=\x07\x1b\\"
+        );
+        let long = "x".repeat(200);
+        let seq = osc52(&long, Multiplexer::Screen);
+        let pieces: Vec<&str> = seq
+            .split("\x1b\\")
+            .filter(|piece| !piece.is_empty())
+            .collect();
+        assert!(pieces.len() > 2, "{pieces:?}");
+        for piece in &pieces {
+            let body = piece.strip_prefix("\x1bP").unwrap();
+            assert!(body.len() <= 76, "{body:?}");
+        }
+        // Joined, the pieces are the two plain sequences.
+        let joined: String = pieces
+            .iter()
+            .map(|piece| piece.strip_prefix("\x1bP").unwrap())
+            .collect();
+        assert_eq!(joined, osc52(&long, Multiplexer::None));
+    }
+
+    #[test]
+    fn the_multiplexer_comes_from_tmux_then_sty() {
+        use std::ffi::OsStr;
+        let set = Some(OsStr::new("/tmp/tmux-1000/default,1,0"));
+        assert_eq!(Multiplexer::from_env(None, None), Multiplexer::None);
+        assert_eq!(Multiplexer::from_env(set, None), Multiplexer::Tmux);
+        assert_eq!(Multiplexer::from_env(None, set), Multiplexer::Screen);
+        assert_eq!(Multiplexer::from_env(set, set), Multiplexer::Tmux);
     }
 
     #[test]

@@ -12457,7 +12457,8 @@ an empty answer 4 times: send the message again, or switch the model
 persona (agents and helpers) and the wired-agents note say not to send a
 message that only acknowledges or thanks; restored conversations get it
 through the instruction refresh. The three extra model calls remain: an
-upstream draft is in `.handover/upstream-empty-completion.md` (not filed).
+upstream report (`.handover/upstream-empty-completion.md`) is filed as
+lukacf/meerkat#2411 (2026-11-18).
 
 Pinned by `agents::an_empty_answer_to_a_peer_s_message_is_one_quiet_line`
 (rig: the woken agent's client draws only the quiet line, the next user
@@ -12466,3 +12467,41 @@ error; before the change it drew the `error: Terminal failure …` line),
 `ui::tests::turns::{an_empty_answer_is_one_line_quiet_when_nobody_here_asked,
 a_failure_is_said_once}`, `ui::failures::tests::*`, and the persona and
 wire-note tests.
+
+## Copying inside tmux over ssh (owner, 2026-11-18)
+
+**Seen**: rkat-tui in a remote tmux (`mouse on`, `set-clipboard on`,
+`allow-passthrough on`) behind ssh said `copied N chars` and nothing
+reached the clipboard; tmux's own selection (`--no-mouse`) copied.
+
+**What tmux documents** (tmux 3.4 man page): `set-clipboard on` makes tmux
+"accept the escape sequence to create a buffer and attempt to set the
+terminal clipboard", `external` (the default) sets the terminal's
+clipboard from tmux's own copies but "ignore[s] attempts by applications
+to set tmux buffers"; it sets the outer clipboard with the terminfo `Ms`
+capability ("Store the current buffer in the host terminal's selection").
+`allow-passthrough` lets a program "bypass tmux" with `\ePtmux;...\e\\`,
+and only while the pane is visible (`all`: also invisible). The copy went
+only through the passthrough, as `52;cp`: it never used the route that
+works for the owner (tmux's buffer and `Ms`), and named two selections in
+one parameter, which xterm's control-sequence list allows (`c`, `p`, `q`,
+`s`, `0`-`7`) but not every terminal takes; an empty parameter is xterm's
+`s 0`, not the clipboard.
+
+**What rkat-tui does** (`ui::selection::osc52`): one selection per
+sequence, `c` then `p`, ended with BEL (tmux's own `Ms` ends so). Inside
+tmux the plain `c` sequence goes to tmux first, then `c` and `p` in the
+passthrough (for `external` or `off` with passthrough on; with both on the
+outer terminal is set twice with the same text). No plain `p` inside tmux:
+it would make a second paste buffer. Without `$TMUX` (also a tmux on the
+local side of ssh) the plain pair goes out, which that tmux reads. Under
+screen (`$STY`) the pair goes in 76-byte DCS pieces. rkat-tui cannot read
+tmux's options without starting a process, which the library does not do,
+so the first copy inside tmux says what tmux needs. `ui.mouse` makes
+`--no-mouse` lasting. Not verified on a real terminal.
+
+Pinned by `ui::selection::tests::{osc52_without_a_multiplexer_sets_the_clipboard_then_the_primary,
+osc52_in_tmux_goes_to_tmux_plain_first_then_through_its_passthrough,
+osc52_in_screen_goes_out_in_pieces_screen_holds,
+the_multiplexer_comes_from_tmux_then_sty, copy_notice_wording}` and
+`config::tests::ui_mouse_defaults_to_on_layers_and_no_mouse_wins`.

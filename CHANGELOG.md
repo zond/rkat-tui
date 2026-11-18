@@ -37,6 +37,23 @@
   a run reports is said once, not again as "turn failed". The agents and
   helpers are told not to send a message that only acknowledges or
   thanks.
+- A mouse selection inside tmux said `copied N chars` but nothing reached
+  the clipboard: the copy went only through tmux's passthrough, which
+  skips tmux's own clipboard route, and named the clipboard and the
+  primary selection in one sequence (`52;cp`), which some terminals
+  refuse. Inside tmux the copy now goes to tmux itself first (with
+  `set -g set-clipboard on` tmux sets your terminal's clipboard as its
+  copy mode does and keeps a paste buffer), then through the passthrough
+  for `allow-passthrough on`; everywhere the clipboard (`52;c`) and the
+  primary selection (`52;p`) are two sequences, so a refused one never
+  loses the other. The first copy inside tmux says what tmux needs.
+  Under GNU screen the copy goes out in pieces screen passes through.
+
+### Added
+
+- `ui.mouse` in `tui.toml` (default `true`): `false` leaves the mouse to
+  the terminal at every start, as `--no-mouse` does for one; `--no-mouse`
+  wins over every file.
 
 ### Changed
 

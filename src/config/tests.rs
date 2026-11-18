@@ -97,6 +97,7 @@ fn rules_file_round_trip() {
         ui: Some(UiSection {
             helpers: Some(HelperView::Expanded),
             bell: Some(false),
+            mouse: Some(false),
             checklist: Some(ChecklistView::Shown),
         }),
     };
@@ -597,6 +598,41 @@ fn ui_bell_defaults_to_on_and_layers() {
     let overlay = cli("[ui]\nbell = true\n");
     let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
     assert!(layered.ui.bell);
+}
+
+#[test]
+fn ui_mouse_defaults_to_on_layers_and_no_mouse_wins() {
+    use clap::Parser as _;
+    let tmp = tempfile::tempdir().unwrap();
+    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+    let user = tmp.path().join("user.toml");
+    write(&realm, "");
+    write(&project, "");
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
+    assert!(layered.ui.mouse);
+    // The user's file turns it off for every workspace.
+    std::fs::write(&user, "[ui]\nmouse = false\n").unwrap();
+    let layered = load_layered_with(&realm, Some(&user), &project, None).unwrap();
+    assert!(!layered.ui.mouse);
+    // The realm's file over the user's.
+    write(&realm, "[ui]\nmouse = true\n");
+    let layered = load_layered_with(&realm, Some(&user), &project, None).unwrap();
+    assert!(layered.ui.mouse);
+    // The project's preference applies, as for every `[ui]` setting...
+    write(&project, "[ui]\nmouse = false\n");
+    let layered = load_layered_with(&realm, Some(&user), &project, None).unwrap();
+    assert!(!layered.ui.mouse);
+    // ...and `--no-mouse`, the command-line layer, wins over a project
+    // that turns it on.
+    write(&project, "[ui]\nmouse = true\n");
+    let args = crate::cli::Args::parse_from(["rkat-tui", "--no-mouse"]);
+    let overlay = crate::overlay::ConfigOverlay::from_args(&args)
+        .unwrap()
+        .rules_file()
+        .unwrap()
+        .unwrap();
+    let layered = load_layered_with(&realm, Some(&user), &project, Some(&overlay)).unwrap();
+    assert!(!layered.ui.mouse);
 }
 
 #[test]

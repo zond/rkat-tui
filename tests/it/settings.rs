@@ -165,6 +165,7 @@ async fn the_settings_picker_shows_and_changes_a_setting() {
         vec![
             "ui.helpers  folded  (default)",
             "ui.bell  true  (default)",
+            "ui.mouse  true  (default)",
             "ui.checklist  hidden  (default)",
         ]
     );
@@ -197,10 +198,11 @@ async fn the_settings_picker_shows_and_changes_a_setting() {
         vec![
             "ui.helpers  folded  (default)",
             "ui.bell  true  (default)",
+            "ui.mouse  true  (default)",
             "ui.checklist  shown  (user)",
         ]
     );
-    let refreshed = picker.at(2).refreshed(fresh);
+    let refreshed = picker.at(3).refreshed(fresh);
     assert_eq!(
         refreshed.selected().map(|row| row.text.as_str()),
         Some("ui.checklist  shown  (user)")

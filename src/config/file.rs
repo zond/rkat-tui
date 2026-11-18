@@ -219,6 +219,9 @@ pub struct UiSection {
     /// See [`UiSettings::bell`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bell: Option<bool>,
+    /// See [`UiSettings::mouse`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouse: Option<bool>,
     /// See [`UiSettings::checklist`] (`"hidden"` or `"shown"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checklist: Option<ChecklistView>,
@@ -233,6 +236,9 @@ pub struct UiSettings {
     /// Ring the terminal bell when a turn ends or an approval prompt opens
     /// while the terminal is not focused (default on).
     pub bell: bool,
+    /// Whether the UI captures the mouse (default on; `--no-mouse` turns
+    /// it off for one start). Read when the TUI starts.
+    pub mouse: bool,
     /// Whether the task checklist shows under the input (Ctrl+T toggles
     /// it and records the choice; default hidden).
     pub checklist: ChecklistView,
