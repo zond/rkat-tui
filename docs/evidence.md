@@ -13002,3 +13002,44 @@ Tests: `compact_prepare::nothing_of_ours_piles_up_after_one_or_three_compactions
 (the restored conversation holds no note),
 `bootstrap::persona::tests::the_compaction_section_names_memory_search_only_with_memory`,
 `daemon::prepare::tests::compact_ready_s_answer_says_to_carry_on_and_names_memory_only_with_it`.
+
+## A note the agent did not take is held, not dropped (review 7, H11/M12)
+
+`endings::steer_note` logged "a helper's ending did not reach the agent"
+and dropped the note; the helper was retired by then, so its answer was
+gone (only an answer over `MAX_ANSWER` had a file), and `tell` reported
+"<agent> was told" whatever happened. `helpers_run_started` lost the
+notes it took the same way.
+
+What can fail there: `Agents::steer` goes through `notes::steer_member`,
+the engine's unkeyed `mob_member_send` (`HandlingMode::Steer`). It sets
+no idempotency key and the daemon gives it no deadline; the engine
+answers once its ingress accepted the input (`SubmitWorkAckMode::IngressAccepted`
+in `meerkat-mob` `external_turn_for_member`). Its errors are admission
+refusals (member gone, not addressable, a fence), `MemberReloadRequired`
+after the one reload `steer_member` makes (a full or failing disk), and,
+in principle, the actor's reply lost after it accepted the input (a
+stop). Only that last one is an error for a note the agent reads.
+
+Now every failure holds the note (`HeldNotes`, `unsure`, a new optional
+field of `held-notes.json`): it travels with the next message to the
+agent or goes into its next run, and the client reads "<agent> is told
+with its next run: <reason>". For the accepted-then-failed case the
+daemon keeps the note marked as sent (`helper_sent`), so the run it
+starts is still recognised: that run's start drops the held copy
+(`HeldNotes::delivered`, and `take` of the run that started with it),
+and when the run starts before the error comes back, the words are
+remembered (`HeldNotes::seen`, under the same lock) and nothing is held.
+A steer accepted into a running turn and then answered with an error is
+not recognisable that way; it would be told again with the next run (a
+duplicate, never a loss). A note every helper on its way refused whose
+agent runs another conversation is written to the agent's scratch
+directory (`helper-note-<id>.md`) and an `rkat/notice` names it. The
+separator before the user's words no longer says "while you were
+stopped" (held notes are not only an interrupt's now); the old one is
+still recognised in stored conversations.
+
+Tests: `helper_endings::a_note_whose_steer_fails_is_held_and_goes_with_the_next_message_once`,
+`helper_endings::a_note_steered_but_answered_with_an_error_is_not_told_twice`
+(both through `Core::note_faults`),
+`daemon::agents::endings::tests::a_note_held_after_a_failed_steer_goes_once`.

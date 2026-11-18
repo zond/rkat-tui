@@ -22,6 +22,16 @@
 //!   `docs/evidence.md`), or goes into the next run that starts otherwise.
 //! - **Batching.** Endings that come within [`BATCH`] of each other go to
 //!   one recipient as one note that lists each.
+//! - **Never dropped.** A steer into an agent that fails (the engine's
+//!   refusal, after the one reload a storage failure needs) holds the note
+//!   as an interrupt does, and its clients read why ("is told with its
+//!   next run: …"). The steer carries no idempotency key and the daemon
+//!   sets it no deadline, so an error is the engine's answer; should the
+//!   engine have taken it all the same, the run it starts with those words
+//!   drops the held copy ([`HeldNotes::delivered`]). A note every helper on
+//!   its way refused, whose agent runs another conversation now, is written
+//!   to the agent's scratch directory and the agent's clients are told
+//!   where.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -182,7 +192,10 @@ pub struct NoteSummary {
 /// wrote (a held note that travels with the user's words is not one).
 #[must_use]
 pub fn note_summary(text: &str) -> Option<NoteSummary> {
-    if text.contains(crate::daemon::local::HELD_NOTE_SEPARATOR) {
+    if crate::daemon::local::HELD_NOTE_SEPARATORS
+        .iter()
+        .any(|separator| text.contains(separator))
+    {
         return None;
     }
     let Some((count, list)) = text.split_once(" notes about your helpers:\n") else {
@@ -287,6 +300,17 @@ fn with_passed(told: String, passed: &[String]) -> String {
     }
 }
 
+/// Why a note's steer into its agent failed, as its clients are told
+/// (`err`: the engine's refusal, after the reload a storage failure
+/// needs, [`super::notes::steer_member`]).
+fn steer_failure(err: &str) -> String {
+    if crate::daemon::storage::is_storage_failure(err) {
+        "the disk that holds rkat-tui's state is full or failing".to_string()
+    } else {
+        format!("the agent did not take it now ({})", err.trim())
+    }
+}
+
 /// Who a note goes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Recipient {
@@ -296,12 +320,18 @@ enum Recipient {
     Helper { key: HelperKey, tag: HelperTag },
 }
 
-/// A note held for an agent its user just interrupted.
+/// A note held for an agent its user just interrupted, or one its steer
+/// failed for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Held {
     agent: String,
     session: SessionId,
     text: String,
+    /// Held after its steer failed: the engine may have taken it all the
+    /// same, and a run that starts with it shows it did
+    /// ([`HeldNotes::delivered`]). Absent in the files of earlier builds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    unsure: bool,
 }
 
 /// The file's contents.
@@ -321,7 +351,14 @@ const HELD_VERSION: u32 = 1;
 pub struct HeldNotes {
     path: Option<PathBuf>,
     notes: parking_lot::Mutex<Vec<Held>>,
+    /// The newest (agent, words) a run of a helper's note started with,
+    /// [`SEEN`] at most: a failed steer's note is not held when a run took
+    /// it already. Read and written under `notes`' lock.
+    seen: parking_lot::Mutex<std::collections::VecDeque<(String, String)>>,
 }
+
+/// How many runs started by a helper's note [`HeldNotes`] remembers.
+const SEEN: usize = 16;
 
 impl HeldNotes {
     /// The notes held under `realm` (none when there is no file; an
@@ -350,6 +387,7 @@ impl HeldNotes {
         Self {
             path: Some(path),
             notes: parking_lot::Mutex::new(notes),
+            seen: parking_lot::Mutex::default(),
         }
     }
 
@@ -377,21 +415,57 @@ impl HeldNotes {
         }
     }
 
-    /// Hold `text` for `agent`, which runs `session`.
-    fn hold(&self, agent: &str, session: &SessionId, text: String) {
+    /// Hold `text` for `agent`, which runs `session` (`unsure`: its steer
+    /// failed, [`Held::unsure`]).
+    fn hold(&self, agent: &str, session: &SessionId, text: String, unsure: bool) {
         let mut notes = self.notes.lock();
+        if unsure {
+            let mut seen = self.seen.lock();
+            if let Some(at) = seen
+                .iter()
+                .position(|(seen_agent, words)| seen_agent == agent && *words == text)
+            {
+                seen.remove(at);
+                return;
+            }
+        }
         notes.push(Held {
             agent: agent.to_string(),
             session: session.clone(),
             text,
+            unsure,
         });
         self.persist(&notes);
     }
 
+    /// A run of `agent` started with `prompt`, a helper's note: one held
+    /// after a failed steer with these very words reached it after all,
+    /// and goes; none held yet, the words are remembered, so a failed
+    /// steer's answer that comes after the run's start holds nothing.
+    /// Whether one went.
+    pub(super) fn delivered(&self, agent: &str, prompt: &str) -> bool {
+        let mut notes = self.notes.lock();
+        let before = notes.len();
+        notes.retain(|held| !(held.unsure && held.agent == agent && held.text == prompt));
+        let gone = notes.len() != before;
+        if gone {
+            self.persist(&notes);
+        } else {
+            let mut seen = self.seen.lock();
+            if seen.len() == SEEN {
+                seen.pop_front();
+            }
+            seen.push_back((agent.to_string(), prompt.to_string()));
+        }
+        gone
+    }
+
     /// Take every note held for `agent`: the ones for `session` joined in
     /// the order they were held (`None`: none); the ones for another
-    /// conversation of it go (it was left).
-    fn take(&self, agent: &str, session: &SessionId) -> Option<String> {
+    /// conversation of it go (it was left), and so does one held after a
+    /// failed steer that `started_with` (the input of the run starting
+    /// now) shows reached it after all.
+    fn take(&self, agent: &str, session: &SessionId, started_with: Option<&str>) -> Option<String> {
         let mut notes = self.notes.lock();
         if !notes.iter().any(|held| held.agent == agent) {
             return None;
@@ -403,6 +477,7 @@ impl HeldNotes {
         let texts: Vec<String> = mine
             .into_iter()
             .filter(|held| &held.session == session)
+            .filter(|held| !(held.unsure && Some(held.text.as_str()) == started_with))
             .map(|held| held.text)
             .collect();
         (!texts.is_empty()).then(|| texts.join("\n\n"))
@@ -512,7 +587,7 @@ impl Agents {
         }
         for ((agent, session), items) in groups {
             tracing::info!(%agent, endings = items.len(), "helpers' endings held at the daemon's stop for the agent's next message");
-            self.held.hold(&agent, &session, note_text(&items));
+            self.held.hold(&agent, &session, note_text(&items), false);
         }
     }
 
@@ -522,9 +597,11 @@ impl Agents {
         self.interrupted.0.lock().insert(name.to_string());
     }
 
-    /// A run of `name` started: it is no longer just interrupted, and the
-    /// notes held for it go into this run.
-    pub(crate) fn helpers_run_started(self: &Arc<Self>, name: &str) {
+    /// A run of `name` started (with input `prompt`, when known): it is no
+    /// longer just interrupted, and the notes held for it go into this run
+    /// (held again when that steer fails too). A note held after a failed
+    /// steer that this run started with reached it after all, and goes.
+    pub(crate) fn helpers_run_started(self: &Arc<Self>, name: &str, prompt: Option<&str>) {
         self.interrupted.0.lock().remove(name);
         if !self.held.holds(name) {
             return;
@@ -532,10 +609,14 @@ impl Agents {
         let Some(session) = self.core.conversations.current(name) else {
             return;
         };
-        if let Some(text) = self.held.take(name, &session) {
+        if let Some(text) = self.held.take(name, &session, prompt) {
             let agents = Arc::clone(self);
             let name = name.to_string();
-            tokio::spawn(async move { agents.steer_note(&name, text).await });
+            tokio::spawn(async move {
+                if let Err(reason) = agents.steer_or_hold(&name, &session, text).await {
+                    tracing::warn!(agent = %name, %reason, "held notes did not reach the agent's new run; they are held again");
+                }
+            });
         }
     }
 
@@ -544,7 +625,7 @@ impl Agents {
     /// words.
     #[must_use]
     pub fn take_held(&self, name: &str, session: &SessionId) -> Option<String> {
-        self.held.take(name, session)
+        self.held.take(name, session, None)
     }
 
     /// Tell each parent of `batch` its helpers' endings (one note per
@@ -623,11 +704,15 @@ impl Agents {
             let (key, tag) = match recipient {
                 Recipient::Agent { name, session } => {
                     let told = if self.interrupted.0.lock().contains(&name) {
-                        self.held.hold(&name, &session, text);
+                        self.held.hold(&name, &session, text, false);
                         format!("{name} is told with your next message to it")
                     } else {
-                        self.steer_note(&name, text).await;
-                        format!("{name} was told")
+                        match self.steer_or_hold(&name, &session, text).await {
+                            Ok(()) => format!("{name} was told"),
+                            Err(reason) => {
+                                format!("{name} is told with its next run: {reason}")
+                            }
+                        }
                     };
                     return with_passed(told, &passed);
                 }
@@ -664,22 +749,98 @@ impl Agents {
             match self.recipient(&key, &tag) {
                 Some(next) => recipient = next,
                 None => {
-                    tracing::info!("a helper's parents are gone: nobody is told of its ending");
-                    return format!("nobody could be told: {} ended first", passed.join(", "));
+                    let passed = passed.join(", ");
+                    return match self.keep_untold(&tag.owner, &text) {
+                        Some(path) => format!(
+                            "nobody could be told: {passed} ended first; the note is in {}",
+                            path.display()
+                        ),
+                        None => format!("nobody could be told: {passed} ended first"),
+                    };
                 }
             }
         }
     }
 
-    /// Steer `text` into `name`'s run, or start a run with it when it is
-    /// idle (a run no user started, attributed as a helper's ending).
-    async fn steer_note(&self, name: &str, text: String) {
-        if let Err(err) = self
-            .steer(name, text, super::notes::Wake::HelperEnded)
+    /// Steer `text` into `name`'s run (it runs `session`), or start a run
+    /// with it when it is idle (a run no user started, attributed as a
+    /// helper's ending). A steer that fails holds the note ([`HeldNotes`],
+    /// durably): it travels with the next message to the agent or goes
+    /// into its next run, once. Why it failed, in plain words.
+    async fn steer_or_hold(
+        &self,
+        name: &str,
+        session: &SessionId,
+        text: String,
+    ) -> Result<(), String> {
+        let Err(err) = self
+            .steer(name, text.clone(), super::notes::Wake::HelperEnded)
             .await
-        {
-            tracing::warn!(agent = %name, error = %err, "a helper's ending did not reach the agent");
+        else {
+            return Ok(());
+        };
+        tracing::warn!(agent = %name, error = %err, "a helper's note did not reach the agent; it is held for its next run");
+        // Not held when a run started with it meanwhile (the engine took
+        // it before it answered the error).
+        self.held.hold(name, session, text, true);
+        Err(steer_failure(&err))
+    }
+
+    /// A note nobody can take (every helper on its way ended or refused
+    /// it, and its agent runs another conversation now): held for that
+    /// agent's conversation if it runs it again meanwhile, else written to
+    /// the agent's scratch directory, and its clients are told where.
+    /// Where it was written (`None`: held, or no directory to write to).
+    fn keep_untold(&self, owner: &SessionId, text: &str) -> Option<PathBuf> {
+        if let Some(agent) = self.agent_running_as(owner) {
+            self.held.hold(&agent, owner, text.to_string(), false);
+            return None;
         }
+        let registry = &self.core.registry;
+        let agent = registry
+            .root_of_session(owner)
+            .map(|key| key.member.to_string());
+        let written = registry.scratch_of_session(owner).and_then(|dir| {
+            let id = crate::hex::random::<4>().unwrap_or_else(|_| {
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_nanos());
+                format!("{nanos:x}")
+            });
+            let path = dir.join(format!("helper-note-{id}.md"));
+            match crate::paths::write_atomic(
+                &path,
+                text.as_bytes(),
+                crate::paths::FileMode::Private,
+                Some(&dir),
+            ) {
+                Ok(()) => Some(path),
+                Err(err) => {
+                    tracing::warn!(path = %path.display(), error = %err, "a note nobody could take was not written");
+                    None
+                }
+            }
+        });
+        match (&written, agent) {
+            (Some(path), Some(agent)) => self.core.decisions.broadcast(
+                crate::daemon::protocol::AGENT_NOTICE,
+                &crate::daemon::protocol::AgentNotice {
+                    agent,
+                    warn: true,
+                    text: format!(
+                        "a note of your helpers' endings reached nobody (the helpers it went to ended, and that conversation is not running); it is in {}",
+                        path.display()
+                    ),
+                },
+            ),
+            (Some(path), None) => {
+                tracing::warn!(path = %path.display(), "a note nobody could take was written; its agent is gone");
+            }
+            (None, _) => tracing::warn!(
+                "a helper's parents are gone and its note could not be kept: nobody is told of its ending"
+            ),
+        }
+        written
     }
 
     /// A finished helper's answer longer than a note carries, written in
@@ -1062,24 +1223,82 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let session = SessionId::new();
         let held = HeldNotes::open(dir.path());
-        held.hold("main-a", &session, "first".into());
-        held.hold("main-a", &session, "second".into());
-        held.hold("main-b", &session, "other".into());
+        held.hold("main-a", &session, "first".into(), false);
+        held.hold("main-a", &session, "second".into(), true);
+        held.hold("main-b", &session, "other".into(), false);
         assert!(held.holds("main-a"));
         let reopened = HeldNotes::open(dir.path());
         assert_eq!(
-            reopened.take("main-a", &session).as_deref(),
+            reopened.take("main-a", &session, None).as_deref(),
             Some("first\n\nsecond")
         );
-        assert_eq!(reopened.take("main-a", &session), None);
+        assert_eq!(reopened.take("main-a", &session, None), None);
         // A note for a conversation the agent left goes, untold.
-        reopened.hold("main-b", &SessionId::new(), "stale".into());
-        assert_eq!(reopened.take("main-b", &session).as_deref(), Some("other"));
+        reopened.hold("main-b", &SessionId::new(), "stale".into(), false);
+        assert_eq!(
+            reopened.take("main-b", &session, None).as_deref(),
+            Some("other")
+        );
         assert!(!reopened.holds("main-b"));
         // No file, or an unreadable one: nothing held.
         let empty = tempfile::tempdir().unwrap();
         assert!(!HeldNotes::open(empty.path()).holds("main-a"));
         std::fs::write(empty.path().join(HELD_FILE), b"not json").unwrap();
         assert!(!HeldNotes::open(empty.path()).holds("main-a"));
+    }
+
+    /// A note held after a failed steer goes once: with the next take, or
+    /// at the run that started with its very words (the engine took it
+    /// after all), never both; a note held at an interrupt is not taken
+    /// for delivered by a run's words. The file of an earlier build (no
+    /// `unsure`) still opens.
+    #[test]
+    fn a_note_held_after_a_failed_steer_goes_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SessionId::new();
+        let held = HeldNotes::open(dir.path());
+        held.hold("main-a", &session, "NOTE".into(), true);
+        assert!(held.delivered("main-a", "NOTE"));
+        assert!(!held.holds("main-a"));
+        held.hold("main-a", &session, "NOTE".into(), true);
+        held.hold("main-a", &session, "OTHER".into(), true);
+        assert_eq!(
+            held.take("main-a", &session, Some("NOTE")).as_deref(),
+            Some("OTHER")
+        );
+        // The run started before the failed steer's answer came.
+        assert!(!held.delivered("main-a", "EARLY"));
+        held.hold("main-a", &session, "EARLY".into(), true);
+        assert!(!held.holds("main-a"));
+        held.hold("main-a", &session, "KEPT".into(), false);
+        assert!(!held.delivered("main-a", "KEPT"));
+        assert_eq!(
+            HeldNotes::open(dir.path())
+                .take("main-a", &session, Some("KEPT"))
+                .as_deref(),
+            Some("KEPT")
+        );
+        let old = tempfile::tempdir().unwrap();
+        std::fs::write(
+            old.path().join(HELD_FILE),
+            format!(
+                r#"{{"version":1,"notes":[{{"agent":"main-a","session":"{session}","text":"OLD"}}]}}"#
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            HeldNotes::open(old.path())
+                .take("main-a", &session, None)
+                .as_deref(),
+            Some("OLD")
+        );
+        assert_eq!(
+            steer_failure("SQLite failed: database or disk is full"),
+            "the disk that holds rkat-tui's state is full or failing"
+        );
+        assert_eq!(
+            steer_failure("member gone "),
+            "the agent did not take it now (member gone)"
+        );
     }
 }

@@ -340,6 +340,152 @@ async fn an_ending_wakes_an_idle_agent_the_user_did_not_just_interrupt() {
     daemon.stop().await;
 }
 
+/// The script of the failed-steer tests: the agent starts `slow`, whose
+/// answer waits for `gate`, and ends its run; a run that reads the note
+/// says so, and so does the one that takes the user's `NEXT-ASK`.
+fn failing_note_script(gate: &Arc<tokio::sync::Notify>) -> Arc<ScriptedLlmClient> {
+    let gate = Arc::clone(gate);
+    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        if is_helper(messages, "HELPER-TASK") {
+            return Step::Gated(Arc::clone(&gate), Box::new(Step::Text("HELPER-ANSWER")));
+        }
+        let inputs = common::run_inputs(messages);
+        if inputs.contains("NEXT-ASK") {
+            return Step::Text("answered the next ask");
+        }
+        if inputs.contains("HELPER-ANSWER") {
+            return Step::Text("read the note");
+        }
+        if common::answers(messages, Some("a1")) {
+            return Step::Text("waiting for slow");
+        }
+        assign("a1", "slow", "HELPER-TASK: look")
+    }));
+    ScriptedLlmClient::new(vec![step; 20])
+}
+
+/// How many user messages of the agent's newest request carry `text`.
+fn agent_carries(llm: &ScriptedLlmClient, text: &str) -> usize {
+    llm.recorded()
+        .iter()
+        .rev()
+        .find(|r| !is_helper(&r.messages, "HELPER-TASK"))
+        .map_or(0, |r| {
+            common::user_texts(&r.messages)
+                .iter()
+                .filter(|t| t.contains(text))
+                .count()
+        })
+}
+
+/// A helper's note whose steer into its idle agent the engine refuses is
+/// not lost: it is held (durably), the client reads that the agent is told
+/// with its next run and why, and it travels with the user's next message,
+/// once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_note_whose_steer_fails_is_held_and_goes_with_the_next_message_once() {
+    use rkat_tui::daemon::core::NoteFault;
+    let ws = Workspace::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let llm = failing_note_script(&gate);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    let name = client.agent().await;
+    client.send(Effect::StartTurn("go".into()));
+    assert_eq!(
+        client.turn_finished().await.unwrap().text,
+        "waiting for slow"
+    );
+    daemon
+        .local()
+        .core()
+        .note_faults
+        .lock()
+        .push(NoteFault::Refused);
+    gate.notify_one();
+    let (how, told) = ended(&mut client, "slow").await;
+    assert_eq!(how, "finished");
+    assert_eq!(
+        told.as_deref(),
+        Some(
+            format!(
+                "{name} is told with its next run: the agent did not take it now (the note was refused on purpose (test))"
+            )
+            .as_str()
+        )
+    );
+    let held = common::realm_of(&ws.root).join("held-notes.json");
+    assert!(
+        std::fs::read_to_string(&held)
+            .unwrap()
+            .contains("HELPER-ANSWER")
+    );
+    assert!(
+        !agent_heard(&llm, "HELPER-ANSWER"),
+        "the agent never read it"
+    );
+    client.send(Effect::StartTurn("NEXT-ASK".into()));
+    assert_eq!(
+        client.turn_finished().await.unwrap().text,
+        "answered the next ask"
+    );
+    assert_eq!(agent_carries(&llm, "HELPER-ANSWER"), 1);
+    assert_eq!(agent_carries(&llm, "NEXT-ASK"), 1);
+    assert!(
+        !std::fs::read_to_string(&held)
+            .unwrap()
+            .contains("HELPER-ANSWER")
+    );
+    client.quit().await;
+    daemon.stop().await;
+}
+
+/// A steer the engine took but answered with an error is held as a failed
+/// one is, and the run it started with the note's words shows it arrived:
+/// the held copy goes, and the user's next message does not carry the note
+/// again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_note_steered_but_answered_with_an_error_is_not_told_twice() {
+    use rkat_tui::daemon::core::NoteFault;
+    let ws = Workspace::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let llm = failing_note_script(&gate);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    let name = client.agent().await;
+    client.send(Effect::StartTurn("go".into()));
+    assert_eq!(
+        client.turn_finished().await.unwrap().text,
+        "waiting for slow"
+    );
+    daemon
+        .local()
+        .core()
+        .note_faults
+        .lock()
+        .push(NoteFault::Late);
+    gate.notify_one();
+    let (_, told) = ended(&mut client, "slow").await;
+    assert!(
+        told.as_deref()
+            .is_some_and(|t| t.starts_with(&format!("{name} is told with its next run: "))),
+        "{told:?}"
+    );
+    // The note started a run of its own.
+    common::until(|| agent_heard(&llm, "HELPER-ANSWER")).await;
+    daemon.idle(&name).await;
+    let held = common::realm_of(&ws.root).join("held-notes.json");
+    common::until(|| {
+        std::fs::read_to_string(&held).is_ok_and(|held| !held.contains("HELPER-ANSWER"))
+    })
+    .await;
+    client.send(Effect::StartTurn("NEXT-ASK".into()));
+    common::until(|| agent_carries(&llm, "NEXT-ASK") == 1).await;
+    assert_eq!(agent_carries(&llm, "HELPER-ANSWER"), 1);
+    client.quit().await;
+    daemon.stop().await;
+}
+
 /// The agent's message after the restart: its text as the model read it.
 fn message_with(llm: &ScriptedLlmClient, words: &str) -> String {
     llm.recorded()

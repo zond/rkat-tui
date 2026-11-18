@@ -944,7 +944,7 @@ impl Watcher {
         // Not just interrupted any more: a held helper's ending goes in
         // (a replayed start of a run seen before changes nothing).
         if new {
-            agents.helpers_run_started(&self.name);
+            agents.helpers_run_started(&self.name, prompt.as_deref());
         }
         // A run an approval's note started is the user's (its clients were
         // told of it when it was sent).

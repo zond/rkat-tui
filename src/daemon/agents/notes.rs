@@ -272,6 +272,17 @@ impl Agents {
             self.core.engine.human_input(&session);
         }
         let _sending = self.core.activity.sending(name);
+        #[cfg(any(test, feature = "test-support"))]
+        let fault = if wake == Wake::HelperEnded {
+            let mut faults = self.core.note_faults.lock();
+            (!faults.is_empty()).then(|| faults.remove(0))
+        } else {
+            None
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        if fault == Some(crate::daemon::core::NoteFault::Refused) {
+            return Err("the note was refused on purpose (test)".to_string());
+        }
         let steered = steer_member(
             &self.core,
             &MobId::from(MOB_ID),
@@ -279,8 +290,23 @@ impl Agents {
             text,
         )
         .await;
+        #[cfg(any(test, feature = "test-support"))]
+        let steered = match (steered, fault) {
+            (Ok(()), Some(crate::daemon::core::NoteFault::Late)) => {
+                Err(meerkat_mob::MobError::Internal(
+                    "the note was answered late on purpose (test)".into(),
+                ))
+            }
+            (steered, _) => steered,
+        };
+        // A helper's note stays marked as sent after an error: should the
+        // engine have taken it all the same, the run it starts is still
+        // recognised, and the copy held meanwhile goes then
+        // ([`super::endings::HeldNotes::delivered`]).
         steered.map_err(|err| {
-            sent.lock().remove(name);
+            if wake == Wake::Approved {
+                sent.lock().remove(name);
+            }
             err.to_string()
         })
     }

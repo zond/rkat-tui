@@ -701,7 +701,14 @@ fn prepend_note(content: &mut Value, note: &str) {
 
 /// What separates held notes from the user's message they travel with.
 pub(crate) const HELD_NOTE_SEPARATOR: &str =
-    "(rkat-tui noted the above while you were stopped; the user's message follows)";
+    "(rkat-tui held the notes above until the user's next message, which follows)";
+
+/// The separators earlier builds wrote (stored conversations still hold
+/// them), [`HELD_NOTE_SEPARATOR`] first: every one a reader splits on.
+pub(crate) const HELD_NOTE_SEPARATORS: [&str; 2] = [
+    HELD_NOTE_SEPARATOR,
+    "(rkat-tui noted the above while you were stopped; the user's message follows)",
+];
 
 /// The text of a wire content input: a string, or the text blocks of a
 /// block list.

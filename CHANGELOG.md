@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- A helper's answer (or the note that it went idle) was lost when the
+  engine refused to deliver it to the agent: the daemon only logged it,
+  the helper was retired by then, and the TUI still said "main-… was
+  told". Such a note is now held, like one held after an interrupt, and
+  travels with your next message to the agent or goes into its next run,
+  once; the TUI says "main-… is told with its next run" and why. A note
+  that every helper on its way refused while its agent runs another
+  conversation is written to the agent's scratch directory, and a notice
+  names the file.
 - `retire_helper` answered "Helper `x` was retired." even when the
   engine refused the retire, and the helper stayed seated with nothing
   to retire it later. A refused retire is now tried again a few times;

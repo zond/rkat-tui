@@ -77,6 +77,11 @@ impl Agents {
             }
         };
         if from_helper {
+            // It reached the agent: one held after its steer failed (the
+            // engine took it before it answered the error) goes.
+            if self.held.delivered(name, prompt) {
+                tracing::info!(agent = %name, "a note held after a failed steer reached the agent after all");
+            }
             // A note of one member's going idle (the daemon's own words,
             // `super::endings`) is no ending.
             let label = if prompt.starts_with("Your helper `") && prompt.contains("` went idle") {

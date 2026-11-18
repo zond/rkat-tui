@@ -640,6 +640,8 @@ impl Daemon {
             contacts: Arc::clone(&composed.contacts),
             #[cfg(any(test, feature = "test-support"))]
             reload_faults: std::sync::atomic::AtomicU32::new(0),
+            #[cfg(any(test, feature = "test-support"))]
+            note_faults: parking_lot::Mutex::new(Vec::new()),
         });
         let agents = agents::Agents::new(
             Arc::clone(&core),

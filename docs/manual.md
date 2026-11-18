@@ -1445,6 +1445,13 @@ depends on how it reached the agent:
   next message (`… is told with your next message to it`). Another
   client attached to the agent shows the held note as its folded line,
   then your words.
+- **The agent did not take it** (the engine refused the delivery, for
+  example while the disk that holds rkat-tui's state is full): the note
+  is held the same way, and the notice says why (`… is told with its
+  next run: <reason>`); it goes with your next message or into the
+  agent's next run, once. A note no helper on its way could take, while
+  the agent runs another conversation, is written to the agent's scratch
+  directory, and a notice names the file.
 
 A note is never drawn as your message. A conversation opened again shows such a note as the same folded line,
 and `/export` writes it in full under its heading. A helper the daemon's stop left is run on by the engine at
