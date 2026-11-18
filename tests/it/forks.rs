@@ -339,10 +339,12 @@ async fn a_completed_fork_is_retired_once_its_outcome_is_recorded() {
     );
     // The fork read nothing more.
     assert!(!heard(&llm, true, "UPDATE-NOTE"));
-    // Alone in its workspace: told so.
+    // Alone in its workspace: no note says so (nothing that restates who
+    // is here is appended); its instructions point to `contacts`.
     let all = format!("{:?}", parent.messages);
     assert!(
-        all.contains("No other agent works in this workspace now"),
+        !all.contains("No other agent works in this workspace")
+            && all.contains("`contacts` shows who works here now"),
         "{all}"
     );
     drop(connection);

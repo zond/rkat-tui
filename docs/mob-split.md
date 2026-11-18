@@ -487,8 +487,8 @@ customizer shapes every member whose name `is_agent` accepts as an owner
 with its own gate and file tools, and refuses such a name from any spawn
 the host did not make. Every agent is wired to every other one (seat,
 switch, reseat, restore), its persona names it and the norms, and system
-notes (`mob_append_system_context`) give it the roster and tell the others
-of a join or a leave. `rkat/quit` that retires (a `/quit` with other clients on other
+notes (`mob_append_system_context`) tell the others of a join or a leave
+(`contacts` gives who is here and what each is doing). `rkat/quit` that retires (a `/quit` with other clients on other
 agents) cancels a running turn, stops its helpers and retires the member;
 `rkat/shutdown {"retire": true}` (the last client's stop, or "terminate")
 retires every agent before the daemon stops; SIGTERM keeps them for the

@@ -509,12 +509,6 @@ impl Wires {
             .unwrap_or_default()
     }
 
-    /// The labels of `agent`'s wires.
-    #[must_use]
-    pub fn labels(&self, agent: &str) -> Vec<String> {
-        self.rows(agent).iter().map(WireRow::label).collect()
-    }
-
     /// The label of the agent `agent` is wired to whose peer id is
     /// `peer_id`, when it is one.
     #[must_use]

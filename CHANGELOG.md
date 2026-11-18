@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- An agent's conversation grew by a note listing the workspace's other
+  agents and their states every time a client attached to an agent or
+  left it, and at every seat, switch and restart; each note claimed to
+  replace the one before, but all of them stayed. That note is gone:
+  `contacts` says who works here and what each is doing, always current,
+  and the agent's instructions say to ask it before announcing file
+  changes. An agent is still told, in one short note, when another agent
+  joins the workspace or leaves it. The note about a change of the
+  helpers' models no longer says it replaces what the agent was told
+  before.
 - A helper's answer (or the note that it went idle) was lost when the
   engine refused to deliver it to the agent: the daemon only logged it,
   the helper was retired by then, and the TUI still said "main-… was

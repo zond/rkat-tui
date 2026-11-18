@@ -1,5 +1,8 @@
-//! What the daemon tells an agent about the others: the roster and
-//! membership notes (pure text), and how every note reaches an agent:
+//! What the daemon tells an agent about the others: one note when an
+//! agent joins or leaves the workspace (an event it cannot learn of
+//! otherwise; who is here and what each is doing is `contacts`' to give,
+//! always current, so nothing that restates it is appended and nothing
+//! grows with attaches and detaches), and how every note reaches an agent:
 //! appended to its system context, read at its next turn and waking
 //! nobody ([`append_note`], [`Agents::send_notes`]), or steered into its
 //! run, which starts one when it is idle ([`steer_member`],
@@ -21,8 +24,8 @@ use super::Agents;
 /// The source the daemon's notes about the other agents carry.
 const NOTE_SOURCE: &str = "rkat-tui-agents";
 
-/// What another agent was doing when a roster note was sent: whether a
-/// run of it was open, and whether a client was attached to it.
+/// What another agent is doing now: whether a run of it is open, and
+/// whether a client is attached to it (`contacts` gives it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerState {
     /// Its run, as its status said.
@@ -32,7 +35,7 @@ pub struct PeerState {
 }
 
 impl PeerState {
-    /// The state as a roster note words it. An unreadable run state claims
+    /// The state as `contacts` words it. An unreadable run state claims
     /// neither working nor idle.
     fn describe(self) -> &'static str {
         match (self.run, self.attached) {
@@ -43,52 +46,6 @@ impl PeerState {
             (RunState::Unknown, false) => "no client attached",
         }
     }
-}
-
-/// The note telling an agent which other agents work in its workspace
-/// and what each was doing when it was sent, or that none does; `contacts`
-/// says what every peer is. It is sent when the roster or an agent's
-/// attachment changes, never for a run's start or end, so the note says
-/// its states are a snapshot.
-#[must_use]
-pub fn roster_note(others: &[(String, PeerState)]) -> String {
-    if others.is_empty() {
-        return NO_OTHER_AGENTS.to_string();
-    }
-    let names = others
-        .iter()
-        .map(|(name, state)| format!("`{name}` ({})", state.describe()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "Other agents in this workspace now: {names}. You are wired to each of them as a peer. \
-         These states are as of this note: a new one replaces it when an agent joins, or a client \
-         attaches to an agent or leaves it; none comes when an agent starts or ends a run. \
-         `contacts` lists everyone you can message and what each is."
-    )
-}
-
-/// The roster note of an agent alone in its workspace.
-pub const NO_OTHER_AGENTS: &str = "No other agent works in this workspace now; `contacts` \
-     lists everyone you can message (your helpers among them) and what each is. A new note \
-     comes when an agent joins.";
-
-/// `roster` (the note about this workspace's agents) with a line naming
-/// the agents of other workspaces `wired` lists.
-#[must_use]
-pub fn with_wired(roster: String, wired: &[String]) -> String {
-    if wired.is_empty() {
-        return roster;
-    }
-    let names = wired
-        .iter()
-        .map(|label| format!("`{label}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let line = format!(
-        "Agents of other workspaces you are wired to: {names} (each another project's agent; its state is not known here, and a message starts a model turn there when it is idle)."
-    );
-    format!("{roster} {line}")
 }
 
 /// Why an agent leaves the workspace, as the others are told.
@@ -111,7 +68,9 @@ pub enum Leave {
 pub fn membership_note(name: &str, left: Option<&Leave>) -> String {
     let why = match left {
         None => {
-            return format!("Agent `{name}` joined this workspace; you are wired to it as a peer.");
+            return format!(
+                "Agent `{name}` joined this workspace; you are wired to it as a peer. `contacts` shows who works here and what each is doing."
+            );
         }
         Some(Leave::Quit) => "its user quit".to_string(),
         Some(Leave::Retired { by: Some(by) }) => {
@@ -402,7 +361,7 @@ impl Agents {
         states
     }
 
-    /// Every live agent and its state in the roster note's words.
+    /// Every live agent and its state in `contacts`' words.
     pub(crate) async fn worded_states(&self) -> Vec<(String, &'static str)> {
         self.states()
             .await
@@ -411,73 +370,16 @@ impl Agents {
             .collect()
     }
 
-    /// The roster note for `name`: every other agent of `states`, then
-    /// the agents of other workspaces it is wired to.
-    fn roster_for(&self, name: &str, states: &[(String, PeerState)]) -> String {
-        let others: Vec<(String, PeerState)> = states
-            .iter()
-            .filter(|(other, _)| other != name)
-            .cloned()
-            .collect();
-        with_wired(roster_note(&others), &self.core.wires.labels(name))
-    }
-
-    /// Tell `name` which other agents work here now and what each is
-    /// doing, or that none does (its fresh conversation knows none).
-    pub(super) async fn note_roster(&self, name: &str) {
-        let text = self.roster_for(name, &self.states().await);
-        self.send_notes(vec![(name.to_string(), text)]).await;
-    }
-
-    /// Tell every agent of `names` the roster as it is now, each its own
-    /// ([`Self::send_notes`]): the daemon restored them, and what their
-    /// conversations were last told of the others' clients is gone.
-    pub(super) async fn note_rosters(&self, names: &[String]) {
-        let states = self.states().await;
-        let notes = names
-            .iter()
-            .map(|name| (name.clone(), self.roster_for(name, &states)))
+    /// Tell every other live agent that `name` joined the workspace (its
+    /// first client bound to it).
+    pub(super) async fn note_joined(&self, name: &str) {
+        let notes = self
+            .names()
+            .into_iter()
+            .filter(|other| other != name)
+            .map(|other| (other, membership_note(name, None)))
             .collect();
         self.send_notes(notes).await;
-    }
-
-    /// Tell every other live agent the roster as it is now, after `name`
-    /// joined (`joined`: led by the line saying so) or a client attached
-    /// to it or its last one left.
-    pub(super) async fn note_roster_to_others(&self, name: &str, joined: bool) {
-        let states = self.states().await;
-        let notes = states
-            .iter()
-            .filter(|(other, _)| other != name)
-            .map(|(other, _)| {
-                let roster = self.roster_for(other, &states);
-                let text = if joined {
-                    format!("{} {roster}", membership_note(name, None))
-                } else {
-                    roster
-                };
-                (other.clone(), text)
-            })
-            .collect();
-        self.send_notes(notes).await;
-    }
-
-    /// `name`'s attachment changed outside the seating lock (its last
-    /// client left): the others get the roster as it is then, under the
-    /// lock, so it is ordered with the seats and retires around it. An
-    /// agent retired meanwhile, or a daemon shutting down, tells no one.
-    pub(super) fn attachment_changed(self: &Arc<Self>, name: &str) {
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let agents = Arc::clone(self);
-        let name = name.to_string();
-        runtime.spawn(async move {
-            let _one = agents.seating.lock().await;
-            if agents.is_live(&name) && !agents.core.lifecycle.is_terminating() {
-                agents.note_roster_to_others(&name, false).await;
-            }
-        });
     }
 
     /// Tell every live agent `text` (a live change of a setting its
@@ -541,34 +443,27 @@ mod tests {
 
     #[test]
     fn the_notes_name_the_agents() {
-        // Alone: said so, and `contacts` says what every peer is.
-        let alone = roster_note(&[]);
-        assert!(
-            alone.starts_with("No other agent works in this workspace now")
-                && alone.contains("`contacts` lists everyone you can message"),
-            "{alone}"
+        // The states as `contacts` words them.
+        let state = |run, attached| PeerState { run, attached }.describe();
+        assert_eq!(
+            [
+                state(RunState::Running, false),
+                state(RunState::Idle, true),
+                state(RunState::Idle, false),
+                state(RunState::Unknown, false),
+            ],
+            [
+                "working",
+                "idle, a client attached",
+                "idle, no client attached",
+                "no client attached"
+            ]
         );
-        let state = |run, attached| PeerState { run, attached };
-        let roster = roster_note(&[
-            ("main-aaaa".into(), state(RunState::Running, false)),
-            ("main-bbbb".into(), state(RunState::Idle, true)),
-            ("main-cccc".into(), state(RunState::Idle, false)),
-            ("main-dddd".into(), state(RunState::Unknown, false)),
-        ]);
-        assert!(
-            roster.contains(
-                "`main-aaaa` (working), `main-bbbb` (idle, a client attached), \
-                 `main-cccc` (idle, no client attached), `main-dddd` (no client attached)."
-            ) && roster.contains("wired")
-                && roster.contains("`contacts` lists everyone you can message"),
-            "{roster}"
+        // A join points to `contacts` and claims to replace nothing.
+        assert_eq!(
+            membership_note("main-cccc", None),
+            "Agent `main-cccc` joined this workspace; you are wired to it as a peer. `contacts` shows who works here and what each is doing."
         );
-        // A snapshot, and the note says so.
-        assert!(
-            roster.contains("as of this note") && roster.contains("starts or ends a run"),
-            "{roster}"
-        );
-        assert!(membership_note("main-cccc", None).contains("`main-cccc` joined"));
         // Why it left: its user quit only on /quit.
         let quit = membership_note("main-cccc", Some(&Leave::Quit));
         assert!(
@@ -590,23 +485,6 @@ mod tests {
         assert!(
             closed.contains("its session was closed") && !closed.contains("quit"),
             "{closed}"
-        );
-    }
-
-    #[test]
-    fn the_roster_names_the_agents_of_other_workspaces_it_is_wired_to() {
-        assert_eq!(with_wired("r".into(), &[]), "r");
-        let alone = with_wired(roster_note(&[]), &["api/main-ab12".into()]);
-        assert!(
-            alone.starts_with(NO_OTHER_AGENTS)
-                && alone.contains("Agents of other workspaces you are wired to: `api/main-ab12`")
-                && alone.contains("not known here"),
-            "{alone}"
-        );
-        let both = with_wired("Other agents.".into(), &["api/main-ab12".into()]);
-        assert!(
-            both.starts_with("Other agents. Agents of other workspaces"),
-            "{both}"
         );
     }
 }

@@ -6,8 +6,8 @@
 //! - **What.** Each peer sorted by the daemon's own state: the caller's
 //!   parent (a helper's), its own helpers (the seated ones of its tree one
 //!   level below it, [`crate::mobs::seated_for`], reachable or not yet),
-//!   the helpers its parent connected it with, the workspace's agents (as
-//!   the roster note words their states) and the agents of other
+//!   the helpers its parent connected it with, the workspace's agents and
+//!   what each is doing now (no note restates it) and the agents of other
 //!   workspaces it is wired to (`/wire`). A helper's kind, whether it runs
 //!   or since when it is idle, the first line of its task and whom it was
 //!   connected to come from the registry.
@@ -37,8 +37,8 @@ pub const DESCRIPTION: &str = "List everyone you can message now and what each i
 /// live agents (bound once they exist).
 #[async_trait]
 pub trait Roster: Send + Sync {
-    /// Every live agent of the workspace and its state as the roster note
-    /// words it (`working`, `idle, a client attached`, …).
+    /// Every live agent of the workspace and its state in words
+    /// (`working`, `idle, a client attached`, …).
     async fn agent_states(&self) -> Vec<(String, &'static str)>;
     /// The agents of other workspaces `agent` is wired to: label,
     /// workspace and peer id.

@@ -227,7 +227,7 @@ impl Local {
         let told = now.instruction();
         self.agents
             .note_everyone(&format!(
-                "{told} (This replaces what you were told before.)"
+                "The user changed the settings of your helpers' models; from now on: {told}"
             ))
             .await;
         (

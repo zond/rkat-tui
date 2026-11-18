@@ -497,8 +497,8 @@ async fn a_late_threshold_is_set_with_the_start_up_warning() {
 }
 
 /// The System rows of `messages` other than the instructions and the
-/// roster note (the one row that names the other agents): what a
-/// compaction would have left of ours.
+/// notes about the other agents (`rkat-tui-agents`; none in these
+/// single-agent tests): what a compaction would have left of ours.
 fn ours(messages: &[meerkat_core::Message]) -> Vec<String> {
     messages
         .iter()
@@ -553,7 +553,7 @@ fn request_for(llm: &ScriptedLlmClient, marker: &str) -> Recorded {
 /// After one compaction the agent asked for with `compact_ready`, and after
 /// three, nothing of ours is in the conversation: no note of the
 /// compaction, no list of the helpers it holds (it holds two kept ones),
-/// only the instructions and the roster note as System rows. The first
+/// only the instructions as a System row. The first
 /// request after each compaction holds the engine's summary and
 /// `compact_ready`'s answer (the run's own rows, kept verbatim), which says
 /// to carry on; the instructions carry
@@ -688,7 +688,7 @@ fn completed(rig: &Attached) -> usize {
 /// The engine's own compactions (here at its threshold in `auto` mode;
 /// `/compact` asks the same engine call) add nothing of ours either: after
 /// one and after three, the System rows of the agent's request are the
-/// instructions and the roster note only; the engine's summary is what
+/// instructions only; the engine's summary is what
 /// says that a compaction happened.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_engine_s_own_compactions_add_nothing_of_ours_either() {

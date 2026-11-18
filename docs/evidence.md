@@ -12976,9 +12976,9 @@ so every append is a new row):
 | Row | Source | Replaces or stacks |
 |---|---|---|
 | The instructions (persona, agents, deferral, compaction sections) | seat; `instructions` bring-up | replaces (keyed `rkat-tui-instructions`) |
-| Roster note ("Other agents in this workspace now: …", wired line) | `rkat-tui-agents`, each join, attach or detach | stacks (its text says a new one replaces it; the model reads the newest) |
-| Joined / left notes | `rkat-tui-agents` | stack (events) |
-| Helper models changed ("… (This replaces what you were told before.)") | `rkat-tui-agents`, a settings change | stacks |
+| Roster note ("Other agents in this workspace now: …", wired line) | `rkat-tui-agents`, each join, attach or detach | stacked (its text said a new one replaces it); gone since review 7 (below) |
+| Joined / left notes | `rkat-tui-agents` | stack (events; one each since review 7) |
+| Helper models changed ("… (This replaces what you were told before.)") | `rkat-tui-agents`, a settings change | stacks (the claim of replacing is gone since review 7) |
 | Read-only profile with comms | `rkat-tui-agents`, such a `mob_create` | stacks (event) |
 | Wire made or removed | `rkat-tui-wires` | stacks (events) |
 | Helpers connected / a connected peer left (helpers' sessions) | `rkat-tui-connect` | stack (events) |
@@ -13043,3 +13043,42 @@ Tests: `helper_endings::a_note_whose_steer_fails_is_held_and_goes_with_the_next_
 `helper_endings::a_note_steered_but_answered_with_an_error_is_not_told_twice`
 (both through `Core::note_faults`),
 `daemon::agents::endings::tests::a_note_held_after_a_failed_steer_goes_once`.
+
+## No roster note: the agents' states are `contacts`' (owner, review 7)
+
+The table above showed the roster note appended at every join, every
+client attach to an agent without one and every last detach, at each
+seat, switch and restore, stacking although its text said a new one
+replaces it. The owner's rule: an agent's standing knowledge is a fixed
+set (instructions, tools, and `contacts` for who is who), nothing that
+grows. The states the note carried ("working", "idle, a client
+attached", "idle, no client attached") are what `contacts` gives, always
+current (`Roster::agent_states`, `Agents::worded_states`), so the roster
+note is gone (`roster_note`, `NO_OTHER_AGENTS`, `with_wired`,
+`note_roster`, `note_rosters`, `attachment_changed`): nothing is
+appended at an attach or a detach, to the first agent ("no other agent
+works here"), at a seat, a switch or a restore. What stays is one short
+note to the others when an agent joins (its first client bound to it,
+seated for it or the spare) or leaves, an event the agent cannot learn of
+otherwise; the join's text points to `contacts` and claims to replace
+nothing. The persona's rules that leaned on the note now point to
+`contacts` ("call `contacts` and tell which files to the other agents it
+shows working", "once `contacts` shows it working"); the keyed
+instructions update brings stored conversations up to them. The agents
+of other workspaces wired to an agent (the roster's wired line) are in
+`contacts` and have their own wire notes. The helper-models note no
+longer says "This replaces what you were told before." Of the other
+stacking rows (wires, connections, grants, plan mode, read-only profile)
+none claims to replace an earlier one; they are events and stay.
+
+The agents section of the instructions is 4,850 bytes now
+(`bootstrap::persona::tests::the_agents_section_stays_bounded`, bound
+5,000); each roster note was about 300 to 600 bytes and came again with
+every attach and detach.
+
+Tests: `agents::attaches_append_nothing_and_a_join_and_a_leave_one_note_each`
+(five detach and attach cycles, a second agent joining and leaving: the
+next request holds exactly the join and the leave note),
+`agents::restored_agents_are_told_nothing_and_contacts_shows_the_others`,
+`bootstrap::persona::tests::announcements_go_to_working_agents_once_per_task`,
+`daemon::agents::notes::tests::the_notes_name_the_agents`.

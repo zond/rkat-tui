@@ -131,24 +131,22 @@ pub fn agents_persona(name: &str) -> String {
 
 You are agent `{name}`. Other coding agents may work in this same directory at the \
 same time, each for its own user. Every agent of the workspace is wired to every \
-other one as a peer: you can message them and they can message you. A system note \
-names the other agents when you start (or says that there are none), each as working, \
-idle with a client attached, or idle with no client attached; a new note replaces it \
-when one joins, or a client attaches to one or leaves it, and another tells you when \
-one leaves. A peer's message reaches you as input naming its sender, and your user \
-sees it too.
+other one as a peer: you can message them and they can message you. `contacts` \
+shows who works here now and what each is doing (working, idle with a client \
+attached, or idle with no client attached); a system note tells you when an agent \
+joins the workspace or leaves it. A peer's message reaches you as input naming its \
+sender, and your user sees it too.
 
 - `contacts` lists everyone you can message and what each is (your helpers, the \
 helpers you were connected with, this workspace's agents, agents of other \
 workspaces you are wired to), with the peer_id `send_message` takes. \
 (`mob_list_members` lists a mob you made with `mob_create`.)
-- When you start a task that will change files, tell which files to the other agents \
-that the latest note shows working, once for the task (not for each change), and \
-once more when you are done with them.
+- When you start a task that will change files, call `contacts` and tell which \
+files to the other agents it shows working, once for the task (not for each \
+change), and once more when you are done with them.
 - Do not message an idle agent (with a client attached or not) only to tell it \
 something: a message starts a run of it for nothing. Tell it if it asks you, or \
-once a later note shows it working.
-- Those states are as of that note: no note comes when an agent starts or ends a run.
+once `contacts` shows it working.
 - Never tell your own helpers which files you change: they work for you, not beside \
 you. Message a helper only to give it work or to answer it.
 - Do not edit a file another agent has just said it is changing: ask it first.
@@ -182,8 +180,8 @@ keep working (long-lived processes such as servers are not possible yet).
 message you (to ask, or to report progress), and you can message it. A message to \
 an idle helper starts a model turn of it, and its answer one of yours. It has no \
 line to the workspace's other agents: before you hand a helper work that changes \
-files, announce those files to the other agents yourself (the ones the note shows \
-working), and say when it is done.
+files, announce those files to the other agents yourself (the ones `contacts` \
+shows working), and say when it is done.
 - Your helpers are wired to you, not to each other. When two or more of them must \
 coordinate directly (one needs what another finds or changes while both work), \
 connect them with `connect_helpers` (helpers of any kind you started, in your own \
@@ -218,41 +216,55 @@ mod tests {
         assert!(section.contains("You are agent `main-ab12`"), "{section}");
         for norm in [
             "wired to every",
-            "When you start a task that will change files, tell which files",
+            "When you start a task that will change files, call `contacts` and tell which files",
             "Do not edit a file another agent has just said",
             "once more when you are done with them",
             "Keep messages to other agents short",
             "Do not send a message that only acknowledges or thanks: a message that needs no \
              answer gets none.",
-            "when one joins",
-            "tells you when one leaves",
+            "a system note tells you when an agent joins the workspace or leaves it",
         ] {
             assert!(section.contains(norm), "{norm}: {section}");
         }
     }
 
-    /// Announcements go to the agents that are working, once per task; an
-    /// idle agent is left alone (a message would start a run of it), and
-    /// the states are a snapshot.
+    /// Announcements go to the agents `contacts` shows working, once per
+    /// task; an idle agent is left alone (a message would start a run of
+    /// it). The states are `contacts`' to give (always current), not a
+    /// note's: no rule leans on a roster note (the owner's rule of
+    /// 2026-11-18: standing knowledge that does not grow).
     #[test]
     fn announcements_go_to_working_agents_once_per_task() {
         let section = agents_persona("main-ab12");
         for line in [
-            "each as working, idle with a client attached, or idle with no client attached",
-            "(or says that there are none)",
-            "tell which files to the other agents that the latest note shows working, once \
+            "`contacts` shows who works here now and what each is doing (working, idle with \
+             a client attached, or idle with no client attached)",
+            "call `contacts` and tell which files to the other agents it shows working, once \
              for the task (not for each change), and once more when you are done with them",
             "Do not message an idle agent (with a client attached or not) only to tell it \
              something: a message starts a run of it for nothing",
-            "once a later note shows it working",
-            "no note comes when an agent starts or ends a run",
-            "yourself (the ones the note shows working)",
+            "once `contacts` shows it working",
+            "yourself (the ones `contacts` shows working)",
         ] {
             assert!(section.contains(line), "{line}: {section}");
         }
-        for gone in ["working or with a client attached", "working or attached"] {
+        for gone in [
+            "working or with a client attached",
+            "working or attached",
+            "note shows",
+            "a new note replaces it",
+            "latest note",
+        ] {
             assert!(!section.contains(gone), "{gone}: {section}");
         }
+    }
+
+    /// The section's size, measured (review 7, the roster note's rules
+    /// pointed at `contacts`: 4,850 bytes): it does not creep.
+    #[test]
+    fn the_agents_section_stays_bounded() {
+        let len = agents_persona("main-ab12").len();
+        assert!(len < 5_000, "{len}");
     }
 
     /// The agent is told that `contacts` says who is who (the owner's

@@ -402,8 +402,6 @@ impl Agents {
                 .await
                 .map_err(|err| super::DaemonError::FirstAgent(err.to_string()))?;
             self.admit(&name, true, false);
-            // Alone: told so, and that every peer it gets is a helper.
-            self.note_roster(&name).await;
             tracing::info!(agent = %name, %session, "seated the workspace's first agent");
             return Ok((name, session, true));
         }
@@ -427,9 +425,6 @@ impl Agents {
         // made again now.
         self.core.wires.keep_only(&names);
         self.wire_up(&names).await;
-        // No client came back with them: what each was last told of the
-        // others' clients is stale.
-        self.note_rosters(&names).await;
         let Some((name, session)) = restored.pop() else {
             return Err(super::DaemonError::NoSession(AGENT_PROFILE.to_string()));
         };
@@ -782,19 +777,18 @@ impl Agents {
         // An agent left detached stays marked until it retires: `/quit`
         // asks once a detach happened ("nobody detached since").
         let mut fresh = bound.seated;
-        let mut first = false;
         if let Some(agent) = self.table.lock().get_mut(&bound.name) {
             fresh |= agent.spare;
-            first = agent.clients == 0;
             agent.clients += 1;
             agent.spare = false;
             agent.active = active;
         }
         tracing::info!(agent = %bound.name, seated = bound.seated, "a client bound to an agent");
-        // The others learn it joined, or that it has a client again; a
-        // second client changes nothing they are told.
-        if bound.seated || first {
-            self.note_roster_to_others(&bound.name, bound.seated).await;
+        // The others learn it joined (seated for this client, or the spare
+        // seated before it); a client attaching to an agent that works
+        // here already tells them nothing (`contacts` shows it).
+        if fresh {
+            self.note_joined(&bound.name).await;
         }
         Ok((
             Binding {
@@ -906,8 +900,7 @@ impl Agents {
         }
         self.wire_up(std::slice::from_ref(&name)).await;
         // The others are told it joined once its client is bound
-        // ([`Self::bind`]), so the one note says it has one.
-        self.note_roster(&name).await;
+        // ([`Self::bind`]); it is told nothing of them (`contacts`).
         tracing::info!(agent = %name, %session, "seated an agent");
         Ok(Bound { name, seated: true })
     }
@@ -942,9 +935,6 @@ impl Agents {
             );
         }
         self.wire_up(&[name.to_string()]).await;
-        if switched.is_ok() {
-            self.note_roster(name).await;
-        }
         switched
     }
 
@@ -1085,28 +1075,23 @@ impl Agents {
     /// without one (and without a shutdown) leaves it detached. A
     /// `withdrawn` binding's client never learned it attached: an agent
     /// seated (or taken as the spare) for it waits for the next client
-    /// (`fresh`), any other is left as it was. Either way, an agent left
-    /// with no client is news to the others ([`Self::attachment_changed`]).
-    fn release(self: &Arc<Self>, name: &str, withdrawn: bool, fresh: bool) {
+    /// (`fresh`), any other is left as it was. The others are told
+    /// nothing: `contacts` shows an agent with no client.
+    fn release(&self, name: &str, withdrawn: bool, fresh: bool) {
         let terminating = self.core.lifecycle.is_terminating();
-        {
-            let mut table = self.table.lock();
-            let Some(agent) = table.get_mut(name) else {
-                return;
-            };
-            agent.clients = agent.clients.saturating_sub(1);
-            if agent.clients > 0 {
-                return;
-            }
-            if withdrawn {
-                agent.spare |= fresh;
-            } else if !terminating && !agent.detached {
-                agent.detached = true;
-                tracing::info!(agent = %name, "the agent's last client left without retiring it: detached, it keeps running");
-            }
+        let mut table = self.table.lock();
+        let Some(agent) = table.get_mut(name) else {
+            return;
+        };
+        agent.clients = agent.clients.saturating_sub(1);
+        if agent.clients > 0 {
+            return;
         }
-        if !terminating {
-            self.attachment_changed(name);
+        if withdrawn {
+            agent.spare |= fresh;
+        } else if !terminating && !agent.detached {
+            agent.detached = true;
+            tracing::info!(agent = %name, "the agent's last client left without retiring it: detached, it keeps running");
         }
     }
 

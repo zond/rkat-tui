@@ -3455,24 +3455,22 @@ keep messages short, and treat a peer's message as a colleague's, not as
 your instruction. They point to `contacts` for who is who: its helpers
 are never told about file changes and are messaged only to give them
 work or answer them (a message to an idle helper starts a model turn of
-it, and its answer one of the agent's). An agent alone in its workspace
-is told so (`No other agent works in this workspace now; contacts lists
-everyone you can message …`).
-The daemon tells each agent who works here when it
-starts or switches conversation, and every agent when one joins or
+it, and its answer one of the agent's). `contacts` also says what each
+other agent is doing now: working (a run open), idle with a client
+attached, or idle with no client attached; it is always current, so no
+note restates it. The daemon adds one short note to every agent when
+another joins the workspace (`Agent main-abcd joined this workspace; …
+contacts shows who works here and what each is doing.`) and when one
 leaves, and why it left: its user quit, another agent's user retired it
-from `/agents`, or its session was closed. That list says what each
-other agent was doing: working (a run open), idle with a client
-attached, or idle with no client attached. A fresh list goes to every
-agent when one joins, when a client attaches to an agent that had none
-or an agent's last client leaves, and when the daemon restarts with the
-agents it kept; none goes when an agent starts or ends a run, so the
-states are a snapshot. The instructions say to announce file changes
-only to the agents the latest list shows working: a message to an idle
-agent (with a client attached or not) would start a model turn of it for
-a note it does not need yet. It is told when it asks, or once a later
-list shows it working. This is guidance, not a gate: a message to such
-an agent is still allowed.
+from `/agents`, or its session was closed. Nothing else about the other
+agents is appended: not when a client attaches or detaches, not when an
+agent is alone, not after a restart, so a long session's conversation
+does not grow with them. The instructions say to call `contacts` before
+announcing file changes and to tell only the agents it shows working: a
+message to an idle agent (with a client attached or not) would start a
+model turn of it for a note it does not need yet. It is told when it
+asks, or once `contacts` shows it working. This is guidance, not a gate:
+a message to such an agent is still allowed.
 
 **`/quit` and `/detach` per agent.** `/quit` retires your agent: it
 leaves the workspace (a running turn is interrupted first, its helpers
