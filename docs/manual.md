@@ -1391,7 +1391,8 @@ title say how it ended in plain words (`stopped by you`, `failed: …`,
 `ended when the daemon stopped`). What the transcript shows of the note
 depends on how it reached the agent:
 
-- **It started a run** (the agent was idle): one folded line, `✓ helper
+- **It started a run** (the agent was idle, or the note came after the
+  running turn's last step and started the next run): one folded line, `✓ helper
   review-x finished: <the answer's first line> ▸` (`✗ helper review-x
   failed: <reason>`, `✓ 2 helpers ended: review-x finished; lint-y
   failed: …`, `✓ helper review-x went idle: …`, `■` for one stopped). A
@@ -1401,9 +1402,11 @@ depends on how it reached the agent:
 - **It went into a running turn**: a notice says who was told
   (`helper [review-x · model] finished; main-ab12 was told`).
 - **It was held after your interrupt**: a notice says it goes with your
-  next message (`… is told with your next message to it`).
+  next message (`… is told with your next message to it`). Another
+  client attached to the agent shows the held note as its folded line,
+  then your words.
 
-A conversation opened again shows such a note as the same folded line,
+A note is never drawn as your message. A conversation opened again shows such a note as the same folded line,
 and `/export` writes it in full under its heading. A helper the daemon's stop left is run on by the engine at
 the next start (its answer then comes as a note); one the engine did not
 keep is told as `ended when the daemon stopped`.

@@ -48,6 +48,18 @@
   primary selection (`52;p`) are two sequences, so a refused one never
   loses the other. The first copy inside tmux says what tmux needs.
   Under GNU screen the copy goes out in pieces screen passes through.
+- A helper's ending note could show twice: as its folded line and then
+  in full as your message (`› Your helper … finished its task. Its
+  answer: …`). It happened when the note started a follow-up run of a
+  turn that was running (for example a single-use helper that ended a
+  second time after messages reached it late): the run's input was drawn
+  as a message whenever a turn was running. A note of helpers' endings is
+  now only ever its one folded line, whichever of its two reports comes
+  first and whatever is drawn between them, and two endings with the
+  same words are still two lines. Notes held after an interrupt that
+  travel with a message from another client, or in a re-opened
+  conversation, show as their folded line and the message as its own
+  words.
 
 ### Added
 

@@ -144,7 +144,9 @@ impl App {
         }
         if self.running {
             if let Some(text) = prompt {
-                self.transcript.push(Block::User { text });
+                // A follow-up run of the turn: a helper's ending note is
+                // its folded line, shown once with its announcement.
+                self.transcript.remote_input(text);
                 self.scroll.bottom();
             }
             return;
@@ -154,16 +156,9 @@ impl App {
         self.failures = super::failures::RunFailures::start(self.woken_by.take(), true);
         self.streamed_text = false;
         if let Some(text) = prompt {
-            // A watch event the daemon announced before its run started
-            // is shown labelled already.
-            let announced = matches!(
-                self.transcript.last(),
-                Some(Block::Triggered { text: shown, .. } | Block::HelperNote { text: shown, .. })
-                    if *shown == text
-            );
-            if !announced {
-                self.transcript.push(Block::User { text });
-            }
+            // A run the daemon announced before it started is shown
+            // labelled already; a helper's ending note is its folded line.
+            self.transcript.remote_input(text);
         }
         self.running = true;
         self.status.running_since = Some(now);

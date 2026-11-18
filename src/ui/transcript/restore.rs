@@ -19,9 +19,7 @@ pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
                 let text = user.text_content();
                 compact_reply = text == crate::ui::COMPACT_PROMPT;
                 if !text.is_empty() && !compact_reply {
-                    // A note of helpers' endings the daemon started a run
-                    // with is folded as the live view shows it.
-                    blocks.push(restored_note(&text).unwrap_or(Block::User { text }));
+                    blocks.extend(restored_user(text));
                 }
             }
             Message::BlockAssistant(_) if compact_reply => compact_reply = false,
@@ -49,6 +47,27 @@ pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
 fn restored_note(text: &str) -> Option<Block> {
     crate::daemon::agents::endings::note_summary(text)?;
     super::helper_note(crate::daemon::agents::HELPER_ENDED_LABEL, text, true)
+}
+
+/// A stored user message as the live view shows it
+/// ([`super::Transcript::remote_input`]): a note of helpers' endings the
+/// daemon started a run with as its folded line; notes held after an
+/// interrupt that travelled with the user's words as their folded line,
+/// then the words; else the user's message.
+fn restored_user(text: String) -> Vec<Block> {
+    if let Some(note) = restored_note(&text) {
+        return vec![note];
+    }
+    if let Some((held, words)) = super::split_held(&text) {
+        let note = (!held.is_empty())
+            .then(|| super::helper_note(crate::daemon::agents::HELPER_ENDED_LABEL, held, true))
+            .flatten();
+        let words = (!words.is_empty()).then(|| Block::User {
+            text: words.to_string(),
+        });
+        return note.into_iter().chain(words).collect();
+    }
+    vec![Block::User { text }]
 }
 
 /// The prose of one stored assistant message (one model step), by the
@@ -300,8 +319,9 @@ mod tests {
 
     /// A conversation re-opened shows a note of a helper's ending the daemon
     /// started a run with as the live view does, folded, not as a prompt
-    /// of the user's; a note that travelled with the user's words stays
-    /// the user's message.
+    /// of the user's; a note held after an interrupt that travelled with
+    /// the user's words is its folded line too, and the user's message is
+    /// their words alone.
     #[test]
     fn a_stored_helper_ending_note_restores_folded() {
         use crate::daemon::agents::endings::{NoteItem, note_text};
@@ -318,11 +338,20 @@ mod tests {
         );
         let restored = blocks_from_messages(&[
             Message::User(UserMessage::text(note.clone())),
-            Message::User(UserMessage::text(held.clone())),
+            Message::User(UserMessage::text(held)),
         ]);
         assert_eq!(
             restored,
             vec![
+                Block::HelperNote {
+                    title: "helper review-x finished".into(),
+                    first: "All good.".into(),
+                    text: note.clone(),
+                    helpers: vec!["review-x".into()],
+                    failed: false,
+                    collapsed: true,
+                    paired: false,
+                },
                 Block::HelperNote {
                     title: "helper review-x finished".into(),
                     first: "All good.".into(),
@@ -332,7 +361,9 @@ mod tests {
                     collapsed: true,
                     paired: false,
                 },
-                Block::User { text: held },
+                Block::User {
+                    text: "now fix it".into()
+                },
             ]
         );
     }

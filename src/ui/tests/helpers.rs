@@ -1405,3 +1405,140 @@ fn the_helper_picker_scrolls_through_more_helpers_than_a_page() {
         "{rows}"
     );
 }
+
+/// What the transcript holds of helpers' ending notes: the folded lines'
+/// titles, and every user block (none may hold a note's words).
+fn notes_and_users(app: &App) -> (Vec<String>, Vec<String>) {
+    let mut notes = Vec::new();
+    let mut users = Vec::new();
+    for block in app.transcript.blocks() {
+        match block {
+            Block::HelperNote { title, .. } => notes.push(title.clone()),
+            Block::User { text } => users.push(text.clone()),
+            _ => {}
+        }
+    }
+    (notes, users)
+}
+
+/// A helper's ending note is only ever its one folded line, never the
+/// whole note and never as the user's message, in every order its two
+/// reports (the daemon's `rkat/triggered`, the run's own input) arrive:
+/// the first run of an idle agent; a follow-up run of a turn that is
+/// running (the field case: a single-use helper's second ending, its
+/// announcement first, then the run's input as a remote turn); the
+/// input first; no announcement at all; and two endings with the same
+/// words in one turn, each its own line.
+#[test]
+fn a_helper_s_ending_note_is_one_folded_line_in_every_order() {
+    use crate::daemon::agents::HELPER_ENDED_LABEL;
+    use crate::mobs::endings::How;
+    let first = ending_note(
+        "scout",
+        How::Done {
+            answer: "Found it.\nMore.".into(),
+        },
+    );
+    let second = ending_note(
+        "scout",
+        How::Done {
+            answer: "Also this.\nMore.".into(),
+        },
+    );
+    let triggered = |app: &mut App, prompt: &str| {
+        app.update(Msg::Triggered {
+            label: HELPER_ENDED_LABEL.into(),
+            prompt: prompt.into(),
+        });
+    };
+    let remote = |app: &mut App, prompt: &str| {
+        app.update(Msg::RemoteTurn {
+            prompt: Some(prompt.into()),
+        });
+    };
+    let users_hold_no_note = |users: &[String]| {
+        assert!(
+            users.iter().all(|u| !u.contains("Your helper")),
+            "{users:#?}"
+        );
+    };
+
+    // Idle agent, announcement first; then a follow-up run of the same
+    // turn, announced first too (the field case).
+    let (mut app, _, _) = helper_app();
+    triggered(&mut app, &first);
+    remote(&mut app, &first);
+    triggered(&mut app, &second);
+    remote(&mut app, &second);
+    let (notes, users) = notes_and_users(&app);
+    assert_eq!(notes.len(), 2, "{notes:#?}");
+    assert_eq!(users, vec!["go".to_string()]);
+    let text = screen(&mut app, 40).join("\n");
+    assert!(!text.contains("Your helper"), "{text}");
+    assert!(!text.contains("More."), "{text}");
+
+    // The run's input first, the announcement after: idle and running.
+    let (mut app, _, _) = helper_app();
+    remote(&mut app, &first);
+    triggered(&mut app, &first);
+    remote(&mut app, &second);
+    triggered(&mut app, &second);
+    let (notes, users) = notes_and_users(&app);
+    assert_eq!(notes.len(), 2, "{notes:#?}");
+    users_hold_no_note(&users);
+
+    // A note whose run nobody announced (a note steered into a running
+    // run that missed its last boundary) is still the folded line.
+    let (mut app, _, _) = helper_app();
+    remote(&mut app, &first);
+    remote(&mut app, &second);
+    let (notes, users) = notes_and_users(&app);
+    assert_eq!(notes.len(), 2, "{notes:#?}");
+    users_hold_no_note(&users);
+
+    // Something drawn between the announcement and the run's input does
+    // not make the input a user message.
+    let (mut app, _, _) = helper_app();
+    triggered(&mut app, &first);
+    app.update(Msg::Notice {
+        level: NoticeLevel::Info,
+        text: "something else".into(),
+    });
+    remote(&mut app, &first);
+    let (notes, users) = notes_and_users(&app);
+    assert_eq!(notes.len(), 1, "{notes:#?}");
+    users_hold_no_note(&users);
+
+    // The same words twice in one turn are two endings: two lines.
+    let (mut app, _, _) = helper_app();
+    triggered(&mut app, &first);
+    remote(&mut app, &first);
+    triggered(&mut app, &first);
+    remote(&mut app, &first);
+    let (notes, users) = notes_and_users(&app);
+    assert_eq!(notes.len(), 2, "{notes:#?}");
+    users_hold_no_note(&users);
+}
+
+/// Another client's message that carries notes held after an interrupt
+/// shows them as their folded line and the message as its own words.
+#[test]
+fn held_notes_before_another_client_s_message_fold_and_leave_its_words() {
+    use crate::mobs::endings::How;
+    let note = ending_note(
+        "scout",
+        How::Done {
+            answer: "Found it.".into(),
+        },
+    );
+    let (mut app, _, _) = helper_app();
+    app.update(Msg::RemoteTurn {
+        prompt: Some(format!(
+            "{note}\n\n{}\n\nnow fix it",
+            crate::daemon::local::HELD_NOTE_SEPARATOR
+        )),
+    });
+    let (notes, users) = notes_and_users(&app);
+    assert_eq!(notes, vec!["helper scout finished".to_string()]);
+    assert_eq!(users, vec!["go".to_string(), "now fix it".to_string()]);
+}

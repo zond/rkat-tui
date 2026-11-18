@@ -542,6 +542,12 @@ pub struct Transcript {
     /// Peers' names by peer id, from the `peers` results the transcript
     /// showed: a `send_message` block names its recipient with them.
     peer_names: IndexMap<String, String>,
+    /// Runs nobody here typed that one of their two reports showed (the
+    /// daemon's note of the run, [`Self::label_triggered`], or the run's
+    /// own input, [`Self::remote_input`]), by their input and which
+    /// report it was: the other report of the same run shows nothing
+    /// again (at most [`MAX_ANNOUNCED`], the oldest dropped).
+    announced: Vec<(String, Heard)>,
     /// The spinner clock of running helper headers.
     helper_clock: Option<Instant>,
     /// Number of helper headers.
@@ -844,6 +850,7 @@ impl Transcript {
     }
 
     /// The last block.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn last(&self) -> Option<&Block> {
         self.entries.last().map(|entry| &entry.block)
     }
@@ -962,10 +969,92 @@ impl Transcript {
         Some(&mut entry.block)
     }
 
+    /// Note that a run's input `text` was shown by its `heard` report.
+    fn announce(&mut self, text: String, heard: Heard) {
+        if self.announced.len() >= MAX_ANNOUNCED {
+            let _oldest = self.announced.remove(0);
+        }
+        self.announced.push((text, heard));
+    }
+
+    /// Whether the run with input `text` was shown by its `heard` report
+    /// already; that record is taken.
+    fn take_announced(&mut self, text: &str, heard: Heard) -> bool {
+        let Some(at) = self
+            .announced
+            .iter()
+            .position(|(shown, by)| *by == heard && shown == text)
+        else {
+            return false;
+        };
+        let _taken = self.announced.remove(at);
+        true
+    }
+
+    /// `text`, the input of a run this client did not start (another
+    /// client's message, a follow-up run of the turn, a run the daemon
+    /// started), as the transcript shows it:
+    ///
+    /// - nothing when the daemon's note of the run showed it already
+    ///   ([`Self::label_triggered`], in either order of the two);
+    /// - a note of helpers' endings as its one folded line, never as the
+    ///   user's message, whichever path it came by;
+    /// - notes held after an interrupt that travel with another client's
+    ///   message as their folded line, then the message's own words;
+    /// - anything else as the user's message.
+    pub fn remote_input(&mut self, text: String) {
+        if self.take_announced(&text, Heard::Triggered) {
+            return;
+        }
+        if let Some(note) = self.folded_note(&text, true) {
+            self.push(note);
+            self.announce(text, Heard::Input);
+            return;
+        }
+        if let Some((held, words)) = split_held(&text) {
+            if !held.is_empty()
+                && let Some(note) = self.folded_note(held, false)
+            {
+                self.push(note);
+            }
+            if !words.is_empty() {
+                self.push(Block::User {
+                    text: words.to_string(),
+                });
+            }
+            return;
+        }
+        self.push(Block::User { text });
+    }
+
+    /// The folded [`Block::HelperNote`] of `text` when it is a note of
+    /// helpers' endings in the daemon's words (`whole`: only then; else
+    /// any text, folded under its first line), paired with the daemon's
+    /// notice of the same ending, which goes.
+    fn folded_note(&mut self, text: &str, whole: bool) -> Option<Block> {
+        use crate::daemon::agents::{HELPER_ENDED_LABEL, endings};
+        if whole {
+            endings::note_summary(text)?;
+        }
+        let mut note = helper_note(HELPER_ENDED_LABEL, text, !self.detail)?;
+        if let Block::HelperNote {
+            helpers, paired, ..
+        } = &mut note
+        {
+            *paired = self.drop_ending_notices(helpers);
+        }
+        Some(note)
+    }
+
     /// A run nobody typed was fired by `label` with input `prompt`: the
     /// prompt's block among the run's (`run_first` and later) is
-    /// relabelled, else the labelled block is appended.
+    /// relabelled, else the labelled block is appended. When the run's
+    /// own input showed it already ([`Self::remote_input`]) nothing is.
     pub fn label_triggered(&mut self, run_first: BlockId, label: String, prompt: String) {
+        if self.take_announced(&prompt, Heard::Input) {
+            return;
+        }
+        let input = prompt.clone();
         let at = self
             .iter()
             .rev()
@@ -995,6 +1084,8 @@ impl Transcript {
             }
             None => {
                 self.push(block);
+                // The run's input, when it comes, is shown here.
+                self.announce(input, Heard::Triggered);
             }
         }
     }
@@ -2151,6 +2242,28 @@ fn recipient(args: &Value) -> String {
 
 /// Whether `block` has something to fold: its line ends in `▸`/`▾`.
 #[must_use]
+/// Which of its two reports showed a run nobody here typed
+/// ([`Transcript::remote_input`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Heard {
+    /// The daemon's note of the run (`rkat/triggered`).
+    Triggered,
+    /// The run's own input (its start event).
+    Input,
+}
+
+/// Most runs [`Transcript::remote_input`] remembers as shown by one report
+/// only.
+const MAX_ANNOUNCED: usize = 16;
+
+/// `text` split into the held notes and the user's words that follow
+/// them, when it is a message the daemon put held notes before
+/// (`crate::daemon::local::HELD_NOTE_SEPARATOR`).
+pub(super) fn split_held(text: &str) -> Option<(&str, &str)> {
+    let (held, words) = text.split_once(crate::daemon::local::HELD_NOTE_SEPARATOR)?;
+    Some((held.trim(), words.trim()))
+}
+
 /// The folded [`Block::HelperNote`] for a run the daemon started with a
 /// note of helpers' endings (`label` is one of its helper labels): what
 /// the note reads back as, or, for words this build does not know, the

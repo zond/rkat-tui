@@ -12505,3 +12505,41 @@ osc52_in_tmux_goes_to_tmux_plain_first_then_through_its_passthrough,
 osc52_in_screen_goes_out_in_pieces_screen_holds,
 the_multiplexer_comes_from_tmux_then_sty, copy_notice_wording}` and
 `config::tests::ui_mouse_defaults_to_on_layers_and_no_mouse_wins`.
+
+## A helper's ending note drawn twice (owner, 2026-11-18)
+
+**Seen**: `✓ helper x finished: … ▸` (the folded note) followed at once by
+a `›` block holding the whole note. The helper was single-use, had
+messages from its parent delivered after its final answer, ran once more
+and ended a second time.
+
+**Why**: a run the daemon starts with a note has two reports, the
+daemon's `rkat/triggered` and the run's own input (its `run_started`,
+sent on as a remote turn), in no fixed order. Since b177cd7 the first to
+arrive drew the folded note, and the remote turn skipped its input only
+when no turn was running and the last block was that note. The second
+ending's run was a follow-up run of the running turn (the first note's),
+so its input was pushed as a user block unconditionally. A notice drawn
+between the two reports did the same on an idle agent.
+
+**What rkat-tui does** (`ui::transcript::Transcript::remote_input`): a
+remote run's input that is a whole note in the daemon's words is the
+folded note, whichever path it came by; each of the two reports records
+that it showed the run (by its text, bounded at 16), and the other report
+of the same run shows nothing. Notes held after an interrupt that travel
+with another client's message (and the same message in a stored
+conversation) show as their folded line, then the message's own words.
+
+**Delivered after final**: the engine delivers a live Steer input at the
+runner's next `CallingLlm` boundary
+(`meerkat-core-0.9.16/src/lifecycle/boundary_delivery.rs`, module doc:
+"A live Steer input that reaches an active turn is delivered at the
+runner's next exact `CallingLlm` boundary"). A message that reaches a
+helper during its last model call (or its last long tool call before an
+answer with no further call) has no boundary left in that run: it waits
+for the run's end and starts one more run, which ends the single-use
+helper a second time. That is the engine's rule, not ours.
+
+Pinned by `ui::tests::helpers::{a_helper_s_ending_note_is_one_folded_line_in_every_order,
+held_notes_before_another_client_s_message_fold_and_leave_its_words}`
+and `ui::transcript::restore::tests::a_stored_helper_ending_note_restores_folded`.
