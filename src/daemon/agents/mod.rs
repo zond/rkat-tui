@@ -699,6 +699,9 @@ impl Agents {
                 tracing::warn!(helper = %key, error = %err, "cannot wake a restored helper to bring its instructions up to this build's");
                 continue;
             }
+            // Woken for no run: idle until one starts, not at work (a
+            // single-use parent of it is done when its own run ends).
+            self.core.registry.endings().restored_idle(&key);
             self.core.revisions.bring_up(&session, &whose).await;
         }
     }

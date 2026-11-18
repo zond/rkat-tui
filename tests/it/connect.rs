@@ -946,6 +946,19 @@ async fn two_members_of_a_created_mob_connected_talk_both_ways_in_plan_mode_too(
     relay(&connection, &llm, W2, 4, "TASK-OF-W1").await;
     no_send_reviewed(&classifier);
     daemon.idle(&daemon.agent).await;
+    // The members' last runs (the receiver reads the message) end before
+    // the stop: a stop while they run stalled the team mob's shutdown
+    // past the daemon's bound once (`docs/testing.md`).
+    let registry = daemon.registry();
+    let idle = |name: &str| {
+        registry
+            .activity(&rkat_tui::mobs::HelperKey::new(
+                meerkat_mob::MobId::from("team"),
+                meerkat_mob::AgentIdentity::from(name),
+            ))
+            .is_some_and(|(running, _)| !running)
+    };
+    common::until(|| heard(&llm, "TASK-OF-W1", "FROM-W2-4") && idle("w1") && idle("w2")).await;
     drop(connection);
     daemon.stop().await;
 }

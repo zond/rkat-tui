@@ -563,6 +563,32 @@ pub fn user_texts(messages: &[Message]) -> Vec<String> {
         .collect()
 }
 
+/// The user texts after the last assistant message of `messages`, joined:
+/// the inputs the request answers, the user's and the notes steered
+/// beside it in either order (a helper's note can land in the same
+/// request as the user's input, after it).
+pub fn run_inputs(messages: &[Message]) -> String {
+    let from = messages
+        .iter()
+        .rposition(|m| matches!(m, Message::BlockAssistant(_)))
+        .map_or(0, |at| at + 1);
+    user_texts(&messages[from..]).concat()
+}
+
+/// Whether the request `messages` answers a tool result (of the call
+/// `id`, when given): one after its last assistant message, whatever
+/// inputs came after it.
+pub fn answers(messages: &[Message], id: Option<&str>) -> bool {
+    let from = messages
+        .iter()
+        .rposition(|m| matches!(m, Message::BlockAssistant(_)))
+        .map_or(0, |at| at + 1);
+    messages[from..].iter().any(|m| {
+        matches!(m, Message::ToolResults { results, .. }
+            if id.is_none_or(|id| results.iter().any(|r| r.tool_use_id == id)))
+    })
+}
+
 /// An `assign` call `id` starting the helper `name` on `task`.
 pub fn assign(id: &'static str, name: &str, task: &str) -> Step {
     Step::Tool {

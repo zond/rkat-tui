@@ -22,18 +22,6 @@ fn tool(id: &'static str, name: &'static str, args: Value) -> Step {
     Step::Tool { id, name, args }
 }
 
-/// The text of the last user message of `messages`.
-fn last_user(messages: &[Message]) -> String {
-    messages
-        .iter()
-        .rev()
-        .find_map(|m| match m {
-            Message::User(user) => Some(user.text_content()),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
 /// Whether `messages` answer the call `id`.
 fn answered(messages: &[Message], id: &str) -> bool {
     messages.iter().any(|m| {
@@ -75,7 +63,9 @@ fn script(go: &Arc<tokio::sync::Notify>) -> Arc<ScriptedLlmClient> {
         if matches!(messages.last(), Some(Message::ToolResults { .. })) {
             return Step::Text("ok");
         }
-        let user = last_user(messages);
+        // Every input of the request: a helper's note can come in it
+        // after the user's (`docs/testing.md`).
+        let user = common::run_inputs(messages);
         if user.contains("PHASE-START") {
             return Step::Tools(vec![
                 (

@@ -537,27 +537,24 @@ async fn after_its_own_compaction_the_agent_is_told_the_helpers_it_holds_now() {
         if common::is_helper(messages, "K1-TASK") || common::is_helper(messages, "K2-TASK") {
             return Step::Text("K-DONE");
         }
-        let user = common::user_texts(messages)
-            .last()
-            .cloned()
-            .unwrap_or_default();
+        // Every input of the request: a kept helper's "went idle" note can
+        // come in it after the user's (`docs/testing.md`).
+        let user = common::run_inputs(messages);
         if user.contains("CONTEXT COMPACTION") {
             return Step::Text("SUMMARY of the work");
         }
-        match messages.last() {
-            // A context of 300k read, then compact_ready.
-            Some(Message::ToolResults { results, .. })
-                if results.iter().any(|r| r.tool_use_id == "g1") =>
-            {
-                return Step::ToolUsage {
-                    id: "c1",
-                    name: "compact_ready",
-                    args: json!({}),
-                    input: 300_000,
-                };
-            }
-            Some(Message::ToolResults { .. }) => return Step::Text("ok"),
-            _ => {}
+        // A context of 300k read, then compact_ready (a helper's note can
+        // follow the glob's result in the request).
+        if common::answers(messages, Some("g1")) {
+            return Step::ToolUsage {
+                id: "c1",
+                name: "compact_ready",
+                args: json!({}),
+                input: 300_000,
+            };
+        }
+        if common::answers(messages, None) {
+            return Step::Text("ok");
         }
         if user.contains("START-HELPERS") {
             return Step::Tools(vec![

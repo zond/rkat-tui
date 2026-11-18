@@ -12873,3 +12873,48 @@ until the stop (`HelperEndings::hold_batches`). Test:
 (before the restart: told to the delivery, not to the agent, and held in
 the file at the stop; after it: with the first message, once, not with
 the next, and gone from the file).
+
+## A retire that does not happen is said, owed and finished (2026-11-18)
+
+Prompted by one timeout of
+`helper_rows::the_client_s_live_helper_rows_are_the_mob_s_seated_helpers_after_every_ending`
+under load (`p1` and its `c1` still seated after `PHASE-RETIRE-PARENT`).
+That failure was the test's script, not a retire (the daemon's log has no
+decision line for `retire_helper` and no retirement stage of `p1` or
+`c1`; the `r2` retirement in the log tail had settled, at 3.3 s, before
+`p1` was spawned; two runs of the agent followed `p1`'s two "went idle"
+notes, where the user's input would have made a third): the user's input
+and a note shared one request, the note last, and the script read only
+the last user message. `common::run_inputs` now gives a script every
+input after the agent's last answer.
+
+Reading the retire paths for it found real gaps, fixed here:
+`mobs::stop_helper` swallowed the engine's errors, so `retire_helper`
+answered "was retired" for a helper still seated, and nothing retired it
+later. The engine's `MobHandle::retire` answers `Ok` only once the roster
+anchor is removed, and names some refusals retryable
+(`LifecycleOperationPending`, a retire that meets a spawn of the name).
+`stop_helper` now tries three times with a growing wait (250 ms, 500 ms),
+takes a roster that no longer lists the helper as retired, and returns
+the last refusal; every background caller logs it and the helper stays
+owed (`HelperBindings::owe_retire`, which the next start honours).
+`Connect::retire` owes the helper before it reaches the engine, answers a
+refusal in words ("could not be retired (…): it is still seated and
+`contacts` lists it. Call `retire_helper` for it again; …"), and runs its
+tree retire on a task of its own, so a call cancelled meanwhile does not
+stop it half way. The user's stop (`HelperEndings::retire` with `any`)
+and a conversation's end (`cancel_helpers`) now owe the helper too. A
+helper restored from the last daemon and woken only to bring its
+instructions up (`Agents::bring_up_helpers`) is idle
+(`HelperEndings::restored_idle`), so it no longer counts at work and
+holds a single-use parent seated; a restored helper the engine has not
+rebuilt is not followed and never counted at work, so that wake was the
+only case of the limit the previous entry named. Not changed: a retire
+that keeps failing is retried only by another `retire_helper` or the
+next start, not by a background loop.
+
+Tests: `helper_endings::a_refused_retire_is_answered_so_and_an_interrupted_one_still_finishes`
+(a test-support refusal, `Retirements::refuse`; then the interrupt of a
+call held at the engine by `Retirements::before_engine`),
+`mobs::endings::tests::a_restored_idle_child_does_not_hold_its_finished_parent`,
+`mobs::endings::tests::a_stopped_helper_s_retire_is_owed`.

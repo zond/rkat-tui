@@ -12,20 +12,12 @@ use crate::rig;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use common::{ScriptedLlmClient, Step, Workspace, is_helper, start};
+use common::{ScriptedLlmClient, Step, Workspace, is_helper, run_inputs, start};
 use meerkat_core::Message;
 use rig::{Client, Running, Setup};
 use rkat_tui::client::transport::Connection;
 use rkat_tui::ui::{App, Effect, StatusInfo};
 use serde_json::json;
-
-/// The text of the last user message of `messages`.
-fn last_user(messages: &[Message]) -> Option<String> {
-    match messages.last() {
-        Some(Message::User(user)) => Some(user.text_content()),
-        _ => None,
-    }
-}
 
 fn retire(id: &'static str, name: &str) -> Step {
     Step::Tool {
@@ -63,9 +55,9 @@ fn script() -> Arc<ScriptedLlmClient> {
             }
             return start("p-c1", "c1", "C1-TASK", "fresh", true);
         }
-        let Some(user) = last_user(messages) else {
-            return Step::Text("noted");
-        };
+        // The inputs of the agent's run: a helper's note can come in the
+        // same request as the user's input, after it.
+        let user = run_inputs(messages);
         if user.contains("PHASE-START") {
             return Step::Tools(vec![
                 (
@@ -311,13 +303,9 @@ async fn a_helper_s_own_helpers_are_retired_with_it_however_it_ends() {
             }
             return start("t-c3", "c3", "C3-TASK", "fresh", true);
         }
-        match last_user(messages) {
-            Some(user) if user.contains("PHASE-SINGLE") => {
-                start("t-s2", "s2", "S2-TASK", "fresh", false)
-            }
-            Some(user) if user.contains("PHASE-STOP") => {
-                start("t-u1", "u1", "U1-TASK", "fresh", true)
-            }
+        match run_inputs(messages) {
+            user if user.contains("PHASE-SINGLE") => start("t-s2", "s2", "S2-TASK", "fresh", false),
+            user if user.contains("PHASE-STOP") => start("t-u1", "u1", "U1-TASK", "fresh", true),
             _ => Step::Text("noted"),
         }
     }));

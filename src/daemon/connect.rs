@@ -278,24 +278,45 @@ impl Connector {
         let handle = state.handle_for(&helper.key.mob).await.map_err(|err| {
             format!("the mob of `{name}` cannot be reached, so it was not retired: {err}")
         })?;
-        let Some(_retiring) = self.registry.endings().retirements().begin() else {
+        let Some(retiring) = self.registry.endings().retirements().begin() else {
             return Err("the daemon is stopping: nothing was retired".to_string());
         };
         // Ended with its parent's word: no note of it. Its own helpers go
-        // first, deepest first: none stays seated without its owner.
-        let endings = self.registry.endings();
-        let below = endings.take_below(&helper.key);
-        endings.retire_below(&below).await;
-        endings.left(&helper.key);
-        crate::mobs::stop_helper(&handle, &helper.key).await;
-        let labels: Vec<String> = below
-            .iter()
-            .map(|(_, tag)| tag.label().to_string())
-            .collect();
-        Ok(match crate::mobs::endings::retired_with(&labels) {
-            Some(with) => format!("Helper `{}` was retired. {with}", helper.name),
-            None => format!("Helper `{}` was retired.", helper.name),
-        })
+        // first, deepest first: none stays seated without its owner. The
+        // work runs on a task of its own, so a call cancelled meanwhile (an
+        // interrupt) still finishes it; owed until the engine retired it,
+        // so a stop before that leaves it to the next start.
+        let registry = Arc::clone(&self.registry);
+        let key = helper.key.clone();
+        let work = tokio::spawn(async move {
+            let _retiring = retiring;
+            let endings = registry.endings();
+            let below = endings.take_below(&key);
+            endings.retire_below(&below).await;
+            endings.left(&key);
+            registry.owe_retire(&key);
+            let outcome = endings.retirements().stop_helper(&handle, &key).await;
+            let labels: Vec<String> = below
+                .iter()
+                .map(|(_, tag)| tag.label().to_string())
+                .collect();
+            (outcome, labels)
+        });
+        let (outcome, labels) = work
+            .await
+            .map_err(|err| format!("the retire of `{name}` did not finish: {err}"))?;
+        let with = crate::mobs::endings::retired_with(&labels);
+        match outcome {
+            Ok(()) => Ok(match with {
+                Some(with) => format!("Helper `{}` was retired. {with}", helper.name),
+                None => format!("Helper `{}` was retired.", helper.name),
+            }),
+            Err(why) => Err(format!(
+                "Helper `{}` could not be retired ({why}): it is still seated and `contacts` lists it. Call `retire_helper` for it again; if it still fails, it is retired when the daemon next starts.{}",
+                helper.name,
+                with.map_or_else(String::new, |with| format!(" {with}"))
+            )),
+        }
     }
 
     /// Connect `names` for the session `caller`: the answer, or why not.

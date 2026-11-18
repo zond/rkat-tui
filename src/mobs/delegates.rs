@@ -44,5 +44,7 @@ pub async fn retire_left_helper(
         return;
     }
     tracing::info!(helper = %key, "retiring a finished delegate helper an earlier build left");
-    retirements.stop_helper(&handle, key).await;
+    if let Err(err) = retirements.stop_helper(&handle, key).await {
+        tracing::warn!(helper = %key, error = %err, "a finished delegate helper stays seated");
+    }
 }

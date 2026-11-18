@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- `retire_helper` answered "Helper `x` was retired." even when the
+  engine refused the retire, and the helper stayed seated with nothing
+  to retire it later. A refused retire is now tried again a few times;
+  if it still fails, the answer says the helper is still seated and to
+  call `retire_helper` again, and the daemon's next start retires it. A
+  `retire_helper` call interrupted while it runs still finishes its
+  retire, and a helper you stop (or one left with its conversation) is
+  retired at the next start when the daemon stopped before the engine
+  had retired it. A single-use helper whose own kept helper was restored
+  from before a restart and woken only to bring its instructions up is
+  no longer held seated as if that helper were at work.
 - A helper's ending told in the quarter second before the daemon
   stopped (the window in which endings are gathered into one note) never
   reached its agent. The stop now holds such endings for the agent, in

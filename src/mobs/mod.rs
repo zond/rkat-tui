@@ -136,29 +136,78 @@ pub(crate) async fn cancel_helpers(
     let mut seated = seated_for(state, registry, owner).await;
     seated.sort_by_key(|(_, tag)| std::cmp::Reverse(tag.path.len()));
     for (key, _) in seated {
-        // Left with its conversation: no parent is told.
+        // Left with its conversation: no parent is told. Owed until the
+        // engine retired it, so one the engine refuses goes at the next
+        // start.
         registry.endings().left(&key);
+        registry.owe_retire(&key);
         match state.handle_for(&key.mob).await {
             Ok(handle) => {
-                registry
+                if let Err(err) = registry
                     .endings()
                     .retirements()
                     .stop_helper(&handle, &key)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(helper = %key, error = %err, "a helper of the conversation left stays seated: it is retired at the next start");
+                }
             }
             Err(err) => tracing::warn!(helper = %key, error = %err, "cannot reach helper's mob"),
         }
     }
 }
 
+/// How many times [`stop_helper`] asks the engine to retire a helper.
+const RETIRE_TRIES: u32 = 3;
+/// The wait before [`stop_helper`]'s second try; each next one doubles.
+const RETIRE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Force-cancel the helper `key`'s run in its mob `handle`, then retire it.
-pub(crate) async fn stop_helper(handle: &meerkat_mob::MobHandle, key: &HelperKey) {
-    if let Err(err) = handle.force_cancel_member(key.member.clone()).await {
-        tracing::debug!(helper = %key, error = %err, "helper run not cancelled");
+/// A refused retire (the engine answers some as retryable, e.g. one that
+/// meets a spawn of the same name) is tried again, [`RETIRE_TRIES`] times
+/// in all with a growing wait. `Ok` once the engine retired it, or its
+/// roster lists it no more; else the engine's last refusal, in words
+/// (the helper is still seated).
+///
+/// # Errors
+///
+/// The engine's last refusal when every try failed and the roster still
+/// lists the helper.
+pub(crate) async fn stop_helper(
+    handle: &meerkat_mob::MobHandle,
+    key: &HelperKey,
+) -> Result<(), String> {
+    let mut wait = RETIRE_BACKOFF;
+    let mut last = String::new();
+    for attempt in 1..=RETIRE_TRIES {
+        if let Err(err) = handle.force_cancel_member(key.member.clone()).await {
+            tracing::debug!(helper = %key, error = %err, "helper run not cancelled");
+        }
+        match handle.retire(key.member.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                tracing::warn!(helper = %key, attempt, error = %err, "the engine did not retire the helper");
+                last = err.to_string();
+            }
+        }
+        if !roster_lists(handle, key).await {
+            return Ok(());
+        }
+        if attempt < RETIRE_TRIES {
+            tokio::time::sleep(wait).await;
+            wait *= 2;
+        }
     }
-    if let Err(err) = handle.retire(key.member.clone()).await {
-        tracing::warn!(helper = %key, error = %err, "cannot retire helper");
-    }
+    Err(last)
+}
+
+/// Whether `handle`'s roster lists the helper `key`.
+async fn roster_lists(handle: &meerkat_mob::MobHandle, key: &HelperKey) -> bool {
+    handle
+        .list_members()
+        .await
+        .iter()
+        .any(|member| member.agent_identity == key.member)
 }
 
 /// Record the creator of every mob the host creates (helpers spawned into

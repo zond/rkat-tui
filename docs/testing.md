@@ -189,6 +189,40 @@ output now says why; report it rather than retrying silently:
   first, B took A's "told b" and A took B's `curl`, and the test's waits on
   call counts never came. Each agent's step is now chosen from its own
   requests, and the waits count B's calls. No timeout was raised.
+- `the_client_s_live_helper_rows_are_the_mob_s_seated_helpers_after_every_ending`
+  (`tests/it/helper_rows.rs`): timed out once in five loaded rounds of the
+  helper modules on two cores (2026-11-18, the wait for `["k2"]` after
+  `PHASE-RETIRE-PARENT`: `p1` and `c1` still seated); 20 rounds of it
+  alone on two cores beside two busy loops did not reproduce it. Cause
+  from the daemon's log: the agent never called `retire_helper` (no
+  decision line for it, no retirement stage of `p1` or `c1`; the `r2`
+  retirement the log tail shows had settled before `p1` was spawned), and
+  only two runs of the agent followed `p1`'s two "went idle" notes where
+  the user's input would have made three: the user's input and a note
+  went into one request, the note after it, and the script chose its step
+  from the last user message only, so it answered "noted". The agent's
+  step is now chosen from all inputs after its last answer
+  (`common::run_inputs`), in this file's other test too. The next full
+  gate failed `contacts::contacts_lists_exactly_the_sendable_peers_by_what_each_is`
+  the same way (the wait at `tests/it/contacts.rs:216`: no `assign` of
+  `fk` in the log after `kf`'s "went idle" note shared a request with
+  `PHASE-FORK`); its script now reads `common::run_inputs` too, and so
+  does `compact_prepare::after_its_own_compaction_the_agent_is_told_the_helpers_it_holds_now`,
+  which failed the gate after that ("no result for c1": `COMPACT-NOW`
+  shared a request with a kept helper's note). A new
+  script that picks a phase from the user's words while helpers can send
+  notes should do the same. No timeout was raised. The retire paths were hardened beside it (a refused retire is
+  answered and owed, the work outlives the call:
+  `helper_endings::a_refused_retire_is_answered_so_and_an_interrupted_one_still_finishes`).
+- `two_members_of_a_created_mob_connected_talk_both_ways_in_plan_mode_too`
+  (`tests/it/connect.rs`): timed out once in a full local gate
+  (2026-11-18) at its final `daemon.stop()`: the stop began while `w1`
+  and `w2` still ran (the last relayed message being read), the team
+  mob did not shut down in the daemon's 10 s, and the members' runs went
+  on during the teardown. The same stall class as the fork tests above
+  (an engine stop meeting member runs); the test now waits until the
+  last message was read and both members are idle (their runs' ends, a
+  positive event) before it stops. No timeout was raised.
 - `parallel_escalations_share_one_timeout_including_the_queue`
   (`src/approval/engine.rs`): the paused tokio clock auto-advances while a task
   waits on `spawn_blocking`, so budget checks must happen after every await.

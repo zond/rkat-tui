@@ -376,6 +376,9 @@ pub struct Retirements {
     /// Tests: awaited inside a retire, just before it reaches the engine.
     #[cfg(any(test, feature = "test-support"))]
     before_engine: OnceLock<DecidingHook>,
+    /// Tests: the helpers whose retire is refused, with the refusal.
+    #[cfg(any(test, feature = "test-support"))]
+    refuse: Mutex<HashMap<HelperKey, String>>,
 }
 
 impl Default for Retirements {
@@ -384,6 +387,8 @@ impl Default for Retirements {
             gate: tokio::sync::watch::channel((false, 0)).0,
             #[cfg(any(test, feature = "test-support"))]
             before_engine: OnceLock::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            refuse: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -440,22 +445,46 @@ impl Retirements {
     }
 
     /// Retire `key` in `handle`'s mob ([`super::stop_helper`]) unless the
-    /// daemon is stopping: whether it was retired here.
+    /// daemon is stopping.
+    ///
+    /// # Errors
+    ///
+    /// Why it is still seated: the daemon is stopping (a helper whose
+    /// retire is owed is retired at the next start), or the engine's
+    /// refusal of every try.
     pub async fn stop_helper(
         self: &Arc<Self>,
         handle: &meerkat_mob::MobHandle,
         key: &HelperKey,
-    ) -> bool {
+    ) -> Result<(), String> {
         let Some(_retiring) = self.begin() else {
             tracing::info!(helper = %key, "the daemon is stopping: the helper is retired at its next start");
-            return false;
+            return Err("the daemon is stopping".to_string());
         };
         #[cfg(any(test, feature = "test-support"))]
         if let Some(hook) = self.before_engine.get() {
             (hook.0)(key.clone()).await;
         }
-        super::stop_helper(handle, key).await;
-        true
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(refusal) = self.refuse.lock().get(key) {
+            return Err(refusal.clone());
+        }
+        super::stop_helper(handle, key).await
+    }
+
+    /// Tests: refuse every retire of `key` with `refusal`, as an engine
+    /// that keeps refusing would (`None`: let them through again).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn refuse(&self, key: &HelperKey, refusal: Option<&str>) {
+        let mut refused = self.refuse.lock();
+        match refusal {
+            Some(refusal) => {
+                refused.insert(key.clone(), refusal.to_string());
+            }
+            None => {
+                refused.remove(key);
+            }
+        }
     }
 
     /// Tests: await `hook` (with the helper's key) inside each retire, just
@@ -536,7 +565,11 @@ async fn retire_all(
             Ok(handle) => {
                 let parent = tag.parent_path().last().cloned();
                 remember_peer(&handle, child, parent, retired).await;
-                retirements.stop_helper(&handle, child).await;
+                // Owed already ([`HelperEndings::take_below`]): one the
+                // engine keeps refusing is retired at the next start.
+                if let Err(err) = retirements.stop_helper(&handle, child).await {
+                    tracing::warn!(helper = %child, error = %err, "a helper retired with its parent stays seated: it is retired at the next start");
+                }
             }
             Err(err) => {
                 tracing::warn!(helper = %child, error = %err, "cannot reach the mob of a helper retired with its parent");
@@ -966,6 +999,19 @@ impl HelperEndings {
         let _ = self.before_retiring.set(DecidingHook(hook));
     }
 
+    /// The helper `key`, restored from the last daemon's, was woken with
+    /// no run of it (its instructions were brought up): idle, so not at
+    /// work ([`Self::at_work`]) until a run of it starts. A helper that ran
+    /// in this daemon already is left as it is.
+    pub fn restored_idle(&self, key: &HelperKey) {
+        if let Some(tracked) = self.tracked.lock().get_mut(key)
+            && tracked.runs == 0
+            && tracked.idle_after.is_none()
+        {
+            tracked.idle_after = Some(0);
+        }
+    }
+
     /// Whether the followed helper `key` is at work: no run of it has been
     /// decided idle since its last run started (one spawned and not run
     /// yet, one running, one whose run ended and is being decided). A
@@ -1197,6 +1243,11 @@ impl HelperEndings {
     fn retire(&self, key: &HelperKey, any: bool, below: Vec<(HelperKey, HelperTag)>) {
         self.retires
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // A stopped helper is owed until the engine retired it: a daemon
+        // stop before that leaves it to the next start.
+        if any && let Some(registry) = self.owed.get().and_then(Weak::upgrade) {
+            registry.owe_retire(key);
+        }
         let Some(state) = self.state.get().and_then(Weak::upgrade) else {
             return;
         };
@@ -1211,7 +1262,9 @@ impl HelperEndings {
             if any {
                 match state.handle_for(&key.mob).await {
                     Ok(handle) => {
-                        retirements.stop_helper(&handle, &key).await;
+                        if let Err(err) = retirements.stop_helper(&handle, &key).await {
+                            tracing::warn!(helper = %key, error = %err, "a stopped helper stays seated: it is retired at the next start");
+                        }
                     }
                     Err(err) => {
                         tracing::warn!(helper = %key, error = %err, "cannot reach the stopped helper's mob");
@@ -1254,7 +1307,9 @@ impl HelperEndings {
             match state.handle_for(&key.mob).await {
                 Ok(handle) => {
                     remember_peer(&handle, &key, None, &retired).await;
-                    retirements.stop_helper(&handle, &key).await;
+                    if let Err(err) = retirements.stop_helper(&handle, &key).await {
+                        tracing::warn!(helper = %key, error = %err, "a finished helper stays seated: it is retired at the next start");
+                    }
                 }
                 Err(err) => {
                     tracing::warn!(helper = %key, error = %err, "cannot reach the finished helper's mob");
@@ -1746,5 +1801,74 @@ mod tests {
         let stuck = Arc::new(Retirements::default());
         let _held = stuck.begin().unwrap();
         assert!(!stuck.close(std::time::Duration::from_millis(10)).await);
+    }
+
+    /// A registry whose endings owe their retires to it, with the endings'
+    /// receiver, and the keys and tags of a single-use parent `p1` and its
+    /// kept helper `c1`.
+    fn parent_and_child() -> (
+        Arc<super::super::HelperRegistry>,
+        mpsc::UnboundedReceiver<Ended>,
+        HelperKey,
+        HelperKey,
+    ) {
+        use crate::mobs::{HelperContext::Fresh, HelperKind::Started, HelperLife};
+        let registry = Arc::new(super::super::HelperRegistry::in_memory());
+        registry.endings().owe_to(&registry);
+        let (tx, rx) = mpsc::unbounded_channel();
+        registry.endings().deliver_to(tx);
+        let owner = SessionId::new();
+        let mob = MobId::from("tui");
+        let parent = HelperKey::new(mob.clone(), AgentIdentity::from("p1"));
+        let child = HelperKey::new(mob, AgentIdentity::from("c1"));
+        let tag = |path: Vec<&str>, life| HelperTag {
+            owner: owner.clone(),
+            path: path.into_iter().map(str::to_string).collect(),
+            model: "m".into(),
+            kind: Started(Fresh, life),
+        };
+        registry
+            .spawning(parent.clone(), tag(vec!["p1"], HelperLife::Single))
+            .unwrap();
+        registry
+            .spawning(child.clone(), tag(vec!["p1", "c1"], HelperLife::Kept))
+            .unwrap();
+        (registry, rx, parent, child)
+    }
+
+    /// A kept helper restored from the last daemon and woken with no run
+    /// (its instructions brought up) is idle: its single-use parent is
+    /// done when its own run ends, and the child goes with it. Before it is
+    /// known idle, a child spawned and not run yet holds the parent.
+    #[test]
+    fn a_restored_idle_child_does_not_hold_its_finished_parent() {
+        let (registry, mut rx, parent, child) = parent_and_child();
+        let endings = registry.endings();
+        endings.run_started(&parent);
+        endings.run_ended(&parent, Terminal::Completed("first".into()));
+        assert!(rx.try_recv().is_err(), "held while c1 may be at work");
+        endings.restored_idle(&child);
+        endings.run_started(&parent);
+        endings.run_ended(&parent, Terminal::Completed("done".into()));
+        let ended = rx.try_recv().unwrap();
+        assert_eq!(ended.key, parent);
+        assert_eq!(ended.with, vec!["c1".to_string()]);
+        assert!(registry.retire_owed(&parent) && registry.retire_owed(&child));
+        // One that ran in this daemon is left as it is.
+        let (registry, _rx, _, child) = parent_and_child();
+        registry.endings().run_started(&child);
+        registry.endings().restored_idle(&child);
+        assert!(registry.endings().at_work(&child));
+    }
+
+    /// The user's stop of a helper owes its retire until the engine made
+    /// it: a daemon stop before that leaves it to the next start.
+    #[test]
+    fn a_stopped_helper_s_retire_is_owed() {
+        let (registry, mut rx, parent, child) = parent_and_child();
+        assert!(registry.endings().stop(&parent, None));
+        assert!(registry.retire_owed(&parent), "the stopped helper");
+        assert!(registry.retire_owed(&child), "its own helper");
+        assert_eq!(rx.try_recv().unwrap().how, How::StoppedByUser);
     }
 }

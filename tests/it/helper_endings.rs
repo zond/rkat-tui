@@ -813,3 +813,118 @@ async fn a_retire_the_stop_held_back_is_made_at_the_next_start() {
     drop(connection);
     daemon.stop().await;
 }
+
+/// The text of the newest result of the call `id` the agent's model saw.
+fn newest_result(llm: &ScriptedLlmClient, id: &str) -> Option<String> {
+    llm.recorded().iter().rev().find_map(|r| {
+        r.messages.iter().rev().find_map(|m| match m {
+            Message::ToolResults { results, .. } => results
+                .iter()
+                .find(|res| res.tool_use_id == id)
+                .map(meerkat_core::types::ToolResult::text_content),
+            _ => None,
+        })
+    })
+}
+
+/// A `retire_helper` the engine keeps refusing answers that the helper is
+/// still seated and to call again, and the helper is seated and owed (a
+/// start retires it); called again once the engine lets it, it is
+/// retired. A retire whose call is interrupted while it reaches the
+/// engine still finishes: the helper leaves its mob.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_retire_is_answered_so_and_an_interrupted_one_still_finishes() {
+    use meerkat_mob::{AgentIdentity, MobId};
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if is_helper(messages, "KEPT-TASK") {
+            return Step::Text("KEPT-DONE");
+        }
+        if matches!(messages.last(), Some(Message::ToolResults { .. })) {
+            return Step::Text("NOTED");
+        }
+        let user = common::run_inputs(messages);
+        let retire = |id, name: &str| Step::Tool {
+            id,
+            name: "retire_helper",
+            args: json!({"name": name}),
+        };
+        if user.contains("KEEP-TWO") {
+            return Step::Tools(vec![
+                (
+                    "a-k1",
+                    "assign",
+                    json!({"name": "k1", "task": "KEPT-TASK one", "keep": true}),
+                ),
+                (
+                    "a-k2",
+                    "assign",
+                    json!({"name": "k2", "task": "KEPT-TASK two", "keep": true}),
+                ),
+            ]);
+        }
+        if user.contains("RETIRE-K1") {
+            return retire("r-k1", "k1");
+        }
+        if user.contains("RETIRE-K2") {
+            return retire("r-k2", "k2");
+        }
+        Step::Text("NOTED")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 40]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let connection = daemon.connect().await;
+    let mut client = Client::attach(&ws.root).await;
+    let registry = daemon.registry();
+    let k1 = HelperKey::new(MobId::from("tui"), AgentIdentity::from("k1"));
+    client.send(Effect::StartTurn("KEEP-TWO".into()));
+    client.turn_finished().await.unwrap();
+    common::until(|| agent_heard(&llm, "KEPT-DONE")).await;
+    assert!(seated(&connection, "k1").await && seated(&connection, "k2").await);
+    daemon.idle(&daemon.agent).await;
+
+    // Refused: the answer says so, the helper stays seated and owed.
+    registry
+        .endings()
+        .retirements()
+        .refuse(&k1, Some("REFUSED-BY-TEST"));
+    client.send(Effect::StartTurn("RETIRE-K1".into()));
+    client.turn_finished().await.unwrap();
+    let refused = newest_result(&llm, "r-k1").unwrap();
+    assert!(
+        refused.contains(
+            "Helper `k1` could not be retired (REFUSED-BY-TEST): it is still seated and `contacts` lists it. Call `retire_helper` for it again"
+        ),
+        "{refused}"
+    );
+    assert!(seated(&connection, "k1").await);
+    assert!(registry.retire_owed(&k1));
+    daemon.idle(&daemon.agent).await;
+    // Let through: called again, it is retired.
+    registry.endings().retirements().refuse(&k1, None);
+    client.send(Effect::StartTurn("RETIRE-K1 again".into()));
+    client.turn_finished().await.unwrap();
+    assert_eq!(
+        newest_result(&llm, "r-k1").as_deref(),
+        Some("Helper `k1` was retired.")
+    );
+    until_gone(&connection, "k1").await;
+    daemon.idle(&daemon.agent).await;
+
+    // Held as it reaches the engine, its call interrupted: it finishes.
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::watch::channel(false).0);
+    registry
+        .endings()
+        .retirements()
+        .before_engine(holding(&reached, &release));
+    client.send(Effect::StartTurn("RETIRE-K2".into()));
+    common::within(reached.notified()).await;
+    client.send(Effect::Interrupt);
+    release.send_replace(true);
+    assert_eq!(client.turn_finished().await, Err(TurnFailure::Interrupted));
+    until_gone(&connection, "k2").await;
+    client.quit().await;
+    drop(connection);
+    daemon.stop().await;
+}
