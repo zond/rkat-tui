@@ -134,7 +134,9 @@ needs no `keep`. Keep one (`keep: true`) only when you already know you will giv
 this same helper a new task after it finishes, one that needs what it learned. A \
 kept helper is yours to end: you are told each time it goes idle, a message \
 wakes it, and it stays seated until you retire it with `retire_helper`; retire \
-it as soon as its work is done, and never leave helpers seated in case.
+it as soon as its work is done, and never leave helpers seated in case. After \
+a compaction, call `contacts` and retire with `retire_helper` the helpers you no \
+longer need.
 - `mob_create` and `mob_spawn_member` are for a team in a mob of its own, not for \
 your helpers.
 

@@ -78,7 +78,6 @@ impl Held {
 
     /// `a (fresh · kept, idle for 2 h)`, as the reminder after a
     /// compaction names it.
-    #[cfg(any(test, feature = "test-support"))]
     fn short(&self, now: Instant) -> String {
         match &self.kind {
             Some(kind) => format!("{} ({kind}, {})", self.name, self.state(now)),
@@ -384,7 +383,6 @@ impl Contacts {
 
     /// The line an agent reads after a compaction when it holds helpers:
     /// who they are, and how to let them go (`None`: it holds none).
-    #[cfg(any(test, feature = "test-support"))]
     pub async fn held_line(&self, session: &SessionId) -> Option<String> {
         let (owner, path, _, _) = self.caller(session)?;
         let held = self.held(&owner, &path).await;

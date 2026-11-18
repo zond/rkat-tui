@@ -2296,6 +2296,16 @@ compaction all say so, so your instruction need not. The agent may call `compact
 compacts unless the context is below 20% of the window (then nothing is
 compacted and it is told why).
 
+After a compaction its `compact_ready` asked for, an agent that holds
+helpers is also told, as a message in the run that goes on, which ones
+it holds now ("You still hold 2 helpers: k1 (fresh · kept, idle for 4m),
+k2 (…). Retire with `retire_helper` those you no longer need; `contacts`
+shows them."); its instructions also say to call `contacts` after any
+compaction and retire what it no longer needs. The message is part of the
+conversation like any other, so a later compaction summarises it; the
+system notes after each compaction (carry on, memory search) are kept
+by every compaction and so accumulate, one per compaction.
+
 What bounds the agent's choice of moment: if the context grows past the
 midpoint between `compact_prepare_at` and the automatic compaction's
 threshold (or by a further 10% of the window when nothing compacts

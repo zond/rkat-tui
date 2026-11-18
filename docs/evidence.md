@@ -12803,3 +12803,33 @@ Tests: `helper_rows::the_client_s_live_helper_rows_are_the_mob_s_seated_helpers_
 (single-use finishing, the user's stop of a running kept helper),
 `connect::a_single_use_helper_messaged_by_its_sibling_at_its_end_is_retired_once`,
 `daemon::agents::endings::tests::a_note_names_the_helpers_retired_with_it`.
+
+## The helpers an agent holds, after a compaction (owner, 2026-11-18)
+
+The earlier attempt appended the list to the note after each compaction
+and its own test showed it stack: an appended note is a System row
+(`mob_append_system_context`), and the engine's compaction keeps System
+rows, so after two compactions the request held two lists, the first
+stale. The keyed route (a system prompt slot that each compaction
+replaces, as `daemon::instructions` does with `rkat-tui-instructions`)
+was probed in the 0.9.16 sources (`meerkat-core`
+`session/system_prompt_update.rs`): the first version of a key must adopt
+an existing unversioned plain System row (`MissingInitialTarget` without
+`target_message_index`), and the appended notes cannot be adopted (they
+carry an append identity: `TargetHasAppendIdentity`); the only plain row
+is the instructions row itself. So a key of its own cannot be started,
+and the route was dropped. The brief's claim that `CONTINUE_NOTE` is a
+run input does not hold: it goes through `note_compacted` like
+`MEMORY_NOTE`, an appended System row, and stacks the same way (the rig
+test counts two after two compactions); that stacking is left as it is.
+
+Taken instead: the persona's helper paragraph says to call `contacts`
+after a compaction and retire what is no longer needed (cannot go
+stale), and after a compaction the agent's own `compact_ready` asked for
+(the note starts with `CONTINUE_NOTE`, the run goes on) the daemon
+steers `Contacts::held_line` into the run as a user-role input, when the
+agent holds helpers. That input is summarised by a later compaction once
+it is out of the turns the engine keeps verbatim; the newest one names
+what is held then. A steer that lands after the run's last request runs
+as one short follow-up run. Test:
+`compact_prepare::after_its_own_compaction_the_agent_is_told_the_helpers_it_holds_now`.

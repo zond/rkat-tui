@@ -918,12 +918,37 @@ impl Watcher {
             return;
         };
         let prepare = &agents.core().prepare;
-        if let Some(note) = prepare.compacted(&self.name, tokens) {
-            tokio::spawn(super::agents::note_compacted(
-                Arc::clone(&self.watched.state),
-                self.name.clone(),
-                note,
-            ));
+        let Some(note) = prepare.compacted(&self.name, tokens) else {
+            return;
+        };
+        let smart = note.starts_with(super::prepare::CONTINUE_NOTE);
+        tokio::spawn(super::agents::note_compacted(
+            Arc::clone(&self.watched.state),
+            self.name.clone(),
+            note,
+        ));
+        // After a compaction it asked for itself, in the run that goes on,
+        // the helpers it holds now: a run input, which the next compaction
+        // summarises away (an appended note is a system row, which every
+        // compaction keeps, so a list there would stack and go stale).
+        if smart {
+            let name = self.name.clone();
+            let session = session.clone();
+            tokio::spawn(async move {
+                let Some(line) = agents.core().contacts.held_line(&session).await else {
+                    return;
+                };
+                if let Err(err) = super::agents::steer_member(
+                    agents.core(),
+                    &meerkat_mob::MobId::from(super::MOB_ID),
+                    meerkat_mob::AgentIdentity::from(name.as_str()),
+                    line,
+                )
+                .await
+                {
+                    tracing::warn!(agent = %name, error = %err, "the reminder of the helpers held did not reach the agent");
+                }
+            });
         }
     }
 

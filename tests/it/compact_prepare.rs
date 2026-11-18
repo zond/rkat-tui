@@ -496,3 +496,162 @@ async fn a_late_threshold_is_set_with_the_start_up_warning() {
     );
     rig.quit().await;
 }
+
+/// The messages of the last request that holds the result of call `id`.
+fn last_request_with(llm: &ScriptedLlmClient, id: &str) -> Vec<meerkat_core::Message> {
+    llm.recorded()
+        .into_iter()
+        .rfind(|r| {
+            r.messages.iter().any(|m| {
+                matches!(m, meerkat_core::Message::ToolResults { results, .. }
+                    if results.iter().any(|res| res.tool_use_id == id))
+            })
+        })
+        .map(|r| r.messages)
+        .unwrap_or_default()
+}
+
+/// The agent's last request (no helper's).
+fn last_of_agent(llm: &ScriptedLlmClient) -> String {
+    let last = llm
+        .recorded()
+        .into_iter()
+        .rfind(|r| !common::is_helper(&r.messages, "-TASK"))
+        .unwrap();
+    format!("{:?}", last.messages)
+}
+
+/// After each compaction it asked for itself, the agent is told which
+/// helpers it holds now, as a run input: after the first, once, naming
+/// both kept helpers with their states; after the second (one retired
+/// between), the newest reminder names only the one it still holds (the
+/// first is a run input in the turns the engine keeps verbatim, so it goes
+/// only with a later compaction). The appended system note of each
+/// compaction stays (a compaction keeps system rows): two notes after two
+/// compactions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_its_own_compaction_the_agent_is_told_the_helpers_it_holds_now() {
+    use meerkat_core::Message;
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if common::is_helper(messages, "K1-TASK") || common::is_helper(messages, "K2-TASK") {
+            return Step::Text("K-DONE");
+        }
+        let user = common::user_texts(messages)
+            .last()
+            .cloned()
+            .unwrap_or_default();
+        if user.contains("CONTEXT COMPACTION") {
+            return Step::Text("SUMMARY of the work");
+        }
+        match messages.last() {
+            // A context of 300k read, then compact_ready.
+            Some(Message::ToolResults { results, .. })
+                if results.iter().any(|r| r.tool_use_id == "g1") =>
+            {
+                return Step::ToolUsage {
+                    id: "c1",
+                    name: "compact_ready",
+                    args: json!({}),
+                    input: 300_000,
+                };
+            }
+            Some(Message::ToolResults { .. }) => return Step::Text("ok"),
+            _ => {}
+        }
+        if user.contains("START-HELPERS") {
+            return Step::Tools(vec![
+                (
+                    "k1",
+                    "assign",
+                    json!({"name": "k1", "task": "K1-TASK", "keep": true}),
+                ),
+                (
+                    "k2",
+                    "assign",
+                    json!({"name": "k2", "task": "K2-TASK", "keep": true}),
+                ),
+            ]);
+        }
+        if user.contains("RETIRE-K1") {
+            return Step::Tool {
+                id: "r1",
+                name: "retire_helper",
+                args: json!({"name": "k1"}),
+            };
+        }
+        if user.contains("COMPACT-NOW") {
+            return glob("g1", 300_000);
+        }
+        Step::Text("ok")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 80]);
+    let mut rig = rig(&llm, &ws, "warn", 900_000).await;
+    turns(&mut rig, 3).await;
+    rig.send(Effect::StartTurn("START-HELPERS".into()));
+    rig.turn_finished().await.expect("turn succeeds");
+    let registry = rig.daemon.registry();
+    let idle = |name: &str| {
+        registry
+            .activity(&rkat_tui::mobs::HelperKey::new(
+                meerkat_mob::MobId::from("tui"),
+                meerkat_mob::AgentIdentity::from(name),
+            ))
+            .is_some_and(|(running, _)| !running)
+    };
+    common::until(|| idle("k1") && idle("k2")).await;
+    rig.daemon.idle(&rig.daemon.agent).await;
+
+    rig.send(Effect::StartTurn("COMPACT-NOW one".into()));
+    rig.turn_finished().await.expect("turn succeeds");
+    let answer = common::tool_result(&last_request_with(&llm, "c1"), "c1").text_content();
+    assert!(answer.contains(REQUESTED), "{answer}");
+    within(rig.saw(|msg| {
+        matches!(msg, Msg::Agent(env) if matches!(env.payload, AgentEvent::CompactionCompleted { .. }))
+    }))
+    .await;
+    common::until(|| {
+        llm.recorded().iter().any(|r| {
+            format!("{:?}", r.messages)
+                .contains("You still hold 2 helpers: k1 (fresh · kept, idle for")
+        })
+    })
+    .await;
+    rig.daemon.idle(&rig.daemon.agent).await;
+    rig.send(Effect::StartTurn("after one".into()));
+    rig.turn_finished().await.expect("turn succeeds");
+    let last = last_of_agent(&llm);
+    assert_eq!(last.matches("You still hold").count(), 1, "{last}");
+    assert!(
+        last.contains("k2 (fresh · kept, idle for")
+            && last.contains(
+                "Retire with `retire_helper` those you no longer need; `contacts` shows them."
+            ),
+        "{last}"
+    );
+
+    rig.send(Effect::StartTurn("RETIRE-K1".into()));
+    rig.turn_finished().await.expect("turn succeeds");
+    rig.send(Effect::StartTurn("COMPACT-NOW two".into()));
+    rig.turn_finished().await.expect("turn succeeds");
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .any(|r| format!("{:?}", r.messages).contains("You still hold 1 helper: k2"))
+    })
+    .await;
+    rig.daemon.idle(&rig.daemon.agent).await;
+    rig.send(Effect::StartTurn("after two".into()));
+    rig.turn_finished().await.expect("turn succeeds");
+    let last = last_of_agent(&llm);
+    // The newest reminder names what it holds now; an older one is in the
+    // turns the compaction keeps verbatim, and goes with a later one.
+    let newest = &last[last.rfind("You still hold").unwrap()..];
+    assert!(
+        newest.starts_with("You still hold 1 helper: k2 (fresh · kept"),
+        "{newest}"
+    );
+    assert!(last.matches("You still hold").count() <= 2, "{last}");
+    assert_eq!(last.matches(CONTINUE_NOTE).count(), 2, "{last}");
+    rig.quit().await;
+}

@@ -133,6 +133,11 @@
   retire them. A single-use helper whose run ends while one of its own
   helpers still runs is not done yet: that helper's ending is told to it,
   and it is done (and retired with its idle ones) after it read it.
+- After a compaction it asked for with `compact_ready`, an agent that
+  holds helpers is told which ones it holds now ("You still hold 2
+  helpers: k1 (fresh · kept, idle for 4m), …"), as a message in the run
+  that goes on, and its instructions say to call `contacts` after a
+  compaction and retire the helpers it no longer needs.
 - The engine's `peers` (helpers, agents and wires mixed, with no kind or
   state) and `list_members` (which left out fresh kept helpers) are no
   longer offered to agents and helpers: `contacts` replaces both. The
