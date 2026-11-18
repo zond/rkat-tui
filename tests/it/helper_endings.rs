@@ -602,3 +602,137 @@ async fn a_delegate_helper_an_earlier_build_left_finishes_and_answers_its_agent(
     )
     .await;
 }
+
+/// The script of the stop-and-retire tests: the helper answers
+/// `HELPER-ANSWER` at once; the agent assigns `scout`, waits, and notes
+/// the ending.
+fn finishing_script() -> Arc<ScriptedLlmClient> {
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if is_helper(messages, "HELPER-TASK") {
+            return Step::Text("HELPER-ANSWER");
+        }
+        if common::told_finished(messages) {
+            return Step::Text("NOTED");
+        }
+        if after(messages, "a1") {
+            return Step::Text("WAITING");
+        }
+        if results(messages) == 0 && !format!("{messages:?}").contains("finished its task") {
+            return assign("a1", "scout", "HELPER-TASK: answer");
+        }
+        Step::Text("NOTED")
+    }));
+    ScriptedLlmClient::new(vec![step; 20])
+}
+
+/// A hook that tells `reached` and then waits for `release`.
+fn holding(
+    reached: &Arc<tokio::sync::Notify>,
+    release: &Arc<tokio::sync::watch::Sender<bool>>,
+) -> rkat_tui::mobs::endings::DecidingHookFn {
+    let (reached, release) = (Arc::clone(reached), Arc::clone(release));
+    Arc::new(move |_key| {
+        let mut released = release.subscribe();
+        let reached = Arc::clone(&reached);
+        Box::pin(async move {
+            reached.notify_one();
+            let _ = released.wait_for(|go| *go).await;
+        })
+    })
+}
+
+/// How many notes in `session`'s transcript tell that `scout` finished.
+async fn finished_notes(daemon: &Running, session: &meerkat_core::SessionId) -> usize {
+    daemon
+        .transcript(session)
+        .await
+        .iter()
+        .filter(|m| !matches!(m, Message::ToolResults { .. }))
+        .filter(|m| format!("{m:?}").contains("Your helper `scout` finished its task"))
+        .count()
+}
+
+/// The daemon is stopped while the retire of a finished `assign` helper
+/// is reaching the engine (held there): the stop waits for it before it
+/// stops the mobs, so the stop is clean (the engine's stop of a member a
+/// retire meets mid-way failed the runtime's shutdown, once on hosted CI),
+/// and the next start finds the helper gone, its agent seated, and the
+/// ending told once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_waits_for_a_retire_under_way_and_stops_cleanly() {
+    let ws = Workspace::new();
+    let llm = finishing_script();
+    let daemon = Running::start(&ws.root, &llm).await;
+    let registry = daemon.registry();
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::watch::channel(false).0);
+    registry
+        .endings()
+        .retirements()
+        .before_engine(holding(&reached, &release));
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "go").await;
+    common::within(reached.notified()).await;
+    // Its ending reached the agent (the retire comes after it).
+    common::until(|| agent_heard(&llm, "Your helper `scout` finished its task")).await;
+    daemon.idle(&daemon.agent).await;
+    let session = daemon.current_session().await;
+    drop(connection);
+    let stopped = tokio::spawn(daemon.stop());
+    // The stop closed the retirements and waits for the one held.
+    common::until(|| registry.endings().retirements().closed()).await;
+    assert!(!stopped.is_finished(), "the stop waits for the retire");
+    release.send_replace(true);
+    stopped.await.unwrap();
+
+    let again = ScriptedLlmClient::new(vec![Step::Text("NOTED"); 12]);
+    let daemon = Running::start(&ws.root, &again).await;
+    let connection = daemon.connect_bound().await;
+    let seated_now = members(&connection, "tui").await;
+    assert!(seated_now.contains(&daemon.agent), "{seated_now:?}");
+    assert!(!seated_now.iter().any(|m| m == "scout"), "{seated_now:?}");
+    daemon.idle(&daemon.agent).await;
+    assert_eq!(finished_notes(&daemon, &session).await, 1);
+    assert_eq!(daemon.registry().endings().told(), 0);
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// A finished `assign` helper whose retire had not reached the engine
+/// when the daemon began to stop is not retired then (no retire starts
+/// once the stop began): it is still seated at the next start, which
+/// retires it, and its agent is not told of it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_retire_the_stop_held_back_is_made_at_the_next_start() {
+    let ws = Workspace::new();
+    let llm = finishing_script();
+    let daemon = Running::start(&ws.root, &llm).await;
+    let registry = daemon.registry();
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::watch::channel(false).0);
+    registry
+        .endings()
+        .before_retiring(holding(&reached, &release));
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "go").await;
+    common::within(reached.notified()).await;
+    common::until(|| agent_heard(&llm, "Your helper `scout` finished its task")).await;
+    let session = daemon.current_session().await;
+    assert!(seated(&connection, "scout").await);
+    daemon.idle(&daemon.agent).await;
+    drop(connection);
+    daemon.stop().await;
+    // Let go after the stop: it finds the retirements closed.
+    release.send_replace(true);
+
+    let again = ScriptedLlmClient::new(vec![Step::Text("NOTED"); 12]);
+    let daemon = Running::start(&ws.root, &again).await;
+    let connection = daemon.connect_bound().await;
+    until_gone(&connection, "scout").await;
+    assert!(members(&connection, "tui").await.contains(&daemon.agent));
+    daemon.idle(&daemon.agent).await;
+    assert_eq!(finished_notes(&daemon, &session).await, 1);
+    assert_eq!(daemon.registry().endings().told(), 0);
+    drop(connection);
+    daemon.stop().await;
+}

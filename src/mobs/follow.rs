@@ -143,7 +143,11 @@ async fn follow(
             // The record is of its own job: an earlier fork of the same
             // name (ended, its record kept for the epoch) is another job.
             let mut fork_job: Option<String> = None;
-            if tag.kind.is_fork() && tag.kind.life() == Some(super::HelperLife::Single) {
+            // A helper of any kind whose retire was decided before the
+            // last stop, and did not reach the engine, is done: retired now.
+            if registry.retire_owed(&key) {
+                registry.endings().retire_owed(&key);
+            } else if tag.kind.is_fork() && tag.kind.life() == Some(super::HelperLife::Single) {
                 let recorded = outcome_on_record(&handle, &key.member).await;
                 tracing::debug!(helper = %key, recorded, "a single-use fork followed: its outcome on record");
                 if recorded {

@@ -87,7 +87,13 @@ pub(crate) async fn cancel_helpers(
         // Left with its conversation: no parent is told.
         registry.endings().left(&key);
         match state.handle_for(&key.mob).await {
-            Ok(handle) => stop_helper(&handle, &key).await,
+            Ok(handle) => {
+                registry
+                    .endings()
+                    .retirements()
+                    .stop_helper(&handle, &key)
+                    .await;
+            }
             Err(err) => tracing::warn!(helper = %key, error = %err, "cannot reach helper's mob"),
         }
     }
@@ -111,6 +117,7 @@ pub(crate) async fn stop_helper(handle: &meerkat_mob::MobHandle, key: &HelperKey
 /// helper makes is refused).
 pub(crate) fn install_mob_hooks(state: &Arc<MobMcpState>, registry: &Arc<HelperRegistry>) {
     registry.endings().bind(state);
+    registry.endings().owe_to(registry);
     let created = Arc::downgrade(registry);
     let created_hook = state.set_before_create(Arc::new(
         move |request: meerkat_mob_mcp::MobCreateRequest| -> std::pin::Pin<

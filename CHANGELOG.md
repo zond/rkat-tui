@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- Quitting just as a helper finished could leave the daemon's stop
+  unclean (it ended with an error about a lifecycle commit), since the
+  daemon's retire of the finished helper could meet the stop of its mob.
+  The stop now lets a retire under way end first and starts no new one; a
+  finished helper the stop left seated is retired at the next start, and
+  its agent is not told of it again.
+
 - ↑ through the prompt history stopped at a slash command such as
   `/helpers` or `/model`: recalled, the command opened the completion
   menu, which took ↑/↓ for its highlight. No menu opens now over an entry

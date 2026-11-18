@@ -367,6 +367,28 @@ output now says why; report it rather than retrying silently:
   of 20 at 0b01fa7 itself (the race did not show locally), 0 of 20 after;
   the cause is read from the hosted log, not reproduced. No timeout was
   raised.
+- `a_restart_does_not_take_the_first_fork_s_outcome_for_the_second_s`
+  (`tests/it/helper_names.rs`): failed on hosted CI on a85a2d4 at the
+  rig's stop ("clean shutdown": `RecoveryRepairBlocked … stop durable
+  persist target Stopped from live Stopped disagreed with generated
+  lifecycle commit Retired`). A product race: the daemon's retire of a
+  single-use helper that finished (here the first fork, after its outcome
+  was recorded) is a task of its own, and nothing kept it from reaching
+  the engine while the shutdown stopped that member's mob. The shutdown
+  now closes the retirements before it stops the mobs: none starts from
+  then on, and those under way are awaited, at most 10 s
+  (`mobs::endings::Retirements`); a helper whose retire was decided is
+  marked in its binding (`retire_owed`), and a start that finds it still
+  seated retires it. Pinned with a hook inside the retire:
+  `a_stop_waits_for_a_retire_under_way_and_stops_cleanly` and
+  `a_retire_the_stop_held_back_is_made_at_the_next_start`
+  (`tests/it/helper_endings.rs`; the second failed before: the helper
+  stayed seated). Loaded rounds (`taskset -c 0,1` beside two busy loops):
+  0 of 20 before, 0 of 20 after; a release of the held retire swept from
+  0 to 350 ms into an unguarded stop did not make the engine's error
+  either, so the cause is read from the hosted log and the engine's
+  driver (`finalize_runtime_executor_exit` reads the shared lifecycle
+  twice), not reproduced. No timeout was raised.
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a

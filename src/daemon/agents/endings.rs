@@ -659,9 +659,32 @@ impl Agents {
     /// the engine, which resumes its run, and its answer comes to its
     /// parent when it finishes. One its mob no longer seats is gone: its
     /// parent is told so ([`crate::mobs::endings::HelperEndings::lost`]).
+    ///
+    /// A helper of any kind whose retire was decided before the last stop
+    /// (it was done) and did not reach the engine is retired now, when its
+    /// mob still seats it; nobody is told (its parent was, then).
     pub(crate) async fn settle_left_helpers(&self) {
         let registry = &self.core.registry;
         for (key, tag) in registry.bound_members() {
+            if registry.retire_owed(&key) {
+                match self.core.state.handle_for(&key.mob).await {
+                    Ok(handle)
+                        if handle
+                            .list_members()
+                            .await
+                            .iter()
+                            .any(|member| member.agent_identity == key.member) =>
+                    {
+                        registry.endings().retire_owed(&key);
+                    }
+                    // Its mob seats it no more: nothing is owed.
+                    Ok(_) => registry.retired(&key),
+                    Err(err) => {
+                        tracing::warn!(helper = %key, error = %err, "cannot reach the mob of a helper whose retire is owed");
+                    }
+                }
+                continue;
+            }
             if !key.mob.as_str().starts_with("implicit-") {
                 continue;
             }

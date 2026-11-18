@@ -277,6 +277,9 @@ impl Connector {
         let handle = state.handle_for(&helper.key.mob).await.map_err(|err| {
             format!("the mob of `{name}` cannot be reached, so it was not retired: {err}")
         })?;
+        let Some(_retiring) = self.registry.endings().retirements().begin() else {
+            return Err("the daemon is stopping: nothing was retired".to_string());
+        };
         // Ended with its parent's word: no note of it.
         self.registry.endings().left(&helper.key);
         crate::mobs::stop_helper(&handle, &helper.key).await;

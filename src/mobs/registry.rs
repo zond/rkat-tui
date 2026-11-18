@@ -748,6 +748,22 @@ impl HelperRegistry {
         self.live.lock().shift_remove(key);
     }
 
+    /// The helper `key` is done and being retired: a start that finds it
+    /// still seated retires it ([`HelperBindings::owe_retire`]).
+    pub fn owe_retire(&self, key: &HelperKey) {
+        if let Err(err) = self.bindings.owe_retire(key) {
+            tracing::warn!(helper = %key, error = %err, "cannot record the helper's retire");
+        }
+    }
+
+    /// Whether `key`'s retire was decided and is owed (it is done).
+    #[must_use]
+    pub fn retire_owed(&self, key: &HelperKey) -> bool {
+        self.bindings
+            .member(key)
+            .is_some_and(|binding| binding.retire_owed)
+    }
+
     /// The helper `key` left its mob for good: drop it everywhere.
     /// Idempotent.
     pub fn retired(&self, key: &HelperKey) {

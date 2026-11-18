@@ -838,6 +838,16 @@ impl Daemon {
         // The usage counted since the last run end, off the loop.
         let ledger = Arc::clone(&self.local.core().ledger);
         let _ = tokio::task::spawn_blocking(move || ledger.flush()).await;
+        // No helper's retire meets its mob's stop: none starts from now on,
+        // and the ones under way end first (`mobs::endings::Retirements`).
+        // A helper left seated so is retired at the next start.
+        self.local
+            .core()
+            .registry
+            .endings()
+            .retirements()
+            .close(RETIRE_SETTLE)
+            .await;
         stop_mobs(&self.state).await;
         let shutdown = self.runtime.try_shutdown().await;
         connections.abort_all();
@@ -1318,6 +1328,10 @@ fn is_database_file(path: &Path) -> bool {
         .iter()
         .any(|suffix| name.ends_with(suffix))
 }
+
+/// How long the helpers' retirements under way get to end at exit, before
+/// the mobs are stopped.
+const RETIRE_SETTLE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How long the managed mobs get to shut down at exit.
 const MOB_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(10);

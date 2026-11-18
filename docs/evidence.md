@@ -12571,3 +12571,51 @@ install after it asks). The system prompt stays under its 9 KiB bound.
 Corpus cases `a51`–`a55` (allow) and `b52`–`b57` (block); the
 deterministic tiers pass them (`corpus::every_case_passes_the_deterministic_tiers_as_labelled`).
 Their labels are for live runs, which were not made.
+
+## A stop that met a retire (hosted CI on a85a2d4, 2026-11-18)
+
+**Seen**: `helper_names::a_restart_does_not_take_the_first_fork_s_outcome_for_the_second_s`
+failed at the rig's stop: the runtime's shutdown returned
+`Store(RecoveryRepairBlocked { reason: "durability reload required after
+lifecycle_target_validation: stop durable persist target Stopped from live
+Stopped disagreed with generated lifecycle commit Retired" })`.
+
+**What the engine does**: the message is `meerkat-runtime` 0.9.16
+`driver/persistent.rs` `commit_lifecycle_with_rollback`, called from
+`finalize_runtime_executor_exit` (context `"stop"`): it classifies the
+target state from the driver's shared lifecycle authority, then builds the
+lifecycle commit from that authority again; a retire of the same member
+that moved the authority to `Retired` in between fails the check, the
+driver is marked "durability reload required", and the runtime's
+shutdown reports it.
+
+**Our side**: the daemon retires a finished single-use helper (a fork
+once its outcome is recorded, a fresh `assign` helper when it is done)
+in a task of its own (`HelperEndings::retire_done`), and the shutdown
+stopped the mobs without waiting for it: the test asserts `retires() == 1`
+(the count is taken when the retire is decided) and stops at once.
+
+**Fix**: `mobs::endings::Retirements`: every retire the daemon makes
+(`retire_done`, the user's stop, the left-over delegate helpers,
+`retire_helper`, a conversation switch's `cancel_helpers`) holds a guard
+while it reaches the engine; the shutdown closes it right before
+`stop_mobs` (no retire starts from then on: `retire_helper` answers "the
+daemon is stopping: nothing was retired") and waits for the guards, at
+most 10 s. Each decided retire marks the helper's binding
+(`tui_helpers.json` `retire_owed`) first, and the start
+(`Agents::settle_left_helpers`) retires a marked helper its mob still
+seats, telling nobody. Before, a fresh single-use helper whose retire did
+not reach the engine stayed seated after the restart for good (the engine
+restores an idle member without a rebuild, so the follower never sees it).
+
+**Probes**: 20 loaded rounds of the CI test before the fix, all clean. A
+hook inside the retire (`Retirements::before_engine`) held it, and the
+release was swept from 0 to 350 ms into a stop that did not wait: the
+stop stayed clean every time (the mob actor serialises the retire with its
+shutdown in these windows), so the exact interleaving was not made here.
+The fix removes the overlap on our side whatever the window is; no
+upstream draft, since a correctly sequenced stop was never shown to fail.
+
+Tests: `helper_endings::a_stop_waits_for_a_retire_under_way_and_stops_cleanly`,
+`helper_endings::a_retire_the_stop_held_back_is_made_at_the_next_start`
+(failed before the start's retire: the helper stayed seated).

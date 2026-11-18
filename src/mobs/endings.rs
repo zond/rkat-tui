@@ -329,6 +329,118 @@ pub struct HelperEndings {
     /// Tests: awaited before a finished `assign` helper is retired.
     #[cfg(any(test, feature = "test-support"))]
     before_retiring: OnceLock<DecidingHook>,
+    /// The retirements under way, and whether one may still start
+    /// ([`Retirements`]).
+    retirements: Arc<Retirements>,
+    /// Where a decided retire is recorded, so a start that finds the
+    /// helper still seated retires it ([`Self::owe_to`]).
+    owed: OnceLock<Weak<super::HelperRegistry>>,
+}
+
+/// The retirements of helpers under way, closed when the daemon stops: the
+/// engine's stop of a member that a retire of it meets mid-way fails the
+/// runtime's shutdown ("stop durable persist target Stopped … disagreed with
+/// generated lifecycle commit Retired", `docs/evidence.md`, "A stop that
+/// met a retire"). So every retire the daemon makes holds a
+/// [`Retiring`] while it reaches the engine, none starts once
+/// [`Retirements::close`] was called, and the close waits for the ones
+/// under way before the mobs are stopped. A helper whose retire was not
+/// started is retired by the next start.
+#[derive(Debug)]
+pub struct Retirements {
+    /// Closed, and how many are under way.
+    gate: tokio::sync::watch::Sender<(bool, usize)>,
+    /// Tests: awaited inside a retire, just before it reaches the engine.
+    #[cfg(any(test, feature = "test-support"))]
+    before_engine: OnceLock<DecidingHook>,
+}
+
+impl Default for Retirements {
+    fn default() -> Self {
+        Self {
+            gate: tokio::sync::watch::channel((false, 0)).0,
+            #[cfg(any(test, feature = "test-support"))]
+            before_engine: OnceLock::new(),
+        }
+    }
+}
+
+/// One retire under way ([`Retirements::begin`]); dropped when it is done.
+#[derive(Debug)]
+pub struct Retiring(Arc<Retirements>);
+
+impl Drop for Retiring {
+    fn drop(&mut self) {
+        self.0.gate.send_modify(|(_, active)| *active -= 1);
+    }
+}
+
+impl Retirements {
+    /// Start a retire (`None`: the daemon is stopping, so none starts).
+    #[must_use]
+    pub fn begin(self: &Arc<Self>) -> Option<Retiring> {
+        let mut started = false;
+        self.gate.send_if_modified(|(closed, active)| {
+            if *closed {
+                return false;
+            }
+            *active += 1;
+            started = true;
+            true
+        });
+        started.then(|| Retiring(Arc::clone(self)))
+    }
+
+    /// Start no retire from now on, and wait for the ones under way, at
+    /// most `bound`: whether none is left.
+    pub async fn close(&self, bound: std::time::Duration) -> bool {
+        self.gate.send_modify(|(closed, _)| *closed = true);
+        let mut gate = self.gate.subscribe();
+        let settled = tokio::time::timeout(bound, gate.wait_for(|(_, active)| *active == 0))
+            .await
+            .is_ok_and(|seen| seen.is_ok());
+        if !settled {
+            let active = self.gate.borrow().1;
+            tracing::warn!(
+                active,
+                "helper retirements still under way as the mobs stop"
+            );
+        }
+        settled
+    }
+
+    /// Tests: whether the daemon is stopping (no retire starts).
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn closed(&self) -> bool {
+        self.gate.borrow().0
+    }
+
+    /// Retire `key` in `handle`'s mob ([`super::stop_helper`]) unless the
+    /// daemon is stopping: whether it was retired here.
+    pub async fn stop_helper(
+        self: &Arc<Self>,
+        handle: &meerkat_mob::MobHandle,
+        key: &HelperKey,
+    ) -> bool {
+        let Some(_retiring) = self.begin() else {
+            tracing::info!(helper = %key, "the daemon is stopping: the helper is retired at its next start");
+            return false;
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(hook) = self.before_engine.get() {
+            (hook.0)(key.clone()).await;
+        }
+        super::stop_helper(handle, key).await;
+        true
+    }
+
+    /// Tests: await `hook` (with the helper's key) inside each retire, just
+    /// before it reaches the engine (once).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn before_engine(&self, hook: DecidingHookFn) {
+        let _ = self.before_engine.set(DecidingHook(hook));
+    }
 }
 
 /// Tests: what [`HelperEndings::before_deciding`] awaits for a helper.
@@ -441,6 +553,25 @@ impl HelperEndings {
     /// Retire helpers through `state` (once).
     pub fn bind(&self, state: &Arc<MobMcpState>) {
         let _ = self.state.set(Arc::downgrade(state));
+    }
+
+    /// Record each retire decided for a finished helper in `registry`'s
+    /// bindings (once): a start that finds it still seated retires it
+    /// ([`Self::retire_owed`]).
+    pub fn owe_to(&self, registry: &Arc<super::HelperRegistry>) {
+        let _ = self.owed.set(Arc::downgrade(registry));
+    }
+
+    /// The helper `key`, restored at a start, is done: its retire was
+    /// decided before the last stop and did not reach the engine. It is
+    /// retired now; nobody is told (its parent was, then).
+    pub fn retire_owed(&self, key: &HelperKey) {
+        if self.is_settled(key) {
+            return;
+        }
+        tracing::info!(helper = %key, "a helper the last stop left seated after it finished: it is retired");
+        self.settle(key);
+        self.retire_done(key);
     }
 
     /// Whether `key`'s ending was settled already.
@@ -926,16 +1057,19 @@ impl HelperEndings {
             return;
         };
         let key = key.clone();
+        let retirements = Arc::clone(&self.retirements);
         runtime.spawn(async move {
             if any {
                 match state.handle_for(&key.mob).await {
-                    Ok(handle) => super::stop_helper(&handle, &key).await,
+                    Ok(handle) => {
+                        retirements.stop_helper(&handle, &key).await;
+                    }
                     Err(err) => {
                         tracing::warn!(helper = %key, error = %err, "cannot reach the stopped helper's mob");
                     }
                 }
             } else {
-                super::delegates::retire_left_helper(&state, &key).await;
+                super::delegates::retire_left_helper(&state, &retirements, &key).await;
             }
         });
     }
@@ -947,6 +1081,9 @@ impl HelperEndings {
     fn retire_done(&self, key: &HelperKey) {
         self.retires
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(registry) = self.owed.get().and_then(Weak::upgrade) {
+            registry.owe_retire(key);
+        }
         let Some(state) = self.state.get().and_then(Weak::upgrade) else {
             return;
         };
@@ -955,6 +1092,7 @@ impl HelperEndings {
         };
         let key = key.clone();
         let retired = Arc::clone(&self.retired_peers);
+        let retirements = Arc::clone(&self.retirements);
         #[cfg(any(test, feature = "test-support"))]
         let hook = self.before_retiring.get().map(|hook| Arc::clone(&hook.0));
         runtime.spawn(async move {
@@ -974,13 +1112,19 @@ impl HelperEndings {
                             retired.pop_front();
                         }
                     }
-                    super::stop_helper(&handle, &key).await;
+                    retirements.stop_helper(&handle, &key).await;
                 }
                 Err(err) => {
                     tracing::warn!(helper = %key, error = %err, "cannot reach the finished helper's mob");
                 }
             }
         });
+    }
+
+    /// The retirements under way, closed when the daemon stops.
+    #[must_use]
+    pub fn retirements(&self) -> &Arc<Retirements> {
+        &self.retirements
     }
 
     /// The name of the `assign` helper that ran as the peer `peer_id` and
@@ -1401,5 +1545,28 @@ mod tests {
             "failed: its run was cut off when the daemon stopped"
         );
         assert!(!recovered.text().contains("Recovery"));
+    }
+
+    /// No retire starts once the retirements are closed, and the close
+    /// waits for the one under way (and only within its bound).
+    #[tokio::test]
+    async fn a_closed_retirements_start_none_and_wait_for_the_one_under_way() {
+        let retirements = Arc::new(Retirements::default());
+        let under_way = retirements.begin().unwrap();
+        let closing = {
+            let retirements = Arc::clone(&retirements);
+            tokio::spawn(async move { retirements.close(std::time::Duration::from_secs(30)).await })
+        };
+        while !retirements.closed() {
+            tokio::task::yield_now().await;
+        }
+        assert!(retirements.begin().is_none());
+        assert!(!closing.is_finished());
+        drop(under_way);
+        assert!(closing.await.unwrap());
+        // One that never ends is given up on at the bound.
+        let stuck = Arc::new(Retirements::default());
+        let _held = stuck.begin().unwrap();
+        assert!(!stuck.close(std::time::Duration::from_millis(10)).await);
     }
 }

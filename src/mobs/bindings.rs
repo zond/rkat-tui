@@ -77,6 +77,11 @@ pub struct MemberBinding {
     /// The helper's own session, once the mob names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionId>,
+    /// It is done and its retire was decided
+    /// ([`HelperBindings::owe_retire`]): a start that finds it still seated
+    /// retires it (absent in the files an earlier build wrote: not owed).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retire_owed: bool,
 }
 
 /// A member binding as the file stores it.
@@ -350,18 +355,38 @@ impl HelperBindings {
     /// [`BindingsError`] when the file cannot be updated.
     pub fn bind(&self, key: &HelperKey, tag: &HelperTag) -> Result<(), BindingsError> {
         self.change(|b| {
-            let session = b
-                .members
-                .get(key)
-                .filter(|binding| &binding.tag == tag)
-                .and_then(|binding| binding.session.clone());
+            let same = b.members.get(key).filter(|binding| &binding.tag == tag);
+            let session = same.and_then(|binding| binding.session.clone());
+            let retire_owed = same.is_some_and(|binding| binding.retire_owed);
             b.members.insert(
                 key.clone(),
                 MemberBinding {
                     tag: tag.clone(),
                     session,
+                    retire_owed,
                 },
             );
+        })
+    }
+
+    /// `key` is done and is being retired: a start that finds it still
+    /// seated (the retire did not reach the engine before the daemon
+    /// stopped) retires it. Nothing when it is not bound.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingsError`] when the file cannot be updated.
+    pub fn owe_retire(&self, key: &HelperKey) -> Result<(), BindingsError> {
+        if self
+            .lookup(|b| b.members.get(key).map(|binding| binding.retire_owed))
+            .unwrap_or(true)
+        {
+            return Ok(());
+        }
+        self.change(|b| {
+            if let Some(binding) = b.members.get_mut(key) {
+                binding.retire_owed = true;
+            }
         })
     }
 
@@ -386,11 +411,16 @@ impl HelperBindings {
             return Ok(());
         }
         self.change(|b| {
+            let retire_owed = b
+                .members
+                .get(key)
+                .is_some_and(|binding| &binding.tag == tag && binding.retire_owed);
             b.members.insert(
                 key.clone(),
                 MemberBinding {
                     tag: tag.clone(),
                     session: Some(session.clone()),
+                    retire_owed,
                 },
             );
         })
@@ -500,6 +530,34 @@ mod tests {
         assert_eq!(reopened.mob_owner(&MobId::from("team")), Some(owner));
         reopened.remove_mob(&MobId::from("team")).unwrap();
         assert!(reopened.mob_owner(&MobId::from("team")).is_none());
+    }
+
+    /// A retire owed survives a reopen and the rebuild's bind of the same
+    /// tag; a binding written without it (an earlier build's) owes none.
+    #[test]
+    fn a_retire_owed_is_kept_across_a_reopen_and_a_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = SessionId::new();
+        let key = HelperKey::new(MobId::from("tui"), AgentIdentity::from("scout"));
+        {
+            let bindings = HelperBindings::open(dir.path()).unwrap();
+            bindings.bind(&key, &tag(&owner, "scout")).unwrap();
+            assert!(!bindings.member(&key).unwrap().retire_owed);
+            let text = std::fs::read_to_string(dir.path().join(BINDINGS_FILE)).unwrap();
+            assert!(!text.contains("retire_owed"), "{text}");
+            bindings.owe_retire(&key).unwrap();
+        }
+        let reopened = HelperBindings::open(dir.path()).unwrap();
+        assert!(reopened.member(&key).unwrap().retire_owed);
+        reopened.bind(&key, &tag(&owner, "scout")).unwrap();
+        reopened
+            .set_member_session(&key, &tag(&owner, "scout"), &SessionId::new())
+            .unwrap();
+        assert!(reopened.member(&key).unwrap().retire_owed);
+        // Owing for a helper not bound records nothing.
+        let other = HelperKey::new(MobId::from("tui"), AgentIdentity::from("gone"));
+        reopened.owe_retire(&other).unwrap();
+        assert!(reopened.member(&other).is_none());
     }
 
     #[test]

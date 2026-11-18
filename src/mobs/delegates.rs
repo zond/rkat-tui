@@ -29,7 +29,11 @@ pub fn implicit_mob(session: &meerkat_core::SessionId) -> meerkat_mob::MobId {
 /// when its mob still lists it under the `delegate` profile: force-cancel
 /// its run, then retire it. Anything else (gone already, another profile's
 /// member under the same id) is left as it is.
-pub async fn retire_left_helper(state: &MobMcpState, key: &HelperKey) {
+pub async fn retire_left_helper(
+    state: &MobMcpState,
+    retirements: &std::sync::Arc<super::endings::Retirements>,
+    key: &HelperKey,
+) {
     let Ok(handle) = state.handle_for(&key.mob).await else {
         return;
     };
@@ -40,5 +44,5 @@ pub async fn retire_left_helper(state: &MobMcpState, key: &HelperKey) {
         return;
     }
     tracing::info!(helper = %key, "retiring a finished delegate helper an earlier build left");
-    super::stop_helper(&handle, key).await;
+    retirements.stop_helper(&handle, key).await;
 }
