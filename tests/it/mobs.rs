@@ -722,15 +722,17 @@ async fn a_nested_helper_s_note_that_lands_before_its_parent_is_decided_goes_to_
     rig.quit().await;
 }
 
-/// The other order of the same race: `scout` is decided done while
-/// `inner`'s run has ended and its own decision is still held. `inner` is
-/// retired with `scout` (nothing stays seated without its owner) and its
-/// decision, opened afterwards, tells nothing: the agent is told once, of
-/// `scout`, naming `inner` as retired with it; no note of `inner` goes to
-/// the helper being retired (before the fix of 2026-11-17 it did and was
-/// lost, or refused: "mob member not found: scout") nor to the agent.
+/// The other order of the same race: `scout`'s run end is decided first,
+/// while `inner`'s run has ended and its own decision is still held.
+/// Before 2026-11-18 `scout` was done then and `inner`'s note went up to
+/// the agent (before the fix of 2026-11-17 it went to the helper being
+/// retired and was lost, or refused: "mob member not found: scout"). A
+/// helper whose own helper is still at work is not done now (else it
+/// would be retired with it, losing its answer): `scout` stays, is not
+/// retired, `inner`'s note reaches it once, and the agent is told once,
+/// of `scout`, never of `inner`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_nested_helper_s_note_after_its_parent_was_decided_goes_up_to_the_agent() {
+async fn a_nested_helper_s_note_after_its_parent_was_decided_reaches_the_parent() {
     let ws = Workspace::new();
     let llm = nesting();
     let setup = Setup::args(&["--set", "helpers.max_depth=2"]);
@@ -743,22 +745,23 @@ async fn a_nested_helper_s_note_after_its_parent_was_decided_goes_up_to_the_agen
     gates.reached("scout").await;
     gates.reached("inner").await;
     gates.open("scout");
-    gates.reached("retire scout").await;
+    // Decided, not done: nothing retires it while inner is at work.
+    let registry = rig.daemon.registry();
+    let scout = rkat_tui::mobs::HelperKey::new(
+        meerkat_mob::MobId::from("tui"),
+        meerkat_mob::AgentIdentity::from("scout"),
+    );
+    common::until(|| registry.endings().idle_decided() >= 1).await;
+    assert!(registry.endings().is_tracked(&scout), "scout is not done");
     gates.open("inner");
-    common::until(|| {
-        of_agent(&llm).last().is_some_and(|r| {
-            common::user_texts(&r.messages).iter().any(|text| {
-                text.contains("Your helper `scout` finished its task")
-                    && text.contains("Its own helper `inner` was retired with it.")
-            })
-        })
-    })
-    .await;
+    common::until(|| notes_in_last(&of_helper(&llm, "HELPER-TASK"), "inner") == 1).await;
+    gates.reached("retire scout").await;
     gates.open("retire scout");
+    common::until(|| common::parent_told(&llm, "HELPER-TASK", "scout")).await;
     rig.daemon.idle(&rig.daemon.agent).await;
     assert_eq!(notes_in_last(&of_agent(&llm), "scout"), 1);
     assert_eq!(notes_in_last(&of_agent(&llm), "inner"), 0);
-    assert_eq!(notes_in_last(&of_helper(&llm, "HELPER-TASK"), "inner"), 0);
+    assert_eq!(notes_in_last(&of_helper(&llm, "HELPER-TASK"), "inner"), 1);
     rig.quit().await;
 }
 

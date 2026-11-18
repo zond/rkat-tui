@@ -502,6 +502,12 @@ pub struct Daemon {
     local: Arc<local::Local>,
     /// The desk and the event watcher, aborted at shutdown.
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// The delivery of helpers' endings and its stop: at shutdown it holds
+    /// what it has not told yet, and is awaited.
+    endings: Option<(
+        tokio::task::JoinHandle<()>,
+        tokio::sync::watch::Sender<bool>,
+    )>,
 }
 
 impl std::fmt::Debug for Daemon {
@@ -645,7 +651,7 @@ impl Daemon {
         });
         attach_engine(&core, &agents, &workspace)?;
         composed.desk.report_to(&composed.engine);
-        let endings_task = deliver_endings(&agents);
+        let (endings_task, endings_stop) = deliver_endings(&agents);
         let checkpoints_task = deliver_checkpoints(&agents);
         let first_agent = start_agents(
             &agents,
@@ -707,9 +713,9 @@ impl Daemon {
                 engine: Arc::clone(&core.engine),
                 compact_threshold: composed.root.compact_threshold,
             },
+            endings: Some((endings_task, endings_stop)),
             tasks: [
                 watch_task,
-                endings_task,
                 checkpoints_task,
                 storage::watch_free_space(Arc::downgrade(&agents_for_space)),
             ]
@@ -832,6 +838,14 @@ impl Daemon {
             format!("pid {}", std::process::id()),
         ));
         let mut connections = served;
+        // The helpers' endings not told yet (one within its batch's
+        // window) are held for their agents, not lost.
+        if let Some((task, stop)) = self.endings.take() {
+            let _ = stop.send(true);
+            if tokio::time::timeout(ENDINGS_SETTLE, task).await.is_err() {
+                tracing::warn!("the helpers' endings were not held in time as the daemon stops");
+            }
+        }
         for task in &self.tasks {
             task.abort();
         }
@@ -1250,10 +1264,25 @@ fn attach_engine(
 /// The agents' file watches: each batch reaches its agent.
 /// Tell the parents of helpers how they ended ([`agents::endings`]):
 /// the registry's endings go to the agents from now on.
-fn deliver_endings(agents: &Arc<agents::Agents>) -> tokio::task::JoinHandle<()> {
+/// The task, and what tells it the daemon stops (it then holds what it
+/// has not told yet, [`agents::endings::deliver`]).
+fn deliver_endings(
+    agents: &Arc<agents::Agents>,
+) -> (
+    tokio::task::JoinHandle<()>,
+    tokio::sync::watch::Sender<bool>,
+) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (stop, stopping) = tokio::sync::watch::channel(false);
     agents.core().registry.endings().deliver_to(tx);
-    tokio::spawn(agents::endings::deliver(Arc::downgrade(agents), rx))
+    (
+        tokio::spawn(agents::endings::deliver(
+            Arc::downgrade(agents),
+            rx,
+            stopping,
+        )),
+        stop,
+    )
 }
 
 /// Hand every helper's run that reaches its limit to its checkpoint
@@ -1338,6 +1367,10 @@ fn is_database_file(path: &Path) -> bool {
 /// How long the helpers' retirements under way get to end at exit, before
 /// the mobs are stopped.
 const RETIRE_SETTLE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long the delivery of helpers' endings gets at exit to finish the
+/// note it is telling and hold the rest.
+const ENDINGS_SETTLE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How long the managed mobs get to shut down at exit.
 const MOB_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(10);

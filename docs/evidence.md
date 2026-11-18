@@ -12781,13 +12781,28 @@ one refinement is needed: a single-use helper that starts a helper and
 ends its run waiting for its note (as the helper persona tells it: "do
 not poll") was done at once, and its running helper was then killed
 with it (`mobs::a_helper_below_a_raised_depth_limit_starts_one_more`).
-Now a single-use helper whose own helper still runs (the registry's
-activity) is not done when its run ends (`HelperEndings::done`): that
-helper's ending is told to it, a run of it reads it, and that run's end
-decides again. `mobs::a_nested_helper_s_note_after_its_parent_was_decided_goes_up_to_the_agent`
-(the nested helper's run ended, its decision held) now has the nested
-helper retired with its parent and named in the agent's one note, its
-own decision telling nothing.
+Now a single-use helper whose own helper is still at work is not done
+when its run ends (`HelperEndings::done`): that helper's ending is told
+to it, a run of it reads it, and that run's end decides again.
+
+The first version of that check read the registry's activity (running
+or not), and hosted CI on 9822a88 failed
+`mobs::a_helper_below_a_raised_depth_limit_starts_one_more` (the wait for
+`inner`'s note at `tests/it/mobs.rs:579`; the log shows `inner` retired
+right before `scout`): the nested helper was spawned but its run's start
+not seen yet (no activity), or its run had ended and its own end was
+still being decided (`settle_idle`), so `scout` counted as done and
+`inner` was retired with it, its note never told. Locally the run start
+always came first. The check is now the endings' own state
+(`HelperEndings::at_work`): followed, and no run of it decided idle
+since its last run started (spawned and not run, running, or being
+decided). `mobs::a_nested_helper_s_note_after_its_parent_was_decided_reaches_the_parent`
+(renamed from `…_goes_up_to_the_agent`; the nested helper's run ended,
+its decision held while the parent's is opened) now pins that the
+parent stays, gets the nested helper's note once, and the agent is told
+of the parent only. Known limit: a kept helper restored at a start has
+no decided run in the new daemon, so a restored single-use parent of one
+stays at work until that helper runs again.
 
 The single-use audit's other half, established with a rig test: a
 single-use helper connected to a sibling, messaged by it during its last
@@ -12833,3 +12848,28 @@ it is out of the turns the engine keeps verbatim; the newest one names
 what is held then. A steer that lands after the run's last request runs
 as one short follow-up run. Test:
 `compact_prepare::after_its_own_compaction_the_agent_is_told_the_helpers_it_holds_now`.
+
+## An ending told just before a stop (2026-11-18)
+
+`daemon::agents::endings::deliver` gathers the endings that come within
+`BATCH` (250 ms) of the first into one note; the task was among the
+daemon's tasks that the stop aborts, so an ending in the window was
+dropped, and nothing recorded it for the next start. Now the stop
+signals the task (a watch) before the tasks are aborted and awaits it
+(bounded, `ENDINGS_SETTLE`): a note being told is told to its end; the
+batch in its window and whatever is queued are held for the agent each
+helper worked for (`Agents::hold_at_stop`, `HeldNotes`, the existing
+durable `held-notes.json`, its format unchanged). Telling them at the
+stop instead was rejected: a steer into an agent then meets the mobs'
+stop. Every restored agent starts as just interrupted, so the held note
+travels with the user's next message after the start, the existing path
+of the endings the stop itself causes; `take` removes it, so it goes
+once. The brief suggested a new field of the helper's binding in
+`tui_helpers.json`; a finished single-use helper's binding is dropped
+by its retire, which may well land before the stop, so the note is kept
+with the agent instead. A test-support hook holds the batch window open
+until the stop (`HelperEndings::hold_batches`). Test:
+`helper_endings::an_ending_told_just_before_a_stop_reaches_the_agent_after_the_start`
+(before the restart: told to the delivery, not to the agent, and held in
+the file at the stop; after it: with the first message, once, not with
+the next, and gone from the file).

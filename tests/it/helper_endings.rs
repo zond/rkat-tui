@@ -428,6 +428,83 @@ async fn a_held_ending_survives_a_daemon_restart() {
     daemon.stop().await;
 }
 
+/// An ending told within the delivery's batch window just before the
+/// daemon stops (the window held open here until the stop) is not lost:
+/// the stop holds it for the agent, durably (`held-notes.json`), and after
+/// the next start it travels with the user's first message, once; the
+/// message after that does not carry it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_ending_told_just_before_a_stop_reaches_the_agent_after_the_start() {
+    use rkat_tui::daemon::protocol::AgentChoice;
+    use rkat_tui::ui::Departure;
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if is_helper(messages, "HELPER-TASK") {
+            return Step::Text("HELPER-ANSWER");
+        }
+        let user = common::user_texts(messages).concat();
+        if user.contains("again") || user.contains("later") {
+            return Step::Text("after the restart");
+        }
+        match results(messages) {
+            0 => assign("a1", "quick", "HELPER-TASK: look"),
+            _ => Step::Text("started it"),
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 20]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let registry = daemon.registry();
+    registry.endings().hold_batches();
+    let mut client = Client::attach(&ws.root).await;
+    let name = client.agent().await;
+    client.send(Effect::StartTurn("go".into()));
+    assert_eq!(client.turn_finished().await.unwrap().text, "started it");
+    // The helper finished and its ending was told to the delivery, which
+    // holds it in its window.
+    common::until(|| registry.endings().told() == 1).await;
+    daemon.idle(&daemon.agent).await;
+    assert!(!agent_heard(&llm, "Your helper `quick` finished"));
+    client.send(Effect::Leave(Departure::Detach));
+    client.quit().await;
+    drop(registry);
+    daemon.stop().await;
+    let held = common::realm_of(&ws.root).join("held-notes.json");
+    assert!(
+        std::fs::read_to_string(&held)
+            .unwrap()
+            .contains("Your helper `quick` finished its task"),
+        "held for the agent at the stop"
+    );
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach_agent(&ws.root, AgentChoice::Agent { name }).await;
+    client.send(Effect::StartTurn("again".into()));
+    assert_eq!(
+        client.turn_finished().await.unwrap().text,
+        "after the restart"
+    );
+    let message = message_with(&llm, "again");
+    assert!(
+        message.contains("Your helper `quick` finished its task")
+            && message.contains("HELPER-ANSWER"),
+        "{message}"
+    );
+    client.send(Effect::StartTurn("later".into()));
+    client.turn_finished().await.unwrap();
+    let last = llm.recorded().last().unwrap().messages.clone();
+    let told = common::user_texts(&last)
+        .iter()
+        .filter(|text| text.contains("Your helper `quick` finished its task"))
+        .count();
+    assert_eq!(told, 1, "told once");
+    assert!(
+        !std::fs::read_to_string(&held)
+            .unwrap()
+            .contains("HELPER-ANSWER")
+    );
+    client.quit().await;
+    daemon.stop().await;
+}
+
 /// The script of the restart tests: a helper whose task names
 /// `HELPER-TASK` hangs before the restart (`restarted` unset) and answers
 /// `RESTORED-ANSWER` after it, counting its calls in `helper_calls`; the

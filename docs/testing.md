@@ -171,7 +171,15 @@ output now says why; report it rather than retrying silently:
   `Agents::tell`). Both orders are pinned with decision and retire hooks:
   `a_nested_helper_s_note_that_lands_before_its_parent_is_decided_goes_to_the_parent`
   and `a_nested_helper_s_note_after_its_parent_was_decided_goes_up_to_the_agent`.
-  No timeout was raised.
+  No timeout was raised. It failed again on hosted CI (commit 9822a88, the
+  same wait), caused by that commit: a helper retired takes its own
+  helpers with it, and a single-use `scout` whose run ended counted as
+  done when `inner` showed no running activity, which is also the case
+  for a helper spawned whose run start was not seen yet, or whose run's
+  end was still being decided; `inner` was retired with `scout` and its
+  note never told. The check is now the endings' own state
+  (`HelperEndings::at_work`), and the second test is now
+  `a_nested_helper_s_note_after_its_parent_was_decided_reaches_the_parent`.
 - `parallel_escalations_share_one_timeout_including_the_queue`
   (`src/approval/engine.rs`): the paused tokio clock auto-advances while a task
   waits on `spawn_blocking`, so budget checks must happen after every await.

@@ -419,22 +419,103 @@ impl HeldNotes {
 pub struct Interrupted(parking_lot::Mutex<HashSet<String>>);
 
 /// Hand every ending `endings` delivers to `agents`, those that come within
-/// [`BATCH`] of each other together, until the channel closes.
-pub(crate) async fn deliver(agents: Weak<Agents>, mut endings: mpsc::UnboundedReceiver<Ended>) {
-    while let Some(first) = endings.recv().await {
+/// [`BATCH`] of each other together, until the channel closes or the
+/// daemon stops (`stopping` turns true). At the stop the batch waiting for
+/// its window and whatever else is queued are not lost: they are held for
+/// their agents ([`Agents::hold_at_stop`]), durably, and travel with the
+/// next message to the agent after the next start (every restored agent
+/// starts as just interrupted), as the endings the stop itself causes do.
+/// A batch being told when the stop comes is told to its end first, so
+/// each ending is told once.
+pub(crate) async fn deliver(
+    agents: Weak<Agents>,
+    mut endings: mpsc::UnboundedReceiver<Ended>,
+    mut stopping: tokio::sync::watch::Receiver<bool>,
+) {
+    loop {
+        let first = tokio::select! {
+            next = endings.recv() => match next {
+                Some(first) => first,
+                None => return,
+            },
+            _ = stopping.wait_for(|stopping| *stopping) => {
+                if let Some(agents) = agents.upgrade() {
+                    agents.hold_at_stop(Vec::new(), &mut endings);
+                }
+                return;
+            }
+        };
         let mut batch = vec![first];
-        let deadline = tokio::time::Instant::now() + BATCH;
-        while let Ok(Some(next)) = tokio::time::timeout_at(deadline, endings.recv()).await {
-            batch.push(next);
-        }
+        let Some(window) = agents.upgrade().map(|agents| agents.batch_window()) else {
+            return;
+        };
+        let deadline = tokio::time::Instant::now() + window;
+        let stopped = loop {
+            tokio::select! {
+                next = tokio::time::timeout_at(deadline, endings.recv()) => match next {
+                    Ok(Some(next)) => batch.push(next),
+                    _ => break false,
+                },
+                _ = stopping.wait_for(|stopping| *stopping) => break true,
+            }
+        };
         let Some(agents) = agents.upgrade() else {
             return;
         };
+        if stopped {
+            agents.hold_at_stop(batch, &mut endings);
+            return;
+        }
         agents.helpers_ended(batch).await;
     }
 }
 
 impl Agents {
+    /// How long the endings after a batch's first wait to go with it
+    /// ([`BATCH`]; tests can hold a batch open until the daemon stops).
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(clippy::unused_self))]
+    fn batch_window(&self) -> Duration {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.core.registry.endings().batches_held() {
+            return Duration::from_hours(1);
+        }
+        BATCH
+    }
+
+    /// The daemon stops while `batch` (and what else `endings` holds)
+    /// waits to be told: each ending is held for the agent its helper
+    /// worked for, one note per agent, persisted ([`HeldNotes`]); it
+    /// travels with the next message to that agent after the next start.
+    /// An ending whose agent runs another conversation now goes to nobody,
+    /// as at any time.
+    fn hold_at_stop(&self, mut batch: Vec<Ended>, endings: &mut mpsc::UnboundedReceiver<Ended>) {
+        while let Ok(next) = endings.try_recv() {
+            batch.push(next);
+        }
+        let mut groups: Vec<((String, SessionId), Vec<NoteItem>)> = Vec::new();
+        for ended in batch {
+            let Some(agent) = self.agent_running_as(&ended.tag.owner) else {
+                tracing::info!(helper = %ended.key, "a helper's ending at the daemon's stop: its agent runs another conversation; nobody is told");
+                continue;
+            };
+            let item = NoteItem {
+                label: ended.tag.label().to_string(),
+                rest: self.write_rest(&ended),
+                how: ended.how.clone(),
+                with: ended.with.clone(),
+            };
+            let recipient = (agent, ended.tag.owner.clone());
+            match groups.iter_mut().find(|(r, _)| *r == recipient) {
+                Some((_, items)) => items.push(item),
+                None => groups.push((recipient, vec![item])),
+            }
+        }
+        for ((agent, session), items) in groups {
+            tracing::info!(%agent, endings = items.len(), "helpers' endings held at the daemon's stop for the agent's next message");
+            self.held.hold(&agent, &session, note_text(&items));
+        }
+    }
+
     /// The user interrupted `name`'s run: the endings of its helpers are
     /// held until its next run (or the user's next message).
     pub fn interrupted(&self, name: &str) {

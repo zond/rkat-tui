@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- A helper's ending told in the quarter second before the daemon
+  stopped (the window in which endings are gathered into one note) never
+  reached its agent. The stop now holds such endings for the agent, in
+  `held-notes.json`, and they travel with the next message to it after
+  the next start, once.
 - `/helpers` and the helper panel could list helpers the agent no longer
   held, and leave out ones it did: a helper whose whole run the TUI read
   at once (a fast kept one) was shown ended while it sat idle, any event

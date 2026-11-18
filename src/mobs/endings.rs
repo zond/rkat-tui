@@ -348,6 +348,10 @@ pub struct HelperEndings {
     /// Tests: awaited before a finished `assign` helper is retired.
     #[cfg(any(test, feature = "test-support"))]
     before_retiring: OnceLock<DecidingHook>,
+    /// Tests: the daemon's delivery holds every batch of endings open
+    /// until the daemon stops ([`Self::hold_batches`]).
+    #[cfg(any(test, feature = "test-support"))]
+    batches_held: std::sync::atomic::AtomicBool,
     /// The retirements under way, and whether one may still start
     /// ([`Retirements`]).
     retirements: Arc<Retirements>,
@@ -962,6 +966,16 @@ impl HelperEndings {
         let _ = self.before_retiring.set(DecidingHook(hook));
     }
 
+    /// Whether the followed helper `key` is at work: no run of it has been
+    /// decided idle since its last run started (one spawned and not run
+    /// yet, one running, one whose run ended and is being decided). A
+    /// helper not followed (or settled) is not.
+    fn at_work(&self, key: &HelperKey) -> bool {
+        self.tracked.lock().get(key).is_some_and(|tracked| {
+            tracked.tag.is_some() && tracked.idle_after != Some(tracked.runs)
+        })
+    }
+
     /// How many runs of `key` started (`None`: not followed).
     fn runs_of(&self, key: &HelperKey) -> Option<u64> {
         self.tracked.lock().get(key).map(|tracked| tracked.runs)
@@ -1050,17 +1064,18 @@ impl HelperEndings {
     /// The single-use helper `key` is done (`how`): its parent is told,
     /// naming its own helpers that go with it, and it is retired with
     /// them.
-    /// One of its own helpers still running, it is not done yet: it stays
-    /// seated, that helper's ending is told to it (a run of it reads it)
-    /// and that run's end decides again.
+    /// One of its own helpers still at work (spawned and not run yet,
+    /// running, or its run's end not decided yet: [`Self::at_work`]), it
+    /// is not done yet: it stays seated, that helper's ending is told to it
+    /// (a run of it reads it) and that run's end decides again.
     fn done(&self, key: &HelperKey, how: How) {
         if let Some(registry) = self.owed.get().and_then(Weak::upgrade)
             && registry
                 .bound_below(key)
                 .iter()
-                .any(|(child, _)| registry.activity(child).is_some_and(|(running, _)| running))
+                .any(|(child, _)| self.at_work(child))
         {
-            tracing::info!(helper = %key, "a single-use helper's own helper still runs: it is done once that one's ending reached it");
+            tracing::info!(helper = %key, "a single-use helper's own helper is still at work: it is done once that one's ending reached it");
             return;
         }
         let below = self.take_below(key);
@@ -1285,6 +1300,22 @@ impl HelperEndings {
                     "helper `{name}` was retired with its parent `{parent}`; start another helper for more work"
                 ),
             })
+    }
+
+    /// Tests: the daemon's delivery holds every batch of endings open
+    /// until the daemon stops, as if each stop came within its window.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hold_batches(&self) {
+        self.batches_held
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests: whether the delivery holds its batches
+    /// ([`Self::hold_batches`]).
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn batches_held(&self) -> bool {
+        self.batches_held.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Tests: how many retires these endings started so far.
