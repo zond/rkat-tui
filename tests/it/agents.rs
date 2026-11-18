@@ -469,30 +469,39 @@ async fn a_peer_message_wakes_the_other_agent_and_its_client_shows_it() {
     let b_name = Arc::new(parking_lot::Mutex::new(String::new()));
     let send = {
         let b_name = Arc::clone(&b_name);
-        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        move |messages: &[Message]| {
             let peer = peer_id_of(messages, &b_name.lock()).unwrap_or_else(|| "none".into());
             Step::Tool {
                 id: "m1",
                 name: "send_message",
                 args: json!({"peer_id": peer, "body": "I am changing src/lib.rs", "handling_mode": "queue"}),
             }
-        }))
+        }
     };
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "p1",
-            name: "contacts",
-            args: json!({}),
-        },
-        send,
-        Step::Text("told b"),
-        Step::Tool {
-            id: "s1",
-            name: "shell",
-            args: json!({"command": "python3 -c 'print(1)'"}),
-        },
-        Step::Text("noted"),
-    ]);
+    // Each agent's step from its own requests: B, woken by A's message,
+    // can call while A's run goes on.
+    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        if is_b(messages) {
+            if common::answers(messages, Some("s1")) {
+                return Step::Text("noted");
+            }
+            return Step::Tool {
+                id: "s1",
+                name: "shell",
+                args: json!({"command": "python3 -c 'print(1)'"}),
+            };
+        }
+        match tool_rounds(messages) {
+            0 => Step::Tool {
+                id: "p1",
+                name: "contacts",
+                args: json!({}),
+            },
+            1 => send(messages),
+            _ => Step::Text("told b"),
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 8]);
     let classifier = rig::ScriptedClassifier::allowing(Vec::new());
     let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
     let args = setup.command_line(&ws.root);
@@ -520,7 +529,14 @@ async fn a_peer_message_wakes_the_other_agent_and_its_client_shows_it() {
     .await;
     assert_eq!(b.turn_finished().await.unwrap().text, "noted");
     let seen = llm.recorded();
-    let b_turn = &seen[3];
+    let b_turn = seen
+        .iter()
+        .rfind(|r| is_b(&r.messages))
+        .expect("B's request");
+    let a_first = seen
+        .iter()
+        .find(|r| !is_b(&r.messages))
+        .expect("A's request");
     assert!(
         format!("{:?}", b_turn.messages).contains("I am changing src/lib.rs"),
         "B's turn sees the message"
@@ -537,7 +553,7 @@ async fn a_peer_message_wakes_the_other_agent_and_its_client_shows_it() {
         )),
         "{system}"
     );
-    let a_system = format!("{:?}", seen[0].messages);
+    let a_system = format!("{:?}", a_first.messages);
     assert!(
         a_system.contains(&format!("Agent `{b_name}` joined this workspace")),
         "{a_system}"
@@ -604,30 +620,41 @@ async fn an_empty_answer_to_a_peer_s_message_is_one_quiet_line() {
     let b_name = Arc::new(parking_lot::Mutex::new(String::new()));
     let send = {
         let b_name = Arc::clone(&b_name);
-        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        move |messages: &[Message]| {
             let peer = peer_id_of(messages, &b_name.lock()).unwrap_or_else(|| "none".into());
             Step::Tool {
                 id: "m1",
                 name: "send_message",
                 args: json!({"peer_id": peer, "body": "Acknowledged.", "handling_mode": "queue"}),
             }
-        }))
+        }
     };
-    let mut steps = vec![
-        Step::Tool {
-            id: "p1",
-            name: "contacts",
-            args: json!({}),
-        },
-        send,
-        Step::Text("told b"),
-    ];
-    // B, woken: whitespace only, the call and its retries.
-    steps.extend(std::iter::repeat_n(Step::Text(" \n"), 4));
-    steps.push(Step::Text("answered"));
-    // B, its user's message: empty, the call and its retries.
-    steps.extend(std::iter::repeat_n(Step::Text(""), 4));
-    let llm = ScriptedLlmClient::new(steps);
+    // Each agent's step from its own requests: B, woken by A's message,
+    // can call while A's run goes on.
+    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        if is_b(messages) {
+            let inputs = common::run_inputs(messages);
+            // Its user's message: empty, the call and its retries.
+            if inputs.contains("and then?") {
+                return Step::Text("");
+            }
+            if inputs.contains("what now?") {
+                return Step::Text("answered");
+            }
+            // Woken: whitespace only, the call and its retries.
+            return Step::Text(" \n");
+        }
+        match tool_rounds(messages) {
+            0 => Step::Tool {
+                id: "p1",
+                name: "contacts",
+                args: json!({}),
+            },
+            1 => send(messages),
+            _ => Step::Text("told b"),
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 16]);
     let classifier = rig::ScriptedClassifier::allowing(Vec::new());
     let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
     let args = setup.command_line(&ws.root);
@@ -809,6 +836,14 @@ async fn restored_agents_are_told_the_roster_after_a_restart() {
     );
     a.quit().await;
     daemon.stop().await;
+}
+
+/// How many tool rounds `messages` hold (an agent's own calls answered).
+fn tool_rounds(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|m| matches!(m, Message::ToolResults { .. }))
+        .count()
 }
 
 /// Whether `messages` are B's (no user text of A's "tell b").

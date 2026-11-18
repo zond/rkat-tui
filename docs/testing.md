@@ -154,6 +154,40 @@ confine; set it to prove that they ran:
 RKAT_TUI_REQUIRE_SANDBOX=1 cargo nextest run --all-features --test it -E 'test(/^confinement::/) | test(/^daemon::/)'
 ```
 
+## How a scripted model chooses its step
+
+The rig's `ScriptedLlmClient` serves every agent, helper and fork of a
+test from one script, and a request's messages are whatever the engine
+had when the call was made: a daemon note (a helper's ending or going
+idle, a joined or left note, an approval, a watch's batch), a peer's
+message or the user's next words can land in the same request as a tool
+result or a prompt, before it or after it. So a `Step::Dynamic` chooses
+from what the request answers, never from its last message alone:
+
+- A tool result: `common::answers(messages, Some(id))` (a result of `id`
+  after the last assistant message, whatever came beside it), not
+  `messages.last()`. `common::after` is that now too.
+- The user's words or a note: `common::run_inputs(messages)` (every user
+  text after the last assistant message, joined) `.contains(..)`, not
+  `user_texts(..).last()`. A peer's message is a `SystemNotice`, not a
+  user text: look for it in the messages after the last assistant message
+  (or the whole history, when any earlier sight of it will do).
+- Which agent asks: decide from the request itself (`is_helper(messages,
+  marker)` on the task, a prompt only one agent got), never by a request
+  count (`llm.requests().len()`, a shared counter) or a fixed queue of
+  steps when more than one agent draws from the script. A queue of plain
+  steps is fine for one agent alone.
+- A step that holds a gate (`Step::Gated`) must be chosen once: choose it
+  from the one request that answers its trigger, or a second choice waits
+  for a permit nobody gives.
+- A run a note or a peer's message started later must not replay an
+  earlier step: act on a command only in the request that brings it.
+
+The class was found in a4782da and f001e94; review 7 converted the rest
+(the tests in `agents`, `connect`, `forks`, `mob_destroy`, `upgrades`,
+`daemon`, `assign`, `resumed_runs` and `cross_workspace` that chose by
+the last message or a shared queue).
+
 ## Known flaky tests
 
 These tests were flaky on CI and have been hardened. If one fails again, the

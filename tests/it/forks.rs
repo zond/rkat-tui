@@ -30,16 +30,23 @@ fn last(messages: &[Message]) -> String {
         .unwrap_or_default()
 }
 
-/// Whether the last message is a tool result holding a `contacts` listing.
+/// Whether the request answers a tool result holding a `contacts` listing
+/// (a note or a peer's message may land beside it).
 fn after_peers(messages: &[Message]) -> bool {
-    matches!(messages.last(), Some(Message::ToolResults { results, .. })
-        if results.iter().any(|r| r.text_content().contains("\"peer_id\"")))
+    let from = messages
+        .iter()
+        .rposition(|m| matches!(m, Message::BlockAssistant(_)))
+        .map_or(0, |at| at + 1);
+    messages[from..].iter().any(|m| {
+        matches!(m, Message::ToolResults { results, .. }
+            if results.iter().any(|r| r.text_content().contains("\"peer_id\"")))
+    })
 }
 
-/// Whether the last message answers the tool call `id`.
+/// Whether the request answers the tool call `id` ([`common::answers`]:
+/// whatever note or message landed beside it).
 fn answered(messages: &[Message], id: &str) -> bool {
-    matches!(messages.last(), Some(Message::ToolResults { results, .. })
-        if results.iter().any(|r| r.tool_use_id == id))
+    common::answers(messages, Some(id))
 }
 
 fn send(id: &'static str, peer: Option<String>, body: &str) -> Step {
@@ -624,18 +631,18 @@ async fn a_restored_fork_is_wired_and_a_retired_one_is_not() {
                     "FORK-OTHER"
                 });
             }
-            if after_peers(messages) {
-                return send("pm1", peer_id(messages, "kid"), "AFTER-RESTART");
-            }
+            // The restored fork's note can share the request with the
+            // user's words, before or after them.
             if answered(messages, "pm1") {
                 return Step::Text("SENT");
             }
-            if tail.contains("went idle")
-                || matches!(messages.last(), Some(Message::ToolResults { .. }))
-            {
-                return Step::Text("NOTED");
+            if answered(messages, "pp1") {
+                return send("pm1", peer_id(messages, "kid"), "AFTER-RESTART");
             }
-            peers("pp1")
+            if common::run_inputs(messages).contains("tell the kid") {
+                return peers("pp1");
+            }
+            Step::Text("NOTED")
         }));
         12
     ]);

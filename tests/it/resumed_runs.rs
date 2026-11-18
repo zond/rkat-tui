@@ -62,11 +62,13 @@ fn script_gated(call: Step, gate: Option<Arc<tokio::sync::Notify>>) -> Arc<Scrip
         if common::is_helper(messages, "HELPER-TASK") {
             return Step::Hang;
         }
-        let user = common::user_texts(messages);
-        if user.last().is_some_and(|last| last == "after the stop") {
+        // The user's words among the request's inputs (a restored helper's
+        // note can come beside them, before or after).
+        let inputs = common::run_inputs(messages);
+        if inputs.contains("after the stop") {
             return Step::Text("answered after the stop");
         }
-        if user.last().is_some_and(|last| last == "typed meanwhile") {
+        if inputs.contains("typed meanwhile") {
             return Step::Text("read the message");
         }
         match (results(messages), &gate) {
@@ -88,11 +90,13 @@ fn assigning(hold: &Arc<tokio::sync::Notify>) -> Arc<ScriptedLlmClient> {
         if common::is_helper(messages, "HELPER-TASK") {
             return Step::Hang;
         }
-        let user = common::user_texts(messages);
-        if user.last().is_some_and(|last| last == "after the stop") {
+        // The user's words among the request's inputs (a restored helper's
+        // note can come beside them, before or after).
+        let inputs = common::run_inputs(messages);
+        if inputs.contains("after the stop") {
             return Step::Text("answered after the stop");
         }
-        if user.last().is_some_and(|last| last == "typed meanwhile") {
+        if inputs.contains("typed meanwhile") {
             return Step::Text("read the message");
         }
         if results(messages) == 0 {

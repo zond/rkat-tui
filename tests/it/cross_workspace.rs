@@ -52,24 +52,28 @@ impl Markers {
 /// anything else (a peer message) it answers `woke`.
 fn script(to: &Arc<Mutex<String>>, tag: &'static str) -> Vec<Step> {
     let to = Arc::clone(to);
-    let step = Step::Dynamic(Arc::new(
-        move |messages: &[meerkat_core::Message]| match messages.last() {
-            Some(meerkat_core::Message::ToolResults { .. }) => Step::Text("sent"),
-            Some(meerkat_core::Message::User(user)) if user.text_content().starts_with("SEND") => {
-                let words = user
-                    .text_content()
-                    .trim_start_matches("SEND")
-                    .trim()
-                    .to_string();
-                Step::Tool {
-                    id: "m1",
-                    name: "send_message",
-                    args: json!({"peer_id": to.lock().clone(), "body": format!("{tag}: {words}"), "handling_mode": "queue"}),
-                }
-            }
-            _ => Step::Text("woke"),
-        },
-    ));
+    // From what the request answers: a wire note or a peer's message can
+    // land beside the prompt or the tool's result, before or after it.
+    let step = Step::Dynamic(Arc::new(move |messages: &[meerkat_core::Message]| {
+        if common::answers(messages, Some("m1")) {
+            return Step::Text("sent");
+        }
+        let from = messages
+            .iter()
+            .rposition(|m| matches!(m, meerkat_core::Message::BlockAssistant(_)))
+            .map_or(0, |at| at + 1);
+        let prompt = common::user_texts(&messages[from..])
+            .into_iter()
+            .find(|text| text.starts_with("SEND"));
+        match prompt {
+            Some(prompt) => Step::Tool {
+                id: "m1",
+                name: "send_message",
+                args: json!({"peer_id": to.lock().clone(), "body": format!("{tag}: {}", prompt.trim_start_matches("SEND").trim()), "handling_mode": "queue"}),
+            },
+            None => Step::Text("woke"),
+        }
+    }));
     vec![step; 80]
 }
 

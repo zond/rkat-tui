@@ -19,16 +19,33 @@ use serde_json::json;
 
 use crate::assign::peer_id;
 
-/// Whether the last message is a tool result holding a `contacts` listing.
-fn after_peers(messages: &[Message]) -> bool {
-    matches!(messages.last(), Some(Message::ToolResults { results, .. })
-        if results.iter().any(|r| r.text_content().contains("\"peer_id\"")))
+/// The messages after the last assistant message: what the request
+/// answers (a tool result, and whatever notes or peer messages landed
+/// beside it, in either order).
+fn this_round(messages: &[Message]) -> &[Message] {
+    let from = messages
+        .iter()
+        .rposition(|m| matches!(m, Message::BlockAssistant(_)))
+        .map_or(0, |at| at + 1);
+    &messages[from..]
 }
 
-/// Whether the last message answers the tool call `id`.
+/// Whether the request answers a tool result holding a `contacts` listing.
+fn after_peers(messages: &[Message]) -> bool {
+    this_round(messages).iter().any(|m| {
+        matches!(m, Message::ToolResults { results, .. }
+            if results.iter().any(|r| r.text_content().contains("\"peer_id\"")))
+    })
+}
+
+/// Whether the request answers the tool call `id` ([`common::answers`]).
 fn answered(messages: &[Message], id: &str) -> bool {
-    matches!(messages.last(), Some(Message::ToolResults { results, .. })
-        if results.iter().any(|r| r.tool_use_id == id))
+    common::answers(messages, Some(id))
+}
+
+/// Whether `messages` hold the result of the tool call `id` anywhere.
+fn has_result(messages: &[Message], id: &str) -> bool {
+    result_of(messages, id).is_some()
 }
 
 /// The text of the result of the tool call `id` in `messages`.
@@ -80,17 +97,26 @@ fn talker(
     go: &Arc<tokio::sync::Notify>,
     end: &Arc<tokio::sync::Notify>,
 ) -> Step {
+    // Each step from what this request answers: the other's message or the
+    // connection's note can land beside a tool result, before or after it.
     let all = format!("{messages:?}");
-    if all.contains(other) {
-        return Step::Text(heard);
-    }
     if answered(messages, ids.1) {
         return Step::Gated(Arc::clone(end), Box::new(Step::Text("waiting")));
     }
-    if after_peers(messages) {
+    if has_result(messages, ids.1) && all.contains(other) {
+        return Step::Text(heard);
+    }
+    if answered(messages, ids.0) && after_peers(messages) {
         return send(ids.1, peer_id(messages, peer), body);
     }
-    Step::Gated(Arc::clone(go), Box::new(tool(ids.0, "contacts", json!({}))))
+    if !has_result(messages, ids.0) {
+        return Step::Gated(Arc::clone(go), Box::new(tool(ids.0, "contacts", json!({}))));
+    }
+    Step::Text(if all.contains(other) {
+        heard
+    } else {
+        "waiting"
+    })
 }
 
 /// No message was put to the classifier: each passed the gate unreviewed.
@@ -615,7 +641,12 @@ fn commanded(messages: &[Message], me: &str, other: &str) -> Step {
         let peer = peer_id(messages, other);
         return send(s, peer, &format!("FROM-{me}-{n}"));
     }
-    tool(q, "contacts", json!({}))
+    // A command is acted on in the request that brings it; a run a peer's
+    // message or a note started afterwards does not replay it.
+    if format!("{:?}", this_round(messages)).contains(&last) {
+        return tool(q, "contacts", json!({}));
+    }
+    Step::Text("idle")
 }
 
 /// The mob tools the agent's script calls.
@@ -650,12 +681,9 @@ fn team_script(
             }
         }
         let all = format!("{messages:?}");
-        let last = common::user_texts(messages)
-            .last()
-            .cloned()
-            .unwrap_or_default();
-        if last == "DESTROY" {
-            return if all.contains("\"d1\"") {
+        // A kept helper's idle note can share the request with DESTROY.
+        if common::run_inputs(messages).contains("DESTROY") || answered(messages, "d1") {
+            return if answered(messages, "d1") {
                 Step::Text("destroyed")
             } else {
                 tool("d1", "mob_destroy", json!({"mob_id": "team"}))
@@ -1065,11 +1093,11 @@ async fn a_connection_outlives_a_restart_and_goes_with_a_retired_end() {
                 };
             }
             if user.contains("TELL-Y") {
-                if after_peers(messages) {
-                    return send("mx", peer_id(messages, "main/y"), "FROM-X-AFTER-RESTART");
-                }
                 if answered(messages, "mx") {
                     return Step::Text("X-SENT");
+                }
+                if answered(messages, "px") {
+                    return send("mx", peer_id(messages, "main/y"), "FROM-X-AFTER-RESTART");
                 }
                 return tool("px", "contacts", json!({}));
             }
@@ -1081,12 +1109,9 @@ async fn a_connection_outlives_a_restart_and_goes_with_a_retired_end() {
             }
             return Step::Text("Y-IDLE");
         }
-        // The agent: its prompts say what to do.
-        let last = common::user_texts(messages)
-            .last()
-            .cloned()
-            .unwrap_or_default();
-        if last.contains("SPAWN") {
+        // The agent: its one prompt says what to do (its helpers' idle
+        // notes can come after it in the same request).
+        if user.contains("SPAWN") {
             if all.contains("\"c1\"") {
                 return Step::Text("connected");
             }

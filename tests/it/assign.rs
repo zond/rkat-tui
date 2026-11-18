@@ -59,6 +59,15 @@ pub fn peer_id(messages: &[Message], needle: &str) -> Option<String> {
 
 /// Whether the last message is a tool result holding a `contacts`
 /// listing.
+/// The messages after the last assistant message, as one text.
+fn this_round(messages: &[Message]) -> String {
+    let from = messages
+        .iter()
+        .rposition(|m| matches!(m, Message::BlockAssistant(_)))
+        .map_or(0, |at| at + 1);
+    format!("{:?}", &messages[from..])
+}
+
 fn after_peers(messages: &[Message]) -> bool {
     matches!(messages.last(), Some(Message::ToolResults { results, .. })
         if results.iter().any(|r| r.text_content().contains("\"peer_id\"")))
@@ -133,13 +142,15 @@ async fn an_assigned_helper_runs_beside_its_parent_talks_both_ways_and_retires_w
             let user = common::user_texts(messages).concat();
             let tail = last(messages);
             if user.contains("HELPER-TASK") {
-                if after_peers(messages) {
-                    return send(peer_id(messages, "main-"), "HELLO-PARENT");
-                }
-                if matches!(messages.last(), Some(Message::ToolResults { .. })) {
+                // From what the request answers: the parent's message can
+                // land beside a tool result, before or after it.
+                if common::answers(messages, Some("m1")) {
                     return Step::Gated(Arc::clone(&second), Box::new(Step::Text("FIRST-PART")));
                 }
-                if tail.contains("HELLO-HELPER") {
+                if common::answers(messages, Some("p1")) {
+                    return send(peer_id(messages, "main-"), "HELLO-PARENT");
+                }
+                if tail.contains("HELLO-HELPER") || this_round(messages).contains("HELLO-HELPER") {
                     return Step::Text("HELPER-ANSWER");
                 }
                 return Step::Gated(Arc::clone(&first), Box::new(peers()));

@@ -541,7 +541,9 @@ async fn a_client_cannot_cancel_another_agents_helper() {
         if common::is_helper(messages, "wait forever") {
             return Step::Hang;
         }
-        if common::after(messages, "a1") {
+        // Once it started its helper, never again (the helper's ending
+        // after the cancel wakes it with a note).
+        if format!("{messages:?}").contains("\"a1\"") {
             return Step::Text("after");
         }
         common::assign("a1", "slow", "wait forever")

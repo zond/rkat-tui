@@ -203,34 +203,32 @@ async fn a_restored_helper_s_older_instructions_are_replaced() {
             }
             return Step::Text("IDLE-ANSWER");
         }
-        let last = messages
-            .last()
-            .map(|m| format!("{m:?}"))
-            .unwrap_or_default();
-        if last.contains("went idle") {
-            return Step::Text("NOTED");
-        }
-        if all.contains("\"m1\"") {
+        // Each step from what the request answers: the helper's idle note
+        // can share a request with the user's words or a tool result.
+        let inputs = common::run_inputs(messages);
+        if common::answers(messages, Some("m1")) {
             return Step::Text("sent");
         }
-        if let Some(peer) = crate::assign::peer_id(messages, "w1") {
+        if common::answers(messages, Some("p1"))
+            && let Some(peer) = crate::assign::peer_id(messages, "w1")
+        {
             return Step::Tool {
                 id: "m1",
                 name: "send_message",
                 args: json!({"peer_id": peer, "body": "SAY-IT-ONCE-MORE", "handling_mode": "queue"}),
             };
         }
-        if common::user_texts(messages)
-            .concat()
-            .contains("TELL-IT-AGAIN")
-        {
+        if inputs.contains("TELL-IT-AGAIN") {
             return Step::Tool {
                 id: "p1",
                 name: "contacts",
                 args: json!({}),
             };
         }
-        if matches!(messages.last(), Some(Message::ToolResults { .. })) {
+        if inputs.contains("went idle") || all.contains("\"m1\"") {
+            return Step::Text("NOTED");
+        }
+        if common::answers(messages, None) {
             return Step::Text("spawned");
         }
         spawn_member("w1", "HELPER-TASK: say something")

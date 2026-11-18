@@ -627,17 +627,17 @@ pub fn is_helper(messages: &[Message], marker: &str) -> bool {
         .is_some_and(|task| task.contains(marker))
 }
 
-/// Whether the last message of `messages` is the note that tells a parent
-/// its `assign` helper finished.
+/// Whether the request `messages` answers the note that tells a parent
+/// its `assign` helper finished (among the inputs after its last answer:
+/// a note, a peer message or the user's words may come beside it).
 pub fn told_finished(messages: &[Message]) -> bool {
-    matches!(messages.last(), Some(Message::User(user))
-        if user.text_content().contains("finished its task"))
+    run_inputs(messages).contains("finished its task")
 }
 
-/// Whether the last message of `messages` is the result of the call `id`.
+/// Whether the request `messages` answers the result of the call `id`
+/// ([`answers`]: whatever note or message landed after it).
 pub fn after(messages: &[Message], id: &str) -> bool {
-    matches!(messages.last(), Some(Message::ToolResults { results, .. })
-        if results.iter().any(|r| r.tool_use_id == id))
+    answers(messages, Some(id))
 }
 
 /// Whether a request of a parent (not of a helper whose task carries

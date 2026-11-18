@@ -20,48 +20,45 @@ use serde_json::json;
 
 /// The prompt that makes the team (`make`) or destroys it (`destroy`).
 fn script() -> Arc<ScriptedLlmClient> {
+    // Each step from what the request answers: the member's idle note can
+    // share a request with the user's prompt or a tool result, before or
+    // after it.
     let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
-        let user = common::user_texts(messages).concat();
-        let done = messages
-            .iter()
-            .filter(|m| matches!(m, Message::ToolResults { .. }))
-            .count();
-        // The note that the member went idle after its first turn (it
-        // stays seated): taken in, nothing done.
-        if common::user_texts(messages)
-            .last()
-            .is_some_and(|last| last.contains("went idle"))
-        {
-            return Step::Text("noted");
-        }
-        if user.ends_with("destroy") {
-            return match done {
-                // A make in the same conversation came first.
-                n if n == 2 || n == 0 => Step::Tool {
-                    id: "d1",
-                    name: "mob_destroy",
-                    args: json!({"mob_id": "team"}),
-                },
-                _ => Step::Text("gone"),
-            };
-        }
-        if !user.ends_with("make") {
+        if common::is_helper(messages, "hello") {
             // The member's own turns.
             return Step::Text("ready");
         }
-        match done {
-            0 => Step::Tool {
-                id: "m1",
-                name: "mob_create",
-                args: json!({"definition": {"id": "team", "profiles": {"worker": {"model": common::MODEL, "tools": {"comms": true}}}}}),
-            },
-            1 => Step::Tool {
+        let inputs = common::run_inputs(messages);
+        if common::answers(messages, Some("d1")) {
+            return Step::Text("gone");
+        }
+        if inputs.contains("destroy") {
+            return Step::Tool {
+                id: "d1",
+                name: "mob_destroy",
+                args: json!({"mob_id": "team"}),
+            };
+        }
+        if common::answers(messages, Some("s1")) {
+            return Step::Text("made");
+        }
+        if common::answers(messages, Some("m1")) {
+            return Step::Tool {
                 id: "s1",
                 name: "mob_spawn_member",
                 args: json!({"mob_id": "team", "profile": "worker", "member_id": "w1", "initial_message": "hello"}),
-            },
-            _ => Step::Text("made"),
+            };
         }
+        if inputs.contains("make") {
+            return Step::Tool {
+                id: "m1",
+                name: "mob_create",
+                args: json!({"definition": {"id": "team", "profiles": {"worker": {"model": common::MODEL, "tools": {"comms": true}}}}}),
+            };
+        }
+        // The note that the member went idle (it stays seated): taken in,
+        // nothing done.
+        Step::Text("noted")
     }));
     ScriptedLlmClient::new(vec![step; 40])
 }
