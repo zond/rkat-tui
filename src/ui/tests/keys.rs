@@ -549,27 +549,6 @@ fn newline_variants_and_paste() {
 }
 
 #[test]
-fn ctrl_enter_sends_now() {
-    let ctrl_enter = || Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
-    let mut app = App::new(StatusInfo::default());
-    // Idle: the same as Enter.
-    type_str(&mut app, "first");
-    assert_eq!(
-        app.update(ctrl_enter()),
-        vec![Effect::StartTurn("first".into())]
-    );
-    // Running: interrupt and send the input next.
-    type_str(&mut app, "next");
-    assert_eq!(app.update(ctrl_enter()), vec![Effect::Interrupt]);
-    assert_eq!(app.send_next.as_deref(), Some("next"));
-    // Running with an empty input: a plain interrupt.
-    assert_eq!(app.update(ctrl_enter()), vec![Effect::Interrupt]);
-    // A trailing backslash does not turn Ctrl+Enter into a newline.
-    type_str(&mut app, "x\\");
-    assert_eq!(app.update(ctrl_enter()), vec![Effect::Interrupt]);
-}
-
-#[test]
 fn scroll_follow_semantics() {
     let mut s = ScrollState::default();
     assert_eq!(s.window(100, 10), 90);
@@ -1066,7 +1045,13 @@ fn chord_ctrl_x_ctrl_s_interrupt_and_send_when_running() {
         vec!["first".to_string(), "next".into()]
     );
     assert_eq!(app.input.history().last().map(String::as_str), Some("next"));
-    // Running with an empty editor: plain interrupt.
+    assert_eq!(app.send_next.as_deref(), Some("next"));
+    // A trailing backslash does not turn the chord into a newline.
+    type_str(&mut app, "x\\");
+    app.update_at(ctrl('x'), t0);
+    assert_eq!(app.update_at(ctrl('s'), t0), vec![Effect::Interrupt]);
+    assert_eq!(app.send_next.as_deref(), Some("next\n\nx\\"));
+    // Running with an empty editor and nothing waiting: plain interrupt.
     app.update_at(ctrl('x'), t0);
     assert_eq!(app.update_at(ctrl('s'), t0), vec![Effect::Interrupt]);
     // Esc cancels the chord without interrupting.

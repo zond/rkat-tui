@@ -1104,8 +1104,6 @@ Keys:
   ? (empty input)                show these keys; any key closes them (with text, ? is typed)
   Enter                          send; while the agent is working, queues the message
                                  and delivers it at the next step
-  Ctrl+Enter                     send now: interrupt the turn and send the input next
-                                 (sends normally when idle; same as Ctrl-X Ctrl-S)
   Shift+Enter, Alt+Enter, Ctrl+J insert a newline (so does \\ right before Enter at a line end)
   Ctrl-C                         interrupt the turn (as Esc) · clear the input · press twice to quit
   Esc                            a pending /btw takes the first Esc: it cancels that question only.
@@ -1137,7 +1135,8 @@ Keys:
                                  the transcript);
                                  a click unfolds a header
   Ctrl-R                         search history (Ctrl-R again: older · Enter accept · Esc cancel)
-  Ctrl-X Ctrl-S                  interrupt and send the input (sends normally when idle)
+  Ctrl-X Ctrl-S                  send now: interrupt the turn and send your waiting messages,
+                                 then the input, as the next run (sends normally when idle)
   Ctrl-G, Ctrl-X Ctrl-E          edit the input in $VISUAL / $EDITOR / vi (also while a turn runs)
   Up/Down, Ctrl-P/N              move between lines · recall prompt history (a recalled entry
                                  opens no / or @ menu until you edit it: the walk goes on)
@@ -2069,7 +2068,6 @@ mod tests {
         match action {
             Action::Submit => &["Enter"],
             Action::Newline => &["Shift+Enter, Alt+Enter, Ctrl+J"],
-            Action::SendNow => &["Ctrl+Enter"],
             Action::CtrlC => &["Ctrl-C"],
             Action::CtrlD => &["Ctrl-D"],
             Action::Escape => &["Esc", "Esc Esc (idle, with text)"],

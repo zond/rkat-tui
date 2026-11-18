@@ -930,6 +930,98 @@ async fn three_presses_during_a_slow_shell_stop_one_run_and_return_the_typed_mes
     rig.quit().await;
 }
 
+/// Ctrl-X Ctrl-S on an empty editor while a message typed during a long
+/// tool call waits ("delivering…"): the run is interrupted, the message
+/// comes back from the agent and goes at once as the next run's prompt,
+/// not to the editor: the agent's next model request holds it once, the
+/// editor is empty, and no other run starts for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn send_now_pushes_a_message_held_behind_a_long_tool_call_as_the_next_run() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "slow",
+            name: "shell",
+            args: json!({ "command": "sleep 30; echo done", "timeout_secs": 60 }),
+        },
+        Step::Text("answered the pushed message"),
+        Step::Text("a second run"),
+    ]);
+    let mut rig = Attached::start_with(&ws.root, &llm, allow_shell()).await;
+    let agent = rig.agent().await;
+    let mut app = rkat_tui::ui::App::new(rkat_tui::ui::StatusInfo::default());
+    for msg in rig.seen.clone() {
+        for effect in app.update(msg) {
+            rig.send(effect);
+        }
+    }
+    type_into(&rig, &mut app, "run something long");
+    pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::Agent(env)
+            if matches!(&env.payload, AgentEvent::ToolExecutionStarted { id, .. } if id == "slow"))
+    })
+    .await;
+    type_into(&rig, &mut app, "how is it going");
+    pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::SteerAck { result: Ok(()), .. })
+    })
+    .await;
+    assert!(app.input.is_empty());
+    for c in ['x', 's'] {
+        for effect in app.update(Msg::Key(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::CONTROL,
+        ))) {
+            rig.send(effect);
+        }
+    }
+    let interrupted = pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::TurnFinished(_))
+    })
+    .await;
+    assert!(
+        matches!(
+            interrupted,
+            Msg::TurnFinished(Err(TurnFailure::Interrupted))
+        ),
+        "{interrupted:?}"
+    );
+    // The app started the next run with the message itself.
+    assert!(app.is_running());
+    assert!(app.input.is_empty(), "{:?}", app.input.text());
+    let answered = pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::TurnFinished(_))
+    })
+    .await;
+    assert!(
+        matches!(&answered, Msg::TurnFinished(Ok(done)) if done.text == "answered the pushed message"),
+        "{answered:?}"
+    );
+    rig.daemon.idle(&agent).await;
+    let requests = llm.requests();
+    assert_eq!(requests.len(), 2, "no second run for it");
+    assert_eq!(
+        user_texts(&requests[1])
+            .iter()
+            .filter(|text| text.contains("how is it going"))
+            .count(),
+        1,
+        "{:#?}",
+        requests[1]
+    );
+    let session = rig.messages().await;
+    assert_eq!(count(&session, "how is it going"), 1, "{session:#?}");
+    assert!(app.input.is_empty());
+    let text = app.transcript.export_text();
+    assert!(
+        text.contains("interrupted; sending your waiting message now"),
+        "{text}"
+    );
+    assert_eq!(text.matches("interrupted;").count(), 1, "{text}");
+    rig.quit().await;
+}
+
 /// A single Esc still stops the run at once, by its id, and a message the
 /// agent already read before the interrupt stays delivered (it is not
 /// returned).
@@ -1600,11 +1692,11 @@ fn count(messages: &[Message], text: &str) -> usize {
 }
 
 /// The sequence of a user report (a model request that sends nothing): a
-/// steer typed during the stall, then Ctrl+Enter (interrupt, and the
-/// editor's text sent once the turn ends). The interrupt is confirmed
-/// well within the client's deadline, the stalled run ends, the steer
-/// comes back (the rule of 2026-11-17), and sent again with Ctrl+Enter's
-/// text it reaches the conversation once.
+/// steer typed during the stall, then an interrupt and a message sent once
+/// the turn ends. The interrupt is confirmed well within the client's
+/// deadline, the stalled run ends, the steer comes back (the rule of
+/// 2026-11-17), and sent again with the new message it reaches the
+/// conversation once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_interrupt_during_a_stalled_model_request_ends_it_and_loses_nothing() {
     let ws = Workspace::new();
@@ -1642,7 +1734,7 @@ async fn an_interrupt_during_a_stalled_model_request_ends_it_and_loses_nothing()
         "{:#?}",
         rig.seen
     );
-    // The steer came back (the rule of 2026-11-17); Ctrl+Enter's text goes
+    // The steer came back (the rule of 2026-11-17); the new message goes
     // once the turn ended, with it as the user sends it again.
     assert!(
         rig.seen
@@ -1707,7 +1799,7 @@ async fn an_interrupt_during_a_stalled_request_is_confirmed_while_a_fork_runs() 
 }
 
 /// The order of the user report: a model request held open, a steer sent
-/// ("delivering…"), Ctrl+Enter (the interrupt), the steer taken back (↑),
+/// ("delivering…"), the interrupt, the steer taken back (↑),
 /// and the message sent again. The interrupt is confirmed at once, the
 /// recalled steer is never run, and the message sent again reaches the
 /// conversation exactly once.
@@ -1862,11 +1954,11 @@ async fn esc_with_nothing_running_says_so() {
     rig.quit().await;
 }
 
-/// Review 5, TU1: Ctrl+Enter with text while a run another client started
-/// is open (the UI shows it as a remote turn) interrupts that run, then
-/// sends the text as the next turn.
+/// Review 5, TU1: Ctrl-X Ctrl-S with text while a run another client
+/// started is open (the UI shows it as a remote turn) interrupts that run,
+/// then sends the text as the next turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ctrl_enter_interrupts_another_clients_run_then_sends() {
+async fn send_now_interrupts_another_clients_run_then_sends() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Hang, Step::Text("sent after it")]);
     let mut rig = Attached::start(&ws.root, &llm).await;
@@ -1874,7 +1966,7 @@ async fn ctrl_enter_interrupts_another_clients_run_then_sends() {
     llm.wait_call(0).await;
     rig.wait_for(|msg| matches!(msg, Msg::RemoteTurn { .. }))
         .await;
-    // Ctrl+Enter with text while running: the interrupt now, the text once
+    // Ctrl-X Ctrl-S with text while running: the interrupt now, the text once
     // the turn ended (the UI's `send_next`).
     rig.send(Effect::Interrupt);
     assert_eq!(rig.turn_finished().await, Err(TurnFailure::Interrupted));

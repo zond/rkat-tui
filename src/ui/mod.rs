@@ -671,8 +671,8 @@ pub enum Effect {
     /// Cancel the running `!` command (answered with
     /// [`ShellOutcome::Cancelled`] unless it already finished).
     CancelShell,
-    /// Interrupt the running turn. Ctrl-X Ctrl-S and Ctrl+Enter with a
-    /// draft send it too: the UI keeps the draft and starts it as the next
+    /// Interrupt the running turn. After Ctrl-X Ctrl-S the UI sends the
+    /// waiting messages the interrupt hands back and the draft as the next
     /// turn itself once [`Msg::TurnFinished`] arrives.
     Interrupt,
     /// Pull back every steered message the runtime still holds queued (not
@@ -983,6 +983,9 @@ pub struct StatusInfo {
     running_since: Option<Instant>,
     /// Number of messages typed mid-turn that have not been delivered yet.
     queued: usize,
+    /// Whether one of the user's messages waits for the running turn, so
+    /// the queued segment says that Ctrl-X Ctrl-S pushes it.
+    send_now: bool,
     /// When the agent's model request in flight started (`None`: none is):
     /// a steer joins only once the reply is in, so the bar says what the
     /// queued messages wait for.
@@ -1356,6 +1359,10 @@ pub struct App {
     draining: bool,
     /// Prompt to send once the interrupted turn ends (Ctrl-X Ctrl-S).
     send_next: Option<String>,
+    /// Ctrl-X Ctrl-S interrupted the turn: the user's messages its
+    /// interrupt hands back go as the next run (before `send_next`), not
+    /// to the editor.
+    send_waiting: bool,
     /// Sequence number of the last primary-stream event processed.
     last_seq: u64,
     /// Normal editing or history search.
@@ -1480,6 +1487,7 @@ impl App {
             deferred: std::collections::HashMap::new(),
             draining: false,
             send_next: None,
+            send_waiting: false,
             last_seq: 0,
             mode: InputMode::Normal,
             chord: None,
@@ -2073,6 +2081,7 @@ impl App {
             }
         }
         self.status.queued = self.pending.len();
+        self.status.send_now = self.running && self.has_waiting_messages();
         let asking = matches!(self.modal, Some(Modal::Escalation { .. }))
             || !self.pending_escalations.is_empty();
         self.status.asking_since = if asking {

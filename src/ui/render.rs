@@ -204,8 +204,12 @@ pub fn draw_at(frame: &mut Frame<'_>, app: &mut App, now: Instant) {
     }
     // The paragraph does not wrap, so an over-long status bar is clipped.
     frame.render_widget(
-        Paragraph::new(status_bar(&app.status, now))
-            .style(Style::default().add_modifier(Modifier::REVERSED)),
+        Paragraph::new(status_bar_fit(
+            &app.status,
+            now,
+            usize::from(status_area.width),
+        ))
+        .style(Style::default().add_modifier(Modifier::REVERSED)),
         status_area,
     );
     if let Some(modal) = &mut app.modal {
@@ -657,10 +661,10 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
             " Enter opens the helper (empty input; with text Enter sends) · Esc deselects ".into()
         }
         InputHint::TakeBack => format!(
-            " ↑ takes back queued · Ctrl+Enter send now{helpers} · Esc interrupts (queued go next) "
+            " ↑ takes back queued · Ctrl-X Ctrl-S sends now{helpers} · Esc interrupts (queued go next) "
         ),
         InputHint::Running => format!(
-            " Enter queues · Ctrl+Enter interrupts and sends{helpers} · Esc/Ctrl-C interrupts "
+            " Enter queues · Ctrl-X Ctrl-S interrupts and sends{helpers} · Esc/Ctrl-C interrupts "
         ),
         InputHint::Stash => format!(" Ctrl-S restores the stashed prompt{helpers} "),
         InputHint::Keys if app.checklist().is_empty() => " ? keys · Shift+Tab mode ".into(),
@@ -960,8 +964,36 @@ fn activity_segments(status: &StatusInfo, activity: &Activity, now: Instant) -> 
     segs
 }
 
-/// The styled status bar (drawn on a reversed background).
+/// How the queued segment names Ctrl-X Ctrl-S while one of the user's
+/// messages waits for the running turn: in full, short, or not at all
+/// (the bar is `width` cells wide and clipped at its end).
+const SEND_NOW_HINTS: [&str; 3] = [
+    " · Ctrl-X Ctrl-S interrupts and sends",
+    " · C-x C-s sends",
+    "",
+];
+
+/// [`status_bar`] for a bar `width` cells wide: the send-now hint as long
+/// as it fits, shortened, or left out.
+pub fn status_bar_fit(status: &StatusInfo, now: Instant, width: usize) -> Line<'static> {
+    let mut line = Line::default();
+    for hint in SEND_NOW_HINTS {
+        line = status_bar_with(status, now, hint);
+        if line.width() <= width {
+            break;
+        }
+    }
+    line
+}
+
+/// The styled status bar (drawn on a reversed background), with the
+/// send-now hint in full.
+#[cfg(any(test, feature = "test-support"))]
 pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
+    status_bar_with(status, now, SEND_NOW_HINTS[0])
+}
+
+fn status_bar_with(status: &StatusInfo, now: Instant, send_now: &str) -> Line<'static> {
     // What the agent is doing leads, so that a narrow terminal, which
     // clips the bar's end, cuts it last.
     let activity = activity(status, now);
@@ -1009,13 +1041,15 @@ pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
             .map(|since| now.saturating_duration_since(since))
             .filter(|waited| *waited >= MODEL_WAIT_SHOWN)
             .filter(|_| !matches!(activity, Activity::Quiet { .. }));
+        // While one of the user's messages waits, how to push it.
+        let hint = if status.send_now { send_now } else { "" };
         segs.push(Span::raw(match waiting {
             Some(waited) => format!(
-                "queued {}, waiting for the model's reply ({}s)",
+                "queued {}, waiting for the model's reply ({}s){hint}",
                 status.queued,
                 waited.as_secs()
             ),
-            None => format!("queued {}", status.queued),
+            None => format!("queued {}{hint}", status.queued),
         }));
     }
     if status.helpers > 0 {

@@ -354,10 +354,10 @@ fn keys_panel_snapshot() {
             "│  ? (empty input)                show these keys; any key closes them (with text, ? is typed)         │",
             "│  Enter                          send; while the agent is working, queues the message                 │",
             "│                                 and delivers it at the next step                                     │",
-            "│  Ctrl+Enter                     send now: interrupt the turn and send the input next                 │",
-            "│                                 (sends normally when idle; same as Ctrl-X Ctrl-S)                    │",
             "│  Shift+Enter, Alt+Enter, Ctrl+J insert a newline (so does \\ right before Enter at a line end)        │",
-            "│  Ctrl-C                         interrupt the turn (as Esc) · clear the input · press twice to quit  │───",
+            "│  Ctrl-C                         interrupt the turn (as Esc) · clear the input · press twice to quit  │",
+            "│  Esc                            a pending /btw takes the first Esc: it cancels that question only.   │",
+            "│                                 Else interrupt the turn: your messages the agent has not read come   │───",
             "│… more in /help                                                                                       │",
             "└──────────────────────────────────────────────────────────────────────────────────────────────────────┘",
         ]
@@ -502,7 +502,8 @@ fn queued_block_status_count_and_hints() {
     // Running with nothing queued: Esc interrupts.
     let rows = render_sized(&mut app, now, 100);
     assert!(
-        rows[9].contains("Enter queues · Ctrl+Enter interrupts and sends · Esc/Ctrl-C interrupts"),
+        rows[9]
+            .contains("Enter queues · Ctrl-X Ctrl-S interrupts and sends · Esc/Ctrl-C interrupts"),
         "input title: {:?}",
         rows[9]
     );
@@ -515,16 +516,17 @@ fn queued_block_status_count_and_hints() {
         rows.iter().any(|r| r == "› also fix tests  · queued"),
         "rows: {rows:#?}"
     );
-    // A queued message: ↑ takes it back, Esc interrupts and sends it next.
+    // A queued message: ↑ takes it back, Ctrl-X Ctrl-S pushes it.
     assert!(
         rows[9].contains(
-            "↑ takes back queued · Ctrl+Enter send now · Esc interrupts (queued go next)"
+            "↑ takes back queued · Ctrl-X Ctrl-S sends now · Esc interrupts (queued go next)"
         ),
         "input title: {:?}",
         rows[9]
     );
     assert!(
-        rows[11].ends_with("│ queued 1"),
+        // Too narrow for the full send-now hint: the short one.
+        rows[11].ends_with("│ queued 1 · C-x C-s sends"),
         "status row: {:?}",
         rows[11]
     );
@@ -557,7 +559,7 @@ fn queued_block_status_count_and_hints() {
     let rows = render_sized(&mut app, now, 100);
     assert!(
         rows[9].contains(
-            "↑ takes back queued · Ctrl+Enter send now · Esc interrupts (queued go next)"
+            "↑ takes back queued · Ctrl-X Ctrl-S sends now · Esc interrupts (queued go next)"
         ),
         "input title: {:?}",
         rows[9]

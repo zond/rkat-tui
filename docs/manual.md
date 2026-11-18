@@ -156,11 +156,21 @@ in the daemon's log and the audit log. When the agent's session is being
 brought back right after an interrupt, the client waits up to 10 s for
 it before it shows the conversation again. The prompt of an interrupted
 run is not kept in the conversation the model sees (the engine closes
-the run without it); the transcript still shows it. Ctrl+Enter
-(interrupt and send) sends the returned messages with its text.
+the run without it); the transcript still shows it.
 
-*Esc on an empty editor with no turn shown* (and Ctrl+Enter on an empty
-editor) still interrupts: the agent may run a turn this client does not
+*Ctrl-X Ctrl-S, send now*, pushes what waits: while a turn runs it
+interrupts the turn and sends, at once, as the next run, your messages
+the agent has not read yet (in the order you typed them) and then the
+editor's text, if any; nothing goes back to the editor, and one notice
+says what happened ("interrupted; sending your 2 waiting messages now").
+With nothing waiting and an empty editor it is a plain interrupt; when
+idle it sends as Enter does. While one of your messages waits for the
+running turn, the status bar's `queued N` says `· Ctrl-X Ctrl-S
+interrupts and sends` (shortened to `· C-x C-s sends` when the bar is
+narrow, left out when even that does not fit).
+
+*Esc on an empty editor with no turn shown* (and Ctrl-X Ctrl-S with
+nothing waiting) still interrupts: the agent may run a turn this client does not
 show, for example one that was going when the client attached. The client
 asks the daemon; when the agent runs, its run is cancelled and a notice
 says so; when it does not, the notice says "nothing is running".
@@ -1373,7 +1383,7 @@ when it becomes active (its parent or a peer made it so), and none when the
 run's last call was a message to its parent (the parent has its last word).
 A run an idle note starts for the agent is labelled `a helper went idle`.
 
-**Interrupts and helpers.** Esc, Ctrl-C, Ctrl+Enter and Ctrl-X Ctrl-S stop
+**Interrupts and helpers.** Esc, Ctrl-C and Ctrl-X Ctrl-S stop
 the agent's **own** run only: its helpers (assigned helpers, spawned
 members, forks, at any depth) keep working, their tool calls are still
 judged (the interrupt's Stop marks the agent's own calls only), and the
@@ -2444,7 +2454,7 @@ or it says that skills are off.
 
 **Claude Code parity.** The keys, the commands and the approval prompt
 follow Claude Code's wherever both have the feature: Enter queues while the
-agent works and Ctrl+Enter sends now, Esc interrupts, Shift+Tab switches
+agent works and Ctrl-X Ctrl-S sends now, Esc interrupts, Shift+Tab switches
 the mode, `?` shows the keys, `/permissions`, `/usage`, `/context` and
 `/compact` mean what they mean there, and the approval prompt offers the
 same three numbered choices. Where rkat-tui differs or lacks a feature, and
@@ -2619,7 +2629,6 @@ in `src/ui/commands.rs`, pinned to the keymap by a test):
 |---|---|
 | `?` (empty input) | Show the keys; any key closes them (with text, `?` is typed). The idle, empty editor title says `? keys` |
 | Enter | Send; while the agent works, queue the message and deliver it at the next step (a steer, see [Sessions](#sessions)) |
-| Ctrl+Enter | Send now: interrupt the turn and send the input next (sends normally when idle; the same as Ctrl-X Ctrl-S) |
 | Shift+Enter, Alt+Enter, Ctrl+J | Insert a newline; so does a `\` typed right before Enter at a line end (the backslash is dropped) |
 | Ctrl-C | Interrupt the turn (as Esc), else clear the input, else press twice to quit |
 | Esc | Interrupt the turn (the agent's own run: its helpers keep working); your messages the agent has not read come back to the input; again within 1 s it says when the next forces it, later it forces that run, and after the run ended it only says the turn is already stopped (see [Sessions](#sessions)). The first Esc or Ctrl-C after a mouse selection only clears it. In a running helper's full view: ask whether to stop that helper (`y` stops it, `n` or Esc keeps it) |
@@ -2630,7 +2639,7 @@ in `src/ui/commands.rs`, pinned to the keymap by a test):
 | Ctrl-T | Show or hide the [task checklist](#task-checklist) |
 | Ctrl+Up/Down | Select a helper in the panel under the input (newest first); Enter on an empty input opens its full view: its task and later inputs with who gave them, its work and its answer, under a title with its kind, state and model (Esc returns at once, after a pending `/btw` takes the first; Ctrl-C asks whether to stop a running helper, `y` stops it (the view stays and shows its end), `n`, Esc or Ctrl-C keep it and stay; PgUp/PgDn scroll it) |
 | Ctrl-R | Search the prompt history, the workspace's then the global one (Ctrl-R again: older; Enter accepts; Esc cancels) |
-| Ctrl-X Ctrl-S | Interrupt and send the input (sends normally when idle) |
+| Ctrl-X Ctrl-S | Send now: interrupt the turn and send your waiting messages, then the input, as the next run (sends normally when idle; see [Sessions](#sessions)) |
 | Ctrl-G, Ctrl-X Ctrl-E | Edit the input in `$VISUAL`, else `$EDITOR`, else `vi` (also while a turn runs) |
 | Up/Down, Ctrl-P/N | Move between lines (wrapped rows first), then recall prompt history; an entry recalled and not edited (a `/command` or `@path` among them) opens no completion menu, so the walk goes on past it |
 | Ctrl-A/E, Alt+B/F | Line start/end, word left/right (Ctrl/Alt+Left/Right too) |

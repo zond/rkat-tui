@@ -8578,8 +8578,8 @@ empty editor, now send the interrupt. They used to do nothing; there is
 still no rewind. A press inside the grace says when the next one forces
 it, and a press after the force says that the client is waiting. Pinned
 also by `client_turns::esc_with_nothing_running_says_so`,
-`client_turns::ctrl_enter_interrupts_another_clients_run_then_sends`
-(the run another client started, shown as a remote turn) and
+`client_turns::send_now_interrupts_another_clients_run_then_sends`
+(named `ctrl_enter_…` until 2026-11-18; the run another client started, shown as a remote turn) and
 `ui::tests::turns::esc_with_nothing_pending_interrupts`. Not verified:
 the owner's exact sequence (the 0.0.2 log does not record forwarded
 interrupts).
@@ -12726,3 +12726,33 @@ Tests: `contacts::contacts_lists_exactly_the_sendable_peers_by_what_each_is`,
 `daemon::contacts::tests::the_answer_reads_by_group_with_each_peer_id`,
 `tool_costs::*` (the comms family and its bound),
 `approval::policy::tests::delegation_and_mob_queries_need_no_review_but_mob_changes_do`.
+
+## Send now is Ctrl-X Ctrl-S, and it pushes what waits (owner, 2026-11-18)
+
+The owner's final word: Ctrl-X Ctrl-S is the one send-now key; the
+Ctrl+Enter binding, its hints and its rows are gone (Ctrl+Enter is a
+plain Enter now; Shift+Enter is still a newline, the keyboard
+enhancement is unchanged). Send now used to interrupt and send only the
+editor's text: with an empty editor it was a plain interrupt, so a steer
+held behind a long tool call came back to the editor and needed a
+second Enter. Now `App::interrupt_and_send` marks the interrupt
+(`send_waiting`) when a turn runs and one of the user's messages waits
+(queued or delivering, no recall found it read: the same test as ↑'s
+recall); the interrupt's answer hands the unread ones back
+(`Msg::Returned`, before the turn's end: the runner settles the turn
+only after the answer) and `turn_finished` joins them, in the order
+typed, before the editor's text into the next run's prompt instead of
+the editor. One notice replaces the interrupted line. The status bar's
+queued segment names the key while one waits, shortened or left out to
+fit the bar's width (`render::status_bar_fit`). Ctrl-X as a chord's
+first key still lets any other key through at once.
+
+Tests: `ui::tests::turns::{send_now_on_an_empty_editor_sends_the_waiting_messages_as_the_next_run,
+send_now_with_text_sends_the_waiting_message_then_the_text,
+send_now_with_nothing_waiting_is_a_plain_interrupt,
+send_now_after_a_run_that_ended_on_its_own_still_sends,
+the_status_bar_says_how_to_push_a_waiting_message}`,
+`ui::tests::keys::chord_ctrl_x_ctrl_s_interrupt_and_send_when_running`,
+`client_turns::send_now_pushes_a_message_held_behind_a_long_tool_call_as_the_next_run`
+(the rig: the steer arrives once, as the next run's prompt, the editor
+empty, no further run).

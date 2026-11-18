@@ -685,6 +685,151 @@ fn send_next_takes_priority_over_held_messages() {
     assert_eq!(users, vec![&user("one"), &user("two"), &user("urgent")]);
 }
 
+/// Ctrl-X Ctrl-S on the running turn.
+fn send_now(app: &mut App) -> Vec<Effect> {
+    let t0 = Instant::now();
+    app.update_at(ctrl('x'), t0);
+    app.update_at(ctrl('s'), t0)
+}
+
+/// The notices that speak of the interrupt.
+fn interrupt_notices(app: &App) -> Vec<String> {
+    notices(app)
+        .into_iter()
+        .map(|(_, text)| text)
+        .filter(|text| text.contains("interrupt"))
+        .collect()
+}
+
+/// Ctrl-X Ctrl-S on an empty editor while two of the user's messages wait
+/// for the agent: the turn is interrupted and the two the interrupt hands
+/// back go at once as the next run, in the order typed, not to the editor;
+/// one notice says so.
+#[test]
+fn send_now_on_an_empty_editor_sends_the_waiting_messages_as_the_next_run() {
+    let mut app = running_app();
+    submit(&mut app, "two");
+    submit(&mut app, "three");
+    app.update(ack(1, Ok(())));
+    app.update(ack(2, Ok(())));
+    assert_eq!(send_now(&mut app), vec![Effect::Interrupt]);
+    assert!(
+        app.update(Msg::Returned(vec![PendingId(2), PendingId(1)]))
+            .is_empty()
+    );
+    let fx = app.update(finished(Err(TurnFailure::Interrupted)));
+    assert_eq!(fx, vec![Effect::StartTurn("two\n\nthree".into())]);
+    assert!(app.is_running());
+    assert!(app.input.is_empty());
+    assert!(app.pending.is_empty());
+    let users: Vec<&Block> = app
+        .transcript
+        .iter()
+        .map(|(_, b)| b)
+        .filter(|b| matches!(b, Block::User { .. }))
+        .collect();
+    assert_eq!(users, vec![&user("one"), &user("two\n\nthree")]);
+    assert_eq!(
+        interrupt_notices(&app),
+        ["interrupted; sending your 2 waiting messages now"]
+    );
+}
+
+/// With text in the editor too, the waiting message goes first and the
+/// text after it, in one run.
+#[test]
+fn send_now_with_text_sends_the_waiting_message_then_the_text() {
+    let mut app = running_app();
+    submit(&mut app, "two");
+    app.update(ack(1, Ok(())));
+    type_str(&mut app, "urgent");
+    assert_eq!(send_now(&mut app), vec![Effect::Interrupt]);
+    assert!(app.input.is_empty());
+    app.update(Msg::Returned(vec![PendingId(1)]));
+    let fx = app.update(finished(Err(TurnFailure::Interrupted)));
+    assert_eq!(fx, vec![Effect::StartTurn("two\n\nurgent".into())]);
+    assert!(app.input.is_empty());
+    assert_eq!(
+        interrupt_notices(&app),
+        ["interrupted; sending your waiting message and the new one now"]
+    );
+}
+
+/// Nothing waiting and an empty editor: a plain interrupt, after which
+/// nothing starts.
+#[test]
+fn send_now_with_nothing_waiting_is_a_plain_interrupt() {
+    let mut app = running_app();
+    assert_eq!(send_now(&mut app), vec![Effect::Interrupt]);
+    assert!(
+        app.update(finished(Err(TurnFailure::Interrupted)))
+            .is_empty()
+    );
+    assert!(!app.is_running());
+    assert_eq!(
+        interrupt_notices(&app),
+        ["turn interrupted; the agent is idle"]
+    );
+}
+
+/// The run ended on its own as the interrupt came: what the interrupt
+/// handed back is sent all the same, and the notice says the run had
+/// ended.
+#[test]
+fn send_now_after_a_run_that_ended_on_its_own_still_sends() {
+    let mut app = running_app();
+    submit(&mut app, "two");
+    app.update(ack(1, Ok(())));
+    assert_eq!(send_now(&mut app), vec![Effect::Interrupt]);
+    app.update(Msg::Returned(vec![PendingId(1)]));
+    let fx = app.update(finished(Ok(summary())));
+    assert_eq!(fx, vec![Effect::StartTurn("two".into())]);
+    assert_eq!(
+        interrupt_notices(&app),
+        ["the run had ended as you interrupted it; sending your waiting message now"]
+    );
+}
+
+/// While one of the user's messages waits for the running turn, the
+/// status bar's queued segment says how to push it, shortened or left out
+/// as the width asks; a message the agent read already does not count.
+#[test]
+fn the_status_bar_says_how_to_push_a_waiting_message() {
+    let mut app = running_app();
+    let now = Instant::now();
+    let line = |app: &App| crate::ui::render::status_line(&app.status, now);
+    assert!(!line(&app).contains("Ctrl-X"), "{}", line(&app));
+    submit(&mut app, "two");
+    app.update(ack(1, Ok(())));
+    assert!(
+        line(&app).contains("queued 1 · Ctrl-X Ctrl-S interrupts and sends"),
+        "{}",
+        line(&app)
+    );
+    let full = crate::ui::render::status_bar(&app.status, now).width();
+    let fit = |width: usize| -> String {
+        crate::ui::render::status_bar_fit(&app.status, now, width)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    };
+    assert!(fit(full).contains("Ctrl-X Ctrl-S interrupts and sends"));
+    assert!(
+        fit(full - 1).contains("queued 1 · C-x C-s sends"),
+        "{}",
+        fit(full - 1)
+    );
+    assert!(fit(10).ends_with("queued 1"), "{}", fit(10));
+    // A recall found it with the agent: nothing left to push.
+    app.update(key(KeyCode::Up));
+    app.update(Msg::Recalled {
+        recalled: Vec::new(),
+        errors: Vec::new(),
+    });
+    assert!(!line(&app).contains("Ctrl-X"), "{}", line(&app));
+}
+
 #[test]
 fn reset_transcript_keeps_queued_placeholders() {
     let mut app = running_app();

@@ -118,6 +118,11 @@
 
 ### Changed
 
+- Send now is Ctrl-X Ctrl-S only, and it pushes what waits: while a turn
+  runs it interrupts it and sends your messages the agent has not read
+  yet, then the editor's text, at once as the next run (they no longer
+  come back to the editor for a second Enter); the status bar's
+  `queued N` names the key while one waits.
 - The engine's `peers` (helpers, agents and wires mixed, with no kind or
   state) and `list_members` (which left out fresh kept helpers) are no
   longer offered to agents and helpers: `contacts` replaces both. The

@@ -109,7 +109,7 @@ fn enter_tui_mode(mouse: bool) -> io::Result<()> {
     )?;
     if matches!(supports_keyboard_enhancement(), Ok(true)) {
         // Disambiguation only: it tells Esc from Alt sequences and
-        // Shift/Ctrl+Enter from Enter. Event types are not requested:
+        // Shift+Enter from Enter. Event types are not requested:
         // under them kitty 0.32 sends the release of a legacy-encoded
         // key (Backspace, Enter, Tab) as a second press byte, which
         // deleted two characters per Backspace; the spec says those keys

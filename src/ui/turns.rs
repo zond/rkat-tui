@@ -478,12 +478,16 @@ impl App {
         // An interrupt returns every message the agent did not read to the
         // editor, in the order typed: the ones it took back from the agent
         // and the ones the UI still held; nothing typed during the
-        // interrupted turn starts a run by itself. Ctrl+Enter's text
-        // (`send_next`) is sent, with them, as the user asked.
+        // interrupted turn starts a run by itself. After Ctrl-X Ctrl-S
+        // (`send_waiting`) they are sent instead, as the next run, before
+        // the editor's text it took (`send_next`), as the user asked.
         let mut unsent = self.pending.take_unsent();
         let returned = std::mem::take(&mut self.returned);
+        let push = std::mem::take(&mut self.send_waiting);
+        let typed = self.send_next.is_some();
         let mut back = 0;
-        if interrupted && self.send_next.is_none() {
+        let mut pushed = 0;
+        if interrupted && !push {
             self.drop_blocks(unsent.iter().map(|p| p.block));
             let mut texts: Vec<(PendingId, String)> = returned;
             texts.extend(unsent.drain(..).map(|p| (p.id, p.text)));
@@ -491,17 +495,25 @@ impl App {
             back = texts.len();
             self.prepend_to_editor(texts.into_iter().map(|(_, text)| text).collect());
         } else if !returned.is_empty() {
-            // Sent first with Ctrl+Enter's text; else (the run ended on its
-            // own as the interrupt came) back in the editor.
+            // Sent now after Ctrl-X Ctrl-S, before the editor's text it
+            // took; else (the run ended on its own as the interrupt came)
+            // back in the editor.
+            let mut returned = returned;
+            returned.sort_by_key(|(id, _)| *id);
             let texts: Vec<String> = returned.into_iter().map(|(_, text)| text).collect();
-            back = texts.len();
-            if let Some(next) = self.send_next.take() {
-                self.send_next = Some(format!("{}\n\n{next}", texts.join("\n\n")));
-                back = 0;
+            if push {
+                pushed = texts.len();
+                let texts = texts.join("\n\n");
+                self.send_next = Some(match self.send_next.take() {
+                    Some(next) => format!("{texts}\n\n{next}"),
+                    None => texts,
+                });
             } else {
+                back = texts.len();
                 self.prepend_to_editor(texts);
             }
         }
+        let sending = (push && (pushed > 0 || typed)).then(|| sending_line(pushed, typed));
         match result {
             Ok(summary) => {
                 if !self.streamed_text && !summary.text.is_empty() {
@@ -515,18 +527,30 @@ impl App {
                     .push_notice(NoticeLevel::Error, format!("turn failed: {err}"));
             }
             Err(TurnFailure::Interrupted) => {
-                self.transcript
-                    .push_notice(NoticeLevel::Warn, interrupted_line(back));
+                let line = match &sending {
+                    Some(sending) => format!("interrupted; {sending}"),
+                    None => interrupted_line(back),
+                };
+                self.transcript.push_notice(NoticeLevel::Warn, line);
             }
             Err(TurnFailure::Unconfirmed) => {
                 self.transcript.push_notice(
                     NoticeLevel::Warn,
                     format!(
                         "the daemon did not confirm the interrupt, not even after a hard cancel: the run may still be going and shows here again when it reports; what you send next waits behind it{}",
-                        back_text(back).map(|text| format!("; {text}")).unwrap_or_default()
+                        back_text(back)
+                            .or_else(|| sending.clone())
+                            .map(|text| format!("; {text}"))
+                            .unwrap_or_default()
                     ),
                 );
             }
+        }
+        if !interrupted && let Some(sending) = &sending {
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                format!("the run had ended as you interrupted it; {sending}"),
+            );
         }
         if !interrupted && let Some(text) = back_text(back) {
             self.transcript.push_notice(
@@ -638,6 +662,21 @@ pub fn interrupted_line(back: usize) -> String {
     match back_text(back) {
         Some(text) => format!("turn interrupted; the agent is idle, and {text}"),
         None => "turn interrupted; the agent is idle".to_string(),
+    }
+}
+
+/// What Ctrl-X Ctrl-S sends as the next run, in words: `pushed` of the
+/// user's waiting messages, and the editor's text when `typed`.
+fn sending_line(pushed: usize, typed: bool) -> String {
+    let waiting = match pushed {
+        0 => None,
+        1 => Some("your waiting message".to_string()),
+        n => Some(format!("your {n} waiting messages")),
+    };
+    match (waiting, typed) {
+        (Some(waiting), true) => format!("sending {waiting} and the new one now"),
+        (Some(waiting), false) => format!("sending {waiting} now"),
+        (None, _) => "sending your message now".to_string(),
     }
 }
 

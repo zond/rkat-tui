@@ -289,7 +289,6 @@ impl App {
                 _ if self.input.backslash_newline() => {}
                 _ => self.submit(now, fx),
             },
-            Action::SendNow => self.interrupt_and_send(now, fx),
             // Esc in a helper's view goes back to the transcript at once
             // (a pending `/btw` takes it first); it neither interrupts the
             // agent nor arms Esc-Esc. The next Esc drops the selection.
@@ -381,24 +380,41 @@ impl App {
             )));
     }
 
-    /// Ctrl+Enter or Ctrl-X Ctrl-S: when idle, the same as Enter; when
-    /// running, interrupt and send the editor contents next. On an empty
-    /// editor a plain interrupt, idle too: the client then asks the daemon
+    /// Ctrl-X Ctrl-S, send now: when idle, the same as Enter. While a turn
+    /// runs it interrupts the turn and sends, as the next run, the user's
+    /// messages still waiting for the agent (queued or delivering, in the
+    /// order typed) and then the editor's text: the interrupt's answer
+    /// hands the unread ones back ([`super::Msg::Returned`]) and the
+    /// turn's end sends them instead of putting them in the editor
+    /// ([`Self::turn_finished`]). With nothing waiting and an empty editor
+    /// a plain interrupt, idle too: the client then asks the daemon
     /// whether the agent runs a turn this UI does not show.
     pub(super) fn interrupt_and_send(&mut self, now: Instant, fx: &mut Vec<Effect>) {
-        if self.input.text().trim().is_empty() {
+        let empty = self.input.text().trim().is_empty();
+        let waiting = self.running && self.has_waiting_messages();
+        if empty && !waiting {
             self.interrupt(now, fx);
         } else if !self.running {
             self.submit(now, fx);
         } else {
-            let text = self.input.take();
-            self.submitted.push(text.clone());
-            self.send_next = Some(match self.send_next.take() {
-                Some(prev) => format!("{prev}\n\n{text}"),
-                None => text,
-            });
+            if !empty {
+                let text = self.input.take();
+                self.submitted.push(text.clone());
+                self.send_next = Some(match self.send_next.take() {
+                    Some(prev) => format!("{prev}\n\n{text}"),
+                    None => text,
+                });
+            }
+            self.send_waiting = true;
             fx.push(Effect::Interrupt);
         }
+    }
+
+    /// Whether one of the user's messages steered into the running turn
+    /// still waits for the agent (queued or delivering, and no recall found
+    /// it read already).
+    pub(super) fn has_waiting_messages(&self) -> bool {
+        self.has_admitted_recallable()
     }
 
     pub(super) fn edit(&mut self, edit: EditAction) {
