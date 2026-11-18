@@ -68,10 +68,55 @@ use std::sync::Arc;
 
 use meerkat_core::SessionId;
 
-pub use registry::{Gone, HelperKey, HelperRegistry};
+pub use registry::{Gone, HelperKey, HelperRegistry, SeatedHook};
 pub use registry::{HelperContext, HelperKind, HelperLife, HelperStatus, HelperTag};
 
 use meerkat_mob_mcp::MobMcpState;
+
+/// The helpers seated now for `owner` (its whole tree, nested ones too):
+/// every helper bound to it that its mob's roster lists, a helper the
+/// engine restored and has not rebuilt yet (an idle kept one after a
+/// restart) too, in the order they were bound. The one source of what an
+/// agent holds: the clients' live helpers, `contacts`, the reminder after
+/// a compaction and a conversation's end read it.
+pub async fn seated_for(
+    state: &MobMcpState,
+    registry: &HelperRegistry,
+    owner: &SessionId,
+) -> Vec<(HelperKey, HelperTag)> {
+    let bound: Vec<(HelperKey, HelperTag)> = registry
+        .bound_members()
+        .into_iter()
+        .filter(|(_, tag)| &tag.owner == owner)
+        .collect();
+    let mut rosters: std::collections::HashMap<
+        meerkat_mob::MobId,
+        Vec<meerkat_mob::AgentIdentity>,
+    > = std::collections::HashMap::new();
+    for (key, _) in &bound {
+        if rosters.contains_key(&key.mob) {
+            continue;
+        }
+        let roster = match state.handle_for(&key.mob).await {
+            Ok(handle) => handle
+                .list_members()
+                .await
+                .into_iter()
+                .map(|member| member.agent_identity)
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        rosters.insert(key.mob.clone(), roster);
+    }
+    bound
+        .into_iter()
+        .filter(|(key, _)| {
+            rosters
+                .get(&key.mob)
+                .is_some_and(|roster| roster.contains(&key.member))
+        })
+        .collect()
+}
 
 /// Stop every running helper `registry` lists for `owner` in `state`'s mobs:
 /// force-cancel its run, then retire it. Failures are logged. The daemon
@@ -83,7 +128,10 @@ pub(crate) async fn cancel_helpers(
     registry: &HelperRegistry,
     owner: &SessionId,
 ) {
-    for key in registry.live_for(owner) {
+    // Deepest first: a helper's own helpers before it.
+    let mut seated = seated_for(state, registry, owner).await;
+    seated.sort_by_key(|(_, tag)| std::cmp::Reverse(tag.path.len()));
+    for (key, _) in seated {
         // Left with its conversation: no parent is told.
         registry.endings().left(&key);
         match state.handle_for(&key.mob).await {

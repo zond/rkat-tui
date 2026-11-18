@@ -358,8 +358,9 @@ fn draw_helper_view(frame: &mut Frame<'_>, app: &mut App, header: BlockId, area:
 }
 
 /// The helper panel under the input: one line per helper, indented by
-/// nesting depth, the selected one reversed; past [`MAX_PANEL_LINES`]
-/// helpers a window around the selection and `… and N more`.
+/// nesting depth, the selected one reversed, one that ended dim with its
+/// ending; past [`MAX_PANEL_LINES`] helpers a window around the selection
+/// and a line saying what it hides ([`panel_more`]).
 fn draw_panel(frame: &mut Frame<'_>, app: &App, panel: &[BlockId], area: Rect) {
     let w = usize::from(area.width).max(4);
     let selected = app
@@ -374,7 +375,10 @@ fn draw_panel(frame: &mut Frame<'_>, app: &App, panel: &[BlockId], area: Rect) {
         .filter_map(|(i, id)| match app.transcript.block(*id) {
             Some(Block::Helper(fold)) => {
                 let indent = "  ".repeat(fold.depth);
-                let line = helper_line(fold, &fold.panel_status_text(), w, &indent, "");
+                let mut line = helper_line(fold, &fold.panel_status_text(), w, &indent, "");
+                if !app.transcript.helper_live(fold) {
+                    line = line.patch_style(Modifier::DIM);
+                }
                 Some(if selected == Some(i) {
                     line.patch_style(Modifier::REVERSED)
                 } else {
@@ -385,12 +389,41 @@ fn draw_panel(frame: &mut Frame<'_>, app: &App, panel: &[BlockId], area: Rect) {
         })
         .collect();
     if more > 0 {
+        let running = |range: &[BlockId]| {
+            range
+                .iter()
+                .filter(|id| {
+                    matches!(app.transcript.block(**id), Some(Block::Helper(fold)) if fold.state.is_running())
+                })
+                .count()
+        };
+        let (above, rest) = panel.split_at(first.min(panel.len()));
+        let below = rest.get(shown..).unwrap_or_default();
+        let hidden_running = running(above) + running(below);
         lines.push(Line::styled(
-            format!("  … and {more} more"),
+            truncate_to_width(&panel_more(above.len(), below.len(), hidden_running), w),
             Style::default().add_modifier(Modifier::DIM),
         ));
     }
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// The panel's line for the helpers its window hides: `above` before it,
+/// `below` after it, `running` of them running (`  … and 4 more (1
+/// running) · 1 above · 3 below`).
+#[must_use]
+pub fn panel_more(above: usize, below: usize, running: usize) -> String {
+    let mut text = format!("  … and {} more", above + below);
+    if running > 0 {
+        text.push_str(&format!(" ({running} running)"));
+    }
+    if above > 0 {
+        text.push_str(&format!(" · {above} above"));
+    }
+    if below > 0 && above > 0 {
+        text.push_str(&format!(" · {below} below"));
+    }
+    text
 }
 
 /// The task checklist under the input: `… and N more` for the older

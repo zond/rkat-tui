@@ -2,34 +2,163 @@
 
 use super::*;
 
+/// The owner's rule of 2026-11-18: the panel lists what is live, running
+/// helpers first (newest first), then the seated idle ones; one that ended
+/// stays dim with its ending word for `PANEL_LINGER`, then leaves, with
+/// no turn boundary; its header stays in the transcript.
 #[test]
-fn the_panel_lists_running_helpers_newest_first_and_drops_finished_ones_at_the_next_turn() {
+fn the_panel_lists_live_helpers_and_an_ended_one_leaves_after_its_linger() {
+    let t0 = Instant::now();
     let (mut app, scout, fork) = helper_app();
+    // The agent's turn runs all along: no turn starts or ends below.
+    type_str(&mut app, "go on");
+    app.update_at(key(KeyCode::Enter), t0);
+    assert!(app.is_running());
+    app.update_at(
+        Msg::SeatedHelpers(vec!["scout".into(), "fork-1".into()]),
+        t0,
+    );
     assert_eq!(app.helper_panel(), vec![fork, scout]);
     assert!(app.status.helper_panel);
-    // scout finishes: still listed during this turn, as done.
-    app.update(live(&["fork-1"]));
+    // scout goes idle, still seated: listed after the running one.
+    app.update_at(live(&["fork-1"]), t0);
     assert_eq!(app.helper_panel(), vec![fork, scout]);
-    assert!(matches!(
-        app.transcript.block(scout),
-        Some(Block::Helper(fold)) if fold.state == transcript::HelperState::Done
-    ));
-    // The next turn starts: the finished helper drops off, the running
-    // one stays; the inline header stays in the transcript.
-    type_str(&mut app, "next");
-    app.update(key(KeyCode::Enter));
-    assert!(app.is_running());
-    assert_eq!(app.helper_panel(), vec![fork]);
-    assert_eq!(app.transcript.helper_header("scout"), Some(scout));
-    // Once nothing runs and nothing finished this turn, the panel is
-    // empty and hidden.
-    app.update(live(&[]));
-    assert_eq!(app.helper_panel(), vec![fork]);
-    app.update(Msg::TurnFinished(Ok(summary())));
-    type_str(&mut app, "again");
-    app.update(key(KeyCode::Enter));
+    // fork-1 finishes and leaves its mob: dim with its ending, after the
+    // live one, for its linger.
+    app.update_at(
+        Msg::HelperEnded {
+            path: vec!["fork-1".into()],
+            how: "finished".into(),
+            told: Some("main-ab12 was told".into()),
+        },
+        t0,
+    );
+    app.update_at(live(&[]), t0);
+    app.update_at(Msg::SeatedHelpers(vec!["scout".into()]), t0);
+    assert_eq!(app.helper_panel(), vec![scout, fork]);
+    assert!(
+        app.transcript.helpers_lingering(),
+        "the UI ticks until it leaves"
+    );
+    let rows = screen(&mut app, 12);
+    let ended = rows
+        .iter()
+        .find(|r| r.contains("[fork-1 · m]"))
+        .unwrap_or_else(|| panic!("{rows:#?}"));
+    assert!(ended.contains("finished"), "{ended}");
+    app.update_at(Msg::Tick, t0 + transcript::PANEL_LINGER / 2);
+    assert_eq!(app.helper_panel(), vec![scout, fork]);
+    app.update_at(Msg::Tick, t0 + transcript::PANEL_LINGER);
+    assert_eq!(app.helper_panel(), vec![scout]);
+    assert!(!app.transcript.helpers_lingering());
+    assert_eq!(app.transcript.helper_header("fork-1"), Some(fork));
+    assert!(app.is_running(), "no turn boundary was needed");
+    // scout retired: it leaves too, and the panel goes.
+    app.update_at(
+        Msg::SeatedHelpers(Vec::new()),
+        t0 + transcript::PANEL_LINGER,
+    );
+    app.update_at(Msg::Tick, t0 + transcript::PANEL_LINGER * 3);
     assert!(app.helper_panel().is_empty());
     assert!(!app.status.helper_panel);
+}
+
+/// The owner's 0.0.16 report: in one long turn twenty helpers, of which
+/// three are live (seated) now: the panel lists the three, with no
+/// "more" line, once the ended ones' linger is over.
+#[test]
+fn of_twenty_helpers_in_one_long_turn_the_panel_lists_the_three_live() {
+    let t0 = Instant::now();
+    let mut app = App::new(StatusInfo::default());
+    type_str(&mut app, "do it all");
+    app.update_at(key(KeyCode::Enter), t0);
+    let labels: Vec<String> = (0..20).map(|i| format!("h{i}")).collect();
+    let names: Vec<&str> = labels.iter().map(String::as_str).collect();
+    app.update_at(Msg::SeatedHelpers(labels.clone()), t0);
+    app.update_at(live(&names), t0);
+    assert_eq!(app.helper_panel().len(), 20);
+    // Seventeen end; three stay seated (idle).
+    for label in &labels[3..] {
+        app.update_at(
+            Msg::HelperEnded {
+                path: vec![label.clone()],
+                how: "finished".into(),
+                told: Some("main-ab12 was told".into()),
+            },
+            t0,
+        );
+    }
+    app.update_at(live(&[]), t0);
+    app.update_at(Msg::SeatedHelpers(labels[..3].to_vec()), t0);
+    app.update_at(Msg::Tick, t0 + transcript::PANEL_LINGER);
+    let panel: Vec<String> = app
+        .helper_panel()
+        .into_iter()
+        .filter_map(|id| match app.transcript.block(id) {
+            Some(Block::Helper(fold)) => Some(fold.label.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(panel, ["h2", "h1", "h0"]);
+    let rows = screen(&mut app, 16);
+    assert!(!rows.iter().any(|r| r.contains("more")), "{rows:#?}");
+    assert_eq!(app.transcript.helper_headers().count(), 20);
+    assert!(app.is_running(), "all in one turn");
+}
+
+/// A selected row does not leave while selected, ended or not; when a
+/// row's header goes, the selection moves to its neighbour, not the top.
+#[test]
+fn a_selected_ended_helper_stays_and_a_gone_row_hands_the_selection_to_its_neighbour() {
+    let t0 = Instant::now();
+    let later = t0 + transcript::PANEL_LINGER * 2;
+    let mut app = App::new(StatusInfo::default());
+    let labels = ["a", "b", "c", "d"];
+    app.update_at(
+        Msg::SeatedHelpers(labels.iter().map(ToString::to_string).collect()),
+        t0,
+    );
+    app.update_at(live(&labels), t0);
+    let [a, b, c, d] = labels.map(|l| app.transcript.helper_header(l).unwrap());
+    assert_eq!(app.helper_panel(), vec![d, c, b, a]);
+    // Select b, then b ends: it stays while selected, past its linger.
+    for _ in 0..3 {
+        app.update_at(ctrl_key(KeyCode::Down), t0);
+    }
+    assert_eq!(app.panel_selection(), Some(b));
+    app.update_at(live(&["a", "c", "d"]), t0);
+    app.update_at(
+        Msg::SeatedHelpers(vec!["a".into(), "c".into(), "d".into()]),
+        t0,
+    );
+    app.update_at(Msg::Tick, later);
+    assert_eq!(app.panel_selection(), Some(b));
+    assert_eq!(app.helper_panel(), vec![d, c, a, b]);
+    // Moving off it lets it go.
+    app.update_at(ctrl_key(KeyCode::Up), later);
+    assert_eq!(app.panel_selection(), Some(a));
+    assert_eq!(app.helper_panel(), vec![d, c, a]);
+    // The selected row's header goes: the selection moves to the row
+    // after it, not to the top.
+    app.update_at(ctrl_key(KeyCode::Up), later);
+    assert_eq!(app.panel_selection(), Some(c));
+    assert!(app.transcript.remove_block(c).is_some());
+    app.update_at(Msg::Tick, later);
+    assert_eq!(app.helper_panel(), vec![d, a]);
+    assert_eq!(app.panel_selection(), Some(a));
+}
+
+/// Past six helpers the last line says what the window hides: how many,
+/// how many of them run, and how many are above it.
+#[test]
+fn the_panel_s_overflow_line_counts_what_it_hides() {
+    assert_eq!(render::panel_more(0, 3, 0), "  … and 3 more");
+    assert_eq!(render::panel_more(0, 3, 2), "  … and 3 more (2 running)");
+    assert_eq!(
+        render::panel_more(2, 3, 1),
+        "  … and 5 more (1 running) · 2 above · 3 below"
+    );
+    assert_eq!(render::panel_more(3, 0, 0), "  … and 3 more · 3 above");
 }
 
 #[test]
@@ -74,7 +203,7 @@ fn the_panel_shows_at_most_six_lines() {
     // Five helpers (newest first), then the rest counted.
     assert!(rows[9].starts_with("  [h7 · m]"), "{rows:?}");
     assert!(rows[13].starts_with("  [h3 · m]"), "{rows:?}");
-    assert_eq!(rows[14], "  … and 3 more");
+    assert_eq!(rows[14], "  … and 3 more (3 running)");
     // Selecting past the window moves it (the first press selects the
     // newest, seven more the oldest).
     for _ in 0..8 {
@@ -82,6 +211,7 @@ fn the_panel_shows_at_most_six_lines() {
     }
     let rows = screen(&mut app, 16);
     assert!(rows[13].starts_with("  [h0 · m]"), "{rows:?}");
+    assert_eq!(rows[14], "  … and 3 more (3 running) · 3 above");
     assert_eq!(render::panel_window(8, Some(7)), (3, 5, 3));
     assert_eq!(render::panel_window(6, Some(5)), (0, 6, 0));
 }
@@ -1153,9 +1283,9 @@ fn picker_line(app: &mut App, label: &str) -> String {
 }
 
 /// A kept helper that a message wakes again keeps its one header (it is
-/// the same helper, not a new one), shows in the panel as any helper does
-/// (running, then until the next turn starts), says `idle` while seated
-/// and `retired` once the daemon says it left its mob.
+/// the same helper, not a new one), stays in the panel while it is seated
+/// (running, then idle; turns do not matter), says `idle` while seated and
+/// `retired` once the daemon says it left its mob.
 #[test]
 fn a_woken_kept_helper_keeps_its_header_and_says_idle_until_retired() {
     let mut app = App::new(StatusInfo::default());
@@ -1164,24 +1294,25 @@ fn a_woken_kept_helper_keeps_its_header_and_says_idle_until_retired() {
         name: "assign".into(),
         args: test_args(json!({"name": "w1", "task": "index the repo", "keep": true})),
     }));
+    app.update(Msg::SeatedHelpers(vec!["w1".into()]));
     app.update(live(&["w1"]));
     app.update(helper_msg("w1", run_started("index the repo")));
     let w1 = app.transcript.helper_header("w1").unwrap();
     app.update(helper_msg("w1", run_completed()));
     app.update(live(&[]));
     assert!(picker_line(&mut app, "w1").contains("[w1 · m] fresh · kept · idle · 0 tool calls"));
-    // The next turn: it drops off the panel.
+    // The next turn: seated and idle, it stays on the panel.
     type_str(&mut app, "next");
     app.update(key(KeyCode::Enter));
     app.update(Msg::TurnFinished(Ok(summary())));
-    assert!(app.helper_panel().is_empty());
+    assert_eq!(app.helper_panel(), vec![w1]);
     // A message wakes it: the same header, running, in the panel.
     app.update(helper_msg("w1", run_started("UPDATE")));
     app.update(live(&["w1"]));
     assert_eq!(app.transcript.helper_header("w1"), Some(w1));
     assert_eq!(app.transcript.helper_headers().count(), 1);
     assert_eq!(app.helper_panel(), vec![w1]);
-    // Its run ends: still listed until the next turn starts, idle.
+    // Its run ends: listed, idle.
     app.update(helper_msg("w1", run_completed()));
     app.update(live(&[]));
     assert_eq!(app.helper_panel(), vec![w1]);
@@ -1191,9 +1322,6 @@ fn a_woken_kept_helper_keeps_its_header_and_says_idle_until_retired() {
             .any(|r| r.contains("[w1 · m] fresh · kept · idle · 0 tool calls")),
         "{rows:#?}"
     );
-    type_str(&mut app, "again");
-    app.update(key(KeyCode::Enter));
-    assert!(app.helper_panel().is_empty());
     assert_eq!(app.transcript.helper_headers().count(), 1);
     // Retired: said so on its line, and nothing else is shown.
     let before = app.transcript.len();
@@ -1202,6 +1330,7 @@ fn a_woken_kept_helper_keeps_its_header_and_says_idle_until_retired() {
         how: crate::daemon::protocol::HELPER_RETIRED.into(),
         told: None,
     });
+    app.update(Msg::SeatedHelpers(Vec::new()));
     assert_eq!(app.transcript.len(), before);
     assert!(picker_line(&mut app, "w1").contains("[w1 · m] fresh · kept · retired · 0 tool calls"));
     // A helper whose line says how it ended keeps those words.

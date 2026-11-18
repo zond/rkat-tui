@@ -19,13 +19,35 @@ impl App {
     /// The helpers the panel under the input lists (see
     /// [`Transcript::panel_helpers`](crate::ui::Transcript::panel_helpers)).
     pub fn helper_panel(&self) -> Vec<BlockId> {
-        self.transcript.panel_helpers()
+        self.transcript.panel_helpers(self.panel_selected)
     }
 
     /// The helper selected in the panel, if the panel still lists it.
     pub fn panel_selection(&self) -> Option<BlockId> {
         self.panel_selected
-            .filter(|id| self.transcript.panel_helpers().contains(id))
+            .filter(|id| self.helper_panel().contains(id))
+    }
+
+    /// After an update: the panel's rows now. A selected row whose helper
+    /// left the panel (its header went) hands the selection to its
+    /// neighbour (the next row, else the one before), never to the top.
+    pub(super) fn settle_panel(&mut self) {
+        let panel = self.helper_panel();
+        if let Some(selected) = self.panel_selected
+            && !panel.contains(&selected)
+        {
+            let at = self.panel_rows.iter().position(|id| *id == selected);
+            self.panel_selected = at.and_then(|i| {
+                let (before, after) = self.panel_rows.split_at(i);
+                after
+                    .iter()
+                    .skip(1)
+                    .chain(before.iter().rev())
+                    .find(|id| panel.contains(id))
+                    .copied()
+            });
+        }
+        self.panel_rows = panel;
     }
 
     /// The helper whose full view is open, if its header is still one.
@@ -45,7 +67,7 @@ impl App {
     /// Ctrl+Up (`forward == false`) / Ctrl+Down: move the panel selection,
     /// starting at the first (newest) helper and wrapping around.
     pub(super) fn move_panel_selection(&mut self, forward: bool) {
-        let panel = self.transcript.panel_helpers();
+        let panel = self.helper_panel();
         let (Some(first), Some(last)) = (panel.first().copied(), panel.last().copied()) else {
             self.panel_selected = None;
             return;

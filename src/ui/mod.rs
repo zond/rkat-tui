@@ -1418,6 +1418,9 @@ pub struct App {
     /// The helper header selected in the helper panel (Ctrl+Up/Down; Enter
     /// on an empty input opens its full view).
     panel_selected: Option<BlockId>,
+    /// The helper panel's rows at the last update (a selection whose row
+    /// leaves moves to its neighbour, [`Self::settle_panel`]).
+    panel_rows: Vec<BlockId>,
     /// `/helpers` lists the ended helpers too (its `a`).
     helpers_all: bool,
     /// The helper whose full view replaces the transcript, if one is open.
@@ -1502,6 +1505,7 @@ impl App {
             last_copied: None,
             local: Vec::new(),
             panel_selected: None,
+            panel_rows: Vec::new(),
             helpers_all: false,
             helper_view: None,
             recalling: false,
@@ -1585,6 +1589,7 @@ impl App {
             || self.quit.confirm.is_some()
             || self.chord.is_some()
             || self.transcript.helpers_running()
+            || self.transcript.helpers_lingering()
     }
 
     /// Whether a bell is due; clears it.
@@ -2047,8 +2052,11 @@ impl App {
             Msg::Tick => {
                 let helpers_spun = self.transcript.tick_helpers(now);
                 let tools_ticked = self.transcript.tick_tools(now);
+                // An ended helper leaving the panel redraws it.
+                let lingering = self.transcript.helpers_lingering();
                 dirty = helpers_spun
                     || tools_ticked
+                    || lingering
                     || self.status.busy()
                     || self.quit.last_ctrl_c.is_some()
                     || self.quit.confirm.is_some()
@@ -2072,7 +2080,9 @@ impl App {
         } else {
             None
         };
-        self.status.helper_panel = !self.transcript.panel_helpers().is_empty();
+        self.transcript.settle_helpers(now);
+        self.settle_panel();
+        self.status.helper_panel = !self.panel_rows.is_empty();
         self.follow_helper_picker();
         self.refresh_menu();
         self.dirty |= dirty;

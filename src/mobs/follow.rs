@@ -126,6 +126,8 @@ async fn follow(
             mut mob_events,
         }) => {
             observer.mob_hosts(&key.mob);
+            // It is in its mob's roster now: its owner's clients list it.
+            registry.seated_changed(&tag.owner);
             // A fresh fork, and one restored (the mob keeps the edge
             // across a restart; one it lost is made again): wired once it
             // is seated, off this task, which reads its events meanwhile.

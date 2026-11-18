@@ -543,6 +543,11 @@ impl Runner {
                     told: ended.told,
                 });
             }
+            Push::Seated(seated)
+                if seated.agent == link.connection.agent() && seated.session_id == link.session =>
+            {
+                self.seated_helpers(&seated.helpers);
+            }
             Push::Triggered(_)
             | Push::Cost(_)
             | Push::Switched(_)
@@ -550,7 +555,8 @@ impl Runner {
             | Push::Idle(_)
             | Push::Running(_)
             | Push::AgentNotice(_)
-            | Push::HelperEnded(_) => {}
+            | Push::HelperEnded(_)
+            | Push::Seated(_) => {}
             Push::Mob(protocol::MobNote {
                 mob_id,
                 change: protocol::MobChange::Hosts,
@@ -662,6 +668,19 @@ impl Runner {
         });
     }
 
+    /// The daemon listed the helpers seated for this conversation now
+    /// (`paths`, each by its labels): the UI's live helpers are these,
+    /// and the followers follow them.
+    pub(super) fn seated_helpers(&mut self, paths: &[Vec<String>]) {
+        let labels: Vec<String> = paths
+            .iter()
+            .filter_map(|path| path.last().cloned())
+            .collect();
+        let actions = self.followers.seated(labels.iter().map(String::as_str));
+        self.send(Msg::SeatedHelpers(labels));
+        self.follow(actions);
+    }
+
     /// Open every known mob that is this agent's and not open yet.
     pub(super) fn open_known_mobs(&mut self) {
         let mobs: Vec<String> = self
@@ -692,15 +711,28 @@ impl Runner {
             return;
         };
         let reports = self.reporter();
+        // The workspace's mob seats every agent's helpers: the daemon says
+        // which are this conversation's.
+        let owner = (mob == crate::daemon::MOB_ID)
+            .then(|| self.conn.link().map(|link| link.session.clone()))
+            .flatten();
         tokio::spawn(async move {
             let opened = bounded(CALL_TIMEOUT, async {
                 let stream = remote::open_mob_stream(&connection, &mob).await?;
+                let seated = match &owner {
+                    Some(owner) => Some(remote::seated_helpers(&connection, owner).await?),
+                    None => None,
+                };
                 let mut members = Vec::new();
                 for label in remote::members(&connection, &mob).await.unwrap_or_default() {
                     let session = remote::member_session(&connection, &mob, &label).await.ok();
                     members.push((label, session));
                 }
-                Ok::<_, ClientError>((stream, members))
+                Ok::<_, ClientError>(super::OpenedMob {
+                    stream,
+                    members,
+                    seated,
+                })
             })
             .await
             .map_err(|err| err.to_string());

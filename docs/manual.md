@@ -1449,15 +1449,20 @@ verdict: a long tool or a slow model is silent too. After two minutes of
 silence during a turn it adds `· Esc interrupts`. The next event brings
 the spinner back.
 
-**Watching a helper.** While helpers work, a panel under the input lists
-them, one line each, indented by nesting depth (the newest top-level helper
-first, its nested helpers under it): `[scout · model] ⠋ running · 4 tool
-calls · grep "fn resolve"` while it works (its last call, or the first line
-of its latest text), then `done · 7 tool calls · 2.1k tokens` (or `failed`,
-`cancelled`, `unmeasured`, or how it ended when the daemon says: `stopped by
-you`, `failed: …`, `ended when the daemon stopped`). A helper that finished stays listed until the
-next turn starts. The panel takes at most six lines (beyond that, a window
-around the selection and `… and N more`) and is hidden when empty.
+**Watching a helper.** A panel under the input lists the agent's live
+helpers, one line each, indented by nesting depth: the running ones first
+(the newest top-level helper first, its nested helpers under it), then the
+seated idle ones (kept helpers a message would reach): `[scout · model] ⠋
+running · 4 tool calls · grep "fn resolve"` while it works (its last call,
+or the first line of its latest text), `idle` once its run is done. A
+helper that ended stays on the panel, dim, with how it ended (`finished`,
+`failed: …`, `stopped by you`, `retired`, `ended when the daemon
+stopped`) for about ten seconds, then leaves it, whether or not a turn
+started meanwhile; a selected one stays until the selection moves off it,
+and when a selected row leaves the panel the selection moves to its
+neighbour. The panel takes at most six lines; beyond that, a window around
+the selection and a last line saying what it hides (`… and 4 more (1
+running) · 1 above · 3 below`). It is hidden when empty.
 Ctrl+↓/Ctrl+↑ move a selection in the panel (the newest first, wrapping
 around). Enter on an **empty** input opens the selected helper's **full
 view** in place of the transcript (Enter with text in the input sends it as
@@ -1501,18 +1506,20 @@ out; the hint line counts them (`a: show 14 ended`), and `a` lists them
 too, dim, after the live ones (`a` again hides them), so their full view
 stays reachable. With only ended ones the list says `no live helpers; a
 shows N ended`. Whether a helper is live comes from what the daemon knows
-of it, not from its run's end: the daemon says when a helper ended or was
-retired, and the mob's members as the TUI lists them on attaching say who
-is still seated. Enter opens the highlighted helper's full view, as
+of it, not from its run's end: the daemon says when a helper ended, and
+sends the list of the helpers it seats for the conversation (nested ones
+too) as the TUI attaches and each time one is seated or leaves, so the
+live rows are exactly the helpers the agent still holds, after a
+re-attach, a `/resume` or a daemon restart too. Helpers another agent of
+the workspace started are not shown. Enter opens the highlighted helper's full view, as
 Ctrl+↓ then Enter does, `f` folds or expands its block in the transcript,
 and `s` then `y` stops a running one (a finished one says it has nothing
 to stop); Esc, `q` or Ctrl-C close the list. `/helpers list` prints the
 live ones as a notice with a count of the ended ones, `/helpers list all`
 prints them all, and `/helpers expand|fold <label>|all` unfolds or folds
 any helper's block. A kept helper that a message wakes again keeps its
-one header: the panel under the input lists it while it runs and until
-the next turn starts, as any helper, and its line says `idle` again
-after. `[ui] helpers = "expanded"` in `tui.toml` starts every header
+one header: the panel under the input lists it while it is seated, and
+its line says `idle` again after each run. `[ui] helpers = "expanded"` in `tui.toml` starts every header
 unfolded (default `"folded"`); a resumed session shows its helpers folded.
 
 **Bell.** When a turn ends (and no queued message starts the next one) or an

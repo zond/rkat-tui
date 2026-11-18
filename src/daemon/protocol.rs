@@ -74,6 +74,29 @@ pub const HELPER_ENDED: &str = "rkat/helper_ended";
 /// line shows it retired, and nothing else is shown.
 pub const HELPER_RETIRED: &str = "retired";
 
+/// The notification of the helpers seated for one agent's conversation
+/// now (its whole tree, nested ones too): pushed whenever one is seated or
+/// leaves, so a client's live helpers are the daemon's ([`SeatedHelpers`]).
+pub const SEATED: &str = "rkat/seated";
+
+/// What [`SEATED`] carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatedHelpers {
+    /// The agent the helpers work for (at the top of their nesting).
+    pub agent: String,
+    /// The conversation they work for.
+    pub session_id: SessionId,
+    /// Each seated helper's labels, outermost first (its own last).
+    pub helpers: Vec<Vec<String>>,
+}
+
+/// [`method::Seated`]'s result.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatedList {
+    /// Each seated helper's labels, outermost first (its own last).
+    pub helpers: Vec<Vec<String>>,
+}
+
 /// What [`HELPER_ENDED`] carries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelperEnded {
@@ -389,6 +412,9 @@ methods! {
     /// told. Refused with [`HELPER_REFUSED`] for a helper that is not
     /// running, or that works for another agent.
     StopHelper = "rkat/stop_helper" (StopHelperParams) -> Empty;
+    /// The helpers seated now for a conversation (its whole tree): what a
+    /// client lists live as it attaches; [`SEATED`] pushes each change.
+    Seated = "rkat/seated_helpers" (SessionParams) -> SeatedList;
     /// Take back messages the caller's agent has not read yet: each named
     /// input of its current conversation that the runtime still holds
     /// queued is abandoned, leaving the running turn alone; one that

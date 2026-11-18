@@ -52,6 +52,8 @@ pub mod outcome;
 mod restore;
 pub mod tool_line;
 
+#[cfg(any(test, feature = "test-support"))]
+pub use helpers::PANEL_LINGER;
 use helpers::helper_args_preview;
 pub use helpers::{
     HelperFold, HelperKind, HelperLast, HelperState, HelperView, MAX_HELPER_PREVIEW,
@@ -177,13 +179,6 @@ impl HelperState {
 }
 
 impl HelperFold {
-    /// Whether the helper panel lists it: running, or finished during the
-    /// current turn.
-    #[must_use]
-    pub fn in_panel(&self) -> bool {
-        self.state.is_running() || self.this_turn
-    }
-
     /// `[label · model]`, or `[label]` while the model is unknown.
     #[must_use]
     pub fn tag(&self) -> String {
@@ -536,6 +531,9 @@ pub struct Transcript {
     /// The helpers spawned into a mob of the agent's own making
     /// (`mob_spawn_member`), whose seat that listing does not say.
     elsewhere: std::collections::HashSet<String>,
+    /// The clock of the last update ([`Self::settle_helpers`]): an ended
+    /// helper leaves the panel [`helpers::PANEL_LINGER`] after it ended.
+    panel_now: Option<Instant>,
     /// Notes for tool calls whose block has not arrived yet, by tool-use id
     /// (at most [`MAX_PENDING_NOTES`], oldest dropped first).
     pending_notes: IndexMap<String, String>,
@@ -943,7 +941,8 @@ impl Transcript {
         for mut block in blocks {
             if let Block::Helper(fold) = &mut block {
                 fold.expanded = false;
-                fold.this_turn = false;
+                fold.was_live = false;
+                fold.left = None;
                 if fold.state.is_running() {
                     fold.state = HelperState::Done;
                 }
@@ -1774,10 +1773,8 @@ impl Transcript {
                         HelperState::Done | HelperState::Failed | HelperState::Cancelled
                     ) {
                         // A seated helper's later run (a message woke it):
-                        // the same header, in the panel until the turn
-                        // after its end, as a new helper's.
+                        // the same header, running again.
                         f.state = HelperState::Running;
-                        f.this_turn = true;
                         f.ended = None;
                     }
                 });
@@ -3376,19 +3373,28 @@ mod tests {
     }
 
     #[test]
-    fn finished_helpers_leave_the_panel_when_a_turn_starts() {
+    fn an_ended_helper_leaves_the_panel_after_its_linger_without_a_turn() {
+        let now = Instant::now();
         let mut t = Transcript::new();
+        t.seated_helpers(["a".to_string(), "b".to_string()]);
         t.note_live_helpers([("a", "m", 1), ("b", "m", 1)]);
+        t.settle_helpers(now);
         let (a, b) = (t.helper_header("a").unwrap(), t.helper_header("b").unwrap());
-        assert_eq!(t.panel_helpers(), vec![b, a]);
+        assert_eq!(t.panel_helpers(None), vec![b, a]);
+        // a leaves its mob: still listed, after the live one, until its
+        // linger is over.
         t.note_live_helpers([("b", "m", 1)]);
-        assert_eq!(t.panel_helpers(), vec![b, a]);
-        t.retire_finished_helpers();
-        assert_eq!(t.panel_helpers(), vec![b]);
+        t.seated_helpers(["b".to_string()]);
+        t.settle_helpers(now);
+        assert_eq!(t.panel_helpers(None), vec![b, a]);
+        assert!(t.helpers_lingering());
+        t.settle_helpers(now + PANEL_LINGER);
+        assert_eq!(t.panel_helpers(None), vec![b]);
+        assert!(!t.helpers_lingering());
         // Removing an earlier block leaves the panel's ids as they were.
         t.push(Block::User { text: "x".into() });
         assert!(t.remove_block(a).is_some());
-        assert_eq!(t.panel_helpers(), vec![b]);
+        assert_eq!(t.panel_helpers(None), vec![b]);
     }
 
     #[test]

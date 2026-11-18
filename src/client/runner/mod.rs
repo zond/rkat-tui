@@ -314,6 +314,17 @@ impl Reporter {
     }
 }
 
+/// A mob's stream, opened.
+struct OpenedMob {
+    /// The stream.
+    stream: String,
+    /// Its members, each with its session when it could be read.
+    members: Vec<(String, Option<SessionId>)>,
+    /// The workspace's mob's: the helpers seated for this conversation
+    /// (each by its labels), as the daemon listed them.
+    seated: Option<Vec<Vec<String>>>,
+}
+
 /// What a background task reports.
 enum Report {
     /// A `/model` switch (`rkat/set_model`) applied, or why not.
@@ -343,7 +354,7 @@ enum Report {
     /// A mob's stream opened, with its members' sessions; or not.
     MobOpened {
         mob: String,
-        opened: Result<(String, Vec<(String, Option<SessionId>)>), String>,
+        opened: Result<OpenedMob, String>,
     },
     /// A helper session's durable events.
     Backfilled {
@@ -1062,19 +1073,21 @@ impl Runner {
                 self.open_known_mobs();
             }
             Report::MobOpened { mob, opened } => match opened {
-                Ok((stream, members)) => {
+                Ok(OpenedMob {
+                    stream,
+                    members,
+                    seated,
+                }) => {
                     if self.conn.link().is_none() {
                         return;
+                    }
+                    if let Some(seated) = &seated {
+                        self.seated_helpers(seated);
                     }
                     self.followers.opened(stream.clone(), &mob);
                     let mut actions = Vec::new();
                     for event in self.orphans.take(&stream) {
                         actions.extend(self.followers.event(&stream, event));
-                    }
-                    if mob == crate::daemon::MOB_ID {
-                        self.send(Msg::SeatedHelpers(
-                            members.iter().map(|(label, _)| label.clone()).collect(),
-                        ));
                     }
                     for (label, session) in members {
                         actions.extend(self.followers.member(&mob, &label, session));

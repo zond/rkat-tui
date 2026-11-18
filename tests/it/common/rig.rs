@@ -465,6 +465,14 @@ impl Client {
         }
     }
 
+    /// Take every message the runner said so far into [`Self::seen`],
+    /// without waiting for more.
+    pub fn drain(&mut self) {
+        while let Ok(msg) = self.harness.ui_rx.try_recv() {
+            self.seen.push(msg);
+        }
+    }
+
     /// The agent events seen so far.
     pub fn events(&self) -> Vec<&AgentEvent> {
         self.seen

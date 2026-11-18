@@ -43,6 +43,7 @@ mod forks;
 mod helper_endings;
 mod helper_models;
 mod helper_names;
+mod helper_rows;
 mod helpers;
 mod hook_source_trust;
 mod instructions;

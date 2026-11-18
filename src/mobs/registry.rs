@@ -311,6 +311,16 @@ struct SessionModel {
     auth_binding: Option<AuthBindingRef>,
 }
 
+/// What [`HelperRegistry::on_seated`] is told: the owner session whose
+/// seated helpers changed.
+pub struct SeatedHook(pub Box<dyn Fn(&SessionId) + Send + Sync>);
+
+impl std::fmt::Debug for SeatedHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SeatedHook")
+    }
+}
+
 /// rkat-tui's helper bookkeeping, shared by the spawn customizer, the
 /// event followers, the session handles and the runner.
 #[derive(Debug)]
@@ -341,6 +351,9 @@ pub struct HelperRegistry {
     /// its seat takes it ([`Self::intend`], [`Self::take_intent`]): a fork's
     /// seat carries no label of the call (the engine's `fork_off` seats it).
     intents: Mutex<HashMap<HelperKey, HelperKind>>,
+    /// Told the owner session whose seated helpers changed (one was
+    /// seated or left), after the change ([`Self::on_seated`]).
+    seated: std::sync::OnceLock<SeatedHook>,
     /// Tests: forks are wired as their spawn is announced
     /// ([`Self::wire_forks_early`]).
     #[cfg(any(test, feature = "test-support"))]
@@ -379,6 +392,7 @@ impl HelperRegistry {
             endings: std::sync::Arc::default(),
             gone: std::sync::OnceLock::new(),
             intents: Mutex::new(HashMap::new()),
+            seated: std::sync::OnceLock::new(),
             #[cfg(any(test, feature = "test-support"))]
             forks_early: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
@@ -730,8 +744,25 @@ impl HelperRegistry {
     pub fn spawning(&self, key: HelperKey, tag: HelperTag) -> Result<(), BindingsError> {
         self.bindings.bind(&key, &tag)?;
         self.endings.spawned(&key, &tag);
+        let owner = tag.owner.clone();
         self.live.lock().insert(key, tag);
+        self.seated_changed(&owner);
         Ok(())
+    }
+
+    /// Tell `hook` the owner session whose seated helpers changed, after
+    /// each change from now on (once; the daemon pushes the list to the
+    /// owner's clients, [`crate::daemon::protocol::SEATED`]).
+    pub fn on_seated(&self, hook: SeatedHook) {
+        let _ = self.seated.set(hook);
+    }
+
+    /// The helpers seated for `owner` may have changed (one was bound,
+    /// joined its mob, or left): the hook is told.
+    pub fn seated_changed(&self, owner: &SessionId) {
+        if let Some(hook) = self.seated.get() {
+            (hook.0)(owner);
+        }
     }
 
     /// The helper `key` runs as `session`: helpers it delegates to
@@ -745,7 +776,10 @@ impl HelperRegistry {
     /// The helper `key` is not running here (its mob stopped, or it was
     /// never observable); its binding stays for a rebuild.
     pub fn finished(&self, key: &HelperKey) {
-        self.live.lock().shift_remove(key);
+        let removed = self.live.lock().shift_remove(key);
+        if let Some(tag) = removed {
+            self.seated_changed(&tag.owner);
+        }
     }
 
     /// The helper `key` is done and being retired: a start that finds it
@@ -767,19 +801,35 @@ impl HelperRegistry {
     /// The helper `key` left its mob for good: drop it everywhere.
     /// Idempotent.
     pub fn retired(&self, key: &HelperKey) {
-        self.finished(key);
+        let removed = self.live.lock().shift_remove(key);
+        let owner = removed
+            .map(|tag| tag.owner)
+            .or_else(|| self.bindings.member(key).map(|binding| binding.tag.owner));
         if let Err(err) = self.bindings.remove_member(key) {
             tracing::warn!(helper = %key, error = %err, "cannot drop the helper's binding");
+        }
+        if let Some(owner) = owner {
+            self.seated_changed(&owner);
         }
         self.report_gone(Gone::Member(key.clone()));
     }
 
     /// `mob` was destroyed: drop its helpers everywhere. Idempotent.
     pub fn mob_destroyed(&self, mob: &MobId) {
-        self.live.lock().retain(|key, _| &key.mob != mob);
+        let mut owners = Vec::new();
+        self.live.lock().retain(|key, tag| {
+            let stays = &key.mob != mob;
+            if !stays && !owners.contains(&tag.owner) {
+                owners.push(tag.owner.clone());
+            }
+            stays
+        });
         let _ = self.destroyed.send(mob.clone());
         if let Err(err) = self.bindings.remove_mob(mob) {
             tracing::warn!(mob = %mob, error = %err, "cannot drop the mob's bindings");
+        }
+        for owner in &owners {
+            self.seated_changed(owner);
         }
         self.report_gone(Gone::Mob(mob.clone()));
     }

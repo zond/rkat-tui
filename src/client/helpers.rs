@@ -83,6 +83,8 @@ struct Helper {
     /// Live events held while the backfill runs.
     held: Option<Vec<EventEnvelope<AgentEvent>>>,
     live: bool,
+    /// Whether any of its events was shown.
+    seen: bool,
     model: Option<String>,
 }
 
@@ -101,7 +103,19 @@ pub struct Followers {
     convened: HashMap<String, Vec<String>>,
     /// The agent's model (a helper's until its own is read).
     default_model: String,
+    /// The labels the daemon ever listed as this conversation's helpers
+    /// (`None`: not listed yet): the workspace's mob seats every agent's
+    /// helpers, and only these are followed from it.
+    ours: Option<HashSet<String>>,
+    /// Helpers of the workspace's mob seen before the daemon listed them
+    /// as ours, each with its session when an event named it: followed
+    /// from their start once listed (at most [`MAX_UNCLAIMED`]).
+    unclaimed: IndexMap<String, Option<SessionId>>,
 }
+
+/// The most helpers of the workspace's mob [`Followers`] remembers while
+/// the daemon has not listed them as this conversation's.
+const MAX_UNCLAIMED: usize = 256;
 
 impl Followers {
     /// Follow the helpers of the agent running as `owner`; what was
@@ -296,10 +310,55 @@ impl Followers {
             return Vec::new();
         }
         let id = (mob.to_string(), label.to_string());
-        if self.helpers.contains_key(&id) {
+        if self.helpers.contains_key(&id) || !self.claimed(&id, session.as_ref()) {
             return Vec::new();
         }
         self.first_sight(&id, session)
+    }
+
+    /// The daemon listed `labels` as the helpers seated for this
+    /// conversation now: those of the workspace's mob seen before they
+    /// were listed are followed from their start.
+    pub fn seated<'a>(&mut self, labels: impl IntoIterator<Item = &'a str>) -> Vec<Action> {
+        let ours = self.ours.get_or_insert_with(HashSet::new);
+        let mut claimed = Vec::new();
+        for label in labels {
+            ours.insert(label.to_string());
+            if let Some(session) = self.unclaimed.shift_remove(label) {
+                claimed.push((label.to_string(), session));
+            }
+        }
+        let mut actions = Vec::new();
+        for (label, session) in claimed {
+            let id = (MOB_ID.to_string(), label);
+            if !self.helpers.contains_key(&id) {
+                actions.extend(self.first_sight(&id, session));
+            }
+        }
+        actions
+    }
+
+    /// Whether the helper `id` is followed: one of the workspace's mob
+    /// only once the daemon listed it as this conversation's (or while it
+    /// has listed none). One not listed yet is remembered with `session`.
+    fn claimed(&mut self, id: &HelperId, session: Option<&SessionId>) -> bool {
+        if id.0 != MOB_ID {
+            return true;
+        }
+        let Some(ours) = &self.ours else {
+            return true;
+        };
+        if ours.contains(&id.1) {
+            return true;
+        }
+        let entry = self.unclaimed.entry(id.1.clone()).or_default();
+        if entry.is_none() {
+            *entry = session.cloned();
+        }
+        if self.unclaimed.len() > MAX_UNCLAIMED {
+            self.unclaimed.shift_remove_index(0);
+        }
+        false
     }
 
     /// The helper `attributed` of `stream` is from, when the stream is a
@@ -329,6 +388,9 @@ impl Followers {
         let id = (mob, label);
         let mut actions = Vec::new();
         if !self.helpers.contains_key(&id) {
+            if !self.claimed(&id, session.as_ref()) {
+                return actions;
+            }
             actions.extend(self.first_sight(&id, session.clone()));
         }
         let Some(helper) = self.helpers.get_mut(&id) else {
@@ -394,10 +456,15 @@ impl Followers {
                 continue;
             }
             helper.shown = helper.shown.max(envelope.seq);
-            let running = !matches!(
-                envelope.payload,
-                AgentEvent::RunCompleted { .. } | AgentEvent::RunFailed { .. }
-            );
+            // A run's start and end say whether it runs; what comes between
+            // runs (a peer message taken in, an interaction's end) does not.
+            let running = match envelope.payload {
+                AgentEvent::RunCompleted { .. } | AgentEvent::RunFailed { .. } => false,
+                AgentEvent::RunStarted { .. } => true,
+                // The first seen of one whose start was not: it runs.
+                _ => helper.live || !helper.seen,
+            };
+            helper.seen = true;
             if helper.live != running {
                 helper.live = running;
                 live_changed = true;
@@ -481,6 +548,84 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The helpers listed live in `actions`' last running update.
+    fn running(actions: &[Action]) -> Option<Vec<String>> {
+        actions.iter().rev().find_map(|action| match action {
+            Action::Ui(Msg::Status(StatusUpdate::Helpers(h))) => {
+                Some(h.iter().map(|h| h.label.clone()).collect())
+            }
+            _ => None,
+        })
+    }
+
+    /// A helper runs from its run's start to its end: an event it takes
+    /// in after its run (a peer message) does not show it running again.
+    #[test]
+    fn only_a_run_start_shows_a_helper_running() {
+        let owner = SessionId::new();
+        let session = SessionId::new();
+        let mut followers = Followers::default();
+        followers.reset(owner);
+        followers.opened("tui".into(), MOB_ID);
+        let started = || {
+            use meerkat_core::types::{ContentInput, RunInput, TranscriptMessageIdentity};
+            AgentEvent::RunStarted {
+                session_id: session.clone(),
+                identity: TranscriptMessageIdentity::default(),
+                input: RunInput::Content {
+                    content: ContentInput::Text("go".into()),
+                },
+                request_reasoning: None,
+                reasoning_effort: None,
+            }
+        };
+        let id = (MOB_ID.to_string(), "k1".to_string());
+        let _ = followers.event("tui", attributed("k1", &session, 1, started()));
+        let shown = followers.backfilled(&id, Vec::new());
+        assert_eq!(running(&shown), Some(vec!["k1".to_string()]));
+        let done = followers.event(
+            "tui",
+            attributed("k1", &session, 2, run_completed(&session)),
+        );
+        assert_eq!(running(&done), Some(Vec::new()));
+        let after = followers.event("tui", attributed("k1", &session, 3, text("a peer's words")));
+        assert_eq!(running(&after), None, "no change: still not running");
+        assert!(followers.live().is_empty());
+        let again = followers.event("tui", attributed("k1", &session, 4, started()));
+        assert_eq!(running(&again), Some(vec!["k1".to_string()]));
+    }
+
+    /// Once the daemon listed this conversation's helpers, a helper of the
+    /// workspace's mob it does not name (another agent's) is not followed;
+    /// one it names later is, from its start.
+    #[test]
+    fn a_helper_of_the_workspace_s_mob_is_followed_once_the_daemon_lists_it() {
+        let owner = SessionId::new();
+        let session = SessionId::new();
+        let mut followers = Followers::default();
+        followers.reset(owner);
+        followers.opened("tui".into(), MOB_ID);
+        assert!(followers.seated(["mine"]).is_empty());
+        assert!(
+            followers
+                .event("tui", attributed("theirs", &session, 1, text("x")))
+                .is_empty()
+        );
+        assert!(
+            followers
+                .member(MOB_ID, "theirs", Some(session.clone()))
+                .is_empty()
+        );
+        // Listed now: followed from its start (its durable events read).
+        let actions = followers.seated(["mine", "theirs"]);
+        assert!(
+            actions.iter().any(
+                |a| matches!(a, Action::Backfill { session: s, after: 0, .. } if *s == session)
+            ),
+            "{actions:?}"
+        );
     }
 
     #[test]

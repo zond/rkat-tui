@@ -461,6 +461,21 @@ pub async fn usage(
     call::<method::Usage>(connection, &session_params(session)).await
 }
 
+/// The helpers seated now for `session`'s whole tree, each by its labels
+/// (`rkat/seated_helpers`).
+///
+/// # Errors
+///
+/// The call's error, or [`ClientError::Decode`].
+pub async fn seated_helpers(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<Vec<Vec<String>>, ClientError> {
+    call::<method::Seated>(connection, &session_params(session))
+        .await
+        .map(|list| list.helpers)
+}
+
 /// The configured endpoint `session`'s auth binding names (`rkat/endpoint`;
 /// `None`: a built-in endpoint).
 ///

@@ -42,6 +42,8 @@ pub enum Push {
     AgentNotice(protocol::AgentNotice),
     /// A helper ended ([`protocol::HELPER_ENDED`]).
     HelperEnded(protocol::HelperEnded),
+    /// The helpers seated for a conversation now ([`protocol::SEATED`]).
+    Seated(protocol::SeatedHelpers),
     /// A setting in force changed ([`protocol::SETTING`]).
     Setting(protocol::SettingNote),
     /// An event of the stream `stream` (the conversation's own, or a mob's;
@@ -92,6 +94,7 @@ impl Push {
             protocol::RUNNING => Self::Running(read(note)?),
             protocol::AGENT_NOTICE => Self::AgentNotice(read(note)?),
             protocol::HELPER_ENDED => Self::HelperEnded(read(note)?),
+            protocol::SEATED => Self::Seated(read(note)?),
             protocol::MODE => Self::Mode(read(note)?),
             protocol::SETTING => Self::Setting(read(note)?),
             STREAM_EVENT => {

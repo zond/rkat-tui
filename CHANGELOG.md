@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- `/helpers` and the helper panel could list helpers the agent no longer
+  held, and leave out ones it did: a helper whose whole run the TUI read
+  at once (a fast kept one) was shown ended while it sat idle, any event
+  a helper took in after its run (a peer message) showed it running
+  again under a new header, the helpers of another agent of the workspace
+  were shown as this one's, and after a daemon restart the kept helpers
+  the engine restored were not listed at all. The daemon now sends the
+  list of the helpers it seats for the conversation (its whole tree) as
+  the TUI attaches and each time one is seated or leaves, and the TUI's
+  live rows are that list. A new conversation now also retires the
+  helpers a restart restored that had not run since.
 - The pinned bar at the top of the transcript (`↑ you: …`) could show
   the daemon's own words as your message, for example the smart
   compaction's "needs compacting soon … call `compact_ready`", and such
@@ -98,6 +109,14 @@
 
 ### Changed
 
+- The helper panel under the input lists the agent's live helpers: the
+  running ones first, then the seated idle ones. A helper that ended
+  stays there dim, with how it ended, for about ten seconds and then
+  leaves it, whether or not a turn started (it used to stay until the
+  next turn, so a long turn piled up every helper that ended in it). A
+  selected row stays while selected, and when a row leaves the selection
+  moves to its neighbour. Past six helpers the last line says what it
+  hides: `… and 4 more (1 running) · 1 above · 3 below`.
 - The agents and helpers are told plainly when to keep a helper: `assign`'s
   description, its `keep` parameter, the agents' and the helpers'
   instructions and a kept helper's start say that a single-use helper can

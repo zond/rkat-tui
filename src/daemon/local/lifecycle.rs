@@ -168,6 +168,18 @@ impl Local {
         })
     }
 
+    /// `rkat/seated_helpers`: the helpers seated now for the conversation
+    /// `session` (its whole tree), each by its labels.
+    pub(super) async fn seated(&self, session: &meerkat_core::SessionId) -> protocol::SeatedList {
+        protocol::SeatedList {
+            helpers: crate::mobs::seated_for(&self.core.state, &self.core.registry, session)
+                .await
+                .into_iter()
+                .map(|(_, tag)| tag.path)
+                .collect(),
+        }
+    }
+
     /// `rkat/stop_helper` for `caller`: stop the running helper of its
     /// agent's current conversation whose labels are `path` (its run
     /// cancelled, it retired; the helpers it started keep running), and

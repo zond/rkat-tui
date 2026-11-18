@@ -755,6 +755,45 @@ fn follow_helpers(
         &Arc<super::instructions::Instructions>,
     ),
 ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
+    // Each change of a conversation's seated helpers goes to its clients
+    // as the whole list: a client's live helpers are the daemon's. One
+    // task reads and sends them in the order the changes came.
+    let (changed, mut changes) = mpsc::unbounded_channel::<meerkat_core::SessionId>();
+    registry.on_seated(crate::mobs::SeatedHook(Box::new(
+        move |owner: &meerkat_core::SessionId| {
+            let _ = changed.send(owner.clone());
+        },
+    )));
+    tokio::spawn({
+        let state = Arc::downgrade(state);
+        let decisions = Arc::downgrade(decisions);
+        let registry = Arc::downgrade(registry);
+        async move {
+            while let Some(owner) = changes.recv().await {
+                let (Some(state), Some(decisions), Some(registry)) =
+                    (state.upgrade(), decisions.upgrade(), registry.upgrade())
+                else {
+                    break;
+                };
+                let Some(agent) = registry.root_of_session(&owner) else {
+                    continue;
+                };
+                let helpers = crate::mobs::seated_for(&state, &registry, &owner)
+                    .await
+                    .into_iter()
+                    .map(|(_, tag)| tag.path)
+                    .collect();
+                decisions.broadcast(
+                    super::protocol::SEATED,
+                    &super::protocol::SeatedHelpers {
+                        agent: agent.member.to_string(),
+                        session_id: owner,
+                        helpers,
+                    },
+                );
+            }
+        }
+    });
     let helper_events = Arc::new(
         super::approvals::HelperEvents::new(
             super::approvals::CatalogReads::of(origins),

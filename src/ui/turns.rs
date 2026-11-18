@@ -106,8 +106,6 @@ impl App {
         now: Instant,
         fx: &mut Vec<Effect>,
     ) {
-        // Helpers that finished drop off the helper panel.
-        self.transcript.retire_finished_helpers();
         self.run_first_block = self.transcript.next_id();
         self.failures = super::failures::RunFailures::start(None, false);
         self.woken_by = None;
@@ -151,7 +149,6 @@ impl App {
             }
             return;
         }
-        self.transcript.retire_finished_helpers();
         self.run_first_block = self.transcript.next_id();
         self.failures = super::failures::RunFailures::start(self.woken_by.take(), true);
         self.streamed_text = false;

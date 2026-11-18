@@ -12651,3 +12651,41 @@ Tests: `ui::selection::tests::a_wrong_tmux_guess_still_writes_the_plain_sequence
 `ui::tests::mouse::a_middle_click_pastes_the_last_copy_at_the_cursor_without_sending`,
 `a_middle_click_with_nothing_copied_says_so_and_folds_nothing`,
 `a_middle_click_over_a_picker_or_with_shift_pastes_nothing`.
+
+## The live helpers the TUI shows (owner, 2026-11-18)
+
+**Seen** on 0.0.16, at one moment: the agent's `peers` listed 3 helpers,
+`/helpers` (live only) 13, the panel 20 ("… and 14 more").
+
+**What was wrong**: the panel listed every helper running or ended in the
+current turn, so a long turn piled them all up: a display rule, not a
+lifecycle fault. `/helpers` judged liveness from the mob's member list
+read once at attach plus every helper seen running since. A rig test that
+compares the client's live rows with `mob/members` after each kind of
+ending (`helper_rows::the_client_s_live_helper_rows_are_the_mob_s_seated_helpers_after_every_ending`)
+failed at its first check: a kept helper whose whole run the client read
+in one backfill (start and end together) was never seen running, so it
+showed ended while seated. Read from the code and fixed with it: the
+client's follower marked a helper running on any event but a run's end
+(a peer message taken in by an idle helper made a fresh "running" header
+that never ended); the mob-wide stream of `tui` carries every agent's
+helpers, which were followed as this agent's; after a restart the engine
+restores idle kept helpers lazily, so the registry's followed set (what
+`cancel_helpers` read too) did not hold them, and a `/new` left them
+seated.
+
+**What changed**: one source of the helpers an agent holds,
+`mobs::seated_for` (the bindings of the conversation that its mobs'
+rosters list). The daemon pushes it as `rkat/seated` on every bind, seat
+and leave (one task, in order), and answers `rkat/seated_helpers` at
+attach; the client's live rows are that list, and its follower follows
+only helpers of `tui` that list names. A helper runs from its run's start
+to its end. The panel lists the live helpers (running, then idle) and an
+ended one for `PANEL_LINGER` (10 s, the UI's tick), not until a turn.
+The retire of a helper's own helpers with it is item C.
+
+Tests: the rig test above (also re-attach, restart, `/new`, `/resume`),
+`ui::tests::helpers::the_panel_lists_live_helpers_and_an_ended_one_leaves_after_its_linger`,
+`of_twenty_helpers_in_one_long_turn_the_panel_lists_the_three_live`,
+`a_selected_ended_helper_stays_and_a_gone_row_hands_the_selection_to_its_neighbour`,
+`the_panel_s_overflow_line_counts_what_it_hides`.
