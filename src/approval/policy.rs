@@ -172,7 +172,6 @@ pub const READ_ONLY_BUILTINS: &[&str] = &[
     "load_skill",
     "skill_list_resources",
     "skill_read_resource",
-    "peers",
     // Native semantic memory (`AgentFactory::memory`): searches the
     // session's own compacted history.
     "memory_search",
@@ -188,9 +187,8 @@ pub const READ_ONLY_BUILTINS: &[&str] = &[
     // with the other mutating `mob_*` tools.
     "mob_list_flows",
     "mob_flow_status",
-    // The member-scoped mob queries a daemon member is offered (its own
-    // mob's roster and a member's state).
-    "list_members",
+    // The member-scoped mob query a daemon member is offered (a member's
+    // state; its own mob's roster is `contacts`').
     "member_status",
     // The engine's schedule queries (`meerkat_schedule_*`): what is
     // scheduled and what fired.
@@ -271,13 +269,22 @@ pub const AGENT_SEND_TOOLS: &[&str] = &["send_message"];
 ///   `docs/evidence.md`). Agents and helpers ask and answer with
 ///   `send_message`; no flow of the engine needs a model to answer a
 ///   request (the runtime answers its own).
-pub const NOT_OFFERED: [&str; 6] = [
+/// - `peers` (helpers, agents and wires mixed, with no kind or state) and
+///   `list_members` (its own mob's roster, without fresh kept helpers):
+///   `contacts` (`crate::daemon::contacts`) lists everyone a member can
+///   message, what each is and the `peer_id` `send_message` takes.
+///   `reply_to_peer` needs neither (it is pre-addressed); a mob an agent
+///   made with `mob_create` is listed with `mob_list_members`, which
+///   stays.
+pub const NOT_OFFERED: [&str; 8] = [
     "delegate",
     "fork_off",
     "spawn_member",
     "spawn_many_members",
     "send_request",
     "send_response",
+    "peers",
+    "list_members",
 ];
 
 /// What a tool call does, as far as the policy is concerned.
@@ -453,6 +460,11 @@ impl<'a> Action<'a> {
             // Retiring one of the caller's own helpers ends only what it
             // started (`crate::daemon::connect`).
             (ToolFamily::Files, crate::tools::RETIRE_HELPER) => ActionKind::Delegation,
+            // Listing whom the caller can message reads the daemon's
+            // state (`crate::daemon::contacts`).
+            (ToolFamily::Files, crate::tools::CONTACTS) if !declared_mutating => {
+                ActionKind::ReadOnlyBuiltin
+            }
             // Reading a skill of the agent's own inventory, through the
             // engine's skill runtime: no path, nothing written.
             (ToolFamily::Files, crate::tools::SKILL_READ) if !declared_mutating => {
@@ -1593,6 +1605,11 @@ mod tests {
         let parsed = Action::parse(crate::tools::ASSIGN, &args, Some(&origin));
         assert_eq!(parsed.family, ToolFamily::Files, "{parsed:?}");
         assert_eq!(parsed.kind, ActionKind::Delegation);
+        // `contacts` reads: always allowed.
+        let contacts = ToolOrigin::tui(crate::tools::ASSIGN_TOOLS_SOURCE, crate::tools::CONTACTS);
+        let none = raw(&json!({}));
+        let listed = Action::parse(crate::tools::CONTACTS, &none, Some(&contacts));
+        assert_eq!(listed.kind, ActionKind::ReadOnlyBuiltin, "{listed:?}");
         assert_eq!(
             classify_tier(
                 &parsed,

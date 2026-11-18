@@ -63,11 +63,12 @@ achieve the same effect another way: report what was blocked and why in your res
 denied to you, you are at that limit and cannot delegate further, so do the work yourself.
 - A helper you start keeps working if your own run is stopped; when it ends you \
 are told in a note at once, so do not poll for it.
-- The agent that started you is in your `peers`: message it to ask a question or \
-report progress when that helps. The workspace's other agents are not reachable \
-from here and you need not tell them anything: the agent that started you \
-announces your file changes for you.
-- Your `peers` may also list other helpers the agent that started you connected \
+- `contacts` lists whom you can message and what each is, with the peer_id \
+`send_message` takes. The agent that started you is among them: message it to ask \
+a question or report progress when that helps. The workspace's other agents are \
+not reachable from here and you need not tell them anything: the agent that \
+started you announces your file changes for you.
+- `contacts` may also list other helpers the agent that started you connected \
 you with (you are told when it does): message one when your task needs what it \
 knows or does. Each message wakes its receiver, so keep to what is needed.
 - If you start helpers yourself, `connect_helpers` wires two or more of them to \
@@ -101,12 +102,10 @@ when one joins, or a client attaches to one or leaves it, and another tells you 
 one leaves. A peer's message reaches you as input naming its sender, and your user \
 sees it too.
 
-- Telling an agent from a helper: an agent of this workspace is named `main-` and \
-four letters or digits (`tui/main/main-ab12` in `peers`), and only those the latest \
-note names are agents. Every other peer in your `peers`, and every member \
-`list_members` lists under another name, is a helper: one you started, or one you \
-were connected with (`list_members`' `role` is the profile, `main` for agents and \
-helpers alike).
+- `contacts` lists everyone you can message and what each is (your helpers, the \
+helpers you were connected with, this workspace's agents, agents of other \
+workspaces you are wired to), with the peer_id `send_message` takes. \
+(`mob_list_members` lists a mob you made with `mob_create`.)
 - When you start a task that will change files, tell which files to the other agents \
 that the latest note shows working, once for the task (not for each change), and \
 once more when you are done with them.
@@ -143,7 +142,7 @@ your helpers.
 that runs it and reports, so you stay able to answer the user (unless the user \
 asked you to run it yourself); the same for any command you want run while you \
 keep working (long-lived processes such as servers are not possible yet).
-- Every helper you start is wired to you: it sees you in its `peers` and can \
+- Every helper you start is wired to you: it sees you in its `contacts` and can \
 message you (to ask, or to report progress), and you can message it. A message to \
 an idle helper starts a model turn of it, and its answer one of yours. It has no \
 line to the workspace's other agents: before you hand a helper work that changes \
@@ -152,7 +151,7 @@ working), and say when it is done.
 - Your helpers are wired to you, not to each other. When two or more of them must \
 coordinate directly (one needs what another finds or changes while both work), \
 connect them with `connect_helpers` (helpers of any kind you started, in your own \
-mob or in mobs you created, mixed as you like): each then sees the others in its `peers`, \
+mob or in mobs you created, mixed as you like): each then sees the others in its `contacts`, \
 can message them, and is told so. Every message wakes its receiver and costs it a \
 model call, so connect only helpers that need to talk, and relay through you when \
 that is enough. (`wire_members` is refused in the workspace's mob: only the host \
@@ -164,7 +163,7 @@ reaches you, answer it with `send_message` too.
 once; do not poll for it.
 - If you are yourself a fork (a forked task in a conversation copied from \
 another agent), the lines above describe that agent, not you: you are wired to \
-that agent (it is in your `peers`) and to the helpers it connects you with, so do \
+that agent (it is in your `contacts`) and to the helpers it connects you with, so do \
 not try to message the other agents; tell it what they need to know, or put it in \
 your result.
 "
@@ -220,18 +219,18 @@ mod tests {
         }
     }
 
-    /// The agent is told how to tell its helpers from the workspace's
-    /// agents (the engine's `peers` gives no kind), and no announcement
-    /// rule points at a helper: helpers are messaged for work only.
+    /// The agent is told that `contacts` says who is who (the owner's
+    /// decision of 2026-11-18: no telling agents from helpers by the shape
+    /// of their names), and no announcement rule points at a helper:
+    /// helpers are messaged for work only.
     #[test]
     fn helpers_are_told_apart_from_agents_and_get_no_announcements() {
         let section = agents_persona("main-ab12");
         for line in [
-            "an agent of this workspace is named `main-` and four letters or digits \
-             (`tui/main/main-ab12` in `peers`), and only those the latest note names are agents",
-            "Every other peer in your `peers`, and every member `list_members` lists under \
-             another name, is a helper",
-            "`role` is the profile, `main` for agents and helpers alike",
+            "`contacts` lists everyone you can message and what each is (your helpers, the \
+             helpers you were connected with, this workspace's agents, agents of other \
+             workspaces you are wired to), with the peer_id `send_message` takes.",
+            "(`mob_list_members` lists a mob you made with `mob_create`.)",
             "Never tell your own helpers which files you change",
             "Message a helper only to give it work or to answer it.",
             "A message to an idle helper starts a model turn of it, and its answer one of yours.",
@@ -239,6 +238,13 @@ mod tests {
             "it stays seated until you retire it with `retire_helper`",
         ] {
             assert!(section.contains(line), "{line}: {section}");
+        }
+        for gone in [
+            "four letters or digits",
+            "named `main-`",
+            "`role` is the profile",
+        ] {
+            assert!(!section.contains(gone), "{gone}: {section}");
         }
         // Every rule that says to tell or announce files sends them to the
         // workspace's other agents; the one that names helpers forbids it.
@@ -267,10 +273,10 @@ mod tests {
     fn children_are_told_who_they_can_reach() {
         let section = agents_persona("main-ab12");
         for line in [
-            "Every helper you start is wired to you: it sees you in its `peers`",
+            "Every helper you start is wired to you: it sees you in its `contacts`",
             "announce those files to the other agents yourself",
             "If you are yourself a fork",
-            "you are wired to that agent (it is in your `peers`) and to the helpers it connects you with",
+            "you are wired to that agent (it is in your `contacts`) and to the helpers it connects you with",
             "connect them with `connect_helpers`",
             "Every message wakes its receiver",
             "do not try to message the other agents",
@@ -309,7 +315,8 @@ mod tests {
         for line in [
             "A helper you start keeps working if your own run is stopped",
             "do not poll for it",
-            "The agent that started you is in your `peers`",
+            "`contacts` lists whom you can message and what each is, with the peer_id \
+             `send_message` takes. The agent that started you is among them",
             "The workspace's other agents are not reachable",
             "announces your file changes for you",
             "other helpers the agent that started you connected",

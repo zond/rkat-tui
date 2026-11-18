@@ -46,12 +46,10 @@ impl PeerState {
 }
 
 /// The note telling an agent which other agents work in its workspace
-/// and what each was doing when it was sent, or that none does (then
-/// every peer it has but the agents of other workspaces the note may name
-/// is a helper: the engine's `peers` gives no kind, and an agent alone
-/// took its helpers for agents of its workspace). It is sent when the
-/// roster or an agent's attachment changes, never for a run's start or
-/// end, so the note says its states are a snapshot.
+/// and what each was doing when it was sent, or that none does; `contacts`
+/// says what every peer is. It is sent when the roster or an agent's
+/// attachment changes, never for a run's start or end, so the note says
+/// its states are a snapshot.
 #[must_use]
 pub fn roster_note(others: &[(String, PeerState)]) -> String {
     if others.is_empty() {
@@ -65,15 +63,15 @@ pub fn roster_note(others: &[(String, PeerState)]) -> String {
     format!(
         "Other agents in this workspace now: {names}. You are wired to each of them as a peer. \
          These states are as of this note: a new one replaces it when an agent joins, or a client \
-         attaches to an agent or leaves it; none comes when an agent starts or ends a run. Any \
-         other peer in your `peers` is a helper, not an agent of this workspace."
+         attaches to an agent or leaves it; none comes when an agent starts or ends a run. \
+         `contacts` lists everyone you can message and what each is."
     )
 }
 
 /// The roster note of an agent alone in its workspace.
-pub const NO_OTHER_AGENTS: &str = "No other agent works in this workspace now: every peer in \
-     your `peers` that this note does not name is a helper (one you started, or one you were \
-     connected with), not an agent of this workspace. A new note comes when an agent joins.";
+pub const NO_OTHER_AGENTS: &str = "No other agent works in this workspace now; `contacts` \
+     lists everyone you can message (your helpers among them) and what each is. A new note \
+     comes when an agent joins.";
 
 /// `roster` (the note about this workspace's agents) with a line naming
 /// the agents of other workspaces `wired` lists.
@@ -394,6 +392,15 @@ impl Agents {
         states
     }
 
+    /// Every live agent and its state in the roster note's words.
+    pub(crate) async fn worded_states(&self) -> Vec<(String, &'static str)> {
+        self.states()
+            .await
+            .into_iter()
+            .map(|(name, state)| (name, state.describe()))
+            .collect()
+    }
+
     /// The roster note for `name`: every other agent of `states`, then
     /// the agents of other workspaces it is wired to.
     fn roster_for(&self, name: &str, states: &[(String, PeerState)]) -> String {
@@ -524,12 +531,11 @@ mod tests {
 
     #[test]
     fn the_notes_name_the_agents() {
-        // Alone: said so, and every peer is a helper.
+        // Alone: said so, and `contacts` says what every peer is.
         let alone = roster_note(&[]);
         assert!(
             alone.starts_with("No other agent works in this workspace now")
-                && alone.contains("is a helper")
-                && alone.contains("not an agent of this workspace"),
+                && alone.contains("`contacts` lists everyone you can message"),
             "{alone}"
         );
         let state = |run, attached| PeerState { run, attached };
@@ -544,7 +550,7 @@ mod tests {
                 "`main-aaaa` (working), `main-bbbb` (idle, a client attached), \
                  `main-cccc` (idle, no client attached), `main-dddd` (no client attached)."
             ) && roster.contains("wired")
-                && roster.contains("Any other peer in your `peers` is a helper"),
+                && roster.contains("`contacts` lists everyone you can message"),
             "{roster}"
         );
         // A snapshot, and the note says so.

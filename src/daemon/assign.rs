@@ -72,10 +72,9 @@ pub fn name_refusal(name: &str) -> Option<String> {
 /// Why a fork with a `model` is refused.
 pub const FORK_MODEL_REFUSAL: &str = "a fork runs on your own model (it goes on from your conversation), so `model` cannot be given with `context: \"fork\"`; call `assign` again without `model`, or with `context: \"fresh\"` and a task that carries what the helper needs";
 
-/// The answer to an `assign` that seated `name` (`peer` in `peers`) as
-/// `kind`.
+/// The answer to an `assign` that seated `name` as `kind`.
 #[must_use]
-pub fn started_text(name: &str, peer: &str, kind: HelperKind) -> String {
+pub fn started_text(name: &str, kind: HelperKind) -> String {
     let (context, life) = match kind {
         HelperKind::Started(context, life) => (context, life),
         HelperKind::Other => (HelperContext::Fresh, HelperLife::Single),
@@ -101,7 +100,7 @@ pub fn started_text(name: &str, peer: &str, kind: HelperKind) -> String {
         }
     };
     format!(
-        "{start} {end} Meanwhile you can message it with `send_message` (it is `{peer}` in `peers`), and it can message you."
+        "{start} {end} Meanwhile you can message it with `send_message` (`contacts` gives its peer_id), and it can message you."
     )
 }
 
@@ -113,6 +112,8 @@ pub struct Assigner {
     routes: OnceLock<Arc<super::deferral::ForkRoutes>>,
     /// `connect_helpers` ([`super::connect`]).
     connector: super::connect::Connector,
+    /// `contacts` ([`super::contacts`]).
+    contacts: Arc<super::contacts::Contacts>,
 }
 
 impl std::fmt::Debug for Assigner {
@@ -122,14 +123,16 @@ impl std::fmt::Debug for Assigner {
 }
 
 impl Assigner {
-    /// Seat helpers for the sessions `registry` knows.
+    /// Seat helpers for the sessions `registry` knows; `contacts` answers
+    /// who each can message.
     #[must_use]
-    pub fn new(registry: Arc<HelperRegistry>) -> Self {
+    pub fn new(registry: Arc<HelperRegistry>, contacts: Arc<super::contacts::Contacts>) -> Self {
         Self {
             connector: super::connect::Connector::new(Arc::clone(&registry)),
             registry,
             state: OnceLock::new(),
             routes: OnceLock::new(),
+            contacts,
         }
     }
 
@@ -138,6 +141,7 @@ impl Assigner {
     pub fn bind(&self, state: &Arc<MobMcpState>, links: &Arc<super::links::Links>) {
         let _ = self.state.set(Arc::downgrade(state));
         self.connector.bind(state, links);
+        self.contacts.bind(state, links);
     }
 
     /// Start forks through `routes` (once; made with the mob tools
@@ -196,7 +200,7 @@ impl Assigner {
             .any(|member| member.agent_identity.as_str() == name)
         {
             return Err(format!(
-                "the name `{name}` is in use by a member seated now (`list_members` shows them); call `assign` again with another name"
+                "the name `{name}` is in use by a member seated now (`contacts` lists your helpers); call `assign` again with another name"
             ));
         }
         let role = members
@@ -204,8 +208,6 @@ impl Assigner {
             .find(|member| member.agent_identity == parent.member)
             .map(|member| member.role.clone())
             .ok_or(not_here)?;
-        let peer = meerkat_core::MemberCommsName::new(parent.mob.as_str(), role.as_str(), &name)
-            .map_or_else(|_| name.clone(), |peer| peer.to_string());
         let life = if keep {
             HelperLife::Kept
         } else {
@@ -216,6 +218,8 @@ impl Assigner {
             HelperStart::Fork => HelperKind::Started(HelperContext::Fork, life),
         };
         let key = HelperKey::new(parent.mob.clone(), AgentIdentity::from(name.as_str()));
+        // Its binding keeps the task's first line (`contacts` shows it).
+        let given = task.clone();
         self.registry.intend(key.clone(), kind);
         let seated = match start {
             HelperStart::Fresh => {
@@ -237,7 +241,10 @@ impl Assigner {
             HelperStart::Fork => self.fork(caller, id, context, &name, task).await,
         };
         self.registry.forget_intent(&key);
-        seated.map(|()| started_text(&name, &peer, kind))
+        if seated.is_ok() {
+            self.registry.note_task(&key, &given);
+        }
+        seated.map(|()| started_text(&name, kind))
     }
 
     /// Fork `caller` as `name` on `task` through the engine's `fork_off` of
@@ -310,6 +317,10 @@ impl AssignHost for Assigner {
             Err(text) => (text, true),
         }
     }
+
+    async fn contacts(&self, caller: Option<&SessionId>) -> (String, bool) {
+        self.contacts.answer(caller).await
+    }
 }
 
 #[cfg(test)]
@@ -342,8 +353,8 @@ mod tests {
         use HelperContext::{Fork, Fresh};
         use HelperLife::{Kept, Single};
         for (context, life) in [(Fresh, Single), (Fresh, Kept), (Fork, Single), (Fork, Kept)] {
-            let text = started_text("w", "tui/main/w", HelperKind::Started(context, life));
-            assert!(text.contains("`tui/main/w` in `peers`"), "{text}");
+            let text = started_text("w", HelperKind::Started(context, life));
+            assert!(text.contains("`contacts` gives its peer_id"), "{text}");
             assert_eq!(text.contains("retire_helper"), life == Kept, "{text}");
             assert_eq!(text.contains("then retired"), life == Single, "{text}");
             assert_eq!(

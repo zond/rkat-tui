@@ -429,10 +429,11 @@ const RULES: &[Rule] = &[
         outcome: no_outcome,
     },
     Rule {
-        tools: &["mob_list_members", "mob_list", "peers"],
+        tools: &["mob_list_members", "mob_list", "peers", "contacts"],
         head: |tool, args, _| {
             let verb = match tool {
                 "peers" => "peers",
+                "contacts" => "contacts",
                 "mob_list" => "mobs",
                 _ => "members",
             };

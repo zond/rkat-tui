@@ -76,7 +76,7 @@ use meerkat_mob_mcp::MobMcpState;
 /// The helpers seated now for `owner` (its whole tree, nested ones too):
 /// every helper bound to it that its mob's roster lists, a helper the
 /// engine restored and has not rebuilt yet (an idle kept one after a
-/// restart) too, in the order they were bound. The one source of what an
+/// restart) too, by mob and name. The one source of what an
 /// agent holds: the clients' live helpers, `contacts`, the reminder after
 /// a compaction and a conversation's end read it.
 pub async fn seated_for(

@@ -24,27 +24,44 @@ fn last(messages: &[Message]) -> String {
         .unwrap_or_default()
 }
 
-/// The peer id of the peer whose name contains `needle`, from the last
-/// `peers` result in `messages`.
+/// The peer id of the peer `needle` names (a member name, or a comms name
+/// `<mob>/<role>/<member>` or its tail, whose member is matched), from
+/// the last `contacts` result in `messages`.
 pub fn peer_id(messages: &[Message], needle: &str) -> Option<String> {
+    fn find(value: &serde_json::Value, matches: &dyn Fn(&str) -> bool) -> Option<String> {
+        match value {
+            serde_json::Value::Object(map) => {
+                if map
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(matches)
+                    && let Some(id) = map.get("peer_id").and_then(serde_json::Value::as_str)
+                {
+                    return Some(id.to_string());
+                }
+                map.values().find_map(|v| find(v, matches))
+            }
+            serde_json::Value::Array(items) => items.iter().find_map(|v| find(v, matches)),
+            _ => None,
+        }
+    }
+    let member = needle.rsplit('/').next().unwrap_or(needle);
     messages.iter().rev().find_map(|m| match m {
         Message::ToolResults { results, .. } => results.iter().find_map(|r| {
             let value: serde_json::Value = serde_json::from_str(&r.text_content()).ok()?;
-            value["peers"].as_array()?.iter().find_map(|peer| {
-                peer["name"]
-                    .as_str()
-                    .is_some_and(|name| name.contains(needle))
-                    .then(|| peer["peer_id"].as_str().map(str::to_string))?
-            })
+            // The member named exactly, else (`main-`) the one it opens.
+            find(&value, &|name| name == member)
+                .or_else(|| find(&value, &|name| name.starts_with(member)))
         }),
         _ => None,
     })
 }
 
-/// Whether the last message is a tool result holding a `peers` listing.
+/// Whether the last message is a tool result holding a `contacts`
+/// listing.
 fn after_peers(messages: &[Message]) -> bool {
     matches!(messages.last(), Some(Message::ToolResults { results, .. })
-        if results.iter().any(|r| r.text_content().contains("\"peers\"")))
+        if results.iter().any(|r| r.text_content().contains("\"peer_id\"")))
 }
 
 fn assign(name: &str, task: &str) -> Step {
@@ -66,7 +83,7 @@ fn send(peer: Option<String>, body: &str) -> Step {
 fn peers() -> Step {
     Step::Tool {
         id: "p1",
-        name: "peers",
+        name: "contacts",
         args: json!({}),
     }
 }
@@ -160,7 +177,7 @@ async fn an_assigned_helper_runs_beside_its_parent_talks_both_ways_and_retires_w
         .unwrap();
     assert!(
         result.contains("Helper `scout` is running")
-            && result.contains("with `send_message` (it is `tui/main/scout` in `peers`)"),
+            && result.contains("with `send_message` (`contacts` gives its peer_id)"),
         "{result}"
     );
     // The helper's first call cannot answer before `first` is notified,
@@ -168,7 +185,7 @@ async fn an_assigned_helper_runs_beside_its_parent_talks_both_ways_and_retires_w
     // helper had not got past it.
     common::until(|| heard(&llm, true, "HELPER-TASK")).await;
     assert!(
-        !heard(&llm, true, "\"peers\""),
+        !heard(&llm, true, r#"\"you\":"#),
         "the helper's first call is still held"
     );
     first.notify_one();

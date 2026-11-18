@@ -135,8 +135,8 @@ impl Drop for Socket {
 #[must_use]
 pub fn left_note(gone: &End) -> String {
     format!(
-        "`{}` (`{}` in `peers`), the helper you were connected with, has left (it finished, was retired or stopped, or its mob was destroyed): it is gone from your `peers` and gets no more messages.",
-        gone.name, gone.peer
+        "`{}`, the helper you were connected with, has left (it finished, was retired or stopped, or its mob was destroyed): it gets no more messages, and `contacts` no longer lists it.",
+        gone.name
     )
 }
 
@@ -647,10 +647,8 @@ mod tests {
     #[test]
     fn the_survivor_is_told_who_left() {
         let note = left_note(&end("team", "w1"));
-        assert!(
-            note.contains("`w1` (`team/worker/w1` in `peers`)"),
-            "{note}"
-        );
+        assert!(note.starts_with("`w1`, the helper"), "{note}");
         assert!(note.contains("gets no more messages"), "{note}");
+        assert!(note.contains("`contacts`"), "{note}");
     }
 }

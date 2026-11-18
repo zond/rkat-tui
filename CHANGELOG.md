@@ -98,6 +98,15 @@
 
 ### Added
 
+- `contacts`, one tool that tells an agent or a helper whom it can
+  message and what each is: its parent, its helpers (kind, running or
+  idle for how long, the first line of the task, whom `connect_helpers`
+  joined it with), how many of its helpers ended, the helpers it was
+  connected with, this workspace's agents (working, idle with or without
+  a client) and the agents of other workspaces it is wired to, each with
+  the `peer_id` `send_message` takes. Its entries are exactly the peers
+  the engine lets it send to. Always allowed; a helper at the depth limit
+  has it too.
 - A middle-click inside rkat-tui pastes what it copied last (a mouse
   selection or `/copy`) into the input at the cursor, as a paste: lines
   kept, nothing sent. With the mouse captured a middle-click never
@@ -109,6 +118,14 @@
 
 ### Changed
 
+- The engine's `peers` (helpers, agents and wires mixed, with no kind or
+  state) and `list_members` (which left out fresh kept helpers) are no
+  longer offered to agents and helpers: `contacts` replaces both. The
+  instructions, `assign`'s answer, the refusals of `retire_helper` and
+  `connect_helpers`, the notes of a connection and of a wire, and the
+  list of the workspace's agents point to it; the instructions no longer
+  teach telling agents from helpers by the shape of their names.
+  `mob_list_members` still lists a mob an agent made.
 - The helper panel under the input lists the agent's live helpers: the
   running ones first, then the seated idle ones. A helper that ended
   stays there dim, with how it ended, for about ten seconds and then

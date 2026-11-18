@@ -66,7 +66,7 @@ async fn neither_peer_request_tool_is_offered_and_the_helper_runs_on() {
                     json!({"peer_id": parent, "intent": "checksum_token", "params": {"subject": "s"}, "handling_mode": "queue"}),
                 );
             }
-            return tool("p1", "peers", json!({}));
+            return tool("p1", "contacts", json!({}));
         }
         if all.contains("\"x1\"") {
             return Step::Text("parent done");
@@ -74,7 +74,7 @@ async fn neither_peer_request_tool_is_offered_and_the_helper_runs_on() {
         if all.contains("\"s1\"") {
             let w = crate::assign::peer_id(messages, "main/w").unwrap_or_default();
             if w.is_empty() {
-                return tool("p0", "peers", json!({}));
+                return tool("p0", "contacts", json!({}));
             }
             return tool(
                 "x1",

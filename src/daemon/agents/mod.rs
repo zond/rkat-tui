@@ -153,6 +153,22 @@ pub struct Agents {
     checkpoints: super::checkpoint::Checkpoints,
 }
 
+#[async_trait::async_trait]
+impl super::contacts::Roster for Agents {
+    async fn agent_states(&self) -> Vec<(String, &'static str)> {
+        self.worded_states().await
+    }
+
+    fn wired(&self, agent: &str) -> Vec<(String, std::path::PathBuf, String)> {
+        self.core
+            .wires
+            .cards(agent)
+            .into_iter()
+            .map(|card| (card.label(), card.workspace, card.peer_id))
+            .collect()
+    }
+}
+
 impl std::fmt::Debug for Agents {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Agents")

@@ -25,6 +25,8 @@ pub const ASSIGN: &str = "assign";
 pub const CONNECT_HELPERS: &str = "connect_helpers";
 /// Tool name.
 pub const RETIRE_HELPER: &str = "retire_helper";
+/// Tool name.
+pub const CONTACTS: &str = crate::daemon::contacts::CONTACTS;
 
 /// The arguments of one `retire_helper` call.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -102,6 +104,8 @@ pub trait AssignHost: Send + Sync {
     /// The session `caller` asks for its helper `args` to be retired: what
     /// the model is told, and whether that is an error.
     async fn retire(&self, caller: Option<&SessionId>, args: RetireArgs) -> (String, bool);
+    /// The session `caller` asks who it can message and what each is.
+    async fn contacts(&self, caller: Option<&SessionId>) -> (String, bool);
 }
 
 /// The `assign` tool over a host (one for every agent and helper: the
@@ -208,9 +212,21 @@ impl AssignToolDispatcher {
             }),
         )
         .with_provenance(super::provenance(ASSIGN_TOOLS_SOURCE));
+        let contacts = ToolDef::new(
+            CONTACTS,
+            crate::daemon::contacts::DESCRIPTION,
+            json!({"type": "object", "properties": {}, "additionalProperties": false}),
+        )
+        .with_provenance(super::provenance(ASSIGN_TOOLS_SOURCE));
         Self {
             host,
-            tools: vec![Arc::new(def), Arc::new(connect), Arc::new(retire)].into(),
+            tools: vec![
+                Arc::new(def),
+                Arc::new(connect),
+                Arc::new(retire),
+                Arc::new(contacts),
+            ]
+            .into(),
         }
     }
 
@@ -220,6 +236,14 @@ impl AssignToolDispatcher {
         context: &ToolDispatchContext,
     ) -> Result<ToolDispatchOutcome, ToolError> {
         let caller = context.origin_session_id();
+        if call.name == CONTACTS {
+            let (text, is_error) = self.host.contacts(caller).await;
+            return Ok(ToolDispatchOutcome::from(ToolResult::new(
+                call.id.to_string(),
+                text,
+                is_error,
+            )));
+        }
         if call.name == RETIRE_HELPER {
             let args: RetireArgs =
                 call.parse_args()
@@ -283,8 +307,9 @@ impl AgentToolDispatcher for AssignToolDispatcher {
             // Seating a helper changes nothing by itself: every call the
             // helper makes passes its caller's gate. Wiring the caller's
             // own helpers lets them message each other, nothing more;
-            // retiring one ends only what the caller started.
-            ASSIGN | CONNECT_HELPERS | RETIRE_HELPER => ToolMutationClass::ReadOnly,
+            // retiring one ends only what the caller started; listing whom
+            // it can message reads.
+            ASSIGN | CONNECT_HELPERS | RETIRE_HELPER | CONTACTS => ToolMutationClass::ReadOnly,
             _ => ToolMutationClass::Unknown,
         }
     }
@@ -324,6 +349,10 @@ impl AssignHost for NoAssignments {
     async fn retire(&self, _caller: Option<&SessionId>, _args: RetireArgs) -> (String, bool) {
         ("no helper can be retired here".to_string(), true)
     }
+
+    async fn contacts(&self, _caller: Option<&SessionId>) -> (String, bool) {
+        ("nobody can be listed here".to_string(), true)
+    }
 }
 
 #[cfg(test)]
@@ -362,6 +391,10 @@ mod tests {
         async fn retire(&self, _caller: Option<&SessionId>, args: RetireArgs) -> (String, bool) {
             (format!("retire {}", args.name), false)
         }
+
+        async fn contacts(&self, _caller: Option<&SessionId>) -> (String, bool) {
+            ("contacts".to_string(), false)
+        }
     }
 
     /// One short definition naming `name` and `task` as required; a call
@@ -371,10 +404,12 @@ mod tests {
     async fn the_tool_is_one_short_definition_that_asks_the_host() {
         let tools = AssignToolDispatcher::new(Arc::new(Echo));
         let defs = tools.tools();
-        assert_eq!(defs.len(), 3);
+        assert_eq!(defs.len(), 4);
         assert_eq!(defs[0].name.as_str(), ASSIGN);
         assert_eq!(defs[1].name.as_str(), CONNECT_HELPERS);
         assert_eq!(defs[2].name.as_str(), RETIRE_HELPER);
+        assert_eq!(defs[3].name.as_str(), CONTACTS);
+        assert!(defs[3].description.len() < 400, "{}", defs[3].description);
         assert!(defs[2].description.len() < 200, "{}", defs[2].description);
         assert!(defs[1].description.len() < 400, "{}", defs[1].description);
         // 717 bytes: room for when not to keep a helper and that a kept

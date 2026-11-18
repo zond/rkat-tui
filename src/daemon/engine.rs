@@ -134,6 +134,8 @@ pub struct Composed {
     pub side_clients: super::btw::SideClients,
     /// This build's instructions on conversations earlier builds began.
     pub revisions: Arc<super::instructions::Instructions>,
+    /// Who each agent and helper can message (`contacts`).
+    pub contacts: Arc<super::contacts::Contacts>,
 }
 
 /// How `/btw` builds the model client of a session's model identity: the
@@ -292,7 +294,14 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     let daemon_endpoints = endpoints.clone();
     // `assign` for every agent and helper; it seats through the mob state
     // made below.
-    let assigner = Arc::new(super::assign::Assigner::new(Arc::clone(&registry)));
+    let contacts = Arc::new(super::contacts::Contacts::new(
+        Arc::clone(&registry),
+        helper_max_depth,
+    ));
+    let assigner = Arc::new(super::assign::Assigner::new(
+        Arc::clone(&registry),
+        Arc::clone(&contacts),
+    ));
     let assign_tools = Arc::new(crate::tools::AssignToolDispatcher::new(
         Arc::clone(&assigner) as Arc<dyn crate::tools::AssignHost>,
     ));
@@ -504,6 +513,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         helper_models,
         profiles,
         revisions,
+        contacts,
     })
 }
 

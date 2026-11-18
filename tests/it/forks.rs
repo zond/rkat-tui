@@ -30,10 +30,10 @@ fn last(messages: &[Message]) -> String {
         .unwrap_or_default()
 }
 
-/// Whether the last message is a tool result holding a `peers` listing.
+/// Whether the last message is a tool result holding a `contacts` listing.
 fn after_peers(messages: &[Message]) -> bool {
     matches!(messages.last(), Some(Message::ToolResults { results, .. })
-        if results.iter().any(|r| r.text_content().contains("\"peers\"")))
+        if results.iter().any(|r| r.text_content().contains("\"peer_id\"")))
 }
 
 /// Whether the last message answers the tool call `id`.
@@ -53,7 +53,7 @@ fn send(id: &'static str, peer: Option<String>, body: &str) -> Step {
 fn peers(id: &'static str) -> Step {
     Step::Tool {
         id,
-        name: "peers",
+        name: "contacts",
         args: json!({}),
     }
 }
@@ -70,6 +70,14 @@ fn kept_fork(task: &str) -> Step {
 
 /// Whether a recorded request of the fork (`fork`: its task names
 /// `FORK-TASK`) or of its parent carries `text`.
+/// Whether a request of the fork followed its `contacts` listing.
+fn fork_listed(llm: &ScriptedLlmClient) -> bool {
+    llm.recorded()
+        .iter()
+        .filter(|r| r.user().contains("FORK-TASK"))
+        .any(|r| after_peers(&r.messages))
+}
+
 fn heard(llm: &ScriptedLlmClient, fork: bool, text: &str) -> bool {
     llm.recorded()
         .iter()
@@ -169,7 +177,7 @@ async fn a_fork_and_its_parent_talk_both_ways_while_it_works() {
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "go").await;
     // Its first call already found its parent.
-    common::until(|| heard(&llm, true, "\"peers\"")).await;
+    common::until(|| fork_listed(&llm)).await;
     let first = llm
         .recorded()
         .iter()
@@ -178,7 +186,7 @@ async fn a_fork_and_its_parent_talk_both_ways_while_it_works() {
         .map(|r| last(&r.messages))
         .unwrap();
     assert!(
-        first.contains(&format!("tui/main/{}", daemon.agent)),
+        first.contains("parent") && first.contains(&daemon.agent),
         "{first}"
     );
     // The parent reads the fork's message and answers it while the fork's
@@ -310,10 +318,10 @@ async fn a_completed_fork_is_retired_once_its_outcome_is_recorded() {
             })
             .unwrap()
     };
-    // Listed while it worked; gone from `peers` after.
-    assert!(results("pp0").contains("tui/main/kid"));
+    // Listed while it worked; gone from `contacts` after.
+    assert!(results("pp0").contains("\"name\":\"kid\""));
     assert!(
-        !results("pp1").contains("tui/main/kid"),
+        !results("pp1").contains("\"name\":\"kid\""),
         "{}",
         results("pp1")
     );
@@ -372,7 +380,7 @@ async fn a_fork_wired_before_it_is_seated_is_wired_once_it_is() {
         registry.forks_not_seated() >= 1,
         "the wire came before the fork was seated"
     );
-    common::until(|| heard(&llm, true, "\"peers\"")).await;
+    common::until(|| fork_listed(&llm)).await;
     let first = llm
         .recorded()
         .iter()
@@ -380,7 +388,10 @@ async fn a_fork_wired_before_it_is_seated_is_wired_once_it_is() {
         .find(|r| after_peers(&r.messages))
         .map(|r| last(&r.messages))
         .unwrap();
-    assert!(first.contains(&format!("tui/main/{agent}")), "{first}");
+    assert!(
+        first.contains("parent") && first.contains(&agent),
+        "{first}"
+    );
     done.notify_one();
     common::until(|| outcome_heard(&llm)).await;
     daemon.idle(&agent).await;
@@ -460,7 +471,7 @@ async fn a_helper_s_fork_is_wired_to_the_helper() {
     );
     common::until(|| registry.member_session(&scout).is_some()).await;
     go.notify_one();
-    common::until(|| heard(&llm, true, "\"peers\"")).await;
+    common::until(|| fork_listed(&llm)).await;
     let listed = llm
         .recorded()
         .iter()
@@ -468,11 +479,11 @@ async fn a_helper_s_fork_is_wired_to_the_helper() {
         .find(|r| after_peers(&r.messages))
         .map(|r| last(&r.messages))
         .unwrap();
-    assert!(listed.contains("tui/main/scout"), "{listed}");
     assert!(
-        !listed.contains(&format!("tui/main/{}", daemon.agent)),
+        listed.contains("parent") && listed.contains("scout"),
         "{listed}"
     );
+    assert!(!listed.contains(&daemon.agent), "{listed}");
     let wired = wired_to(&connection, "kid").await;
     assert_eq!(wired, vec!["scout".to_string()]);
     done.notify_one();

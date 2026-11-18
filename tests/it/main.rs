@@ -30,6 +30,7 @@ mod compact;
 mod compact_prepare;
 mod confinement;
 mod connect;
+mod contacts;
 mod conversations;
 mod corpus;
 mod councils;

@@ -213,7 +213,7 @@ async fn a_name_in_use_or_an_agent_s_is_refused_for_every_kind() {
             assert_eq!(
                 text,
                 format!(
-                    "the name `{name}` is in use by a member seated now (`list_members` shows them); call `assign` again with another name"
+                    "the name `{name}` is in use by a member seated now (`contacts` lists your helpers); call `assign` again with another name"
                 ),
                 "{name} as {context} keep {keep}"
             );
@@ -310,7 +310,7 @@ async fn an_ended_helper_s_name_starts_a_new_helper_of_any_kind() {
             if !has(messages, "m0") {
                 return Step::Tool {
                     id: "m0",
-                    name: "peers",
+                    name: "contacts",
                     args: json!({}),
                 };
             }

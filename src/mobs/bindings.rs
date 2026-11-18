@@ -82,6 +82,11 @@ pub struct MemberBinding {
     /// retires it (absent in the files an earlier build wrote: not owed).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub retire_owed: bool,
+    /// The first line of the task its `assign` gave it, shortened
+    /// ([`HelperBindings::set_task`]; absent in the files an earlier build
+    /// wrote, and for a helper no `assign` started).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 /// A member binding as the file stores it.
@@ -358,14 +363,40 @@ impl HelperBindings {
             let same = b.members.get(key).filter(|binding| &binding.tag == tag);
             let session = same.and_then(|binding| binding.session.clone());
             let retire_owed = same.is_some_and(|binding| binding.retire_owed);
+            let task = same.and_then(|binding| binding.task.clone());
             b.members.insert(
                 key.clone(),
                 MemberBinding {
                     tag: tag.clone(),
                     session,
                     retire_owed,
+                    task,
                 },
             );
+        })
+    }
+
+    /// The task `key` was given is `task` (its first line, shortened).
+    /// Nothing when it is not bound.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingsError`] when the file cannot be updated.
+    pub fn set_task(&self, key: &HelperKey, task: &str) -> Result<(), BindingsError> {
+        if self
+            .lookup(|b| {
+                b.members
+                    .get(key)
+                    .map(|binding| binding.task.as_deref() == Some(task))
+            })
+            .unwrap_or(true)
+        {
+            return Ok(());
+        }
+        self.change(|b| {
+            if let Some(binding) = b.members.get_mut(key) {
+                binding.task = Some(task.to_string());
+            }
         })
     }
 
@@ -411,16 +442,16 @@ impl HelperBindings {
             return Ok(());
         }
         self.change(|b| {
-            let retire_owed = b
-                .members
-                .get(key)
-                .is_some_and(|binding| &binding.tag == tag && binding.retire_owed);
+            let same = b.members.get(key).filter(|binding| &binding.tag == tag);
+            let retire_owed = same.is_some_and(|binding| binding.retire_owed);
+            let task = same.and_then(|binding| binding.task.clone());
             b.members.insert(
                 key.clone(),
                 MemberBinding {
                     tag: tag.clone(),
                     session: Some(session.clone()),
                     retire_owed,
+                    task,
                 },
             );
         })

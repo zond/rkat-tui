@@ -12684,8 +12684,45 @@ to its end. The panel lists the live helpers (running, then idle) and an
 ended one for `PANEL_LINGER` (10 s, the UI's tick), not until a turn.
 The retire of a helper's own helpers with it is item C.
 
-Tests: the rig test above (also re-attach, restart, `/new`, `/resume`),
+Tests (G): the rig test above (also re-attach, restart, `/new`, `/resume`),
 `ui::tests::helpers::the_panel_lists_live_helpers_and_an_ended_one_leaves_after_its_linger`,
 `of_twenty_helpers_in_one_long_turn_the_panel_lists_the_three_live`,
 `a_selected_ended_helper_stays_and_a_gone_row_hands_the_selection_to_its_neighbour`,
 `the_panel_s_overflow_line_counts_what_it_hides`.
+
+## `contacts` in place of `peers` and `list_members` (owner, 2026-11-18)
+
+**Decision**: one tool of ours that lists everyone a member can message
+and what each is. Named `contacts`, not `peers`: the members' tool
+access policy denies the tools rkat-tui does not offer by name
+(`NOT_OFFERED`), so a tool of ours called `peers` would be denied with
+the engine's, and two tools of one name in a member's dispatchers would
+clash.
+
+**What the engine gives**: `send_message` takes the canonical `peer_id`
+(a UUID derived from the peer's key; a display name or the comms name
+`<mob>/<role>/<member>` is refused as `peer_not_found_or_not_trusted`).
+The caller's comms runtime lists exactly the peers it may send to
+(`CommsRuntime::peers`). `contacts` reads that directory for the
+caller's session and sorts each entry by the daemon's state: the wires'
+cards (by peer id), the caller's helpers (`mobs::seated_for`, one level
+below it), its parent, its parent's other helpers (connected with it:
+in-mob `wired_to`, across mobs `helper-links.json`), the workspace's
+agents (the roster note's states). So its peer ids equal the engine's
+sendable set by construction; the rig test checks that against the
+runtime's own directory before and after a retire and after a restart.
+The task's first line is kept with the helper's binding (`task`, a new
+optional field of `tui_helpers.json`); run state and idle time come from
+the follower's run starts and ends (not kept across a restart: a restored
+helper is `idle` with no time); the ended count is the daemon's since its
+start. The answer is compact JSON (its field order fixed by a serde
+struct), which the TUI also reads for the names of `send_message`
+headers. `peers` and `list_members` joined `NOT_OFFERED`; `reply_to_peer`
+needs neither (pre-addressed), `mob_list_members` stays for mobs an agent
+made. The comms family is 8,977 bytes with `contacts` (9,364 with
+`peers`).
+
+Tests: `contacts::contacts_lists_exactly_the_sendable_peers_by_what_each_is`,
+`daemon::contacts::tests::the_answer_reads_by_group_with_each_peer_id`,
+`tool_costs::*` (the comms family and its bound),
+`approval::policy::tests::delegation_and_mob_queries_need_no_review_but_mob_changes_do`.

@@ -178,6 +178,7 @@ async fn follow(
                         match &envelope.payload {
                             AgentEvent::RunStarted { .. } => {
                                 steps = 0;
+                                registry.ran(&key, true);
                                 registry.endings().run_started(&key);
                             }
                             AgentEvent::TurnCompleted { .. } => steps += 1,
@@ -200,6 +201,7 @@ async fn follow(
                             _ => {}
                         }
                         if let Some(terminal) = super::endings::Terminal::of(&envelope.payload) {
+                            registry.ran(&key, false);
                             registry.endings().run_ended(&key, counted(terminal, steps));
                         }
                         observe(&*observer, &tag, &envelope.payload).await;

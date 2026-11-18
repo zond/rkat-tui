@@ -108,6 +108,7 @@ async fn every_offered_builtin_is_classified_and_memory_search_is_tier_one() {
             || name == rkat_tui::tools::ASSIGN
             || name == rkat_tui::tools::CONNECT_HELPERS
             || name == rkat_tui::tools::RETIRE_HELPER
+            || name == rkat_tui::tools::CONTACTS
             // Mutating mob tools (the read-only ones are listed).
             || name.starts_with("mob_");
         if !known {

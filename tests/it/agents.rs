@@ -481,7 +481,7 @@ async fn a_peer_message_wakes_the_other_agent_and_its_client_shows_it() {
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
             id: "p1",
-            name: "peers",
+            name: "contacts",
             args: json!({}),
         },
         send,
@@ -504,9 +504,14 @@ async fn a_peer_message_wakes_the_other_agent_and_its_client_shows_it() {
     let b_name = b_name.lock().clone();
     a.send(Effect::StartTurn("tell b".into()));
     assert_eq!(a.turn_finished().await.unwrap().text, "told b");
-    // A's peers: B, and only B.
+    // A's contacts: B, and only B, as an agent of the workspace.
     let peers = tool_results(&llm.requests()[1]);
-    assert!(peers.contains(&format!("tui/main/{b_name}")), "{peers}");
+    assert!(
+        peers.contains(&format!(
+            "\"agents_of_this_workspace\":[{{\"name\":\"{b_name}\""
+        )),
+        "{peers}"
+    );
     assert_eq!(peers.matches("\"peer_id\"").count(), 1, "{peers}");
     // B woke for the message: its client shows it, labelled.
     b.wait_for(|m| {
@@ -611,7 +616,7 @@ async fn an_empty_answer_to_a_peer_s_message_is_one_quiet_line() {
     let mut steps = vec![
         Step::Tool {
             id: "p1",
-            name: "peers",
+            name: "contacts",
             args: json!({}),
         },
         send,
@@ -833,7 +838,7 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
             id: "p1",
-            name: "peers",
+            name: "contacts",
             args: json!({}),
         },
         send,
@@ -1005,7 +1010,7 @@ async fn a_quit_agent_is_announced_and_takes_no_more_messages() {
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
             id: "p1",
-            name: "peers",
+            name: "contacts",
             args: json!({}),
         },
         Step::Text("listed"),
@@ -1213,7 +1218,7 @@ async fn a_message_to_another_agent_is_tier_one_and_any_other_send_asks() {
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
             id: "p1",
-            name: "peers",
+            name: "contacts",
             args: json!({}),
         },
         send,
@@ -1398,7 +1403,7 @@ async fn child_peers(route: (&'static str, bool)) -> (String, String) {
             }
             return Step::Tool {
                 id: "cp1",
-                name: "peers",
+                name: "contacts",
                 args: json!({}),
             };
         }
@@ -1485,7 +1490,7 @@ async fn a_parent_messages_its_child_like_a_peer() {
         } else if !answered("p1") {
             Step::Tool {
                 id: "p1",
-                name: "peers",
+                name: "contacts",
                 args: json!({}),
             }
         } else if !answered("m1") {

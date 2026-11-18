@@ -35,6 +35,7 @@ pub mod blank_text;
 pub mod btw;
 pub mod checkpoint;
 pub mod connect;
+pub mod contacts;
 pub mod context;
 pub mod conversations;
 pub mod core;
@@ -630,6 +631,7 @@ impl Daemon {
             )),
             realm: composed.scope.realm_root(),
             revisions: Arc::clone(&composed.revisions),
+            contacts: Arc::clone(&composed.contacts),
             #[cfg(any(test, feature = "test-support"))]
             reload_faults: std::sync::atomic::AtomicU32::new(0),
         });
@@ -637,6 +639,10 @@ impl Daemon {
             Arc::clone(&core),
             agents::endings::HeldNotes::open(&composed.scope.realm_root()),
         );
+        core.contacts.bind_roster({
+            let roster: Arc<dyn contacts::Roster> = agents.clone();
+            Arc::downgrade(&roster)
+        });
         attach_engine(&core, &agents, &workspace)?;
         composed.desk.report_to(&composed.engine);
         let endings_task = deliver_endings(&agents);

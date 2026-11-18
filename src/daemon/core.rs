@@ -65,6 +65,8 @@ pub struct Core {
     pub realm: std::path::PathBuf,
     /// This build's instructions on conversations earlier builds began.
     pub revisions: Arc<super::instructions::Instructions>,
+    /// Who each agent and helper can message (`contacts`).
+    pub contacts: Arc<super::contacts::Contacts>,
     /// Tests: how many of the next member reloads fail
     /// ([`super::storage::reload`]).
     #[cfg(any(test, feature = "test-support"))]

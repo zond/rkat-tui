@@ -124,7 +124,6 @@ impl HelperKind {
 
     /// Its two words (`fresh · single-use`; `None`: not started by `assign`).
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn text(self) -> Option<String> {
         match self {
             Self::Started(context, life) => Some(format!("{} · {}", context.word(), life.word())),
@@ -311,6 +310,10 @@ struct SessionModel {
     auth_binding: Option<AuthBindingRef>,
 }
 
+/// The longest first line of a helper's task its binding keeps
+/// ([`HelperRegistry::note_task`]).
+pub const TASK_LINE: usize = 80;
+
 /// What [`HelperRegistry::on_seated`] is told: the owner session whose
 /// seated helpers changed.
 pub struct SeatedHook(pub Box<dyn Fn(&SessionId) + Send + Sync>);
@@ -354,6 +357,12 @@ pub struct HelperRegistry {
     /// Told the owner session whose seated helpers changed (one was
     /// seated or left), after the change ([`Self::on_seated`]).
     seated: std::sync::OnceLock<SeatedHook>,
+    /// Whether each followed helper runs, and since when (its last run's
+    /// start or end as the follower saw it).
+    activity: Mutex<HashMap<HelperKey, (bool, std::time::Instant)>>,
+    /// How many helpers each parent (an owner session and the parent's
+    /// path) had retire since the daemon started.
+    ended: Mutex<HashMap<(SessionId, Vec<String>), usize>>,
     /// Tests: forks are wired as their spawn is announced
     /// ([`Self::wire_forks_early`]).
     #[cfg(any(test, feature = "test-support"))]
@@ -393,6 +402,8 @@ impl HelperRegistry {
             gone: std::sync::OnceLock::new(),
             intents: Mutex::new(HashMap::new()),
             seated: std::sync::OnceLock::new(),
+            activity: Mutex::new(HashMap::new()),
+            ended: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "test-support"))]
             forks_early: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
@@ -750,6 +761,51 @@ impl HelperRegistry {
         Ok(())
     }
 
+    /// A run of the helper `key` started (`running`) or ended, now.
+    pub fn ran(&self, key: &HelperKey, running: bool) {
+        self.activity
+            .lock()
+            .insert(key.clone(), (running, std::time::Instant::now()));
+    }
+
+    /// Whether the helper `key` runs and since when, as its follower saw
+    /// its runs (`None`: no run of it was seen since the daemon started).
+    #[must_use]
+    pub fn activity(&self, key: &HelperKey) -> Option<(bool, std::time::Instant)> {
+        self.activity.lock().get(key).copied()
+    }
+
+    /// How many helpers of the parent at `parent_path` in `owner`'s tree
+    /// retired since the daemon started.
+    #[must_use]
+    pub fn ended_count(&self, owner: &SessionId, parent_path: &[String]) -> usize {
+        self.ended
+            .lock()
+            .get(&(owner.clone(), parent_path.to_vec()))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// The helper `key` was given `task`: its first line, shortened to
+    /// [`TASK_LINE`] characters, is kept with its binding.
+    pub fn note_task(&self, key: &HelperKey, task: &str) {
+        let line = task
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or_default();
+        let line = crate::ui::markdown::truncate_chars(line, TASK_LINE);
+        if let Err(err) = self.bindings.set_task(key, &line) {
+            tracing::warn!(helper = %key, error = %err, "cannot record the helper's task");
+        }
+    }
+
+    /// The first line of the task the helper `key` was given, when kept.
+    #[must_use]
+    pub fn task_of(&self, key: &HelperKey) -> Option<String> {
+        self.bindings.member(key).and_then(|binding| binding.task)
+    }
+
     /// Tell `hook` the owner session whose seated helpers changed, after
     /// each change from now on (once; the daemon pushes the list to the
     /// owner's clients, [`crate::daemon::protocol::SEATED`]).
@@ -802,9 +858,16 @@ impl HelperRegistry {
     /// Idempotent.
     pub fn retired(&self, key: &HelperKey) {
         let removed = self.live.lock().shift_remove(key);
-        let owner = removed
-            .map(|tag| tag.owner)
-            .or_else(|| self.bindings.member(key).map(|binding| binding.tag.owner));
+        let tag = removed.or_else(|| self.bindings.member(key).map(|binding| binding.tag));
+        self.activity.lock().remove(key);
+        if let Some(tag) = &tag {
+            *self
+                .ended
+                .lock()
+                .entry((tag.owner.clone(), tag.parent_path().to_vec()))
+                .or_default() += 1;
+        }
+        let owner = tag.map(|tag| tag.owner);
         if let Err(err) = self.bindings.remove_member(key) {
             tracing::warn!(helper = %key, error = %err, "cannot drop the helper's binding");
         }

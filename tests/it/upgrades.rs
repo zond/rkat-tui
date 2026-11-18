@@ -226,7 +226,7 @@ async fn a_restored_helper_s_older_instructions_are_replaced() {
         {
             return Step::Tool {
                 id: "p1",
-                name: "peers",
+                name: "contacts",
                 args: json!({}),
             };
         }

@@ -34,7 +34,7 @@ mod write;
 
 pub use assign::{
     ASSIGN, ASSIGN_TOOLS_SOURCE, AssignArgs, AssignHost, AssignToolDispatcher, CONNECT_HELPERS,
-    ConnectArgs, Context as HelperStart, NoAssignments, RETIRE_HELPER, RetireArgs,
+    CONTACTS, ConnectArgs, Context as HelperStart, NoAssignments, RETIRE_HELPER, RetireArgs,
 };
 pub use compact::{
     COMPACT_READY, COMPACT_TOOLS_SOURCE, CompactHost, CompactToolDispatcher, NoCompactions,

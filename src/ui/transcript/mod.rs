@@ -2064,13 +2064,25 @@ impl Transcript {
         let result = result_preview
             .as_ref()
             .and_then(|preview| serde_json::from_str::<Value>(preview).ok());
-        if tool_base(name) == "peers" {
-            let peers = result
-                .as_ref()
-                .and_then(|r| r.get("peers"))
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
+        // `contacts` (and an earlier build's `peers`): every entry naming a
+        // peer id, in whichever group it is.
+        if matches!(tool_base(name), "peers" | crate::daemon::contacts::CONTACTS) {
+            fn entries(value: &Value, out: &mut Vec<Value>) {
+                match value {
+                    Value::Object(map) => {
+                        if map.contains_key("peer_id") {
+                            out.push(value.clone());
+                        }
+                        map.values().for_each(|v| entries(v, out));
+                    }
+                    Value::Array(items) => items.iter().for_each(|v| entries(v, out)),
+                    _ => {}
+                }
+            }
+            let mut peers = Vec::new();
+            if let Some(result) = &result {
+                entries(result, &mut peers);
+            }
             for peer in peers {
                 if let (Some(id), Some(name)) = (
                     peer.get("peer_id").and_then(Value::as_str),
@@ -3756,13 +3768,13 @@ mod tests {
             });
             t.apply_agent_event(&test_tool_result(id, result));
         };
-        call(&mut t, "p1", "peers", json!({}));
+        call(&mut t, "p1", "contacts", json!({}));
         done(
             &mut t,
             "p1",
-            "peers",
+            "contacts",
             false,
-            r#"{"peers":[{"peer_id":"ed25519:abc","name":"tui/main/main-bbbb"}]}"#,
+            r#"{"you":"main-aaaa (an agent of this workspace)","agents_of_this_workspace":[{"name":"main-bbbb","what":"working","peer_id":"ed25519:abc"}]}"#,
         );
         call(
             &mut t,
@@ -3790,9 +3802,9 @@ mod tests {
         };
         assert_eq!(
             head.text(),
-            "message → tui/main/main-bbbb: I am changing src/lib.rs now"
+            "message → main-bbbb: I am changing src/lib.rs now"
         );
-        assert_eq!(note.as_deref(), Some("sent to tui/main/main-bbbb"));
+        assert_eq!(note.as_deref(), Some("sent to main-bbbb"));
         assert!(*collapsed);
         assert!(
             result_preview

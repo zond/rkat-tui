@@ -84,10 +84,13 @@ pub fn own_helpers(caller: &Caller, bound: &[(HelperKey, HelperTag)]) -> Vec<Cho
 /// The names `own` holds, for a refusal.
 fn listed(own: &[Chosen]) -> String {
     if own.is_empty() {
-        return "you have no running helper now (start them with `assign`)".to_string();
+        return "you have no running helper now (start them with `assign`; `contacts` lists whom you can message)".to_string();
     }
     let names: Vec<String> = own.iter().map(|c| format!("`{}`", c.name)).collect();
-    format!("your running helpers are {}", names.join(", "))
+    format!(
+        "your running helpers are {} (`contacts` says what each is)",
+        names.join(", ")
+    )
 }
 
 /// The helpers `names` choose among the caller's `own`, or why not, in
@@ -158,12 +161,9 @@ pub fn choose(
 /// and how.
 #[must_use]
 pub fn connected_note(parent: &str, peers: &[(String, String)]) -> String {
-    let names: Vec<String> = peers
-        .iter()
-        .map(|(name, peer)| format!("`{name}` (`{peer}` in `peers`)"))
-        .collect();
+    let names: Vec<String> = peers.iter().map(|(name, _)| format!("`{name}`")).collect();
     format!(
-        "`{parent}`, who started you, connected you with its other helper{s} {}: you can message {them} with `send_message`, and {they} can message you. Do so when your task needs what {they} know or do; each message wakes its receiver, so keep it to what is needed.",
+        "`{parent}`, who started you, connected you with its other helper{s} {}: you can message {them} with `send_message` (`contacts` gives the peer_id), and {they} can message you. Do so when your task needs what {they} know or do; each message wakes its receiver, so keep it to what is needed.",
         names.join(", "),
         s = if peers.len() == 1 { "" } else { "s" },
         them = if peers.len() == 1 { "it" } else { "them" },
@@ -465,14 +465,9 @@ impl Connector {
                 }
             });
         }
-        let peers: Vec<String> = helpers
-            .iter()
-            .map(|h| format!("`{}` is `{}`", h.name, peer_name(&h.key)))
-            .collect();
         Ok(format!(
-            "Connected, each pair both ways: {}. Each can now message the others with `send_message` ({} in `peers`); each newly connected helper was told whom it can reach. A pair stays connected until one of them leaves: it is retired or stopped, an `assign` helper finishes, or its mob is destroyed (it is then gone from the other's `peers`).",
+            "Connected, each pair both ways: {}. Each can now message the others with `send_message`; each newly connected helper was told whom it can reach. A pair stays connected until one of them leaves: it is retired or stopped, an `assign` helper finishes, or its mob is destroyed (`contacts` shows who is connected to whom).",
             lines.join(", "),
-            peers.join(", ")
         ))
     }
 }
@@ -607,7 +602,8 @@ mod tests {
     fn the_note_names_the_peers_the_parent_and_how() {
         let note = connected_note("main-ab12", &[("b".into(), "tui/main/b".into())]);
         assert!(note.contains("`main-ab12`, who started you"), "{note}");
-        assert!(note.contains("`b` (`tui/main/b` in `peers`)"), "{note}");
+        assert!(note.contains("helper `b`: you can message it"), "{note}");
+        assert!(note.contains("`contacts` gives the peer_id"), "{note}");
         assert!(
             note.contains("send_message") && note.contains("wakes"),
             "{note}"

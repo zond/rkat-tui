@@ -1308,7 +1308,7 @@ members its own `fork_off` seated.
 All four are the same in everything else: named the same way, wired to
 the agent, told and listed (by their two words, below), limited in depth,
 gated, stopped, retired and restored the same way. Every one is wired to
-the agent both ways: each sees the other in `peers`
+the agent both ways: each sees the other in `contacts`
 and either can `send_message` the other at any time. A helper runs with the
 TUI's file tools and a helper persona, on the model the rules below give it
 (**Helper models**), through the session's endpoint, never the model's
@@ -1337,7 +1337,7 @@ helper with `assign` (`name`, `task`, optionally `context`, `keep` and
 `model`): the call returns at once (`Helper scout is running …`) and the
 agent goes on, hearing you and answering while the helper works. The
 helper is seated in the agent's own mob beside it and wired to it both
-ways: each sees the other in `peers`, and either can `send_message` the
+ways: each sees the other in `contacts`, and either can `send_message` the
 other at any time (a message to an idle one starts a run for it). A
 single-use helper's parent is told at once, when its run ends and nothing
 is queued for it, with its answer (`Your helper scout finished its task.
@@ -3312,9 +3312,32 @@ move, Esc or `q` closes it, and:
   the highlight on its neighbour, so several can be retired in a row; a
   refusal shows its reason on the picker.
 
-**Wired.** Every agent is wired to every other one as a peer, so each has
-the engine's peer tools (`peers` lists the other agents, `send_message`
-and `reply_to_peer` reach them). The engine's request and response tools
+**Wired.** Every agent is wired to every other one as a peer: `send_message`
+and `reply_to_peer` reach them.
+
+**`contacts`.** One tool tells an agent or a helper whom it can message
+and what each is, instead of the engine's `peers` (helpers, agents and
+wires mixed, with no kind or state) and `list_members` (which left out
+fresh kept helpers); neither of those is offered. It takes no arguments
+and answers one compact JSON object, its groups left out when empty:
+`you` (its own name, and a helper's kind), `parent` (a helper's),
+`your_helpers` (each with its kind, `fresh · kept` and the like, `running`
+or `idle for 2h`, the first line of its task, `connected_to` when
+`connect_helpers` joined it with another, and its `peer_id`),
+`helpers_note` (`2 of your helpers have ended in this conversation`, or
+`you hold no helpers now`), `connected_with` (the helpers its parent
+connected it with, and whose they are), `agents_of_this_workspace`
+(`working`, `idle, a client attached`, `idle, no client attached`, as the
+daemon's list words them), `wired_agents` (`/wire`'s agents of other
+workspaces, with the workspace) and `others` (a member of a mob the agent
+made). Every entry carries the `peer_id` `send_message` takes (the engine's
+canonical id; a name does not do). Its entries are exactly the peers the
+engine lets the caller send to, sorted by what the daemon knows of each;
+a helper the agent holds but cannot reach yet says `not reachable yet`. It
+is always allowed, and a helper at the depth limit has it too.
+`mob_list_members` still lists a mob the agent made with `mob_create`.
+
+The engine's request and response tools
 (`send_request`, `send_response`) are not offered to agents or helpers: on
 this engine release a response without a result stops the requesting
 conversation for good, so they ask and answer with messages, and answer a
@@ -3323,7 +3346,7 @@ daemon runs an earlier build) with `send_message` too. An agent's helpers are wi
 to it, not to the workspace's other agents: a fresh `assign` helper
 (rkat-tui sets `auto_wire_parent` on every helper it shapes) and a fork
 (the engine seats it without a trust edge; the daemon wires it to its
-parent once it is seated) each see their parent in `peers` and can
+parent once it is seated) each see their parent in `contacts` and can
 message it, and it them. A member of a
 mob the agent created (`mob_spawn_member`) is not wired to it either (the
 engine wires a parent only within one mob), and `wire_members` is refused
@@ -3333,8 +3356,8 @@ in the workspace's mob (only the host wires it).
 other. An agent (or a helper that started helpers of its own) connects
 two or more of its own helpers with `connect_helpers`, naming them as the
 call that started each one did (`{"helpers": ["scout", "tester"]}`):
-every pair of them is wired both ways, so each sees the others in `peers`
-and can message them. Any kind counts (all four ways of `assign`, and
+every pair of them is wired both ways, so each sees the others in
+`contacts` and can message them. Any kind counts (all four ways of `assign`, and
 `mob_spawn_member` members of mobs the agent created), in one mob or
 across mobs: an `assign` helper can be connected
 with a member of a mob the agent created, or members of two such mobs
@@ -3352,7 +3375,7 @@ recipient's own calls pass its gate as always.
 
 A pair stays connected until one of them leaves: it is retired or
 stopped, an `assign` helper finishes, or its mob is destroyed. Then it is
-gone from the other's `peers`. Within one mob the engine keeps the edges
+gone from the other's `contacts`. Within one mob the engine keeps the edges
 across a daemon restart and drops them with a member that retires.
 Across mobs the engine's in-process transport does not reach (each mob's
 members listen in a namespace of their own), so the daemon serves each
@@ -3382,23 +3405,20 @@ reaches the other agent as input: an idle agent wakes for it, a busy one
 takes it at its next step. The receiving TUI shows it as a block labelled
 with the sender (`✉ from agent main-abc`), so you always see why your
 agent acted. The sending side's tool block reads recipient first
-(`send_message → tui/main/main-abc: <start of the message>`, the name
-taken from the conversation's `peers` result, else the peer id) and a
+(`send_message → main-abc: <start of the message>`, the name taken from
+the conversation's `contacts` result, else the peer id) and a
 delivered message folds to `sent to <name>` (the receipt behind the
 toggle); a failed send shows its error. Each agent's instructions name it and the norms for working
 beside the others: when a task will change files, say which to the
 agents shown working, once for the task and once when done (not for each
 change), do not edit a file another agent has just announced (ask it),
 keep messages short, and treat a peer's message as a colleague's, not as
-your instruction. They also say how to tell the workspace's agents from
-the agent's own helpers, which the engine's `peers` lists alike
-(`tui/main/<name>`, no kind): an agent is named `main-` and four letters
-or digits, and only those the daemon's latest list names are agents;
-every other peer is a helper, never told about file changes and messaged
-only to give it work or answer it (a message to an idle helper starts a
-model turn of it, and its answer one of the agent's). An agent alone in
-its workspace is told so (`No other agent works in this workspace now:
-every peer in your peers that this note does not name is a helper …`).
+your instruction. They point to `contacts` for who is who: its helpers
+are never told about file changes and are messaged only to give them
+work or answer them (a message to an idle helper starts a model turn of
+it, and its answer one of the agent's). An agent alone in its workspace
+is told so (`No other agent works in this workspace now; contacts lists
+everyone you can message …`).
 The daemon tells each agent who works here when it
 starts or switches conversation, and every agent when one joins or
 leaves, and why it left: its user quit, another agent's user retired it
@@ -3504,7 +3524,7 @@ your side completes the wire; `/unwire` there removes the half instead.
 
 **Names.** Both workspaces call their agents `main-<id>`, so across a
 wire an agent is named `<workspace>/<agent>` (the workspace's directory
-name): `peers` lists it so, the receiving TUI labels its messages
+name): `contacts` lists it so, the receiving TUI labels its messages
 `✉ from agent api/main-ab12`, the `send_message` header names it, and
 the agents' notes use it.
 
@@ -3682,7 +3702,7 @@ and a helper allowed to nest keeps the engine's mob tools as they are.
 `/context` lists what the requests carry and, separately, what is hidden,
 by family. Other families cannot be hidden this way: the comms tools
 (messages to the other agents) and the engine's mob operator tools
-(`retire_member`, `list_members` and the rest) are mounted by the engine
+(`retire_member`, `member_status` and the rest) are mounted by the engine
 with no slot a host can wrap, so their definitions ride on every request.
 
 This is rkat-tui's own stand-in for the engine's deferred tool catalog

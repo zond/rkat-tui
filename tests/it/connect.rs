@@ -19,10 +19,10 @@ use serde_json::json;
 
 use crate::assign::peer_id;
 
-/// Whether the last message is a tool result holding a `peers` listing.
+/// Whether the last message is a tool result holding a `contacts` listing.
 fn after_peers(messages: &[Message]) -> bool {
     matches!(messages.last(), Some(Message::ToolResults { results, .. })
-        if results.iter().any(|r| r.text_content().contains("\"peers\"")))
+        if results.iter().any(|r| r.text_content().contains("\"peer_id\"")))
 }
 
 /// Whether the last message answers the tool call `id`.
@@ -90,7 +90,7 @@ fn talker(
     if after_peers(messages) {
         return send(ids.1, peer_id(messages, peer), body);
     }
-    Step::Gated(Arc::clone(go), Box::new(tool(ids.0, "peers", json!({}))))
+    Step::Gated(Arc::clone(go), Box::new(tool(ids.0, "contacts", json!({}))))
 }
 
 /// No message was put to the classifier: each passed the gate unreviewed.
@@ -192,7 +192,10 @@ async fn two_assigned_helpers_connected_talk_both_ways() {
         .unwrap();
     assert!(!error, "{answer}");
     assert!(answer.contains("`a` and `b` (new)"), "{answer}");
-    assert!(answer.contains("`a` is `tui/main/a`"), "{answer}");
+    assert!(
+        answer.contains("`contacts` shows who is connected"),
+        "{answer}"
+    );
     // Both let go only now: their peers lists show each other.
     gates[0].notify_one();
     gates[2].notify_one();
@@ -206,8 +209,8 @@ async fn two_assigned_helpers_connected_talk_both_ways() {
     // Each was told of the other, in words it can act on (the note is
     // read at a step's end: by the request after its message at latest).
     for (marker, other) in [
-        ("TASK-OF-A", "`b` (`tui/main/b`"),
-        ("TASK-OF-B", "`a` (`tui/main/a`"),
+        ("TASK-OF-A", "`b`: you can message it"),
+        ("TASK-OF-B", "`a`: you can message it"),
     ] {
         assert!(
             heard(
@@ -436,7 +439,7 @@ fn commanded(messages: &[Message], me: &str, other: &str) -> Step {
         let peer = peer_id(messages, other);
         return send(s, peer, &format!("FROM-{me}-{n}"));
     }
-    tool(q, "peers", json!({}))
+    tool(q, "contacts", json!({}))
 }
 
 /// The mob tools the agent's script calls.
@@ -596,10 +599,6 @@ async fn helpers_in_different_mobs_connected_talk_both_ways_across_a_restart() {
     let (answer, error) = result_in(&llm, "go", "c1").await;
     assert!(!error, "{answer}");
     assert!(answer.contains("`a` and `w1` (new)"), "{answer}");
-    assert!(
-        answer.contains("`a` is `tui/main/a`") && answer.contains("`w1` is `team/worker/w1`"),
-        "{answer}"
-    );
     let recorded = record(&ws);
     assert!(
         recorded.contains("\"w1\"") && recorded.contains("tui/main/a"),
@@ -608,8 +607,8 @@ async fn helpers_in_different_mobs_connected_talk_both_ways_across_a_restart() {
     relay(&connection, &llm, A, 1, "TASK-OF-W1").await;
     relay(&connection, &llm, W1, 2, "TASK-OF-A").await;
     for (marker, other) in [
-        ("TASK-OF-A", "`w1` (`team/worker/w1`"),
-        ("TASK-OF-W1", "`a` (`tui/main/a`"),
+        ("TASK-OF-A", "`w1`: you can message it"),
+        ("TASK-OF-W1", "`a`: you can message it"),
     ] {
         assert!(
             heard(
@@ -641,12 +640,12 @@ async fn helpers_in_different_mobs_connected_talk_both_ways_across_a_restart() {
         .unwrap();
     common::until(|| !record(&ws).contains("\"w1\"")).await;
     let peers = listing(&connection, &llm, ("tui", "a", "TASK-OF-A"), 5).await;
-    assert!(!peers.contains("team/worker/w1"), "{peers}");
+    assert!(!peers.contains("\"name\":\"w1\""), "{peers}");
     assert!(peers.contains("main-"), "its parent stays: {peers}");
     assert!(heard(
         &llm,
         "TASK-OF-A",
-        "`w1` (`team/worker/w1` in `peers`), the helper you were connected with, has left"
+        "`w1`, the helper you were connected with, has left"
     ));
     daemon.idle(&daemon.agent).await;
     drop(connection);
@@ -677,12 +676,12 @@ async fn a_destroyed_mob_s_member_leaves_its_connected_peer() {
     assert!(!result_in(&llm, "go", "c1").await.1);
     relay(&connection, &llm, A, 1, "TASK-OF-W1").await;
     let before = listing(&connection, &llm, ("tui", "a", "TASK-OF-A"), 2).await;
-    assert!(before.contains("team/worker/w1"), "{before}");
+    assert!(before.contains("\"name\":\"w1\""), "{before}");
     daemon.idle(&daemon.agent).await;
     daemon.prompt(&connection, "DESTROY").await;
     common::until(|| !record(&ws).contains("\"w1\"")).await;
     let after = listing(&connection, &llm, ("tui", "a", "TASK-OF-A"), 3).await;
-    assert!(!after.contains("team/worker/w1"), "{after}");
+    assert!(!after.contains("\"name\":\"w1\""), "{after}");
     daemon.idle(&daemon.agent).await;
     drop(connection);
     daemon.stop().await;
@@ -712,7 +711,7 @@ async fn a_recorded_connection_whose_end_is_gone_ends_at_the_next_start() {
     daemon.prompt(&connection, "go").await;
     assert!(!result_in(&llm, "go", "c1").await.1);
     let before = listing(&connection, &llm, ("tui", "a", "TASK-OF-A"), 1).await;
-    assert!(before.contains("team/worker/w1"), "{before}");
+    assert!(before.contains("\"name\":\"w1\""), "{before}");
     daemon.idle(&daemon.agent).await;
     drop(connection);
     daemon.stop().await;
@@ -727,7 +726,7 @@ async fn a_recorded_connection_whose_end_is_gone_ends_at_the_next_start() {
     let connection = daemon.connect_bound().await;
     assert!(!record(&ws).contains("ghost"), "{}", record(&ws));
     let after = listing(&connection, &llm, ("tui", "a", "TASK-OF-A"), 2).await;
-    assert!(!after.contains("team/worker/w1"), "{after}");
+    assert!(!after.contains("\"name\":\"w1\""), "{after}");
     daemon.idle(&daemon.agent).await;
     drop(connection);
     daemon.stop().await;
@@ -873,7 +872,7 @@ async fn a_connection_outlives_a_restart_and_goes_with_a_retired_end() {
                 return if all.contains("\"px2\"") {
                     Step::Text("X-LISTED")
                 } else {
-                    tool("px2", "peers", json!({}))
+                    tool("px2", "contacts", json!({}))
                 };
             }
             if user.contains("TELL-Y") {
@@ -883,7 +882,7 @@ async fn a_connection_outlives_a_restart_and_goes_with_a_retired_end() {
                 if answered(messages, "mx") {
                     return Step::Text("X-SENT");
                 }
-                return tool("px", "peers", json!({}));
+                return tool("px", "contacts", json!({}));
             }
             return Step::Text("X-IDLE");
         }
@@ -980,7 +979,7 @@ async fn a_connection_outlives_a_restart_and_goes_with_a_retired_end() {
             Some(text)
         })
         .unwrap();
-    assert!(!listing.contains("main/y"), "{listing}");
+    assert!(!listing.contains("\"name\":\"y\""), "{listing}");
     assert!(listing.contains("main-"), "its parent stays: {listing}");
     daemon.idle(&daemon.agent).await;
     drop(connection);

@@ -112,6 +112,12 @@ impl ToolFamily {
                 crate::memory::NOTES_SOURCE => Self::Notes,
                 crate::tools::WATCH_TOOLS_SOURCE => Self::Watch,
                 crate::tools::COMPACT_TOOLS_SOURCE => Self::Compaction,
+                // Whom a member can message: the comms family's.
+                crate::tools::ASSIGN_TOOLS_SOURCE
+                    if def.name.as_str() == crate::tools::CONTACTS =>
+                {
+                    Self::Comms
+                }
                 crate::tools::ASSIGN_TOOLS_SOURCE => Self::Mob,
                 crate::tools::SKILL_TOOLS_SOURCE => Self::Skills,
                 _ => Self::Callback,
