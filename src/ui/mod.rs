@@ -1406,6 +1406,11 @@ pub struct App {
     viewport_height: usize,
     /// Text to put on the system clipboard (drained by the runtime).
     clipboard: Option<QueuedCopy>,
+    /// What this client copied last (a selection or `/copy`): what a
+    /// middle-click pastes ([`App::middle_paste`]). The terminal's own
+    /// selection cannot be read back (an OSC 52 query is refused or asks
+    /// the user), so this is rkat-tui's own.
+    last_copied: Option<String>,
     /// The loop's own effects queued in order ([`LocalEffect::ExternalEditor`],
     /// [`LocalEffect::Suspend`], [`LocalEffect::Redraw`]); the others are
     /// kept in their own fields and coalesced.
@@ -1494,6 +1499,7 @@ impl App {
             btw: None,
             viewport_height: 20,
             clipboard: None,
+            last_copied: None,
             local: Vec::new(),
             panel_selected: None,
             helpers_all: false,
@@ -1765,24 +1771,7 @@ impl App {
                     self.main_key(&key, now, &mut fx);
                 }
             }
-            Msg::Paste(text) => {
-                if let Some(Modal::Escalation { dialog, .. }) = &mut self.modal {
-                    dialog.type_text(&text);
-                } else if let Some(Modal::List(picker)) = &mut self.modal
-                    && picker.editing()
-                {
-                    picker.type_text(&text);
-                } else if self.modal.is_none() {
-                    self.chord = None;
-                    if let InputMode::Search(search) = &mut self.mode {
-                        for c in text.chars().filter(|c| !c.is_control()) {
-                            search.push(c, &self.search_corpus);
-                        }
-                    } else {
-                        self.input.paste(&text);
-                    }
-                }
-            }
+            Msg::Paste(text) => self.paste_text(&text),
             Msg::Resize => {
                 // Logical lines change with the width.
                 self.clear_selection();

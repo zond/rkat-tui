@@ -3,13 +3,13 @@
 
 use std::time::Instant;
 
-use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 
 use super::{
-    App, Block, BlockId, CellPos, LastDown, MULTI_CLICK_WINDOW, NoticeLevel, Press, QueuedCopy,
-    SelectMode, Selection, keymap, selection,
+    App, Block, BlockId, CellPos, InputMode, LastDown, MULTI_CLICK_WINDOW, Modal, NoticeLevel,
+    Press, QueuedCopy, SelectMode, Selection, keymap, selection,
 };
 
 impl App {
@@ -82,9 +82,56 @@ impl App {
             }
             MouseEventKind::Drag(MouseButton::Left) => return self.mouse_drag(m.row, m.column),
             MouseEventKind::Up(MouseButton::Left) => return self.mouse_up(),
+            // With Shift held the terminal's own paste is wanted (most
+            // terminals never report it then).
+            MouseEventKind::Down(MouseButton::Middle)
+                if !m.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                self.middle_paste();
+            }
             _ => return false,
         }
         true
+    }
+
+    /// Middle-click: paste what this client copied last into the field
+    /// that takes a paste now ([`Self::paste_text`]), as a paste from the
+    /// terminal is; nothing copied yet says so. It starts no selection and
+    /// clicks nothing.
+    pub(super) fn middle_paste(&mut self) {
+        match self.last_copied.clone() {
+            Some(text) => self.paste_text(&text),
+            None if self.modal.is_none() => {
+                self.transcript.push_notice(
+                    NoticeLevel::Info,
+                    "nothing copied here yet; Shift+middle-click pastes the terminal's own selection",
+                );
+            }
+            None => {}
+        }
+    }
+
+    /// Paste `text` (the terminal's bracketed paste, or a middle-click):
+    /// into a dialog's or picker's text field when one is open, into the
+    /// history search while it runs, else into the input at its cursor
+    /// (lines kept, nothing sent).
+    pub(super) fn paste_text(&mut self, text: &str) {
+        if let Some(Modal::Escalation { dialog, .. }) = &mut self.modal {
+            dialog.type_text(text);
+        } else if let Some(Modal::List(picker)) = &mut self.modal
+            && picker.editing()
+        {
+            picker.type_text(text);
+        } else if self.modal.is_none() {
+            self.chord = None;
+            if let InputMode::Search(search) = &mut self.mode {
+                for c in text.chars().filter(|c| !c.is_control()) {
+                    search.push(c, &self.search_corpus);
+                }
+            } else {
+                self.input.paste(text);
+            }
+        }
     }
 
     /// Left press: a single click clears the selection (and may become a
@@ -249,6 +296,7 @@ impl App {
             return;
         }
         let (capped, truncated) = selection::cap_clipboard(text);
+        self.last_copied = Some(capped.to_string());
         self.clipboard = Some(QueuedCopy {
             text: capped.to_string(),
             truncated,

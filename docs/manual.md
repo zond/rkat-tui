@@ -2694,6 +2694,18 @@ selection (the terminal's own, past rkat-tui and tmux alike), start with
 section; read when the TUI starts) to leave the mouse to the terminal for
 good; `--no-mouse` wins over every file.
 
+| Mouse | What happens |
+|---|---|
+| drag, double or triple click | selects and copies: the terminal's clipboard and its primary selection; inside tmux also tmux's paste buffer |
+| middle-click | pastes what rkat-tui copied last in this session into the input at its cursor (as a paste: lines kept, nothing sent; into a dialog's text field when one is open); with nothing copied yet it says so |
+| Shift+drag, Shift+middle-click | the terminal's (or tmux's) own selection and paste, past rkat-tui |
+| `ui.mouse = false` or `--no-mouse` | everything is left to the terminal and tmux |
+
+A middle-click inside rkat-tui cannot paste the terminal's primary
+selection or tmux's buffer: the terminal reports the click, not its
+selection, and the one way to ask for that (an OSC 52 query) is refused
+or prompted for by most terminals, so rkat-tui never sends one.
+
 Copying uses OSC 52 only, so the terminal must support it: kitty, foot,
 WezTerm, Alacritty, iTerm2 and xterm (with `allowWindowOps`) do; GNOME
 Terminal and other VTE-based terminals do not. rkat-tui writes one
@@ -2703,14 +2715,17 @@ still gets the clipboard. Over ssh the sequences travel back to your
 terminal like any other output; nothing on the remote side needs to know
 about the clipboard.
 
-Inside tmux (`$TMUX` set) rkat-tui writes the clipboard sequence to tmux
-itself, then both sequences again in tmux's passthrough:
+Inside tmux (`$TMUX` set) rkat-tui writes both plain sequences to tmux
+itself, then both again in tmux's passthrough. The plain ones come first,
+so a `$TMUX` with no tmux in between (one passed on over ssh) still sets
+your terminal's clipboard and primary selection:
 
 - With `set -g set-clipboard on` tmux makes the copy a paste buffer
-  (`prefix ]` pastes it) and sets your terminal's clipboard the way its own
-  copy mode does. This is the setting to use, and it is what works when
-  tmux's own mouse selection already reaches your clipboard. tmux's
-  default, `external`, ignores a program's clipboard sequence.
+  (`prefix ]`, and a middle-click in tmux with its mouse on, paste it) and
+  sets your terminal's clipboard the way its own copy mode does. This is
+  the setting to use, and it is what works when tmux's own mouse
+  selection already reaches your clipboard. tmux's default, `external`,
+  ignores a program's clipboard sequence.
 - With `set -g allow-passthrough on` (tmux 3.3 or later) the passthrough
   copies reach your terminal directly, also under `set-clipboard
   external`; tmux's buffer is not set then.

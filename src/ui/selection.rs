@@ -403,13 +403,17 @@ fn screen_passthrough(seq: &str) -> String {
 ///
 /// - [`Multiplexer::None`]: the two plain sequences. Over ssh they reach a
 ///   tmux on the local side as plain OSC 52, which is what it reads.
-/// - [`Multiplexer::Tmux`]: first the plain `c` sequence to tmux itself:
-///   with `set-clipboard on` tmux makes it a paste buffer and sets the
-///   outer terminal's clipboard with its own `Ms` sequence (the route its
-///   copy mode takes). Then `c` and `p` in tmux's DCS passthrough, for
-///   `set-clipboard external` or `off` with `allow-passthrough on` (with
-///   both on the outer terminal is set twice with the same text). No
-///   plain `p`: tmux would make a second paste buffer of it.
+/// - [`Multiplexer::Tmux`]: first the two plain sequences to tmux itself:
+///   with `set-clipboard on` tmux makes each a paste buffer (the top one,
+///   which a middle-click in tmux pastes, holds the text either way) and
+///   sets the outer terminal's clipboard with its own `Ms` sequence (the
+///   route its copy mode takes). Then `c` and `p` in tmux's DCS
+///   passthrough, for `set-clipboard external` or `off` with
+///   `allow-passthrough on` (with both on the outer terminal is set again
+///   with the same text). The plain pair comes first so that a `$TMUX`
+///   seen with no tmux in between (a variable passed on over ssh) still
+///   sets the terminal's clipboard and primary selection: a terminal
+///   ignores the unknown `ESC P tmux;` strings after them.
 /// - [`Multiplexer::Screen`]: the two sequences in screen's pieces.
 #[must_use]
 pub fn osc52(text: &str, via: Multiplexer) -> String {
@@ -419,7 +423,7 @@ pub fn osc52(text: &str, via: Multiplexer) -> String {
     match via {
         Multiplexer::None => format!("{clipboard}{primary}"),
         Multiplexer::Tmux => format!(
-            "{clipboard}{}{}",
+            "{clipboard}{primary}{}{}",
             tmux_passthrough(&clipboard),
             tmux_passthrough(&primary)
         ),
@@ -642,14 +646,65 @@ mod tests {
         assert_eq!(
             osc52("hi", Multiplexer::Tmux),
             concat!(
-                // Plain, to tmux: its buffer, and its own `Ms` outward.
+                // Plain, to tmux: its buffers, and its own `Ms` outward.
                 "\x1b]52;c;aGk=\x07",
+                "\x1b]52;p;aGk=\x07",
                 // Passthrough, for `set-clipboard external` with
-                // `allow-passthrough on`.
+                // `allow-passthrough on`; each closed with `ESC \`.
                 "\x1bPtmux;\x1b\x1b]52;c;aGk=\x07\x1b\\",
                 "\x1bPtmux;\x1b\x1b]52;p;aGk=\x07\x1b\\",
             )
         );
+    }
+
+    /// `$TMUX` set with no tmux in between (passed on over ssh): the plain
+    /// clipboard and primary sequences, the whole of what a terminal
+    /// outside tmux gets, come before anything wrapped, so the copy is not
+    /// lost; and they decode to the text, for text of every length mod 3,
+    /// lines, non-ASCII and trailing spaces.
+    #[test]
+    fn a_wrong_tmux_guess_still_writes_the_plain_sequences_first() {
+        for text in [
+            "a",
+            "ab",
+            "abc",
+            "it’s\nfine  ",
+            "x\r\ny\n",
+            "naïve – ünïcode",
+        ] {
+            let plain = osc52(text, Multiplexer::None);
+            let tmux = osc52(text, Multiplexer::Tmux);
+            assert!(tmux.starts_with(&plain), "{tmux:?}");
+            let rest = &tmux[plain.len()..];
+            assert!(
+                rest.starts_with("\x1bPtmux;") && rest.ends_with("\x1b\\"),
+                "{rest:?}"
+            );
+            for selection in ["c", "p"] {
+                let start = format!("\x1b]52;{selection};");
+                let body = plain
+                    .split('\x07')
+                    .find_map(|seq| seq.strip_prefix(start.as_str()))
+                    .unwrap();
+                assert_eq!(decode(body), text.as_bytes(), "{text:?}");
+            }
+        }
+    }
+
+    /// A plain RFC 4648 decoder, for the round trip above.
+    fn decode(b64: &str) -> Vec<u8> {
+        let value = |c: u8| u32::try_from(B64.iter().position(|b| *b == c).unwrap()).unwrap();
+        let mut out = Vec::new();
+        for chunk in b64.as_bytes().chunks(4) {
+            let pad = chunk.iter().rev().take_while(|c| **c == b'=').count();
+            let n = chunk
+                .iter()
+                .map(|c| if *c == b'=' { 0 } else { value(*c) })
+                .fold(0u32, |acc, v| (acc << 6) | v);
+            let bytes = n.to_be_bytes();
+            out.extend_from_slice(&bytes[1..4 - pad]);
+        }
+        out
     }
 
     #[test]

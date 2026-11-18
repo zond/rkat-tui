@@ -44,16 +44,18 @@
   a run reports is said once, not again as "turn failed". The agents and
   helpers are told not to send a message that only acknowledges or
   thanks.
-- A mouse selection inside tmux said `copied N chars` but nothing reached
-  the clipboard: the copy went only through tmux's passthrough, which
-  skips tmux's own clipboard route, and named the clipboard and the
-  primary selection in one sequence (`52;cp`), which some terminals
-  refuse. Inside tmux the copy now goes to tmux itself first (with
-  `set -g set-clipboard on` tmux sets your terminal's clipboard as its
-  copy mode does and keeps a paste buffer), then through the passthrough
-  for `allow-passthrough on`; everywhere the clipboard (`52;c`) and the
-  primary selection (`52;p`) are two sequences, so a refused one never
-  loses the other. The first copy inside tmux says what tmux needs.
+- A mouse selection inside tmux said `copied N chars` but a middle-click
+  in tmux pasted something older: the copy went only through tmux's
+  passthrough, around tmux, so tmux's own paste buffer (what a
+  middle-click in tmux pastes) was never set. Inside tmux the copy now
+  goes to tmux itself first, the clipboard (`52;c`) and the primary
+  selection (`52;p`) as two plain sequences (with `set -g set-clipboard
+  on` tmux keeps a paste buffer and sets your terminal's clipboard as its
+  copy mode does), then through the passthrough for `allow-passthrough
+  on`. The plain pair coming first also keeps the copy when `$TMUX` is
+  set with no tmux in between. Everywhere the clipboard and the primary
+  selection are two sequences, so a refused one never loses the other.
+  The first copy inside tmux says what tmux needs.
   Under GNU screen the copy goes out in pieces screen passes through.
 - A helper's ending note could show twice: as its folded line and then
   in full as your message (`› Your helper … finished its task. Its
@@ -70,6 +72,11 @@
 
 ### Added
 
+- A middle-click inside rkat-tui pastes what it copied last (a mouse
+  selection or `/copy`) into the input at the cursor, as a paste: lines
+  kept, nothing sent. With the mouse captured a middle-click never
+  reached the terminal or tmux, so nothing could be pasted with it.
+  Shift+middle-click is still the terminal's own paste.
 - `ui.mouse` in `tui.toml` (default `true`): `false` leaves the mouse to
   the terminal at every start, as `--no-mouse` does for one; `--no-mouse`
   wins over every file.

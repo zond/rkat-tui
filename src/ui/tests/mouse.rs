@@ -462,3 +462,98 @@ fn dragging_past_the_edges_scrolls() {
     app.update(up(13, 2));
     assert!(app.take_clipboard_text().is_some());
 }
+
+fn middle(row: u16, column: u16) -> Msg {
+    mouse(MouseEventKind::Down(MouseButton::Middle), row, column)
+}
+
+/// A middle-click pastes what this client copied last into the input at
+/// its cursor, lines kept, nothing sent; it selects nothing, clicks
+/// nothing and leaves the copy queued as it was.
+#[test]
+fn a_middle_click_pastes_the_last_copy_at_the_cursor_without_sending() {
+    let mut app = selection_app();
+    // Triple click: the first line, copied.
+    let t0 = Instant::now();
+    for ms in [0, 100, 200] {
+        app.update_at(down(1, 3), t0 + Duration::from_millis(ms));
+        app.update_at(up(1, 3), t0 + Duration::from_millis(ms + 10));
+    }
+    let copied = app.take_clipboard_text().unwrap();
+    app.update(key(KeyCode::Esc));
+    assert!(app.selection().is_none());
+    type_str(&mut app, "see ");
+    let fx = app.update(middle(2, 5));
+    assert!(fx.is_empty(), "{fx:?}");
+    assert_eq!(app.input.text(), format!("see {copied}"));
+    assert!(app.selection().is_none());
+    assert_eq!(app.take_clipboard_text(), None);
+    // Several lines stay several lines; still nothing is sent.
+    let mut app = selection_app();
+    app.transcript.push(Block::Assistant {
+        md: "one\ntwo".into(),
+    });
+    submit(&mut app, "/copy");
+    app.take_clipboard_text();
+    type_str(&mut app, "x");
+    let fx = app.update(middle(2, 5));
+    assert!(fx.is_empty(), "{fx:?}");
+    assert_eq!(app.input.text(), "xone\ntwo");
+}
+
+/// Nothing copied yet: one notice says so and how to paste the
+/// terminal's own selection; a click on a tool call does not fold it.
+#[test]
+fn a_middle_click_with_nothing_copied_says_so_and_folds_nothing() {
+    let mut app = App::new(StatusInfo::default());
+    app.update(agent(AgentEvent::ToolCallRequested {
+        id: "t1".into(),
+        name: "read_file".into(),
+        args: test_args(json!({"path": "a.rs"})),
+    }));
+    let t1 = app.transcript.tool_block("t1").unwrap();
+    draw_rows(&mut app, 0, 60, 20);
+    let collapsed = tool_collapsed(&app, t1);
+    let row = (0..20).find(|r| app.block_at_row(*r) == Some(t1)).unwrap();
+    app.update(middle(row, 3));
+    app.update(mouse(MouseEventKind::Up(MouseButton::Middle), row, 3));
+    assert_eq!(tool_collapsed(&app, t1), collapsed);
+    assert_eq!(
+        last_notice(&app),
+        Some((
+            NoticeLevel::Info,
+            "nothing copied here yet; Shift+middle-click pastes the terminal's own selection"
+                .into()
+        ))
+    );
+    assert_eq!(app.input.text(), "");
+}
+
+/// With a picker open that has no text field the paste goes nowhere (the
+/// input stays as it was, the picker open); with Shift held the click is
+/// the terminal's and changes nothing.
+#[test]
+fn a_middle_click_over_a_picker_or_with_shift_pastes_nothing() {
+    let mut app = app_on_sonnet();
+    app.transcript.push(Block::Assistant {
+        md: "copied".into(),
+    });
+    submit(&mut app, "/copy");
+    app.take_clipboard_text();
+    app.update(Msg::ShowModelPicker(picker_models()));
+    let before = app.modal.clone();
+    app.update(middle(2, 2));
+    assert_eq!(app.modal, before);
+    assert_eq!(app.input.text(), "");
+    app.update(key(KeyCode::Esc));
+    assert!(app.modal.is_none());
+    app.update(Msg::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Middle),
+        column: 2,
+        row: 2,
+        modifiers: KeyModifiers::SHIFT,
+    }));
+    assert_eq!(app.input.text(), "");
+    app.update(middle(2, 2));
+    assert_eq!(app.input.text(), "copied");
+}

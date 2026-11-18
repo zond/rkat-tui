@@ -12619,3 +12619,35 @@ upstream draft, since a correctly sequenced stop was never shown to fail.
 Tests: `helper_endings::a_stop_waits_for_a_retire_under_way_and_stops_cleanly`,
 `helper_endings::a_retire_the_stop_held_back_is_made_at_the_next_start`
 (failed before the start's retire: the helper stayed seated).
+
+## Copy and middle-click paste (owner, 2026-11-18)
+
+**Seen**: after a mouse selection the owner could paste nothing, with or
+without tmux. His `script` capture of 0.0.16 showed the copy written once
+and well formed (inside tmux `ESC P tmux; ESC ESC ] 52 ; cp ; <base64> BEL
+ESC \`, outside `ESC ] 52 ; cp ; <base64> BEL`), the base64 decoding to
+the selected text. He pastes with the middle button: inside tmux (mouse
+on) that pastes tmux's top paste buffer, which the passthrough never sets
+(it goes around tmux); outside tmux kitty pastes the primary selection.
+Inside rkat-tui the click never reached either, since rkat-tui captures
+the mouse.
+
+**What changed**: the bytes for a copy of `hi` are, outside tmux,
+`ESC]52;c;aGk=BEL ESC]52;p;aGk=BEL`; inside tmux the same two plain
+sequences (to tmux: its buffer, and with `set-clipboard on` its own `Ms`
+outward), then `ESC Ptmux; ESC ESC]52;c;aGk=BEL ESC \` and the same for
+`p`. The plain pair first also keeps the copy when `$TMUX` is set with no
+tmux in between (read once, in the client, at the UI's start); `$TERM`
+is not consulted (tmux's `default-terminal` is the user's to change, and
+with the plain pair first a wrong guess costs nothing). A second, equal
+paste buffer from the plain `p` is the price inside tmux. A middle-click
+in rkat-tui pastes rkat-tui's own last copy through the same path as a
+terminal paste (`App::paste_text`); the terminal's selection cannot be
+read without an OSC 52 query, which terminals refuse or prompt for, so
+none is sent.
+
+Tests: `ui::selection::tests::a_wrong_tmux_guess_still_writes_the_plain_sequences_first`,
+`osc52_in_tmux_goes_to_tmux_plain_first_then_through_its_passthrough`,
+`ui::tests::mouse::a_middle_click_pastes_the_last_copy_at_the_cursor_without_sending`,
+`a_middle_click_with_nothing_copied_says_so_and_folds_nothing`,
+`a_middle_click_over_a_picker_or_with_shift_pastes_nothing`.
