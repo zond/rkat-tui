@@ -1175,10 +1175,8 @@ impl crate::approval::AgentPeers for AgentAttendance {
 
     async fn unreachable(&self, session: &SessionId, peer_id: &str) -> Option<String> {
         let agents = self.0.upgrade()?;
-        if let Some(helper) = agents.core.registry.endings().retired_peer(peer_id) {
-            return Some(format!(
-                "helper `{helper}` finished its task and was retired; start another helper for more work"
-            ));
+        if let Some(refusal) = agents.core.registry.endings().retired_refusal(peer_id) {
+            return Some(refusal);
         }
         let caller = agents.core.conversations.agent_of(session)?;
         agents.core.wires.unreachable(&caller, peer_id)

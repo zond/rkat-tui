@@ -230,17 +230,21 @@ async fn the_client_s_live_helper_rows_are_the_mob_s_seated_helpers_after_every_
     rows_are(&mut client, &connection, &["c1", "k2", "p1"]).await;
     daemon.idle(&daemon.agent).await;
     client.send(Effect::StartTurn("PHASE-RETIRE-PARENT".into()));
-    // The engine leaves a retired member's own helpers seated: c1 stays,
-    // and the client shows what the mob seats.
-    rows_are(&mut client, &connection, &["c1", "k2"]).await;
+    // Its own helper c1 is retired with it, and the answer says so.
+    rows_are(&mut client, &connection, &["k2"]).await;
     daemon.idle(&daemon.agent).await;
+    assert!(
+        llm.recorded().iter().any(|r| format!("{:?}", r.messages)
+            .contains("Helper `p1` was retired. Its own helper `c1` was retired with it.")),
+        "the retire's answer names c1"
+    );
 
     // A client that attaches now sees the same.
     client.send(Effect::Leave(Departure::Detach));
     client.quit().await;
     let mut client =
         Client::attach_agent(&ws.root, AgentChoice::Agent { name: name.clone() }).await;
-    rows_are(&mut client, &connection, &["c1", "k2"]).await;
+    rows_are(&mut client, &connection, &["k2"]).await;
 
     // A restart: the kept helpers are restored, and listed live.
     client.send(Effect::Leave(Departure::Detach));
@@ -250,7 +254,7 @@ async fn the_client_s_live_helper_rows_are_the_mob_s_seated_helpers_after_every_
     let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
     let connection = daemon.connect().await;
     let mut client = Client::attach_agent(&ws.root, AgentChoice::Agent { name }).await;
-    rows_are(&mut client, &connection, &["c1", "k2"]).await;
+    rows_are(&mut client, &connection, &["k2"]).await;
 
     // A new conversation ends the helpers of the one it leaves; resumed,
     // that one lists none live.
@@ -265,6 +269,89 @@ async fn the_client_s_live_helper_rows_are_the_mob_s_seated_helpers_after_every_
         .saw(|m| matches!(m, rkat_tui::ui::Msg::Notice { text, .. } if text.starts_with("resumed conversation")))
         .await;
     rows_are(&mut client, &connection, &[]).await;
+    client.quit().await;
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// Whether one of the agent's requests holds `text`.
+fn agent_heard(llm: &ScriptedLlmClient, text: &str) -> bool {
+    llm.recorded()
+        .iter()
+        .filter(|r| !is_helper(&r.messages, "-TASK"))
+        .any(|r| format!("{:?}", r.messages).contains(text))
+}
+
+/// Nothing stays seated without a living owner: a single-use helper that
+/// finishes takes its own kept helper with it, and so does a running kept
+/// helper the user stops (its running helper is stopped, then retired);
+/// each parent's note names the helper retired with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_helper_s_own_helpers_are_retired_with_it_however_it_ends() {
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        let results = messages
+            .iter()
+            .any(|m| matches!(m, Message::ToolResults { .. }));
+        if is_helper(messages, "C2-TASK") {
+            return Step::Text("C2-DONE");
+        }
+        if is_helper(messages, "C3-TASK") {
+            return Step::Hang;
+        }
+        if is_helper(messages, "S2-TASK") {
+            if results {
+                return Step::Text("S2-DONE");
+            }
+            return start("t-c2", "c2", "C2-TASK", "fresh", true);
+        }
+        if is_helper(messages, "U1-TASK") {
+            if results {
+                return Step::Hang;
+            }
+            return start("t-c3", "c3", "C3-TASK", "fresh", true);
+        }
+        match last_user(messages) {
+            Some(user) if user.contains("PHASE-SINGLE") => {
+                start("t-s2", "s2", "S2-TASK", "fresh", false)
+            }
+            Some(user) if user.contains("PHASE-STOP") => {
+                start("t-u1", "u1", "U1-TASK", "fresh", true)
+            }
+            _ => Step::Text("noted"),
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 60]);
+    let setup = Setup::args(&["--set", "helpers.max_depth=2"]);
+    let args = setup.command_line(&ws.root);
+    let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
+    let connection = daemon.connect().await;
+    let mut client = Client::attach_args(&ws.root, &args, None).await;
+
+    // s2 starts c2 (kept, it goes idle) and finishes: both go.
+    client.send(Effect::StartTurn("PHASE-SINGLE".into()));
+    common::until(|| {
+        agent_heard(&llm, "Your helper `s2` finished its task")
+            && agent_heard(&llm, "Its own helper `c2` was retired with it.")
+    })
+    .await;
+    rows_are(&mut client, &connection, &[]).await;
+    daemon.idle(&daemon.agent).await;
+
+    // u1 starts c3 (running) and runs on; the user stops u1: both go.
+    client.send(Effect::StartTurn("PHASE-STOP".into()));
+    rows_are(&mut client, &connection, &["c3", "u1"]).await;
+    daemon.idle(&daemon.agent).await;
+    client.send(Effect::StopHelper(vec!["u1".into()]));
+    rows_are(&mut client, &connection, &[]).await;
+    common::until(|| {
+        agent_heard(
+            &llm,
+            "The user stopped your helper `u1`. Its file changes stay on disk; its conversation is not continued. Its own helper `c3` was retired with it.",
+        )
+    })
+    .await;
+    daemon.idle(&daemon.agent).await;
     client.quit().await;
     drop(connection);
     daemon.stop().await;

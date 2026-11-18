@@ -230,8 +230,9 @@ impl Connector {
     }
 
     /// Retire the caller's own helper `name` (any kind; its run is
-    /// cancelled, the helpers it started go with it as the engine retires
-    /// a member's): the answer, or why not. Nobody is told: the caller
+    /// cancelled, and the helpers it started, theirs too, are stopped and
+    /// retired before it, which the engine's retire of a member does not
+    /// do): the answer, naming those, or why not. Nobody is told: the caller
     /// asked. The engine's `retire_member` cannot do this for a fresh
     /// helper (it lets a member retire only the members whose spawn it
     /// made inside its own turn, which only `fork_off` records).
@@ -280,10 +281,21 @@ impl Connector {
         let Some(_retiring) = self.registry.endings().retirements().begin() else {
             return Err("the daemon is stopping: nothing was retired".to_string());
         };
-        // Ended with its parent's word: no note of it.
-        self.registry.endings().left(&helper.key);
+        // Ended with its parent's word: no note of it. Its own helpers go
+        // first, deepest first: none stays seated without its owner.
+        let endings = self.registry.endings();
+        let below = endings.take_below(&helper.key);
+        endings.retire_below(&below).await;
+        endings.left(&helper.key);
         crate::mobs::stop_helper(&handle, &helper.key).await;
-        Ok(format!("Helper `{}` was retired.", helper.name))
+        let labels: Vec<String> = below
+            .iter()
+            .map(|(_, tag)| tag.label().to_string())
+            .collect();
+        Ok(match crate::mobs::endings::retired_with(&labels) {
+            Some(with) => format!("Helper `{}` was retired. {with}", helper.name),
+            None => format!("Helper `{}` was retired.", helper.name),
+        })
     }
 
     /// Connect `names` for the session `caller`: the answer, or why not.

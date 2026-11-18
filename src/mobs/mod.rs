@@ -49,6 +49,10 @@
 //!   helpers keep running (the owner's decision of 2026-11-15). Leaving a
 //!   conversation ([`cancel_helpers`]) and the daemon's stop still end them;
 //!   the user stops one helper on its own ([`endings::HelperEndings::stop`]).
+//! - **No orphans.** However a helper is retired, its own helpers (theirs
+//!   too) are stopped and retired with it, deepest first
+//!   ([`endings::HelperEndings::take_below`]), and its parent's note or
+//!   `retire_helper`'s answer names them.
 //! - **Endings.** An `assign` helper's answer goes to its parent as a note
 //!   when it finishes, and it is retired; a kept member's parent is told
 //!   each time it goes idle; every ending is told to the parent once

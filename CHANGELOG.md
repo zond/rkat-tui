@@ -123,6 +123,16 @@
   yet, then the editor's text, at once as the next run (they no longer
   come back to the editor for a second Enter); the status bar's
   `queued N` names the key while one waits.
+- Nothing stays seated without a living owner: when a helper is retired
+  (by `retire_helper`, by finishing its task, by your stop, at the start
+  that settles a retire owed from before), its own helpers, theirs too,
+  are stopped and retired with it, deepest first; the note its parent
+  gets, or `retire_helper`'s answer, names them ("Its own helper `c1` was
+  retired with it."), and a message to one of them is refused saying it
+  was retired with its parent. Before, they stayed seated with nobody to
+  retire them. A single-use helper whose run ends while one of its own
+  helpers still runs is not done yet: that helper's ending is told to it,
+  and it is done (and retired with its idle ones) after it read it.
 - The engine's `peers` (helpers, agents and wires mixed, with no kind or
   state) and `list_members` (which left out fresh kept helpers) are no
   longer offered to agents and helpers: `contacts` replaces both. The

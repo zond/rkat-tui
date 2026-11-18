@@ -1089,6 +1089,7 @@ fn ending_note(label: &str, how: crate::mobs::endings::How) -> String {
         label: label.into(),
         how,
         rest: None,
+        with: Vec::new(),
     }])
 }
 
@@ -1193,11 +1194,13 @@ fn a_helper_s_ending_note_is_one_folded_line() {
                     answer: "found it".into(),
                 },
                 rest: None,
+                with: Vec::new(),
             },
             crate::daemon::agents::endings::NoteItem {
                 label: "fork-1".into(),
                 how: How::StoppedByUser,
                 rest: None,
+                with: Vec::new(),
             },
         ]),
     });

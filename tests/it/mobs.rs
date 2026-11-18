@@ -722,11 +722,13 @@ async fn a_nested_helper_s_note_that_lands_before_its_parent_is_decided_goes_to_
     rig.quit().await;
 }
 
-/// The other order of the same race: `scout` is decided done and its
-/// retire is under way (held here, still seated) when `inner`'s ending is
-/// told. The note does not go to the helper being retired (before the fix
-/// it did and was lost, or refused: "mob member not found: scout"); it
-/// goes up to the agent, once.
+/// The other order of the same race: `scout` is decided done while
+/// `inner`'s run has ended and its own decision is still held. `inner` is
+/// retired with `scout` (nothing stays seated without its owner) and its
+/// decision, opened afterwards, tells nothing: the agent is told once, of
+/// `scout`, naming `inner` as retired with it; no note of `inner` goes to
+/// the helper being retired (before the fix of 2026-11-17 it did and was
+/// lost, or refused: "mob member not found: scout") nor to the agent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_nested_helper_s_note_after_its_parent_was_decided_goes_up_to_the_agent() {
     let ws = Workspace::new();
@@ -743,10 +745,19 @@ async fn a_nested_helper_s_note_after_its_parent_was_decided_goes_up_to_the_agen
     gates.open("scout");
     gates.reached("retire scout").await;
     gates.open("inner");
-    common::until(|| notes_in_last(&of_agent(&llm), "inner") == 1).await;
+    common::until(|| {
+        of_agent(&llm).last().is_some_and(|r| {
+            common::user_texts(&r.messages).iter().any(|text| {
+                text.contains("Your helper `scout` finished its task")
+                    && text.contains("Its own helper `inner` was retired with it.")
+            })
+        })
+    })
+    .await;
     gates.open("retire scout");
     rig.daemon.idle(&rig.daemon.agent).await;
-    assert_eq!(notes_in_last(&of_agent(&llm), "inner"), 1);
+    assert_eq!(notes_in_last(&of_agent(&llm), "scout"), 1);
+    assert_eq!(notes_in_last(&of_agent(&llm), "inner"), 0);
     assert_eq!(notes_in_last(&of_helper(&llm, "HELPER-TASK"), "inner"), 0);
     rig.quit().await;
 }

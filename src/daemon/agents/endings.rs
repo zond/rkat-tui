@@ -54,6 +54,8 @@ pub struct NoteItem {
     pub how: How,
     /// Where its whole answer was written when the note cuts it.
     pub rest: Option<PathBuf>,
+    /// Its own helpers retired with it.
+    pub with: Vec<String>,
 }
 
 /// `answer` as a note carries it: at most [`MAX_ANSWER`] characters,
@@ -77,8 +79,18 @@ fn bounded(answer: &str, rest: Option<&Path>) -> String {
     format!("{}{rest}", shown.trim())
 }
 
-/// What a parent is told of one ending (no leading list mark).
+/// What a parent is told of one ending (no leading list mark), naming
+/// the helpers of its own that were retired with it.
 fn item_text(item: &NoteItem) -> String {
+    let text = ending_text(item);
+    match crate::mobs::endings::retired_with(&item.with) {
+        Some(with) => format!("{text} {with}"),
+        None => text,
+    }
+}
+
+/// [`item_text`] without the helpers retired with it.
+fn ending_text(item: &NoteItem) -> String {
     const NOT_CONTINUED: &str = "Its file changes stay on disk; its conversation is not continued.";
     let label = &item.label;
     match &item.how {
@@ -519,6 +531,7 @@ impl Agents {
                 label: ended.tag.label().to_string(),
                 rest: self.write_rest(ended),
                 how: ended.how.clone(),
+                with: ended.with.clone(),
             })
             .collect();
         let text = note_text(&items);
@@ -717,7 +730,42 @@ mod tests {
             label: label.into(),
             how,
             rest: None,
+            with: Vec::new(),
         }
+    }
+
+    /// A note names the helpers of its own a helper was retired with, and
+    /// still reads back as its one line.
+    #[test]
+    fn a_note_names_the_helpers_retired_with_it() {
+        let mut done = item(
+            "p1",
+            How::Done {
+                answer: "all done".into(),
+            },
+        );
+        done.with = vec!["c1".into()];
+        let text = note_text(&[done.clone()]);
+        assert!(
+            text.ends_with("Its own helper `c1` was retired with it."),
+            "{text}"
+        );
+        assert_eq!(
+            note_summary(&text).map(|s| s.title),
+            Some("helper p1 finished".to_string())
+        );
+        done.with = vec!["c2".into(), "c1".into()];
+        let mut stopped = item("p2", How::StoppedByUser);
+        stopped.with = vec!["c3".into()];
+        let text = note_text(&[done, stopped]);
+        assert!(
+            text.contains("Its own helpers `c2`, `c1` were retired with it."),
+            "{text}"
+        );
+        assert!(
+            text.contains("The user stopped your helper `p2`. Its file changes stay on disk; its conversation is not continued. Its own helper `c3` was retired with it."),
+            "{text}"
+        );
     }
 
     /// Every note [`note_text`] writes reads back as its one line: what

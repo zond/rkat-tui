@@ -168,6 +168,24 @@ pub struct Ended {
     pub tag: HelperTag,
     /// How it ended.
     pub how: How,
+    /// The labels of its own helpers (theirs too) that were retired with
+    /// it, deepest first: nothing stays seated without a living owner.
+    pub with: Vec<String>,
+}
+
+/// The sentence that names the helpers retired with their parent
+/// (`None`: none were).
+#[must_use]
+pub fn retired_with(labels: &[String]) -> Option<String> {
+    let named: Vec<String> = labels.iter().map(|label| format!("`{label}`")).collect();
+    match named.as_slice() {
+        [] => None,
+        [one] => Some(format!("Its own helper {one} was retired with it.")),
+        many => Some(format!(
+            "Its own helpers {} were retired with it.",
+            many.join(", ")
+        )),
+    }
 }
 
 /// How a helper's own run ended, from its events.
@@ -314,7 +332,8 @@ pub struct HelperEndings {
     outcomes_reported: std::sync::atomic::AtomicUsize,
     /// The peer ids and names of the `assign` helpers retired when they
     /// finished, newest last ([`Self::retired_peer`]).
-    retired_peers: Arc<Mutex<VecDeque<(String, String)>>>,
+    /// With each, the parent it was retired with (`None`: it finished).
+    retired_peers: Arc<RetiredPeers>,
     /// Where a run at its limit goes for its checkpoint
     /// ([`Self::checkpoints_to`]); unset, it is a failure.
     checkpoints: OnceLock<mpsc::UnboundedSender<LimitReached>>,
@@ -465,6 +484,63 @@ impl std::fmt::Debug for DecidingHook {
 /// How many retired `assign` helpers' peer ids are remembered.
 const RETIRED_PEERS: usize = 64;
 
+/// The retired helpers' peer ids, names and the parent each went with,
+/// newest last.
+type RetiredPeers = Mutex<VecDeque<(String, String, Option<String>)>>;
+
+/// The labels of `below`, in its order.
+fn labels(below: &[(HelperKey, HelperTag)]) -> Vec<String> {
+    below
+        .iter()
+        .map(|(_, tag)| tag.label().to_string())
+        .collect()
+}
+
+/// Remember the peer id `key` runs as in `handle`'s mob, retired (with
+/// `parent`, or because it finished), so a message to it is refused
+/// saying so.
+async fn remember_peer(
+    handle: &meerkat_mob::MobHandle,
+    key: &HelperKey,
+    parent: Option<String>,
+    retired: &RetiredPeers,
+) {
+    if let Ok(Some(endpoint)) = handle.member_peer_endpoint(&key.member).await {
+        let mut retired = retired.lock();
+        retired.push_back((
+            endpoint.descriptor.peer_id.to_string(),
+            key.member.to_string(),
+            parent,
+        ));
+        while retired.len() > RETIRED_PEERS {
+            retired.pop_front();
+        }
+    }
+}
+
+/// Stop and retire each of `below` (a retired helper's own helpers,
+/// deepest first) through the guarded retire path; failures are logged.
+async fn retire_all(
+    state: &MobMcpState,
+    retirements: &Arc<Retirements>,
+    retired: &RetiredPeers,
+    below: &[(HelperKey, HelperTag)],
+) {
+    for (child, tag) in below {
+        tracing::info!(helper = %child, "retired with its parent");
+        match state.handle_for(&child.mob).await {
+            Ok(handle) => {
+                let parent = tag.parent_path().last().cloned();
+                remember_peer(&handle, child, parent, retired).await;
+                retirements.stop_helper(&handle, child).await;
+            }
+            Err(err) => {
+                tracing::warn!(helper = %child, error = %err, "cannot reach the mob of a helper retired with its parent");
+            }
+        }
+    }
+}
+
 /// [`InputsProbe`], held.
 struct Probe(InputsProbe);
 
@@ -515,6 +591,7 @@ impl HelperEndings {
         let Some(tag) = tag else { return };
         match tag.kind.life() {
             Some(super::HelperLife::Single) => {
+                let below = self.take_below(key);
                 if let Some(tag) = self.settle(key) {
                     self.tell(Ended {
                         key: key.clone(),
@@ -525,9 +602,10 @@ impl HelperEndings {
                             status,
                             retired: true,
                         },
+                        with: labels(&below),
                     });
                 }
-                self.retire_done(key);
+                self.retire_done(key, below);
             }
             Some(super::HelperLife::Kept) => self.tell(Ended {
                 key: key.clone(),
@@ -538,6 +616,7 @@ impl HelperEndings {
                     status,
                     retired: false,
                 },
+                with: Vec::new(),
             }),
             None => {}
         }
@@ -570,10 +649,39 @@ impl HelperEndings {
             return;
         }
         tracing::info!(helper = %key, "a helper the last stop left seated after it finished: it is retired");
+        let below = self.take_below(key);
         self.settle(key);
-        self.retire_done(key);
+        self.retire_done(key, below);
     }
 
+    /// The helpers bound below `key` ([`super::HelperRegistry::bound_below`]),
+    /// deepest first, taken to be retired with it: each is settled now
+    /// (none of their endings is told: `key`'s names them) and its retire
+    /// is owed, so a stop before it reaches the engine leaves it to the
+    /// next start.
+    pub fn take_below(&self, key: &HelperKey) -> Vec<(HelperKey, HelperTag)> {
+        let Some(registry) = self.owed.get().and_then(Weak::upgrade) else {
+            return Vec::new();
+        };
+        let below = registry.bound_below(key);
+        for (child, _) in &below {
+            if !self.is_settled(child) {
+                self.settle(child);
+            }
+            registry.owe_retire(child);
+        }
+        below
+    }
+
+    /// Retire `below` ([`Self::take_below`]), in its order, through the
+    /// guarded retire path; a message to one of them from now on is
+    /// refused saying it was retired.
+    pub async fn retire_below(&self, below: &[(HelperKey, HelperTag)]) {
+        let Some(state) = self.state.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        retire_all(&state, &self.retirements, &self.retired_peers, below).await;
+    }
     /// Whether `key`'s ending was settled already.
     fn is_settled(&self, key: &HelperKey) -> bool {
         self.settled.lock().contains(key)
@@ -666,8 +774,9 @@ impl HelperEndings {
     /// finished ([`Self::retired_peer`]).
     fn retire_fork(&self, key: &HelperKey) {
         tracing::info!(helper = %key, "the fork's outcome reached its parent: it is retired");
+        let below = self.take_below(key);
         self.settle(key);
-        self.retire_done(key);
+        self.retire_done(key, below);
     }
 
     /// `key` is a `delegate` helper an earlier build left, still seated:
@@ -891,14 +1000,7 @@ impl HelperEndings {
                     // A run at its limit goes to its checkpoint before.
                     Terminal::Cancelled | Terminal::Limit { .. } => return,
                 };
-                if let Some(tag) = self.settle(key) {
-                    self.tell(Ended {
-                        key: key.clone(),
-                        tag,
-                        how,
-                    });
-                }
-                self.retire_done(key);
+                self.done(key, how);
             }
             Started(Fork, life) if first_told_elsewhere => {
                 // The engine tells its first run's end; once its outcome is
@@ -917,14 +1019,7 @@ impl HelperEndings {
                     Terminal::Failed(reason) => How::Failed { reason },
                     Terminal::Cancelled | Terminal::Limit { .. } => return,
                 };
-                if let Some(tag) = self.settle(key) {
-                    self.tell(Ended {
-                        key: key.clone(),
-                        tag,
-                        how,
-                    });
-                }
-                self.retire_done(key);
+                self.done(key, how);
             }
             // A kept helper's run, and a single-use fork's later run whose
             // outcome is not recorded yet.
@@ -945,10 +1040,39 @@ impl HelperEndings {
                     key: key.clone(),
                     tag,
                     how,
+                    with: Vec::new(),
                 });
             }
             super::HelperKind::Other => {}
         }
+    }
+
+    /// The single-use helper `key` is done (`how`): its parent is told,
+    /// naming its own helpers that go with it, and it is retired with
+    /// them.
+    /// One of its own helpers still running, it is not done yet: it stays
+    /// seated, that helper's ending is told to it (a run of it reads it)
+    /// and that run's end decides again.
+    fn done(&self, key: &HelperKey, how: How) {
+        if let Some(registry) = self.owed.get().and_then(Weak::upgrade)
+            && registry
+                .bound_below(key)
+                .iter()
+                .any(|(child, _)| registry.activity(child).is_some_and(|(running, _)| running))
+        {
+            tracing::info!(helper = %key, "a single-use helper's own helper still runs: it is done once that one's ending reached it");
+            return;
+        }
+        let below = self.take_below(key);
+        if let Some(tag) = self.settle(key) {
+            self.tell(Ended {
+                key: key.clone(),
+                tag,
+                how,
+                with: labels(&below),
+            });
+        }
+        self.retire_done(key, below);
     }
 
     fn update(&self, key: &HelperKey, change: impl FnOnce(&mut Tracked)) {
@@ -962,33 +1086,39 @@ impl HelperEndings {
             decide(is_delegate(key), entry)
         };
         if let Some(how) = decision {
+            let below = self.take_below(key);
             if let Some(tag) = self.settle(key) {
                 self.tell(Ended {
                     key: key.clone(),
                     tag,
                     how,
+                    with: labels(&below),
                 });
             }
-            self.retire(key, false);
+            self.retire(key, false, below);
         }
     }
 
     /// The user stopped the helper `key` (`tag`, when the caller knows it
     /// better): its run is force-cancelled and it is retired, the helpers
-    /// it started keep running, and its parent is told. Returns whether it
-    /// was a helper not ended yet.
+    /// it started (running or not) are stopped and retired with it, and
+    /// its parent is told, naming them. Returns whether it was a helper
+    /// not ended yet.
     pub fn stop(&self, key: &HelperKey, tag: Option<HelperTag>) -> bool {
         if self.is_settled(key) {
             return false;
         }
+        let below = self.take_below(key);
+        let with = labels(&below);
         let known = self.settle(key).or(tag);
-        self.retire(key, true);
+        self.retire(key, true, below);
         match known {
             Some(tag) => {
                 self.tell(Ended {
                     key: key.clone(),
                     tag,
                     how: How::StoppedByUser,
+                    with,
                 });
                 true
             }
@@ -1009,6 +1139,7 @@ impl HelperEndings {
             key: key.clone(),
             tag,
             how: How::DaemonStopped,
+            with: Vec::new(),
         });
     }
 
@@ -1047,7 +1178,8 @@ impl HelperEndings {
     /// Retire `key` off the caller's task: a stop (`any`) force-cancels
     /// and retires whatever member it is; otherwise only a `delegate`
     /// helper still seated is ([`super::delegates::retire_left_helper`]).
-    fn retire(&self, key: &HelperKey, any: bool) {
+    /// The helpers `below` it ([`Self::take_below`]) are retired first.
+    fn retire(&self, key: &HelperKey, any: bool, below: Vec<(HelperKey, HelperTag)>) {
         self.retires
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let Some(state) = self.state.get().and_then(Weak::upgrade) else {
@@ -1058,7 +1190,9 @@ impl HelperEndings {
         };
         let key = key.clone();
         let retirements = Arc::clone(&self.retirements);
+        let retired = Arc::clone(&self.retired_peers);
         runtime.spawn(async move {
+            retire_all(&state, &retirements, &retired, &below).await;
             if any {
                 match state.handle_for(&key.mob).await {
                     Ok(handle) => {
@@ -1078,7 +1212,8 @@ impl HelperEndings {
     /// task, remembering its peer id first: a message its parent sends it
     /// from now on is refused saying it finished ([`Self::retired_peer`]),
     /// not with the engine's "peer not found".
-    fn retire_done(&self, key: &HelperKey) {
+    /// The helpers `below` it ([`Self::take_below`]) are retired first.
+    fn retire_done(&self, key: &HelperKey, below: Vec<(HelperKey, HelperTag)>) {
         self.retires
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Some(registry) = self.owed.get().and_then(Weak::upgrade) {
@@ -1100,18 +1235,10 @@ impl HelperEndings {
             if let Some(hook) = hook {
                 hook(key.clone()).await;
             }
+            retire_all(&state, &retirements, &retired, &below).await;
             match state.handle_for(&key.mob).await {
                 Ok(handle) => {
-                    if let Ok(Some(endpoint)) = handle.member_peer_endpoint(&key.member).await {
-                        let mut retired = retired.lock();
-                        retired.push_back((
-                            endpoint.descriptor.peer_id.to_string(),
-                            key.member.to_string(),
-                        ));
-                        while retired.len() > RETIRED_PEERS {
-                            retired.pop_front();
-                        }
-                    }
+                    remember_peer(&handle, &key, None, &retired).await;
                     retirements.stop_helper(&handle, &key).await;
                 }
                 Err(err) => {
@@ -1136,8 +1263,28 @@ impl HelperEndings {
             .lock()
             .iter()
             .rev()
-            .find(|(peer, _)| peer == peer_id)
-            .map(|(_, name)| name.clone())
+            .find(|(peer, _, _)| peer == peer_id)
+            .map(|(_, name, _)| name.clone())
+    }
+
+    /// Why a message to the peer `peer_id` is refused when it ran as a
+    /// helper that was retired: it finished, or it went with its parent
+    /// (`None`: no such helper is remembered).
+    #[must_use]
+    pub fn retired_refusal(&self, peer_id: &str) -> Option<String> {
+        self.retired_peers
+            .lock()
+            .iter()
+            .rev()
+            .find(|(peer, _, _)| peer == peer_id)
+            .map(|(_, name, parent)| match parent {
+                None => format!(
+                    "helper `{name}` finished its task and was retired; start another helper for more work"
+                ),
+                Some(parent) => format!(
+                    "helper `{name}` was retired with its parent `{parent}`; start another helper for more work"
+                ),
+            })
     }
 
     /// Tests: how many retires these endings started so far.

@@ -239,6 +239,182 @@ async fn two_assigned_helpers_connected_talk_both_ways() {
     daemon.stop().await;
 }
 
+/// The helpers the workspace's mob seats (its agents left out).
+async fn seated_helpers(connection: &rkat_tui::client::transport::Connection) -> Vec<String> {
+    let members = connection
+        .call("mob/members", json!({"mob_id": "tui"}))
+        .await
+        .unwrap();
+    members["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|member| member["agent_identity"].as_str().unwrap().to_string())
+        .filter(|name| !rkat_tui::daemon::agents::is_agent(name))
+        .collect()
+}
+
+/// A single-use helper connected to a sibling, messaged by it during its
+/// last step and after it finished: the message during its last step is
+/// unfinished input, so it reads it in one more run and then finishes; it
+/// is retired once and its parent told once; the sibling's `contacts` no
+/// longer lists it, and the sibling's later send is refused saying it was
+/// retired; nothing is left seated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_single_use_helper_messaged_by_its_sibling_at_its_end_is_retired_once() {
+    let ws = Workspace::new();
+    let gates: Vec<Arc<tokio::sync::Notify>> = (0..3)
+        .map(|_| Arc::new(tokio::sync::Notify::new()))
+        .collect();
+    let step = {
+        let gates = gates.clone();
+        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+            let user = common::user_texts(messages).concat();
+            if user.contains("TASK-OF-A") {
+                if format!("{messages:?}").contains("FROM-B-1") {
+                    return Step::Text("A-HEARD-B");
+                }
+                // Its last step, held open while b sends to it.
+                return Step::Gated(Arc::clone(&gates[0]), Box::new(Step::Text("A-DONE")));
+            }
+            if user.contains("TASK-OF-B") {
+                if answered(messages, "sb2") {
+                    return Step::Text("B-DONE");
+                }
+                if answered(messages, "pb2") {
+                    return send("sb2", peer_id(messages, "main/a"), "FROM-B-2");
+                }
+                if answered(messages, "sb1") {
+                    return Step::Gated(
+                        Arc::clone(&gates[2]),
+                        Box::new(tool("pb2", "contacts", json!({}))),
+                    );
+                }
+                if answered(messages, "pb1") {
+                    return send("sb1", peer_id(messages, "main/a"), "FROM-B-1");
+                }
+                return Step::Gated(
+                    Arc::clone(&gates[1]),
+                    Box::new(tool("pb1", "contacts", json!({}))),
+                );
+            }
+            let all = format!("{messages:?}");
+            if all.contains("\"c1\"") {
+                return Step::Text("NOTED");
+            }
+            if answered(messages, "a1") || answered(messages, "a2") {
+                return connect("c1", &["a", "b"]);
+            }
+            Step::Tools(vec![
+                ("a1", "assign", json!({"name": "a", "task": "TASK-OF-A"})),
+                ("a2", "assign", json!({"name": "b", "task": "TASK-OF-B"})),
+            ])
+        }))
+    };
+    let llm = ScriptedLlmClient::new(vec![step; 60]);
+    let (daemon, _classifier) = strict(&ws, &llm).await;
+    let connection = daemon.connect_bound().await;
+    let watcher = daemon.connect().await;
+    daemon.prompt(&connection, "go").await;
+    let b_answered = |id: &str| {
+        llm.recorded()
+            .iter()
+            .filter(|r| r.user().contains("TASK-OF-B"))
+            .any(|r| answered(&r.messages, id))
+    };
+    // b lists a, then messages it while a's last step is open.
+    gates[1].notify_one();
+    common::until(|| b_answered("sb1")).await;
+    let listed = llm
+        .recorded()
+        .iter()
+        .find_map(|r| result_of(&r.messages, "pb1"))
+        .unwrap()
+        .0;
+    assert!(listed.contains("\"name\":\"a\""), "{listed}");
+    // a's run ends; the message is unfinished input: one more run reads
+    // it, then a is done and retired.
+    gates[0].notify_one();
+    common::until(|| heard(&llm, "TASK-OF-A", "FROM-B-1")).await;
+    let deadline = tokio::time::Instant::now() + common::TIMEOUT;
+    while seated_helpers(&watcher).await.contains(&"a".to_string()) {
+        if tokio::time::Instant::now() >= deadline {
+            let registry = daemon.registry();
+            let key = rkat_tui::mobs::HelperKey::new(
+                meerkat_mob::MobId::from("tui"),
+                meerkat_mob::AgentIdentity::from("a"),
+            );
+            panic!(
+                "a stays seated: tracked {}, settled {}, told {}, retires {}, activity {:?}, a's requests {}\n{}",
+                registry.endings().is_tracked(&key),
+                registry.endings().settled(&key),
+                registry.endings().told(),
+                registry.endings().retires(),
+                registry.activity(&key),
+                llm.recorded()
+                    .iter()
+                    .filter(|r| r.user().contains("TASK-OF-A"))
+                    .count(),
+                common::log_tail(400)
+            );
+        }
+        tokio::time::sleep(common::POLL).await;
+    }
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .filter(|r| !r.user().contains("TASK-OF-"))
+            .any(|r| format!("{:?}", r.messages).contains("Your helper `a` finished"))
+    })
+    .await;
+    // b lists its contacts again (a is gone) and messages a: refused.
+    gates[2].notify_one();
+    common::until(|| b_answered("sb2")).await;
+    let again = llm
+        .recorded()
+        .iter()
+        .find_map(|r| result_of(&r.messages, "pb2"))
+        .unwrap()
+        .0;
+    assert!(!again.contains("\"name\":\"a\""), "{again}");
+    let (refused, error) = llm
+        .recorded()
+        .iter()
+        .find_map(|r| result_of(&r.messages, "sb2"))
+        .unwrap();
+    assert!(error, "{refused}");
+    assert!(refused.contains("retired"), "{refused}");
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .filter(|r| !r.user().contains("TASK-OF-"))
+            .any(|r| format!("{:?}", r.messages).contains("Your helper `b` finished"))
+    })
+    .await;
+    common::until_async(async || seated_helpers(&watcher).await.is_empty()).await;
+    daemon.idle(&daemon.agent).await;
+    // Told once each, retired once each.
+    let last = format!(
+        "{:?}",
+        llm.recorded()
+            .iter()
+            .rfind(|r| !r.user().contains("TASK-OF-"))
+            .unwrap()
+            .messages
+    );
+    assert_eq!(
+        last.matches("Your helper `a` finished").count(),
+        1,
+        "{last}"
+    );
+    let registry = daemon.registry();
+    assert_eq!(registry.endings().told(), 2);
+    assert_eq!(registry.endings().retires(), 2);
+    drop(connection);
+    drop(watcher);
+    daemon.stop().await;
+}
+
 /// Every refusal says what to do: fewer than two, an unknown name, the
 /// caller itself, an agent of the workspace; nothing is connected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

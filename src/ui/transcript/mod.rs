@@ -2842,6 +2842,7 @@ mod tests {
                 failed: None,
             },
             rest: None,
+            with: Vec::new(),
         }]);
         t.remote_input(note);
         assert!(

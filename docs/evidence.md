@@ -12756,3 +12756,50 @@ the_status_bar_says_how_to_push_a_waiting_message}`,
 `client_turns::send_now_pushes_a_message_held_behind_a_long_tool_call_as_the_next_run`
 (the rig: the steer arrives once, as the next run's prompt, the editor
 empty, no further run).
+
+## Nothing stays seated without a living owner (owner, 2026-11-18)
+
+Established first (G's rig test, `helper_rows`): after `retire_helper
+p1`, p1's own kept helper `c1` stayed seated; the engine's `retire` of a
+member leaves the members it seated. Now every retire path takes the
+helpers bound below the retired one (`HelperRegistry::bound_below`: same
+owner, a longer path that begins with its own), deepest first
+(`HelperEndings::take_below`: each settled, so none of their endings is
+told, and its retire owed in `tui_helpers.json`, so a stop before it
+reaches the engine leaves it to the next start's `settle_left_helpers`),
+and retires them through the guarded path (`Retirements::stop_helper`)
+before the helper itself: `retire_helper` (`Connector::retire`), a
+single-use helper finishing or stopped at its checkpoint, a fork's
+outcome recorded, the user's stop, a left-over `delegate`, the start's
+owed retire. `/new` and `/resume` (`cancel_helpers`) did so already. The
+parent's note (`Ended::with`, `NoteItem::with`) or the tool's answer
+names them; a message to one is refused with "helper `c1` was retired
+with its parent `p1`" (`HelperEndings::retired_refusal`).
+
+The gate's first run of this change failed two rig tests that show why
+one refinement is needed: a single-use helper that starts a helper and
+ends its run waiting for its note (as the helper persona tells it: "do
+not poll") was done at once, and its running helper was then killed
+with it (`mobs::a_helper_below_a_raised_depth_limit_starts_one_more`).
+Now a single-use helper whose own helper still runs (the registry's
+activity) is not done when its run ends (`HelperEndings::done`): that
+helper's ending is told to it, a run of it reads it, and that run's end
+decides again. `mobs::a_nested_helper_s_note_after_its_parent_was_decided_goes_up_to_the_agent`
+(the nested helper's run ended, its decision held) now has the nested
+helper retired with its parent and named in the agent's one note, its
+own decision telling nothing.
+
+The single-use audit's other half, established with a rig test: a
+single-use helper connected to a sibling, messaged by it during its last
+model call, reads the message in one more run (unfinished input), then
+finishes; it is retired once, its parent told once, the sibling's
+`contacts` no longer lists it and the sibling's later send is refused
+with the "finished its task and was retired" text; nothing stays seated.
+No change was needed there.
+
+Tests: `helper_rows::the_client_s_live_helper_rows_are_the_mob_s_seated_helpers_after_every_ending`
+(now `["k2"]` after p1's retire, and the answer names `c1`; it pinned
+`["c1","k2"]` before), `helper_rows::a_helper_s_own_helpers_are_retired_with_it_however_it_ends`
+(single-use finishing, the user's stop of a running kept helper),
+`connect::a_single_use_helper_messaged_by_its_sibling_at_its_end_is_retired_once`,
+`daemon::agents::endings::tests::a_note_names_the_helpers_retired_with_it`.

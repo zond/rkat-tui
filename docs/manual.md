@@ -1315,6 +1315,18 @@ kind (its run is cancelled; nobody is told, the agent asked). The
 engine's `retire_member` cannot: it lets a member retire only the
 members its own `fork_off` seated.
 
+Nothing stays seated without a living owner: however a helper is retired
+(`retire_helper`, finishing its task, your stop, the start that settles
+a retire the last stop left owed), its own helpers, theirs too, are
+stopped and retired with it, deepest first, and the note its parent
+gets, or `retire_helper`'s answer, names them ("Its own helper `c1` was
+retired with it."). A message to one of them is then refused saying it
+was retired with its parent. A single-use helper whose run ends while
+one of its own helpers still runs is not done yet: that helper's ending
+is told to it, and it is done once a run of it read that. Leaving a
+conversation (`/new`, `/resume`) retires every helper it had, deepest
+first, as before.
+
 All four are the same in everything else: named the same way, wired to
 the agent, told and listed (by their two words, below), limited in depth,
 gated, stopped, retired and restored the same way. Every one is wired to

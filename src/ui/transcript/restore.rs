@@ -345,6 +345,7 @@ mod tests {
                 answer: "All good.\nDetails follow.".into(),
             },
             rest: None,
+            with: Vec::new(),
         }]);
         let held = format!(
             "{note}\n\n{}\n\nnow fix it",

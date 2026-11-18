@@ -527,6 +527,31 @@ impl HelperRegistry {
         self.bindings.members()
     }
 
+    /// The helpers bound below `key`: its own helpers, theirs, and so on
+    /// (the same owner, a longer path that begins with its own), deepest
+    /// first. Empty when `key` is not bound.
+    #[must_use]
+    pub fn bound_below(&self, key: &HelperKey) -> Vec<(HelperKey, HelperTag)> {
+        let bound = self.bound_members();
+        let Some(tag) = bound
+            .iter()
+            .find_map(|(bound, tag)| (bound == key).then(|| tag.clone()))
+        else {
+            return Vec::new();
+        };
+        let mut below: Vec<(HelperKey, HelperTag)> = bound
+            .into_iter()
+            .filter(|(other, other_tag)| {
+                other != key
+                    && other_tag.owner == tag.owner
+                    && other_tag.path.len() > tag.path.len()
+                    && other_tag.path.starts_with(&tag.path)
+            })
+            .collect();
+        below.sort_by_key(|(_, tag)| std::cmp::Reverse(tag.path.len()));
+        below
+    }
+
     /// The scratch directory of the agent `member`, made private when it
     /// is not there yet; `None` when the shell could not write it
     /// (`writable` says, from the confinement plan) or it cannot be made (a
