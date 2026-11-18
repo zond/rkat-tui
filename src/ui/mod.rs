@@ -2032,6 +2032,7 @@ impl App {
             None
         };
         self.status.helper_panel = !self.transcript.panel_helpers().is_empty();
+        self.follow_helper_picker();
         self.refresh_menu();
         self.dirty |= dirty;
         fx

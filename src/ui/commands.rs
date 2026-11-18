@@ -1132,13 +1132,15 @@ Keys:
   Ctrl+Up/Down                   select a helper in the panel under the input (newest first);
                                  Enter on an empty input opens its full view (PgUp/PgDn scroll
                                  it; Esc goes back at once, after a pending /btw takes the first;
-                                 Ctrl-C asks whether to stop a running helper: y stops it, n, Esc
-                                 or Ctrl-C keeps it and stays; quitting is from the transcript);
+                                 Ctrl-C asks whether to stop a running helper: y stops it and the
+                                 view stays, n, Esc or Ctrl-C keeps it and stays; quitting is from
+                                 the transcript);
                                  a click unfolds a header
   Ctrl-R                         search history (Ctrl-R again: older · Enter accept · Esc cancel)
   Ctrl-X Ctrl-S                  interrupt and send the input (sends normally when idle)
   Ctrl-G, Ctrl-X Ctrl-E          edit the input in $VISUAL / $EDITOR / vi (also while a turn runs)
-  Up/Down, Ctrl-P/N              move between lines · recall prompt history
+  Up/Down, Ctrl-P/N              move between lines · recall prompt history (a recalled entry
+                                 opens no / or @ menu until you edit it: the walk goes on)
   Ctrl-A/E, Alt+B/F              line start/end, word left/right (Ctrl/Alt+Left/Right too)
   Ctrl-K/U, Ctrl-W, Alt+D        kill to line end/start, the word before/after (Ctrl-K at a
                                  line end kills the newline); Ctrl/Alt+Backspace = Ctrl-W
@@ -1183,8 +1185,10 @@ Agent picker (/agents):
   d, then y                      retire the agent: only one idle with no client (its
                                  conversation stays in /resume); n or Esc keeps it
   Esc, q                         close
-Lists (/schedules, /permissions, /approve, /helpers, /mode, /memory, /wire, /unwire):
-  Up/Down, j/k                   move; rows wrap (the highlighted one in full)
+Lists (/schedules, /permissions, /approve, /helpers, /mode, /memory, /wire, /unwire, /settings):
+  Up/Down, j/k                   move; rows wrap (the highlighted one in full); a list stays open
+                                 after its acts, refreshed on the same row, until Esc, q or Ctrl-C
+                                 (a mode chosen, a helper's full view, an agent switch close it)
   y / n, Esc                     answer a pending question (yes / no); while one is up every
                                  other key, Enter too, only points at y and n; Esc again closes
   Enter, p (/schedules)          pause the schedule, or resume a paused one

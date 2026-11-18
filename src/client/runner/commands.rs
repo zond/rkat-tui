@@ -1023,6 +1023,7 @@ pub(super) fn rule_picker(
             format!("grant {what} · {}", grant.origin.word()),
             vec![key],
         )
+        .keyed(format!("grant {}", grant.id))
     });
     let statement_rows = statements.iter().map(|statement| {
         let key = match statement.origin {
@@ -1053,6 +1054,7 @@ pub(super) fn rule_picker(
             vec![key],
         )
         .noted("a statement: judged by the classifier, read narrowly")
+        .keyed(format!("statement {}", statement.id))
     });
     let rows = rules
         .iter()
@@ -1080,6 +1082,9 @@ pub(super) fn rule_picker(
                     format!("Remove rule {}? {lasts}.", rule.n),
                 )],
             )
+            // Rules are numbered again after a removal: what the rule
+            // says is what it is.
+            .keyed(format!("rule {what} · {}", rule.origin.as_str()))
         })
         .chain(grant_rows)
         .chain(statement_rows)
@@ -1234,6 +1239,7 @@ pub(super) fn settings_picker(
                 ],
             )
             .noted(note)
+            .keyed(row.key.clone())
         })
         .collect();
     rows.extend(
@@ -1254,6 +1260,7 @@ pub(super) fn settings_picker(
                     "{} (a change applies {}; a project file {}; flags: {})",
                     section.about, section.applies, section.project, section.flags
                 ))
+                .keyed(format!("[{}]", section.key))
             }),
     );
     ListPicker::new(
@@ -1348,6 +1355,7 @@ pub(super) fn schedule_picker(
                     ),
                 ],
             )
+            .keyed(row.id.clone())
         })
         .collect();
     ListPicker::new(

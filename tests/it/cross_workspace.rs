@@ -738,6 +738,104 @@ async fn the_daemon_wires_unwires_and_refuses() {
     a.stop().await;
 }
 
+/// The owner's report of 2026-11-18: `/wire` to an agent in the middle of
+/// a model call said "nothing was wired: the daemon of … did not answer"
+/// (the client's 10 s bound), while that daemon wired its side all the
+/// same: its handler awaited the note to its agent, which the engine
+/// applies only at the step's end. Now `rkat/wire` and `rkat/unwire`
+/// answer as soon as the wire is made or removed (here within 3 s while
+/// the agent's model call is held), the wire is listed at once, and the
+/// agent reads each note in its next model request, after the held step.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wiring_a_busy_agent_answers_at_once_and_its_note_lands_after_the_step() {
+    let (ws, root) = workspace("alpha");
+    let other = ws.sibling("gamma");
+    let (gamma, _) = stranger(&other, "main-gggg");
+    let (wire_gate, unwire_gate) = (
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Text("first"),
+        Step::Gated(Arc::clone(&wire_gate), Box::new(Step::Text("long one"))),
+        Step::Text("after the wire"),
+        Step::Gated(Arc::clone(&unwire_gate), Box::new(Step::Text("long two"))),
+        Step::Text("after the unwire"),
+    ]);
+    let a = Running::start_with(&args_for(&root), rig::Setup::default().options(&root, &llm)).await;
+    turn(&a, "hello").await;
+    let bound = a.connect_bound().await;
+    // As the other workspace's client calls it: a probe naming the agent.
+    let probe = a.connect().await;
+    // Start a run whose model call is held, and wait until it is.
+    let busy = |requests: usize| {
+        let bound = &bound;
+        let llm = &llm;
+        async move {
+            let member =
+                json!({"mob_id": "tui", "agent_identity": bound.agent(), "content": "work"});
+            bound.call("mob/member_send", member).await.unwrap();
+            within_secs(30, async {
+                while llm.requests().len() < requests {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+        }
+    };
+    busy(2).await;
+    let wired = within_secs(
+        3,
+        remote::call::<method::Wire>(
+            &probe,
+            &WireParams {
+                agent: Some(a.agent.clone()),
+                card: gamma.clone(),
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(!wired.already, "{wired:?}");
+    assert_eq!(wires_of(&a).await, vec!["gamma/main-gggg".to_string()]);
+    wire_gate.notify_one();
+    a.idle(&a.agent).await;
+    turn(&a, "go").await;
+    assert!(
+        context(&llm).contains("You are now wired to `gamma/main-gggg`"),
+        "{}",
+        context(&llm)
+    );
+    // Unwiring the busy agent the same way.
+    busy(4).await;
+    let removed = within_secs(
+        3,
+        remote::call::<method::Unwire>(
+            &probe,
+            &protocol::UnwireParams {
+                agent: Some(a.agent.clone()),
+                workspace: other.clone(),
+                peer: "main-gggg".into(),
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(removed.removed);
+    assert_eq!(wires_of(&a).await, Vec::<String>::new());
+    unwire_gate.notify_one();
+    a.idle(&a.agent).await;
+    turn(&a, "again").await;
+    assert!(
+        context(&llm).contains("Your wire to `gamma/main-gggg`"),
+        "{}",
+        context(&llm)
+    );
+    drop(bound);
+    drop(probe);
+    a.stop().await;
+}
+
 /// A socket path longer than `sun_path` is refused at the agent's bind,
 /// and `/wire` says which path and the limit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

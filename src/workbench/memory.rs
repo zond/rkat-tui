@@ -226,7 +226,9 @@ fn memory_picker(
                 )
             }
         };
-        PickRow::new(format!("{name} · {state}"), vec![enter]).noted(note)
+        PickRow::new(format!("{name} · {state}"), vec![enter])
+            .noted(note)
+            .keyed(name)
     })
     .collect();
     ListPicker::new(

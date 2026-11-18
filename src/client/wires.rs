@@ -265,10 +265,28 @@ pub async fn wire(own: &Connection, other: &Endpoint, peer: &str) -> Result<Stri
             agent: Some(peer.to_string()),
         })
         .await?;
-    let wired_there = there
-        .call::<method::Wire>(&peer_params(ours.clone()))
-        .await
-        .map_err(|why| format!("nothing was wired: {why}"))?;
+    let wired_there = match bounded(remote::call::<method::Wire>(
+        there.connection,
+        &peer_params(ours.clone()),
+    ))
+    .await
+    {
+        Ok(wired) => wired,
+        // No answer in time: whether it wired its side is not known, so
+        // it is undone (or said so) before anything is claimed.
+        Err(ClientError::Timeout(_)) => {
+            let undone = there
+                .call::<method::Unwire>(&UnwireParams {
+                    agent: Some(peer.to_string()),
+                    workspace: ours.workspace.clone(),
+                    peer: ours.agent.clone(),
+                })
+                .await
+                .map(|unwired| unwired.removed);
+            return Err(unanswered_wire(&there.name, &theirs.label(), undone));
+        }
+        Err(err) => return Err(format!("nothing was wired: {}", words(&there.name, &err))),
+    };
     let wired_here = match here
         .call::<method::Wire>(&WireParams {
             agent: None,
@@ -314,6 +332,24 @@ pub async fn wire(own: &Connection, other: &Endpoint, peer: &str) -> Result<Stri
             theirs.label()
         )
     })
+}
+
+/// What a wire whose other side (`name`) did not answer its `rkat/wire`
+/// in time comes to, after the undo of that side's half (`undone`:
+/// whether it had one to remove, or why the undo failed): "nothing was
+/// wired" only when that is known.
+fn unanswered_wire(name: &str, label: &str, undone: Result<bool, String>) -> String {
+    match undone {
+        Ok(true) => format!(
+            "{name} did not answer in time but had wired its side; that half was undone, so nothing is wired (/wire {label} again)"
+        ),
+        Ok(false) => format!(
+            "nothing was wired: {name} did not answer in time and holds no wire to this agent (/wire {label} again)"
+        ),
+        Err(undo) => format!(
+            "{name} did not answer in time, so whether it wired its side is not known, and undoing it failed too ({undo}); this side is not wired: /wire {label} again, or /unwire {label} in that workspace"
+        ),
+    }
 }
 
 /// The name of `endpoint`'s workspace (its address when it names none).
@@ -481,7 +517,9 @@ pub fn wire_picker(all: &[Candidate], wired: &[WireRow]) -> crate::ui::ListPicke
                     },
                 )
             };
-            PickRow::new(text, vec![enter]).noted(c.workspace.display().to_string())
+            PickRow::new(text, vec![enter])
+                .noted(c.workspace.display().to_string())
+                .keyed(format!("{}/{}", c.workspace.display(), c.agent))
         })
         .collect();
     ListPicker::new(
@@ -523,6 +561,7 @@ pub fn unwire_picker(wired: &[WireRow], others: &[Other]) -> crate::ui::ListPick
                 )],
             )
             .noted(w.workspace.display().to_string())
+            .keyed(format!("{}/{}", w.workspace.display(), w.agent))
         })
         .collect();
     ListPicker::new(
@@ -550,6 +589,27 @@ pub fn resolve_wire<'a>(target: &str, wired: &'a [WireRow]) -> Result<&'a WireRo
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A wire whose other side did not answer in time says what is the
+    /// case after the undo: nothing wired only when that is known.
+    #[test]
+    fn an_unanswered_wire_says_what_is_the_case() {
+        let name = "the daemon of /w/gamma";
+        let undone = unanswered_wire(name, "gamma/main-g", Ok(true));
+        assert!(
+            undone.contains("had wired its side; that half was undone, so nothing is wired"),
+            "{undone}"
+        );
+        let none = unanswered_wire(name, "gamma/main-g", Ok(false));
+        assert!(none.starts_with("nothing was wired: "), "{none}");
+        let unknown = unanswered_wire(name, "gamma/main-g", Err("no answer".into()));
+        assert!(!unknown.contains("nothing was wired"), "{unknown}");
+        assert!(
+            unknown.contains("whether it wired its side is not known")
+                && unknown.contains("/unwire gamma/main-g in that workspace"),
+            "{unknown}"
+        );
+    }
 
     fn c(workspace: &str, agent: &str) -> Candidate {
         Candidate {

@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- ↑ through the prompt history stopped at a slash command such as
+  `/helpers` or `/model`: recalled, the command opened the completion
+  menu, which took ↑/↓ for its highlight. No menu opens now over an entry
+  recalled from the history until it is edited (an `@path` at an entry's
+  end likewise), so ↑ reaches every earlier entry and ↓ walks back to the
+  draft; once you edit the entry the menu opens and ↑/↓ are its.
+- The agent's streamed answer was cut where a helper's line arrived (a
+  tool call of a helper it started, its header, its error or ending) and
+  went on as a new block after it: a Markdown link or a table broke in
+  two and the text read as two answers. A block of another scope no
+  longer closes an answer that is streaming: the answer stays one block
+  and draws whole, the helper's lines below it; the same holds for a
+  helper's answer in its view while the agent's tool calls arrive.
+- `/wire` to an agent in the middle of a model call said "nothing was
+  wired: the daemon of … did not answer" while that daemon wired its side
+  all the same: it answered only once its note to the agent was applied,
+  which the engine does at the end of the agent's step. The daemon now
+  answers `/wire` and `/unwire` as soon as the wire is made or removed,
+  and the agent reads the note in its next model request. When the other
+  daemon does not answer in time for another reason, its half is undone
+  first and the message says what is the case.
+
+### Changed
+
+- The list dialogs (`/helpers`, `/schedules`, `/permissions`, `/approve`,
+  `/agents`, `/wire`, `/unwire`, `/memory`, `/settings`) stay open after
+  what you do in them and close only on Esc, `q` or Ctrl-C: stopping a
+  helper (`s`, `y`) and opening an instruction file from `/memory` closed
+  theirs before. The rows come again in place with the highlight on the
+  same item (on its neighbour when it is gone); `/helpers` follows its
+  helpers' state live, so a stopped helper's end shows there. Only acts
+  that go somewhere else close a dialog: a mode chosen in `/mode`, a
+  helper's full view, switching to or starting an agent. A helper's full
+  view stays after its Ctrl-C and `y` too.
+
 ## [0.0.16] - 2026-11-18
 
 ### Fixed

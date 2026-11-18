@@ -7,7 +7,9 @@
 //! schedules and rules, the workbench for the instruction files, the UI
 //! for the mode and the helpers); the picker only moves, asks and answers
 //! with a [`PickAct`], which [`App::picked`] turns into what the typed
-//! command does.
+//! command does. A picker stays open after its acts, its list refreshed
+//! in place, until Esc, `q` or Ctrl-C closes it; only an act that goes
+//! somewhere else (a mode, a helper's view, another agent) closes it.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::{Color, Modifier, Style};
@@ -158,24 +160,14 @@ pub enum PickAct {
 }
 
 impl PickAct {
-    /// Whether the picker stays open after it (a refreshed list replaces
-    /// it; the others leave it for the editor, a view or the new mode).
-    fn keeps_picker(&self) -> bool {
+    /// Whether the picker closes after it: only an act whose point is to
+    /// go somewhere else (the new mode, a helper's full view, another
+    /// agent). Every other act leaves the picker open, its list refreshed
+    /// in place, until Esc, `q` or Ctrl-C closes it.
+    fn leaves_picker(&self) -> bool {
         matches!(
             self,
-            Self::Schedule(..)
-                | Self::RemoveRule(_)
-                | Self::RemoveGrant(_)
-                | Self::RemoveStatement(_)
-                | Self::Approve(..)
-                | Self::Withdraw(_)
-                | Self::AllowEffect { .. }
-                | Self::FoldHelper(_)
-                | Self::ShowEndedHelpers(_)
-                | Self::Wire { .. }
-                | Self::Unwire { .. }
-                | Self::RetireAgent(_)
-                | Self::SetSetting { .. }
+            Self::SetMode(_) | Self::ViewHelper(_) | Self::SwitchAgent(_) | Self::NewAgent
         )
     }
 }
@@ -368,6 +360,10 @@ pub struct PickRow {
     pub keys: Vec<PickKey>,
     /// Shown dim (an ended helper among live ones).
     pub dim: bool,
+    /// What the row is of (a schedule's id, a helper's block, an agent's
+    /// name): a refreshed list keeps the highlight on the row of the same
+    /// item ([`ListPicker::refreshed`]).
+    pub id: Option<String>,
 }
 
 impl PickRow {
@@ -379,7 +375,15 @@ impl PickRow {
             note: None,
             keys,
             dim: false,
+            id: None,
         }
+    }
+
+    /// The row as that of item `id` ([`Self::id`]).
+    #[must_use]
+    pub fn keyed(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     /// The row shown dim.
@@ -602,20 +606,41 @@ impl ListPicker {
         }
     }
 
-    /// `fresh` in place of this picker, on the same row where it still is
-    /// (an item highlighted stays on an item: the last when its row is
-    /// gone, never one of the [`Self::actions`] rows after them).
+    /// `fresh` in place of this picker, which stays open as it was: the
+    /// highlight on the row of the same item ([`PickRow::id`]) wherever
+    /// it moved; when that item is gone (or rows have no ids), on the row
+    /// now in its place, its neighbour (an item highlighted stays on an
+    /// item: the last when the list got shorter, never one of the
+    /// [`Self::actions`] rows after them). The line under the rows stays
+    /// (an outcome, a refusal), but for a question or a field about an
+    /// item that is gone.
     #[must_use]
     pub fn refreshed(&self, fresh: Self) -> Self {
         let at = self.cursor.index();
-        let on_item = at < self.rows.len().saturating_sub(self.actions);
-        let items = fresh.rows.len().saturating_sub(fresh.actions);
-        let at = if on_item {
-            at.min(items.saturating_sub(1))
-        } else {
-            at
+        let id = self.selected().and_then(|row| row.id.as_deref());
+        let same = id.and_then(|id| {
+            fresh
+                .rows
+                .iter()
+                .position(|row| row.id.as_deref() == Some(id))
+        });
+        let gone = id.is_some() && same.is_none();
+        let at = same.unwrap_or_else(|| {
+            let on_item = at < self.rows.len().saturating_sub(self.actions);
+            let items = fresh.rows.len().saturating_sub(fresh.actions);
+            if on_item {
+                at.min(items.saturating_sub(1))
+            } else {
+                at
+            }
+        });
+        let line = match &self.line {
+            Some(PickerLine::Confirm { .. } | PickerLine::Field(_)) if gone => None,
+            line => line.clone(),
         };
-        fresh.at(at)
+        let mut fresh = fresh.at(at);
+        fresh.line = line;
+        fresh
     }
 }
 
@@ -837,6 +862,7 @@ pub fn approve_picker(calls: &[crate::approval::grants::BlockedCall], now: u64) 
                 keys,
             )
             .noted(format!("{}{grant}{effect}", call.reason))
+            .keyed(call.id.to_string())
         })
         .collect();
     let withdraw = if calls.iter().any(|call| call.approved_once) {
@@ -886,6 +912,7 @@ fn waiting_row(
         "blocked {ago} ago: {} · w withdraws the approval (the call is blocked again)",
         call.reason
     ))
+    .keyed(call.id.to_string())
 }
 
 /// One line on what each mode asks and allows (the `/mode` picker's).
@@ -926,6 +953,7 @@ pub fn mode_picker(current: Option<PermissionMode>, paused: bool) -> ListPicker 
             };
             PickRow::new(format!("{mark}{}{state}", mode.label()), vec![enter])
                 .noted(mode_explained(mode))
+                .keyed(mode.label())
         })
         .collect();
     let at = current
@@ -988,6 +1016,7 @@ pub fn agent_picker(agents: &[AgentEntry]) -> ListPicker {
                     d,
                 ],
             )
+            .keyed(agent.name.clone())
         })
         .collect();
     rows.push(PickRow::new(
@@ -1096,6 +1125,25 @@ impl App {
         self.picker_says(kind, &PickerLine::Done(what.to_string()));
     }
 
+    /// The `/helpers` picker, open or waiting behind an approval dialog,
+    /// as the transcript has its helpers now (a stopped helper's new
+    /// state as soon as the daemon's word of its ending arrives), on the
+    /// same helper.
+    pub(super) fn follow_helper_picker(&mut self) {
+        let open = |slot: &Option<Modal>| matches!(slot, Some(Modal::List(open)) if open.kind == PickerKind::Helpers);
+        if !open(&self.modal) && !open(&self.parked) {
+            return;
+        }
+        let fresh = self.helper_picker();
+        for slot in [&mut self.modal, &mut self.parked] {
+            if let Some(Modal::List(open)) = slot
+                && open.kind == PickerKind::Helpers
+            {
+                *open = open.refreshed(fresh.clone());
+            }
+        }
+    }
+
     /// `line` under the rows of a picker of `kind` open or waiting; a
     /// question pending there stays.
     fn picker_says(&mut self, kind: PickerKind, line: &PickerLine) {
@@ -1109,10 +1157,11 @@ impl App {
         }
     }
 
-    /// A picker's answer: what the typed command does; the schedules, the
-    /// rules, the helpers and the wires stay open (their list comes again).
+    /// A picker's answer: what the typed command does. The picker stays
+    /// open (its list comes again in place) but for the acts that go
+    /// somewhere else ([`PickAct::leaves_picker`]).
     pub(super) fn picked(&mut self, act: PickAct, fx: &mut Vec<Effect>) {
-        if !act.keeps_picker() {
+        if act.leaves_picker() {
             self.modal = None;
         }
         match act {
@@ -1170,17 +1219,13 @@ impl App {
                 });
                 self.clear_selection();
             }
+            // The helpers' picker follows the transcript after every
+            // update ([`App::follow_helper_picker`]).
             PickAct::FoldHelper(header) => {
                 self.toggle_helper(header);
-                let picker = self.helper_picker();
-                self.show_picker(picker, true);
             }
             PickAct::StopHelper(header) => self.stop_helper(header, fx),
-            PickAct::ShowEndedHelpers(all) => {
-                self.helpers_all = all;
-                let picker = self.helper_picker();
-                self.show_picker(picker, true);
-            }
+            PickAct::ShowEndedHelpers(all) => self.helpers_all = all,
         }
     }
 }
@@ -1468,6 +1513,120 @@ mod tests {
             "keys",
         );
         assert_eq!(open.refreshed(shorter).cursor.index(), 0);
+    }
+
+    /// Rows with ids: a refresh keeps the highlight on the same item
+    /// wherever it moved, and the line under the rows with it; when the
+    /// item is gone, on its neighbour (the row in its place), dropping a
+    /// question about it but keeping an act's outcome.
+    #[test]
+    fn a_refresh_follows_the_item_and_keeps_the_line() {
+        let list = |ids: &[&str]| {
+            ListPicker::new(
+                PickerKind::Schedules,
+                ids.iter()
+                    .map(|id| {
+                        PickRow::new(
+                            format!("row {id}"),
+                            vec![PickKey::confirmed(
+                                KeyCode::Char('d'),
+                                PickAct::Schedule(ScheduleOp::Delete, (*id).into()),
+                                format!("delete {id}?"),
+                            )],
+                        )
+                        .keyed(*id)
+                    })
+                    .collect(),
+                "none",
+                "keys",
+            )
+        };
+        let mut open = list(&["a", "b", "c"]).at(1);
+        open.key(&press(KeyCode::Char('d')));
+        // "a" went: "b" is now the first row, still highlighted, still asked.
+        let fresh = open.refreshed(list(&["b", "c"]));
+        assert_eq!(fresh.selected().unwrap().text, "row b");
+        assert!(
+            matches!(&fresh.line, Some(PickerLine::Confirm { question, .. }) if question == "delete b?")
+        );
+        // "b" went: on its neighbour, the question about it dropped.
+        let gone = fresh.refreshed(list(&["c"]));
+        assert_eq!(gone.selected().unwrap().text, "row c");
+        assert_eq!(gone.line, None);
+        // An outcome stays over a refresh.
+        let mut done = list(&["a", "b"]).at(1);
+        done.line = Some(PickerLine::Done("deleted b".into()));
+        let after = done.refreshed(list(&["a"]));
+        assert_eq!(after.selected().unwrap().text, "row a");
+        assert_eq!(after.line, Some(PickerLine::Done("deleted b".into())));
+    }
+
+    /// Every act leaves its picker open (its list comes again in place)
+    /// but for the ones that go somewhere else: a mode chosen, a helper's
+    /// full view, another agent or a new one.
+    #[test]
+    fn only_acts_that_go_elsewhere_close_the_picker() {
+        let id = BlockId(0);
+        let stays = [
+            PickAct::Schedule(ScheduleOp::Pause, "1".into()),
+            PickAct::RemoveRule(1),
+            PickAct::RemoveGrant(1),
+            PickAct::RemoveStatement(1),
+            PickAct::Approve(1, GrantScope::Once),
+            PickAct::Withdraw(1),
+            PickAct::AllowEffect {
+                id: 1,
+                scope: GrantScope::Session,
+                text: "x".into(),
+            },
+            PickAct::SetSetting {
+                key: "k".into(),
+                value: None,
+                user: false,
+                filter: None,
+            },
+            PickAct::OpenMemory(MemoryTarget::User),
+            PickAct::FoldHelper(id),
+            PickAct::StopHelper(id),
+            PickAct::ShowEndedHelpers(true),
+            PickAct::Wire {
+                workspace: "/w".into(),
+                agent: "a".into(),
+            },
+            PickAct::Unwire {
+                workspace: "/w".into(),
+                agent: "a".into(),
+            },
+            PickAct::RetireAgent("a".into()),
+        ];
+        for act in stays {
+            let mut app = App::new(crate::ui::StatusInfo::default());
+            app.update(crate::ui::Msg::ShowPicker {
+                picker: picker(),
+                refresh: false,
+            });
+            let mut fx = Vec::new();
+            app.picked(act.clone(), &mut fx);
+            assert!(
+                matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Schedules),
+                "{act:?} closed the picker"
+            );
+        }
+        for act in [
+            PickAct::SetMode(PermissionMode::Plan),
+            PickAct::ViewHelper(id),
+            PickAct::SwitchAgent("a".into()),
+            PickAct::NewAgent,
+        ] {
+            let mut app = App::new(crate::ui::StatusInfo::default());
+            app.update(crate::ui::Msg::ShowPicker {
+                picker: picker(),
+                refresh: false,
+            });
+            let mut fx = Vec::new();
+            app.picked(act.clone(), &mut fx);
+            assert!(app.modal.is_none(), "{act:?} left the picker open");
+        }
     }
 
     /// The mode picker: four rows, the current one marked and highlighted;

@@ -2496,8 +2496,18 @@ asks about the agent this client works with, and says so.
 #### List dialogs
 
 The lists of `/approve`, `/permissions`, `/schedules`, `/agents`, `/wire`,
-`/unwire`, `/mode`, `/memory` and `/helpers` share their keys: ↑/↓ (or
-k/j) move, each row's keys act on it, Esc, `q` or Ctrl-C close. Rows wrap
+`/unwire`, `/mode`, `/memory`, `/settings` and `/helpers` share their keys:
+↑/↓ (or k/j) move, each row's keys act on it, Esc, `q` or Ctrl-C close.
+A list stays open after what you do in it, and closes only on those keys:
+its rows come again in place (from the daemon, once its answer is there;
+`/helpers` follows its helpers as their state changes, a stopped one's end
+included; `/memory` once the editor closes), the highlight on the same
+item wherever it moved, on the row now in its place when the item is gone.
+Only the acts that take you somewhere else close it: a mode chosen in
+`/mode`, Enter on a helper in `/helpers` (its full view), and switching
+to an agent or starting a new one in `/agents`; so do choosing a model in
+`/model` and a conversation in `/resume`. A helper's full view also stays
+after its Ctrl-C and `y`, showing the helper's end. Rows wrap
 to the dialog's width: the highlighted row in full, every other at most
 two lines of its text and two of its note, ending in "…". A key that asks
 first (retire, delete, remove, unwire, `/approve`'s `s` and `a`) puts its
@@ -2514,7 +2524,10 @@ Typing `/` at the start of a one-line input opens a menu of the commands
 whose name or alias starts with what follows (case-insensitive) right above
 the input, each as `/name usage — summary`, up to eight rows at a time
 (the list scrolls with the highlight). ↑/↓ choose a row (not history while
-the menu is open), Tab puts the highlighted command and a space in place of
+the menu is open). No menu opens over an entry ↑/↓ recalled from the prompt
+history until you edit it (moving the cursor is no edit), so ↑/↓ go on
+through the history past a recalled `/helpers` or `… @src/main.rs`; the
+first edit opens it, and ↑/↓ are then the menu's. Tab puts the highlighted command and a space in place of
 the word, Enter does the same for a partial name and sends a complete one
 (with its arguments) as before, and Esc closes the menu for that word;
 typing reopens it. `//` never opens it, and nor does a word nothing
@@ -2586,11 +2599,11 @@ in `src/ui/commands.rs`, pinned to the keymap by a test):
 | Ctrl-D | On an empty input, quit on a second press within 3 s (see [Sessions](#sessions) and [Detach and reattach](#the-workspace-daemon)); with text, delete forward |
 | Ctrl-O | Show everything in full, or fold it all back: every tool call's arguments, output and diff, every reasoning block, every job outcome, in the transcript and an open helper view; while on, new ones arrive shown (a click toggles one until the next Ctrl-O). Expanding or folding, by Ctrl-O, a click or `/helpers`, keeps the line at the bottom of the screen where it is: what is above it grows or shrinks upwards, and folding again brings the view back as it was |
 | Ctrl-T | Show or hide the [task checklist](#task-checklist) |
-| Ctrl+Up/Down | Select a helper in the panel under the input (newest first); Enter on an empty input opens its full view: its task and later inputs with who gave them, its work and its answer, under a title with its kind, state and model (Esc returns at once, after a pending `/btw` takes the first; Ctrl-C asks whether to stop a running helper, `y` stops it, `n`, Esc or Ctrl-C keep it and stay; PgUp/PgDn scroll it) |
+| Ctrl+Up/Down | Select a helper in the panel under the input (newest first); Enter on an empty input opens its full view: its task and later inputs with who gave them, its work and its answer, under a title with its kind, state and model (Esc returns at once, after a pending `/btw` takes the first; Ctrl-C asks whether to stop a running helper, `y` stops it (the view stays and shows its end), `n`, Esc or Ctrl-C keep it and stay; PgUp/PgDn scroll it) |
 | Ctrl-R | Search the prompt history, the workspace's then the global one (Ctrl-R again: older; Enter accepts; Esc cancels) |
 | Ctrl-X Ctrl-S | Interrupt and send the input (sends normally when idle) |
 | Ctrl-G, Ctrl-X Ctrl-E | Edit the input in `$VISUAL`, else `$EDITOR`, else `vi` (also while a turn runs) |
-| Up/Down, Ctrl-P/N | Move between lines (wrapped rows first), then recall prompt history |
+| Up/Down, Ctrl-P/N | Move between lines (wrapped rows first), then recall prompt history; an entry recalled and not edited (a `/command` or `@path` among them) opens no completion menu, so the walk goes on past it |
 | Ctrl-A/E, Alt+B/F | Line start/end, word left/right (Ctrl/Alt+Left/Right too) |
 | Ctrl-K/U, Ctrl-W, Alt+D | Kill to the line end (at a line end, the newline) or start, the word before or after; Ctrl/Alt+Backspace = Ctrl-W |
 | Ctrl-Y, Alt+Y | Yank the last killed text; Alt+Y right after a yank cycles to older kills |

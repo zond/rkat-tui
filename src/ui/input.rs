@@ -66,6 +66,11 @@ pub struct InputEditor {
     history: Vec<String>,
     history_pos: Option<usize>,
     draft: Option<String>,
+    /// The text as ↑/↓ last recalled it from the history (this editor's
+    /// own form), while the recall is under way: the input is an unedited
+    /// recall while it still holds exactly that
+    /// ([`Self::is_unedited_recall`]).
+    recalled: Option<String>,
     /// Columns a visual row holds (set by the renderer; 0 = do not wrap).
     wrap_width: usize,
     /// Killed text, the newest last (Ctrl+K/U/W, Alt+D, Ctrl/Alt+Backspace);
@@ -266,6 +271,7 @@ impl InputEditor {
             history: Vec::new(),
             history_pos: None,
             draft: None,
+            recalled: None,
             wrap_width: 0,
             kill_ring: VecDeque::new(),
             last: LastEdit::Other,
@@ -324,6 +330,18 @@ impl InputEditor {
     pub fn set_history(&mut self, history: Vec<String>) {
         self.history = history;
         self.history_pos = None;
+        self.recalled = None;
+    }
+
+    /// Whether the input holds an entry ↑/↓ recalled from the history,
+    /// unedited since (moving the cursor is no edit): ↑/↓ then go on
+    /// walking the history, and no completion menu opens over it.
+    pub fn is_unedited_recall(&self) -> bool {
+        self.history_pos.is_some()
+            && self
+                .recalled
+                .as_deref()
+                .is_some_and(|text| *text == self.raw_text())
     }
 
     /// Seed the history (oldest first).
@@ -442,6 +460,7 @@ impl InputEditor {
         self.col = 0;
         self.history_pos = None;
         self.draft = None;
+        self.recalled = None;
     }
 
     /// Replace the text and put the cursor at the end. The text comes from
@@ -914,7 +933,14 @@ impl InputEditor {
         };
         self.history_pos = Some(next);
         let entry = self.history.get(next).cloned().unwrap_or_default();
-        self.set_text(&entry);
+        self.recall(&entry);
+    }
+
+    /// Put history `entry` in the editor, cursor at its end, as an
+    /// unedited recall.
+    fn recall(&mut self, entry: &str) {
+        self.set_text(entry);
+        self.recalled = Some(self.raw_text());
     }
 
     /// Down arrow: move down a visual row, or recall newer history from the
@@ -933,9 +959,10 @@ impl InputEditor {
         if p + 1 < self.history.len() {
             self.history_pos = Some(p + 1);
             let entry = self.history.get(p + 1).cloned().unwrap_or_default();
-            self.set_text(&entry);
+            self.recall(&entry);
         } else {
             self.history_pos = None;
+            self.recalled = None;
             // The draft is this editor's own text, chips and all.
             let draft = self.draft.take().unwrap_or_default();
             self.load(&draft);

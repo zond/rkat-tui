@@ -512,8 +512,11 @@ fn mode_picker_switches_the_mode() {
 }
 
 /// `/memory` asks for the instruction-file picker; its Enter opens the
-/// file as `/memory <file>` does and closes it; the typed forms
-/// (`/memory workspace|user|system`) open the files directly.
+/// file as `/memory <file>` does and the picker stays (the owner's rule
+/// of 2026-11-18), asked for again once the editor closes so its sizes
+/// are new, on the same file; Esc closes it. The typed forms (`/memory
+/// workspace|user|system`) open the files directly, and their editor's
+/// close asks for no picker.
 #[test]
 fn memory_picker_opens_the_file() {
     let mut app = App::new(StatusInfo::default());
@@ -545,7 +548,37 @@ fn memory_picker_opens_the_file() {
         app.update(key(KeyCode::Enter)),
         vec![Effect::OpenMemory(MemoryTarget::User)]
     );
+    let on_user = |app: &App| {
+        matches!(&app.modal, Some(Modal::List(p))
+            if p.kind == PickerKind::Memory && p.cursor.index() == 1)
+    };
+    assert!(on_user(&app), "{:?}", app.modal);
+    let path = std::path::PathBuf::from("/x/AGENTS.md");
+    let closed = |result| {
+        Msg::EditorClosed(EditorClosed::Memory {
+            target: MemoryTarget::User,
+            path: path.clone(),
+            result,
+        })
+    };
+    assert_eq!(
+        app.update(closed(Ok(()))),
+        vec![
+            Effect::MemoryEdited {
+                target: MemoryTarget::User,
+                path: path.clone(),
+            },
+            Effect::RequestMemoryPicker,
+        ]
+    );
+    assert!(on_user(&app));
+    app.update(key(KeyCode::Esc));
     assert!(app.modal.is_none());
+    assert!(
+        app.update(closed(Ok(())))
+            .iter()
+            .all(|fx| *fx != Effect::RequestMemoryPicker)
+    );
     for (typed, target) in [
         ("/memory workspace", MemoryTarget::Workspace),
         ("/memory user", MemoryTarget::User),

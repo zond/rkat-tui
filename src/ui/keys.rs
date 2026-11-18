@@ -68,11 +68,17 @@ impl App {
     /// Open, keep or close the completion menu for the word under the
     /// cursor. The same word keeps the menu (and its highlight); a new word
     /// rebuilds it; no word, a dismissed word, search mode or no matches
-    /// close it.
+    /// close it. Over an entry ↑/↓ recalled from the history and not
+    /// edited since, no menu opens: ↑/↓ go on walking the history (a
+    /// recalled `/models` or `… @src/main.rs` would otherwise take them for
+    /// the menu's highlight, and the walk would stop there); the first
+    /// edit opens it.
     pub(super) fn refresh_menu(&mut self) {
         let word = match self.mode {
-            InputMode::Normal => complete::word_at(self.input.lines(), self.input.cursor()),
-            InputMode::Search(_) => None,
+            InputMode::Normal if !self.input.is_unedited_recall() => {
+                complete::word_at(self.input.lines(), self.input.cursor())
+            }
+            InputMode::Normal | InputMode::Search(_) => None,
         };
         let word = word
             .filter(|word| word.kind != complete::CompletionKind::Path || self.workspace.is_some());
@@ -496,6 +502,19 @@ impl App {
     /// client runner to reload, an edited draft replaces the input (Ctrl-_
     /// brings the old one back); a failure keeps everything and notices.
     pub(super) fn editor_closed(&mut self, closed: EditorClosed, fx: &mut Vec<Effect>) {
+        let memory_picker = [&self.modal, &self.parked].into_iter().any(|slot| {
+            matches!(slot, Some(Modal::List(open)) if open.kind == super::PickerKind::Memory)
+        });
+        // The `/memory` picker the file was opened from stays: its rows
+        // again after the edit, with the file's new size.
+        let refresh = memory_picker && matches!(closed, EditorClosed::Memory { .. });
+        self.editor_closed_as(closed, fx);
+        if refresh {
+            fx.push(Effect::RequestMemoryPicker);
+        }
+    }
+
+    fn editor_closed_as(&mut self, closed: EditorClosed, fx: &mut Vec<Effect>) {
         match closed {
             EditorClosed::Memory {
                 target,

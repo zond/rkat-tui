@@ -217,7 +217,8 @@ impl App {
                         PickKey::now(KeyCode::Char('f'), PickAct::FoldHelper(id)),
                         stop,
                     ],
-                );
+                )
+                .keyed(format!("{id:?}"));
                 if live { row } else { row.dimmed() }
             })
             .collect();
@@ -250,15 +251,16 @@ impl App {
     }
 
     /// Stop the helper `header` (its labels from the transcript): the
-    /// daemon cancels its run and retires it, and tells its parent.
+    /// daemon cancels its run and retires it, and tells its parent. Where
+    /// it was asked (the `/helpers` picker, the helper's full view) stays
+    /// open and shows the helper's ending when the daemon's word of it
+    /// arrives.
     pub(super) fn stop_helper(&mut self, header: BlockId, fx: &mut Vec<Effect>) {
         let path = self.transcript.helper_path(header);
         if path.is_empty() {
             return;
         }
-        if self.helper_view() == Some(header) {
-            self.helper_view = None;
-        }
+        self.keep_helper();
         fx.push(Effect::StopHelper(path));
     }
 
@@ -316,7 +318,8 @@ impl App {
         }
     }
 
-    /// The stop question is answered "keep it": the view stays open.
+    /// The stop question is answered (or no longer asked): the view
+    /// stays open.
     fn keep_helper(&mut self) {
         if let Some(view) = self.helper_view.as_mut() {
             view.confirm_stop = false;

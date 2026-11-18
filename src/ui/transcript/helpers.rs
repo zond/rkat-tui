@@ -504,7 +504,8 @@ impl Transcript {
             return *id;
         }
         let parent = (!parents.is_empty()).then(|| self.ensure_fold(parents));
-        let id = self.push(Block::Helper(HelperFold {
+        // The helper's own block: it parts no other scope's prose.
+        let id = self.push_raw(Block::Helper(HelperFold {
             label: (*label).to_string(),
             model: self.helper_model(label).map(str::to_string),
             state: HelperState::Running,
@@ -659,10 +660,8 @@ impl Transcript {
                 text: input.to_string(),
             });
         }
-        self.close_streams(Some(helper.header));
         for block in blocks {
-            let id = self.push(block);
-            self.set_owner(id, Some(helper.header));
+            self.push_scoped(Some(helper.header), block);
         }
         self.update_fold(helper.header, |f| f.inputs += 1);
     }
@@ -721,10 +720,10 @@ impl Transcript {
         } else {
             super::NoticeLevel::Info
         };
-        self.push_notice(
-            level,
-            format!("helper {} {how}{told}", self.helper_tag(label)),
-        );
+        // News of a helper: it parts no prose of the agent's still
+        // streaming (see the module doc).
+        let text = format!("helper {} {how}{told}", self.helper_tag(label));
+        self.push_raw(Block::Notice { level, text });
     }
 
     /// The model of the helper `label`, when known.

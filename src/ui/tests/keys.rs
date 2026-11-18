@@ -745,6 +745,176 @@ fn history_recall_with_up() {
     assert_eq!(app.input.text(), "old");
 }
 
+/// Close whatever dialog is open (Esc until none is; a question in a
+/// picker takes the first).
+fn close_dialogs(app: &mut App) {
+    for _ in 0..4 {
+        if app.modal.is_none() {
+            return;
+        }
+        app.update(key(KeyCode::Esc));
+    }
+    assert!(app.modal.is_none(), "{:?}", app.modal);
+}
+
+/// A picker for a command whose list the client runner brings: one row
+/// whose Enter acts (and keeps the picker).
+fn stand_in_picker() -> crate::ui::ListPicker {
+    use crate::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
+    ListPicker::new(
+        PickerKind::Schedules,
+        vec![PickRow::new(
+            "a",
+            vec![PickKey::now(
+                KeyCode::Enter,
+                PickAct::Schedule(crate::daemon::protocol::ScheduleOp::Pause, "1".into()),
+            )],
+        )],
+        "none",
+        "keys",
+    )
+}
+
+/// Up from an empty input reaches every entry, oldest last, and Down
+/// walks back to the empty draft; each step lands on `expected` (newest
+/// first). Up on a multi-line entry walks its rows first (it is recalled
+/// with the cursor at its end); Down recalls each with the cursor at its
+/// end, so the next Down goes on at once.
+fn walk_history(app: &mut App, expected: &[&str], what: &str) {
+    assert!(app.input.is_empty(), "{what}");
+    for entry in expected {
+        app.update(key(KeyCode::Up));
+        // A multi-line entry: the cursor walks its rows up first.
+        for _ in 1..entry.lines().count() {
+            assert_eq!(app.input.text(), *entry, "{what}");
+            app.update(key(KeyCode::Up));
+        }
+        assert_eq!(app.input.text(), *entry, "{what}");
+        assert!(app.menu().is_none(), "{what}: no menu over {entry:?}");
+    }
+    // Past the oldest, Up stays.
+    app.update(key(KeyCode::Up));
+    assert_eq!(app.input.text(), *expected.last().unwrap(), "{what}");
+    for entry in expected.iter().rev().skip(1) {
+        app.update(key(KeyCode::Down));
+        assert_eq!(app.input.text(), *entry, "{what}");
+        assert!(app.menu().is_none(), "{what}: no menu over {entry:?}");
+    }
+    app.update(key(KeyCode::Down));
+    assert!(app.input.is_empty(), "{what}: back to the empty draft");
+}
+
+/// The owner's report of 2026-11-18: after a slash command that opened a
+/// dialog (`/helpers`, `/model`, …), acted in and closed, ↑ stopped at
+/// that command. The cause: a recalled `/helpers` is a complete command
+/// word, so the completion menu opened over it and took ↑/↓ for its
+/// highlight. Now no menu opens over an unedited recall: every earlier
+/// entry is reachable, a multi-line one included, and the same command
+/// sent twice in a row is one entry.
+#[test]
+fn up_walks_past_a_recalled_slash_command_to_every_earlier_entry() {
+    let pickers = [
+        "/helpers",
+        "/model",
+        "/agents",
+        "/schedules",
+        "/resume",
+        "/permissions",
+        "/mode",
+        "/memory",
+        "/wire",
+        "/unwire",
+        "/approve",
+        "/settings",
+        "/auto",
+        "/help",
+        "/status",
+    ];
+    for command in pickers {
+        let mut app = App::new(StatusInfo::default());
+        // Each prompt's turn ends (nothing is queued for ↑ to take back).
+        submit(&mut app, "first");
+        app.update(Msg::TurnFinished(Ok(summary())));
+        type_str(&mut app, "second");
+        app.update(ctrl('j'));
+        submit(&mut app, "line two");
+        app.update(Msg::TurnFinished(Ok(summary())));
+        // Twice in a row: one entry.
+        for _ in 0..2 {
+            submit(&mut app, command);
+            if app.modal.is_none() {
+                app.update(Msg::ShowPicker {
+                    picker: stand_in_picker(),
+                    refresh: false,
+                });
+            }
+            // Act in it, move, then close it.
+            app.update(key(KeyCode::Down));
+            app.update(key(KeyCode::Enter));
+            close_dialogs(&mut app);
+        }
+        app.input.clear();
+        walk_history(&mut app, &[command, "second\nline two", "first"], command);
+    }
+    // A recalled `@path` at the end of an entry opens no path menu either.
+    let (_dir, mut app) = mention_app();
+    submit(&mut app, "first");
+    app.update(Msg::TurnFinished(Ok(summary())));
+    type_str(&mut app, "read @src/main.rs");
+    answer_index(&mut app);
+    app.update(key(KeyCode::Esc));
+    app.update(key(KeyCode::Enter));
+    app.update(Msg::TurnFinished(Ok(summary())));
+    app.input.clear();
+    app.update(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "read @src/main.rs");
+    answer_index(&mut app);
+    assert!(app.menu().is_none(), "{:?}", menu_rows(&app));
+    app.update(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "first");
+    app.update(key(KeyCode::Down));
+    app.update(key(KeyCode::Down));
+    assert!(app.input.is_empty());
+}
+
+/// Once a recalled entry is edited, the menu is back and takes ↑/↓; an
+/// entry the walk recalls again is unedited again.
+#[test]
+fn an_edited_recall_opens_the_menu_and_the_menu_takes_up_and_down() {
+    let mut app =
+        App::new(StatusInfo::default()).with_history(vec!["older".into(), "/help".into()]);
+    app.update(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "/help");
+    assert!(app.menu().is_none());
+    // Moving the cursor is no edit.
+    app.update(key(KeyCode::Left));
+    assert!(app.menu().is_none());
+    app.update(key(KeyCode::End));
+    // An edit: the menu opens for the word and ↑/↓ move its highlight.
+    app.update(key(KeyCode::Backspace));
+    assert_eq!(app.input.text(), "/hel");
+    assert_eq!(menu_rows(&app), ["/help", "/helpers"]);
+    app.update(key(KeyCode::Down));
+    assert_eq!(app.menu().unwrap().selected, 1);
+    assert_eq!(app.input.text(), "/hel");
+    // Typed back to the recalled text, it is the recall again.
+    type_str(&mut app, "p");
+    assert!(app.menu().is_none());
+    app.update(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "older");
+    app.update(key(KeyCode::Down));
+    assert_eq!(app.input.text(), "/help");
+    assert!(app.menu().is_none());
+    // A command typed fresh still gets the menu, and ↑ is its.
+    app.update(key(KeyCode::Down));
+    assert!(app.input.is_empty());
+    type_str(&mut app, "/help");
+    assert_eq!(menu_rows(&app), ["/help", "/helpers"]);
+    app.update(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "/help");
+    assert_eq!(app.menu().unwrap().selected, 1);
+}
+
 #[test]
 fn ctrl_p_and_ctrl_n_are_up_and_down() {
     let mut app = App::new(StatusInfo::default()).with_history(vec!["one".into(), "two".into()]);

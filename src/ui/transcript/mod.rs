@@ -18,6 +18,21 @@
 //! stays invisible. A stored conversation follows the same rule
 //! ([`blocks_from_messages`]), and so does a helper's view (the same
 //! code path, scoped to its header).
+//!
+//! Scopes: the session and each helper (under its header) stream on
+//! their own, and only something visible of a prose block's own scope
+//! closes it (its tool call, its non-blank reasoning, a notice of its, its
+//! step's end). A block of another scope that arrives while it is open
+//! (a helper's tool line, header, task, error or ending while the agent's
+//! answer streams; the agent's tool call while a helper's does) is
+//! appended after it and the prose goes on in its block: the open prose
+//! keeps its place, where it began, and grows there, so a link or a
+//! table cut by a helper's line in the event order is still one block and
+//! draws whole, with the other scope's lines below it in their own order.
+//! Ids, owners and folds are those of any appended block (nothing is
+//! moved or held back). A stored conversation has no such interleaving:
+//! it holds the agent's messages only, and its helpers' blocks are not
+//! restored between them.
 
 use std::time::Instant;
 
@@ -877,6 +892,19 @@ impl Transcript {
         self.push_raw(block)
     }
 
+    /// Append a block of `scope` (the session's when `None`, else the
+    /// helper whose header it is, which owns it): it closes that scope's
+    /// open streaming blocks only, never another scope's (see the module
+    /// doc).
+    fn push_scoped(&mut self, scope: Option<BlockId>, block: Block) -> BlockId {
+        self.close_streams(scope);
+        let id = self.push_raw(block);
+        if scope.is_some() {
+            self.set_owner(id, scope);
+        }
+        id
+    }
+
     /// Append a notice block.
     pub fn push_notice(&mut self, level: NoticeLevel, text: impl Into<String>) -> BlockId {
         self.push(Block::Notice {
@@ -1547,10 +1575,9 @@ impl Transcript {
             }
             AgentEvent::ToolCallRequested { id, name, args } => match helper {
                 None => {
-                    self.request_tool(id.clone(), name.clone(), args.as_value().clone(), 0);
+                    self.request_tool(None, id.clone(), name.clone(), args.as_value().clone(), 0);
                 }
                 Some(h) => {
-                    self.close_streams(scope);
                     let preview = helper_args_preview(args.as_value());
                     self.update_fold(h.header, |f| {
                         f.calls += 1;
@@ -1559,13 +1586,13 @@ impl Transcript {
                             args: preview,
                         };
                     });
-                    let block = self.request_tool(
+                    self.request_tool(
+                        scope,
                         key(id),
                         format!("{} {name}", h.tag),
                         args.as_value().clone(),
                         h.depth,
                     );
-                    self.set_owner(block, scope);
                 }
             },
             AgentEvent::ToolExecutionStarted { id, .. } => self.start_tool(&key(id), now),
@@ -1620,15 +1647,17 @@ impl Transcript {
                     // A cancelled run's words are the engine's; how the
                     // helper ended comes from the daemon (`helper_ended`).
                     if !cancelled {
-                        let notice = self.push_notice(
-                            NoticeLevel::Error,
-                            format!(
-                                "{} error: {}",
-                                h.tag,
-                                crate::mobs::endings::plain_reason(&error_report.message)
-                            ),
+                        self.push_scoped(
+                            scope,
+                            Block::Notice {
+                                level: NoticeLevel::Error,
+                                text: format!(
+                                    "{} error: {}",
+                                    h.tag,
+                                    crate::mobs::endings::plain_reason(&error_report.message)
+                                ),
+                            },
                         );
-                        self.set_owner(notice, scope);
                     }
                 }
             },
@@ -1862,26 +1891,38 @@ impl Transcript {
         }
     }
 
-    fn request_tool(&mut self, key: String, name: String, args: Value, depth: usize) -> BlockId {
+    /// A tool call of `scope` (the session's, or a helper's under its
+    /// header): it closes that scope's prose only.
+    fn request_tool(
+        &mut self,
+        scope: Option<BlockId>,
+        key: String,
+        name: String,
+        args: Value,
+        depth: usize,
+    ) -> BlockId {
         let note = self.pending_notes.shift_remove(&key).or_else(|| {
             key.rsplit_once('/')
                 .and_then(|(_, call)| self.pending_notes.shift_remove(call))
         });
         let args = self.with_peer_name(&name, args);
         let head = tool_line::head(&name, &args, &self.paths);
-        let id = self.push(Block::Tool {
-            name,
-            args,
-            head,
-            outcome: tool_line::Outcome::default(),
-            ticked: 0,
-            state: ToolState::Requested,
-            result_preview: None,
-            diff: None,
-            note,
-            depth,
-            collapsed: true,
-        });
+        let id = self.push_scoped(
+            scope,
+            Block::Tool {
+                name,
+                args,
+                head,
+                outcome: tool_line::Outcome::default(),
+                ticked: 0,
+                state: ToolState::Requested,
+                result_preview: None,
+                diff: None,
+                note,
+                depth,
+                collapsed: true,
+            },
+        );
         self.by_tool_id.insert(key, id);
         id
     }
@@ -2483,6 +2524,112 @@ mod tests {
             [&Block::Assistant {
                 md: "found the removed reader".into()
             }]
+        );
+    }
+
+    /// The event order of the owner's report of 2026-11-18 (invented
+    /// names): the agent's answer streams, a helper's tool line (its call,
+    /// start and end) arrives in the middle of a Markdown link, then the
+    /// rest of the answer and its `TextComplete`. The answer is one block,
+    /// the helper's line after it; the agent's own tool call still parts
+    /// its prose.
+    #[test]
+    fn a_helper_s_line_does_not_part_the_agent_s_streaming_prose() {
+        let mut t = Transcript::new();
+        t.push(Block::User { text: "go".into() });
+        t.apply_agent_event(&turn_started());
+        t.apply_agent_event(&text("Done.\n\nThe [pipeline](https://forge.example/gro"));
+        t.apply_scoped_event(&helper_call(&["watcher"], "h1", "skill", json!({})));
+        t.apply_scoped_event(&helper_event(
+            &["watcher"],
+            AgentEvent::ToolExecutionStarted {
+                id: "h1".into(),
+                name: "skill".into(),
+            },
+        ));
+        t.apply_scoped_event(&helper_event(
+            &["watcher"],
+            AgentEvent::ToolExecutionCompleted {
+                id: "h1".into(),
+                name: "skill".into(),
+                is_error: false,
+                duration_ms: 10,
+            },
+        ));
+        t.apply_agent_event(&text("up/1) is running."));
+        t.apply_scoped_event(&helper_call(&["watcher"], "h2", "shell", json!({})));
+        t.apply_agent_event(&text(" I watch it."));
+        let whole =
+            "Done.\n\nThe [pipeline](https://forge.example/group/1) is running. I watch it.";
+        t.apply_agent_event(&text_done(whole));
+        let shown: Vec<String> = t
+            .blocks()
+            .iter()
+            .map(|b| match b {
+                Block::User { .. } => "user".to_string(),
+                Block::Assistant { md } => format!("prose {md}"),
+                Block::Helper(fold) => format!("header {}", fold.label),
+                Block::Tool { name, .. } => format!("tool {name}"),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "user".to_string(),
+                format!("prose {whole}"),
+                "header watcher".into(),
+                "tool [watcher] skill".into(),
+                "tool [watcher] shell".into(),
+            ]
+        );
+        // The agent's own tool call parts it, as always.
+        t.apply_agent_event(&AgentEvent::ToolCallRequested {
+            id: "a1".into(),
+            name: "read_file".into(),
+            args: test_args(json!({"path": "x"})),
+        });
+        t.apply_agent_event(&text("After."));
+        assert!(matches!(t.last(), Some(Block::Assistant { md }) if md == "After."));
+    }
+
+    /// The same rule the other way: the agent's tool call and notices of
+    /// the session do not part a helper's streaming prose in its view.
+    #[test]
+    fn the_agent_s_blocks_do_not_part_a_helper_s_streaming_prose() {
+        let mut t = Transcript::new();
+        t.push(Block::User { text: "go".into() });
+        t.apply_scoped_event(&helper_event(&["scout"], turn_started()));
+        t.apply_scoped_event(&helper_event(&["scout"], text("see [the doc](https://ex")));
+        t.apply_agent_event(&AgentEvent::ToolCallRequested {
+            id: "a1".into(),
+            name: "read_file".into(),
+            args: test_args(json!({"path": "x"})),
+        });
+        t.push_notice(NoticeLevel::Info, "a notice of the session");
+        t.apply_scoped_event(&helper_event(&["scout"], text("ample.org/a) first")));
+        let header = t.helper_header("scout").expect("helper header");
+        let prose: Vec<&Block> = t
+            .helper_view_blocks(header)
+            .into_iter()
+            .filter_map(|id| t.block(id))
+            .filter(|b| matches!(b, Block::Assistant { .. }))
+            .collect();
+        assert_eq!(
+            prose,
+            [&Block::Assistant {
+                md: "see [the doc](https://example.org/a) first".into()
+            }]
+        );
+        // Its own tool call parts it.
+        t.apply_scoped_event(&helper_call(&["scout"], "h1", "grep", json!({})));
+        t.apply_scoped_event(&helper_event(&["scout"], text("next")));
+        assert_eq!(
+            t.helper_view_blocks(header)
+                .into_iter()
+                .filter(|id| matches!(t.block(*id), Some(Block::Assistant { .. })))
+                .count(),
+            2
         );
     }
 

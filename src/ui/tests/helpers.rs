@@ -234,11 +234,16 @@ fn ctrl_c_in_a_running_helper_s_view_asks_to_stop_it() {
         app.update(ctrl('c'));
         assert!(app.stop_confirmation().is_some());
     }
-    // y: the helper is stopped (by its labels) and the view closes.
+    // y: the helper is stopped (by its labels); the view stays, the
+    // question gone, until Esc (the owner's rule of 2026-11-18: what you
+    // act in closes only when you close it).
     assert_eq!(
         app.update(key(KeyCode::Char('y'))),
         vec![Effect::StopHelper(vec!["fork-1".into()])]
     );
+    assert_eq!(app.helper_view(), Some(fork));
+    assert_eq!(app.stop_confirmation(), None);
+    app.update(key(KeyCode::Esc));
     assert_eq!(app.helper_view(), None);
     // The Ctrl-C presses armed no quit: idle on the transcript, one
     // Ctrl-C only arms it, as always.
@@ -307,6 +312,13 @@ fn the_helper_picker_stops_a_running_helper_after_a_confirmation() {
         app.update(key(KeyCode::Char('y'))),
         vec![Effect::StopHelper(vec!["scout".into(), "inner".into()])]
     );
+    // The picker stays open on the same helper.
+    assert_eq!(line(&app), None);
+    let selected = |app: &App| match &app.modal {
+        Some(Modal::List(p)) => p.selected().map(|r| r.text.clone()),
+        other => panic!("{other:?}"),
+    };
+    assert!(selected(&app).unwrap().contains("[inner"));
     // A helper that is not running has nothing to stop.
     app.update(Msg::HelperEnded {
         path: vec!["scout".into()],
@@ -314,14 +326,15 @@ fn the_helper_picker_stops_a_running_helper_after_a_confirmation() {
         told: None,
     });
     // (Ended, it is listed with `a`, after the live ones.)
-    type_str(&mut app, "/helpers");
-    app.update(key(KeyCode::Enter));
     app.update(key(KeyCode::Char('a')));
     let at = match &app.modal {
         Some(Modal::List(p)) => p.rows.iter().position(|r| r.text.contains("[scout")),
         _ => None,
     }
     .unwrap();
+    for _ in 0..8 {
+        app.update(key(KeyCode::Up));
+    }
     for _ in 0..at {
         app.update(key(KeyCode::Down));
     }
@@ -332,6 +345,139 @@ fn the_helper_picker_stops_a_running_helper_after_a_confirmation() {
         "{:?}",
         line(&app)
     );
+}
+
+/// The transcript's lines at width 80.
+fn transcript_rows(app: &mut App) -> Vec<String> {
+    let n = app.transcript.ensure_layout(80);
+    app.transcript
+        .visible_lines(0, n)
+        .iter()
+        .map(|line| line.to_string().trim_end().to_string())
+        .collect()
+}
+
+/// An answer cut in the middle of a Markdown link by a helper's tool line
+/// (the event order of the owner's report of 2026-11-18, invented names)
+/// draws exactly as the whole answer does, the helper's lines below it,
+/// not inside it.
+#[test]
+fn an_answer_cut_by_a_helper_s_line_draws_as_the_whole_answer() {
+    let first = "Tagged it.\n\nThe [release pipeline](https://forge.example/gro";
+    let rest = "up/project/-/pipelines/1) is running; I am watching it.";
+    let mut cut = App::new(StatusInfo::default());
+    let mut whole = App::new(StatusInfo::default());
+    for app in [&mut cut, &mut whole] {
+        app.transcript.push(user("go"));
+        app.update(agent(AgentEvent::TurnStarted {
+            turn_number: 1,
+            assistant_message_id: None,
+        }));
+    }
+    cut.update(agent(AgentEvent::TextDelta {
+        delta: first.into(),
+        assistant_message_id: None,
+    }));
+    cut.update(helper_msg(
+        "watcher",
+        AgentEvent::ToolCallRequested {
+            id: "h1".into(),
+            name: "skill".into(),
+            args: test_args(json!({})),
+        },
+    ));
+    cut.update(agent(AgentEvent::TextDelta {
+        delta: rest.into(),
+        assistant_message_id: None,
+    }));
+    whole.update(agent(AgentEvent::TextDelta {
+        delta: format!("{first}{rest}"),
+        assistant_message_id: None,
+    }));
+    let cut_rows = transcript_rows(&mut cut);
+    let whole_rows = transcript_rows(&mut whole);
+    assert_eq!(
+        cut_rows[..whole_rows.len()],
+        whole_rows[..],
+        "{cut_rows:#?}"
+    );
+    let below = cut_rows[whole_rows.len()..].join("\n");
+    assert!(below.contains("[watcher]"), "{cut_rows:#?}");
+    assert!(
+        whole_rows.iter().any(|r| r.contains("release pipeline")),
+        "{whole_rows:#?}"
+    );
+}
+
+/// The owner's rule of 2026-11-18: the `/helpers` picker stays open
+/// after its acts (`f`, `a`, `s` then `y` or `n`) and closes only on Esc,
+/// `q` or Ctrl-C. When the daemon's word of the stopped helper's ending
+/// arrives, the list shows it in place: with the ended ones shown, its
+/// row says how it ended and stays highlighted; without them, the
+/// highlight goes to its neighbour.
+#[test]
+fn the_helper_picker_stays_open_after_its_acts_and_follows_the_helpers() {
+    let (mut app, _, _) = helper_app();
+    submit(&mut app, "/helpers");
+    let picker = |app: &App| match &app.modal {
+        Some(Modal::List(p)) if p.kind == crate::ui::PickerKind::Helpers => p.clone(),
+        other => panic!("the helpers picker is open: {other:?}"),
+    };
+    let texts =
+        |app: &App| -> Vec<String> { picker(app).rows.iter().map(|r| r.text.clone()).collect() };
+    assert_eq!(texts(&app).len(), 2, "{:?}", texts(&app));
+    let first = texts(&app)[0].clone();
+    let second = texts(&app)[1].clone();
+    let label = |text: &str| {
+        if text.contains("[scout") {
+            "scout"
+        } else {
+            "fork-1"
+        }
+    };
+    // f folds or expands: open, the row's marker flips, same row.
+    app.update(key(KeyCode::Char('f')));
+    assert!(picker(&app).rows[0].text.contains('▾'), "{:?}", texts(&app));
+    assert_eq!(picker(&app).cursor.index(), 0);
+    // s then n: still open, nothing stopped.
+    app.update(key(KeyCode::Char('s')));
+    assert!(app.update(key(KeyCode::Char('n'))).is_empty());
+    assert_eq!(picker(&app).line, None);
+    // s then y on the first: stopped, open, on it.
+    app.update(key(KeyCode::Char('s')));
+    let fx = app.update(key(KeyCode::Char('y')));
+    assert_eq!(fx, vec![Effect::StopHelper(vec![label(&first).into()])]);
+    assert_eq!(picker(&app).cursor.index(), 0);
+    assert!(picker(&app).selected().unwrap().text.contains("running"));
+    // The daemon's word arrives: the row is gone from the live list and
+    // the highlight is on its neighbour.
+    app.update(Msg::HelperEnded {
+        path: vec![label(&first).into()],
+        how: "stopped by you".into(),
+        told: None,
+    });
+    assert_eq!(texts(&app), vec![second.clone()]);
+    assert_eq!(picker(&app).selected().unwrap().text, second);
+    // a shows the ended one too: open, still on the same helper, the
+    // ended row saying how it ended.
+    app.update(key(KeyCode::Char('a')));
+    let rows = texts(&app);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(picker(&app).selected().unwrap().text, second);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains(&format!("[{}", label(&first))) && r.contains("stopped by you")),
+        "{rows:?}"
+    );
+    // Its keys close it.
+    app.update(key(KeyCode::Char('q')));
+    assert!(app.modal.is_none());
+    submit(&mut app, "/helpers");
+    app.update(key(KeyCode::Esc));
+    assert!(app.modal.is_none());
+    submit(&mut app, "/helpers");
+    app.update(ctrl('c'));
+    assert!(app.modal.is_none());
 }
 
 /// How a helper ended is said in plain words: on its line in the panel and

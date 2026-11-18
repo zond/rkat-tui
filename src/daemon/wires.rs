@@ -389,7 +389,7 @@ impl Wires {
             return Err(err);
         }
         if existing.is_none() {
-            self.note(agent, wired_note(&label, &card.workspace)).await;
+            self.note(agent, wired_note(&label, &card.workspace));
         }
         tracing::info!(%agent, peer = %label, "wired to an agent of another workspace");
         Ok(false)
@@ -417,7 +417,7 @@ impl Wires {
             self.save()?;
         }
         if removed || had_edge {
-            self.note(agent, unwired_note(&label, workspace)).await;
+            self.note(agent, unwired_note(&label, workspace));
             tracing::info!(%agent, peer = %label, "unwired from an agent of another workspace");
         }
         Ok(removed || had_edge)
@@ -664,10 +664,21 @@ impl Wires {
         })
     }
 
-    async fn note(&self, agent: &str, text: String) {
-        if let Err(err) = super::agents::append_note(&self.state, agent, NOTE_SOURCE, text).await {
-            tracing::warn!(%agent, error = %err, "the agent could not be told about its wire");
-        }
+    /// Tell `agent` about its wire, off the call: the engine applies an
+    /// append to an agent in the middle of a model step only at that
+    /// step's end, and the client asking for the wire (with its own bound)
+    /// need not wait for it. A failure is logged.
+    fn note(&self, agent: &str, text: String) {
+        let state = Arc::downgrade(&self.state);
+        let agent = agent.to_string();
+        tokio::spawn(async move {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            if let Err(err) = super::agents::append_note(&state, &agent, NOTE_SOURCE, text).await {
+                tracing::warn!(%agent, error = %err, "the agent could not be told about its wire");
+            }
+        });
     }
 }
 

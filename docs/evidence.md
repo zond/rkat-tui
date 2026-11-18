@@ -12296,3 +12296,123 @@ taken for the second's", 2 reports for 1),
 `mobs::follow::tests::an_outcome_is_the_fork_s_own_only_by_its_job`,
 `tools::assign::tests::the_tool_is_one_short_definition_that_asks_the_host`
 (the description's sentence).
+
+## History recall past a slash command, and dialogs that stay open (owner, 2026-11-18)
+
+**↑ stopped at `/helpers`.** The owner: after `/models` or `/helpers` and
+something done in the dialog, ↑ through the history stopped there. Not
+the dialog: a recalled `/helpers` is a one-line input whose first word is
+a complete command, so `refresh_menu` (after every update) opened the
+command menu over it, and `menu_key` takes ↑/↓ for the highlight before
+the editor sees them. The walk stopped at every argument-less command
+(`/model`, `/agents`, `/help`, …; `/model gpt` has its cursor past the
+word and opened none), and at an entry ending in an `@path` once the path
+index arrived. Other candidates ruled out by the test: the entry is
+recorded once (consecutive repeats are dropped), a closed picker leaves no
+selection, and a multi-line entry walks its rows first by design
+(recalled with the cursor at its end), every entry still reachable. The
+rule now (`InputEditor::is_unedited_recall`): while the input holds
+exactly what ↑/↓ recalled, no menu opens; the first edit opens it and ↑/↓
+are the menu's; moving the cursor is no edit. Pinned by
+`ui::tests::keys::{up_walks_past_a_recalled_slash_command_to_every_earlier_entry,
+an_edited_recall_opens_the_menu_and_the_menu_takes_up_and_down}` (the
+first failed before at its first recalled command: ↑ left `/helpers`).
+
+**Dialogs stay open.** The owner: a dialog closes only when closed.
+Before, `PickAct::keeps_picker` listed the acts that kept a picker;
+`StopHelper` and `OpenMemory` were not on it, so `/helpers`' `s` `y` and
+`/memory`'s Enter closed theirs. Now `PickAct::leaves_picker` lists the
+acts that go somewhere else (`SetMode`, `ViewHelper`, `SwitchAgent`,
+`NewAgent`) and every other act keeps the picker. Each act, before → now:
+
+| Dialog | Act | Before | Now |
+|---|---|---|---|
+| `/helpers` | `s`, `y` stop | closed | open; the row follows the helper (live) |
+| `/helpers` | `s`, `n` | open | open |
+| `/helpers` | `f` fold, `a` ended | open, rebuilt | open, follows the transcript after every update |
+| `/helpers` | Enter | full view | full view (exception) |
+| `/memory` | Enter edit | closed | open; asked for again when the editor closes (new sizes) |
+| `/schedules` | Enter/`p`, `d` `y` | open, daemon refresh | open, same item kept by id |
+| `/permissions` | `d` `y` | open, daemon refresh | open, same item kept (rules by what they say: renumbered after a removal) |
+| `/approve` | Enter/`o`, `s`/`a`/`A` `y`, `e`, `w` | open, daemon refresh | open, same call kept by id |
+| `/agents` | `d` `y` retire | open, refresh | open, same agent kept |
+| `/agents` | Enter switch, new agent | closed | closed (exception) |
+| `/wire`, `/unwire` | Enter (`y`) | open, refresh after the daemons answer | open, same row kept |
+| `/settings` | Enter/`u` field, `d` `y` | open, refresh | open, same key kept |
+| `/mode` | Enter | closed | closed (exception) |
+| `/model`, `/auto model` | Enter | closed | closed (exception) |
+| `/resume` | Enter | closed | closed (exception) |
+| approval dialog (the agent's) | an answer | resolves it | unchanged (exception) |
+| helper's full view | Ctrl-C, `y` | closed | open, shows the ending |
+
+A refresh (`ListPicker::refreshed`) keeps the highlight on the row of
+the same item (`PickRow::id`, set by each picker's builder) wherever it
+moved, on the row now in its place when the item is gone, and keeps the
+line under the rows but for a question or field about a gone item. The
+daemon's lists come after its answer (each runner path makes the call,
+then lists), so no stale row replaces a fresh one. The `/helpers` picker
+is UI data: `App::follow_helper_picker` rebuilds it after every update,
+so a stop shows when `rkat/helper_ended` arrives. Pinned by
+`ui::picker::tests::{only_acts_that_go_elsewhere_close_the_picker,
+a_refresh_follows_the_item_and_keeps_the_line}`,
+`ui::tests::helpers::{the_helper_picker_stays_open_after_its_acts_and_follows_the_helpers,
+the_helper_picker_stops_a_running_helper_after_a_confirmation,
+ctrl_c_in_a_running_helper_s_view_asks_to_stop_it}`,
+`ui::tests::dispatch::memory_picker_opens_the_file` (the last three
+asserted the old closing and changed with it).
+
+## A helper's line no longer cuts the agent's streaming answer (owner, 2026-11-18)
+
+The owner saw the agent's answer cut inside a Markdown link by a helper's
+tool line and go on as a new `•` block after it. The event order: the
+agent's `TextDelta`s of one step, then a scoped event of a helper the
+agent started (its `ToolCallRequested`, `ToolExecutionStarted`,
+`ToolExecutionCompleted`), then more `TextDelta`s of the same step and its
+`TextComplete`. The cause: a helper's tool block went through
+`Transcript::push`, which closes the session's streams, so the next delta
+opened a new `Block::Assistant`. The same held for a new helper's header,
+its task, its error notice and its ending notice. The rule now (the
+module doc of `src/ui/transcript/mod.rs`): only something visible of a
+prose block's own scope closes it; another scope's block is appended
+after the open prose, which keeps its place and grows there (nothing is
+moved or held, so ids, owners, folds, `keep_bottom` and Ctrl-O see
+ordinary appends). The helper's prose was already safe from the agent's
+blocks (they close only the session's stream). A stored conversation is
+not affected: `blocks_from_messages` reads the agent's own messages,
+where no helper line sits between. Pinned by
+`ui::transcript::tests::{a_helper_s_line_does_not_part_the_agent_s_streaming_prose,
+the_agent_s_blocks_do_not_part_a_helper_s_streaming_prose}` and
+`ui::tests::helpers::an_answer_cut_by_a_helper_s_line_draws_as_the_whole_answer`
+(the cut answer's rows equal the whole answer's, the helper's header
+below).
+
+## `/wire` to a busy agent (owner, 2026-11-18)
+
+The owner wired to an agent that was busy and read "nothing was wired:
+the daemon of … did not answer". The client calls `rkat/wire` on the
+other daemon with a 10 s bound (`client::wires::CALL_TIMEOUT`); that
+daemon made the engine's edge, saved the card, then awaited
+`agents::append_note` to its agent, and the engine applies an append to
+a member in the middle of a model step only at the step's end. So with a
+model call longer than 10 s the client gave up and said nothing was
+wired, while the other side had wired (a half-made wire and a wrong
+message). Now `Wires::note` sends the note off the call (its own task, a
+failure logged), as `connect_helpers` does, for `rkat/wire` and
+`rkat/unwire`. A wire call that still times out (another cause) is
+undone on the other side first, and the message says what is the case
+(`client::wires::unanswered_wire`): "nothing was wired" only when the
+undo found nothing or removed it, else that it is not known.
+
+The audit of the other appends and steers on a client's answer path:
+`agents` seat/retire notes (`Agents::send_notes`) are each their own
+task, waited for only when the agent is idle and then for at most
+`NOTE_WAIT` (2 s); plan mode's note (`local::model`) appends only to an
+idle agent and steers a running one; a grant's note (`engine.rs`) and an
+approval's steer (`report.rs`) are spawned; `links.rs`' note to a
+surviving helper runs in its own loop, not on a client's call; a
+helper's ending (`endings.rs`) is a steer from the follower. None waits
+on a busy agent's step before answering a client. Pinned by
+`cross_workspace::wiring_a_busy_agent_answers_at_once_and_its_note_lands_after_the_step`
+(the agent's model call held; both calls answer within 3 s, the wire is
+listed at once, each note is in the agent's next request) and
+`client::wires::tests::an_unanswered_wire_says_what_is_the_case`.
