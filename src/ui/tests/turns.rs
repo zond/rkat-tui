@@ -1229,3 +1229,167 @@ fn a_compaction_run_holds_what_is_typed_and_the_bar_says_compacting() {
     let bar = render::status_line(&app.status, start + Duration::from_secs(9));
     assert!(!bar.contains("compacting"), "{bar}");
 }
+
+/// The engine's retry of an empty answer, attempt `n` of 3.
+fn empty_retry(n: u32) -> Msg {
+    agent(AgentEvent::Retrying {
+        retry: meerkat_core::LlmRetrySchedule {
+            failure: meerkat_core::LlmRetryFailure {
+                provider: "self_hosted".into(),
+                kind: meerkat_core::LlmRetryFailureKind::RetryableProviderError,
+                retry_after_ms: None,
+                duration_ms: None,
+                message: "LLM completed without user-visible text, images, or tool calls".into(),
+            },
+            plan: meerkat_core::LlmRetryPlan {
+                attempt: n,
+                max_retries: 3,
+                computed_delay_ms: 10,
+                selected_delay_ms: 10,
+                retry_after_hint_ms: None,
+                rate_limit_floor_applied: false,
+                budget_capped: false,
+            },
+        },
+        assistant_message_id: None,
+    })
+}
+
+/// The run's end with `report`.
+fn run_failed(report: meerkat_core::AgentErrorReport) -> Msg {
+    agent(AgentEvent::RunFailed {
+        session_id: meerkat_core::SessionId::new(),
+        identity: meerkat_core::types::TranscriptMessageIdentity::default(),
+        error_report: report,
+        terminal_cause_kind: None,
+    })
+}
+
+/// Every notice of the transcript.
+fn notices(app: &App) -> Vec<(NoticeLevel, String)> {
+    app.transcript
+        .blocks()
+        .iter()
+        .filter_map(|b| match b {
+            Block::Notice { level, text } => Some((*level, text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The owner's report of 2026-11-18: an agent of another workspace's
+/// acknowledgement woke this agent, its model answered nothing, and the
+/// user read three retries, an error and "turn failed" with the same
+/// text. A run nobody here typed now ends in one quiet line; a run the
+/// user started in one plain error; neither draws the retries or says the
+/// failure twice.
+#[test]
+fn an_empty_answer_is_one_line_quiet_when_nobody_here_asked() {
+    // As the engine reports it after its retries.
+    let empty = || {
+        meerkat_core::AgentErrorReport {
+        class: meerkat_core::AgentErrorClass::Llm,
+        reason: Some(meerkat_core::event::AgentErrorReason::TurnTerminalCause {
+            outcome: meerkat_core::TurnTerminalOutcome::Failed,
+            cause_kind: meerkat_core::TurnTerminalCauseKind::RetryExhausted,
+        }),
+        message: "Terminal failure: Failed (RetryExhausted): retry exhausted: LLM error (self_hosted): LLM completed without user-visible text, images, or tool calls".into(),
+    }
+    };
+    let failed = || {
+        Msg::TurnFinished(Err(TurnFailure::Failed(
+            "Terminal failure: Failed (RetryExhausted): retry exhausted".into(),
+        )))
+    };
+    // Woken by another agent's message.
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::Peer {
+        from: "main-ab12".into(),
+        text: "Acknowledged. I will relay it.".into(),
+    });
+    app.update(Msg::RemoteTurn { prompt: None });
+    for n in 1..=3 {
+        app.update(empty_retry(n));
+    }
+    app.update(run_failed(empty()));
+    app.update(failed());
+    assert_eq!(
+        notices(&app),
+        [(
+            NoticeLevel::Info,
+            "the agent had nothing to add to main-ab12's message".to_string()
+        )]
+    );
+    // Joined on the daemon's word first, the message just after.
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::RemoteTurn { prompt: None });
+    app.update(Msg::Peer {
+        from: "main-cd34".into(),
+        text: "Thanks.".into(),
+    });
+    app.update(run_failed(empty()));
+    app.update(failed());
+    assert_eq!(
+        notices(&app),
+        [(
+            NoticeLevel::Info,
+            "the agent had nothing to add to main-cd34's message".to_string()
+        )]
+    );
+    // The user's own message: one plain error, the calls counted.
+    let mut app = App::new(StatusInfo::default());
+    submit(&mut app, "hello");
+    for n in 1..=3 {
+        app.update(empty_retry(n));
+    }
+    app.update(run_failed(empty()));
+    app.update(failed());
+    assert_eq!(
+        notices(&app),
+        [(
+            NoticeLevel::Error,
+            "the model returned an empty answer 4 times: send the message again, or switch the model (/model)"
+                .to_string()
+        )]
+    );
+    // The next message is a turn as any.
+    assert_eq!(
+        submit(&mut app, "again"),
+        vec![Effect::StartTurn("again".into())]
+    );
+}
+
+/// Any other failure is said once: the run's `error: …`, not again as
+/// the turn's `turn failed: …`; a turn that fails with no run failure
+/// still says it.
+#[test]
+fn a_failure_is_said_once() {
+    let mut app = App::new(StatusInfo::default());
+    submit(&mut app, "hello");
+    app.update(run_failed(meerkat_core::AgentErrorReport {
+        class: meerkat_core::AgentErrorClass::Llm,
+        reason: None,
+        message: "the provider is down".into(),
+    }));
+    app.update(Msg::TurnFinished(Err(TurnFailure::Failed(
+        "the provider is down".into(),
+    ))));
+    assert_eq!(
+        notices(&app),
+        [(
+            NoticeLevel::Error,
+            "error: the provider is down".to_string()
+        )]
+    );
+    submit(&mut app, "again");
+    app.update(Msg::TurnFinished(Err(TurnFailure::Failed(
+        "the daemon went away".into(),
+    ))));
+    assert_eq!(
+        notices(&app).last(),
+        Some(&(
+            NoticeLevel::Error,
+            "turn failed: the daemon went away".to_string()
+        ))
+    );
+}

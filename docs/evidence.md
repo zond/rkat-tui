@@ -12416,3 +12416,53 @@ on a busy agent's step before answering a client. Pinned by
 (the agent's model call held; both calls answer within 3 s, the wire is
 listed at once, each note is in the agent's next request) and
 `client::wires::tests::an_unanswered_wire_says_what_is_the_case`.
+
+## An empty answer to another agent's message (owner, 2026-11-18)
+
+The owner saw, after a wired agent's plain acknowledgement woke the
+agent, three `⟳ retry n/3: LLM completed without user-visible text,
+images, or tool calls`, then `error: Terminal failure: Failed
+(RetryExhausted): …` and `turn failed: …` with the same text.
+
+**The engine's rule** (0.9.16, read from the sources and reproduced on the
+rig): in `meerkat-core`'s LLM retry loop (`agent/state.rs`), a call whose
+blocks read as empty output (`response_reads_as_empty_output`;
+whitespace-only text is empty too) is `AgentError::llm_empty_response`, a
+retryable `ProviderError` of kind `IncompleteResponse`, unless the run
+already had visible or actionable output (`allow_empty_success`). After
+the retries `MeerkatMachine`'s `ClassifyAssistantOutput`
+(`ClassifyAssistantOutputEmptyTerminal`) ends the run as failed. It does
+not look at what started the run (a user's prompt, a peer message, a
+system note), and there is no per-run or per-host setting, so (a), an
+engine configuration, does not exist; rkat-tui's `blank_text` filter
+changes requests only, not the answer. On the rig (scripted model, `" \n"`
+and `""`): four model calls, three `Retrying` events whose
+`LlmRetryFailure` has kind `RetryableProviderError` and only the message to
+say it is an empty answer, then `RunFailed` whose report keeps only the
+terminal cause (`TurnTerminalCause { Failed, RetryExhausted }`), the
+retried error in its message. The UI said the run's failure (`error: …`,
+the transcript's `RunFailed`) and the turn's (`turn failed: …`,
+`App::turn_finished`) from the same failure.
+
+**What rkat-tui does** (b): `ui::failures` recognises the empty answer by
+its typed cause where there is one (`IncompleteResponse` with the engine's
+`reason` detail) and by the engine's words where only prose has it (the
+retry, the exhausted run), and per run: the empty answer's retries draw
+nothing; its failure is one quiet line on a run this client did not
+start and that another agent's message or a daemon-started input
+(`Msg::Triggered`) began ("the agent had nothing to add to main-ab12's
+message"), and one plain error on the user's own run ("the model returned
+an empty answer 4 times: send the message again, or switch the model
+(/model)"); any run failure said is not said again at the turn's end. The
+persona (agents and helpers) and the wired-agents note say not to send a
+message that only acknowledges or thanks; restored conversations get it
+through the instruction refresh. The three extra model calls remain: an
+upstream draft is in `.handover/upstream-empty-completion.md` (not filed).
+
+Pinned by `agents::an_empty_answer_to_a_peer_s_message_is_one_quiet_line`
+(rig: the woken agent's client draws only the quiet line, the next user
+message is in the next request, the user's own empty answer is one plain
+error; before the change it drew the `error: Terminal failure …` line),
+`ui::tests::turns::{an_empty_answer_is_one_line_quiet_when_nobody_here_asked,
+a_failure_is_said_once}`, `ui::failures::tests::*`, and the persona and
+wire-note tests.

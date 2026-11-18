@@ -109,6 +109,8 @@ impl App {
         // Helpers that finished drop off the helper panel.
         self.transcript.retire_finished_helpers();
         self.run_first_block = self.transcript.next_id();
+        self.failures = super::failures::RunFailures::start(None, false);
+        self.woken_by = None;
         self.streamed_text = false;
         if user_block {
             self.transcript.push(Block::User {
@@ -149,6 +151,7 @@ impl App {
         }
         self.transcript.retire_finished_helpers();
         self.run_first_block = self.transcript.next_id();
+        self.failures = super::failures::RunFailures::start(self.woken_by.take(), true);
         self.streamed_text = false;
         if let Some(text) = prompt {
             // A watch event the daemon announced before its run started
@@ -513,6 +516,8 @@ impl App {
                     self.transcript.push(Block::Assistant { md: summary.text });
                 }
             }
+            // Said once: the run's end said it already ([`super::failures`]).
+            Err(TurnFailure::Failed(_)) if self.failures.said => {}
             Err(err @ TurnFailure::Failed(_)) => {
                 self.transcript
                     .push_notice(NoticeLevel::Error, format!("turn failed: {err}"));

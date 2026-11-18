@@ -15,6 +15,7 @@ pub mod delivery;
 mod dispatch;
 pub mod editor;
 mod escalations;
+pub mod failures;
 mod helpers;
 pub mod history;
 pub mod input;
@@ -1386,6 +1387,11 @@ pub struct App {
     submitted: Vec<String>,
     running: bool,
     run_first_block: BlockId,
+    /// What the current run's failures said, and who started it.
+    failures: failures::RunFailures,
+    /// Who woke the idle agent for the run about to start (another
+    /// agent's message, which arrives just before the run's start).
+    woken_by: Option<String>,
     /// When an Esc on an idle input with text armed the draft clear.
     last_esc: Option<Instant>,
     /// The last Esc (or Ctrl+C) that interrupted, while it belongs to that
@@ -1480,6 +1486,8 @@ impl App {
             submitted: Vec::new(),
             running: false,
             run_first_block: BlockId(0),
+            failures: failures::RunFailures::default(),
+            woken_by: None,
             last_esc: None,
             last_interrupt: None,
             returned: Vec::new(),
@@ -1816,7 +1824,38 @@ impl App {
                     | AgentEvent::RunFailed { .. } => self.status.compacting_since = None,
                     _ => {}
                 }
-                if let Some(usage) = self.transcript.apply_agent_event_at(&env.payload, now) {
+                // How a failure is said ([`failures`]): an empty answer's
+                // retries draw nothing and its failure is one line; any
+                // failure the run said is not said again at the turn's end.
+                let shown = match &env.payload {
+                    AgentEvent::Retrying { retry, .. }
+                        if failures::is_empty_answer_retry(retry) =>
+                    {
+                        self.failures.empty_retries += 1;
+                        false
+                    }
+                    AgentEvent::RunFailed { error_report, .. }
+                        if failures::is_empty_answer(error_report) =>
+                    {
+                        let (level, text) = self.failures.empty_answer_line();
+                        self.failures.said = true;
+                        self.transcript.push_notice(level, text);
+                        self.scroll.bottom();
+                        false
+                    }
+                    AgentEvent::RunFailed { error_report, .. } => {
+                        self.failures.said |= !matches!(
+                            error_report.class,
+                            meerkat_core::AgentErrorClass::MaxTurns
+                                | meerkat_core::AgentErrorClass::Cancelled
+                        );
+                        true
+                    }
+                    _ => true,
+                };
+                if shown
+                    && let Some(usage) = self.transcript.apply_agent_event_at(&env.payload, now)
+                {
                     self.status
                         .add_tokens(usage.input_tokens, usage.output_tokens);
                 }
@@ -1945,11 +1984,24 @@ impl App {
             }
             Msg::RemoteTurn { prompt } => self.remote_turn(prompt, now),
             Msg::Peer { from, text } => {
+                // A message that wakes the idle agent comes just before
+                // its run starts: that run is not the user's.
+                // (Or just after it, when the client joined the run on
+                // the daemon's word first.)
+                if !text.is_empty() {
+                    let origin = Some(format!(" to {from}'s message"));
+                    if !self.running {
+                        self.woken_by = origin;
+                    } else if self.failures.remote && self.failures.origin.is_none() {
+                        self.failures.origin = origin;
+                    }
+                }
                 self.transcript
                     .peer_message(self.run_first_block, from, text);
                 self.scroll.bottom();
             }
             Msg::Triggered { label, prompt } => {
+                self.failures.origin = Some(format!(" ({label})"));
                 self.transcript
                     .label_triggered(self.run_first_block, label, prompt);
                 self.scroll.bottom();

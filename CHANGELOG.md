@@ -25,6 +25,18 @@
   and the agent reads the note in its next model request. When the other
   daemon does not answer in time for another reason, its half is undone
   first and the message says what is the case.
+- A run another agent's message started (or a schedule, a watch, a
+  helper's ending) whose model had nothing to say showed three retry lines
+  and the same error twice (`error: Terminal failure: … LLM completed
+  without user-visible text …` and `turn failed: …`): the engine fails a
+  run whose model returns an empty answer. Such a run now ends in one
+  quiet line, "the agent had nothing to add to main-ab12's message"; on a
+  run you started, the empty answer is one plain error ("the model
+  returned an empty answer 4 times: send the message again, or switch the
+  model"). The retries of an empty answer are not drawn, and any failure
+  a run reports is said once, not again as "turn failed". The agents and
+  helpers are told not to send a message that only acknowledges or
+  thanks.
 
 ### Changed
 

@@ -548,6 +548,125 @@ async fn a_peer_message_wakes_the_other_agent_and_its_client_shows_it() {
     daemon.stop().await;
 }
 
+/// The notices of failures and retries an `App` fed `seen` draws, in
+/// order (an error, a warning, or any line on a retry, a failure or an
+/// empty answer).
+/// `typed`: a prompt the user sends first (its `StartTurn` goes to the
+/// runner, not into `seen`), so the run that follows is the user's.
+fn drawn_notices(
+    typed: Option<&str>,
+    seen: &[rkat_tui::ui::Msg],
+) -> Vec<(rkat_tui::ui::NoticeLevel, String)> {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = rkat_tui::ui::App::new(rkat_tui::ui::StatusInfo::default());
+    for c in typed.unwrap_or_default().chars() {
+        app.update(rkat_tui::ui::Msg::Key(KeyEvent::from(KeyCode::Char(c))));
+    }
+    if typed.is_some() {
+        app.update(rkat_tui::ui::Msg::Key(KeyEvent::from(KeyCode::Enter)));
+    }
+    for msg in seen {
+        app.update(msg.clone());
+    }
+    app.transcript
+        .blocks()
+        .iter()
+        .filter_map(|block| match block {
+            rkat_tui::ui::Block::Notice { level, text } => Some((*level, text.clone())),
+            _ => None,
+        })
+        .filter(|(level, text)| {
+            *level != rkat_tui::ui::NoticeLevel::Info
+                || ["retry", "failed", "nothing to add", "empty answer"]
+                    .iter()
+                    .any(|word| text.contains(word))
+        })
+        .collect()
+}
+
+/// The owner's report of 2026-11-18: another agent's acknowledgement woke
+/// this one, its model answered nothing, and the engine retried the call
+/// and failed the run (an empty answer is its `llm_empty_response`
+/// error). The client of the woken agent draws one quiet line naming who
+/// woke it, no retries and no error; the agent takes the user's next
+/// message as usual (it is in its next model request); on a run the user
+/// started the same empty answer is one plain error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_empty_answer_to_a_peer_s_message_is_one_quiet_line() {
+    use rkat_tui::daemon::protocol::AgentChoice;
+    use rkat_tui::ui::{Effect, NoticeLevel};
+    let ws = Workspace::new();
+    let b_name = Arc::new(parking_lot::Mutex::new(String::new()));
+    let send = {
+        let b_name = Arc::clone(&b_name);
+        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+            let peer = peer_id_of(messages, &b_name.lock()).unwrap_or_else(|| "none".into());
+            Step::Tool {
+                id: "m1",
+                name: "send_message",
+                args: json!({"peer_id": peer, "body": "Acknowledged.", "handling_mode": "queue"}),
+            }
+        }))
+    };
+    let mut steps = vec![
+        Step::Tool {
+            id: "p1",
+            name: "peers",
+            args: json!({}),
+        },
+        send,
+        Step::Text("told b"),
+    ];
+    // B, woken: whitespace only, the call and its retries.
+    steps.extend(std::iter::repeat_n(Step::Text(" \n"), 4));
+    steps.push(Step::Text("answered"));
+    // B, its user's message: empty, the call and its retries.
+    steps.extend(std::iter::repeat_n(Step::Text(""), 4));
+    let llm = ScriptedLlmClient::new(steps);
+    let classifier = rig::ScriptedClassifier::allowing(Vec::new());
+    let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
+    let args = setup.command_line(&ws.root);
+    let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
+    let mut a = rig::Client::attach(&ws.root).await;
+    let mut b = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    let a_name = a.agent().await;
+    *b_name.lock() = b.agent().await;
+    a.send(Effect::StartTurn("tell b".into()));
+    assert_eq!(a.turn_finished().await.unwrap().text, "told b");
+    let woken = b.turn_finished().await;
+    assert!(woken.is_err(), "{woken:?}");
+    assert_eq!(llm.requests().len(), 7, "the call and three retries");
+    let quiet = format!("the agent had nothing to add to {a_name}'s message");
+    assert_eq!(
+        drawn_notices(None, &b.seen),
+        [(NoticeLevel::Info, quiet)],
+        "{:#?}",
+        b.events()
+    );
+    // The user's next message is a turn as any.
+    b.send(Effect::StartTurn("what now?".into()));
+    assert_eq!(b.turn_finished().await.unwrap().text, "answered");
+    assert!(
+        format!("{:?}", llm.requests().last().unwrap()).contains("what now?"),
+        "the next request carries the message"
+    );
+    // The user's own message answered with nothing: one plain error.
+    let mark = b.seen.len();
+    b.send(Effect::StartTurn("and then?".into()));
+    assert!(b.turn_finished().await.is_err());
+    assert_eq!(
+        drawn_notices(Some("and then?"), &b.seen[mark..]),
+        [(
+            NoticeLevel::Error,
+            "the model returned an empty answer 4 times: send the message again, or switch the model (/model)"
+                .to_string()
+        )]
+    );
+    a.quit().await;
+    b.quit().await;
+    daemon.stop().await;
+}
+
 /// How many roster notes (the daemon's lists of the other agents and
 /// their states) `messages` hold.
 fn roster_notes(messages: &[Message]) -> usize {
