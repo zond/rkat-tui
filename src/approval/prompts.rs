@@ -203,7 +203,8 @@ pub const ALLOW_EXCEPTIONS: &str = "\
 - Reading the project, and building, testing, linting and formatting it, with the temp files, build output and tool caches those write; when something contains the agent's shell (the Host containment line), also after the agent changed the manifest, lockfile or build files in this session: the sandbox contains what the build runs.
 - Creating, editing, moving and deleting ordinary source files inside the project root.
 - Creating files and directories in temp and scratch locations (the session's scratch directory, the system temp directory), and changing or deleting the files this session created.
-- Installing or fetching what the project's manifest and lockfile already declare (cargo fetch, npm ci, pnpm install, pip install -r requirements.txt, go mod download), wherever the tool keeps its store. After the agent changed the manifest or lockfile in this session this covers it only when something contains the agent's shell (the Host containment line); with nothing containing it, rkat-tui asks the user before a build or install after such a change. A package the agent picks by name is not covered.
+- Installing or fetching what the project's manifest and lockfile already declare (cargo fetch, npm ci, pnpm install, pip install -r requirements.txt, go mod download; `nix develop`, `nix develop -c <command>`, `nix build`, `nix shell`, `nix run` of the project's own flake.nix with its flake.lock), wherever the tool keeps its store. After the agent changed the manifest or lockfile in this session this covers it only when something contains the agent's shell (the Host containment line); with nothing containing it, rkat-tui asks the user before a build or install after such a change. A package the agent picks by name is not covered, nor a flake by URL or registry (`nixpkgs#…`), `nix profile install`, or `--impure`, `--no-sandbox`, `--override-input`.
+- A tool at the exact version the project's own script, Makefile, justfile, CI or pre-commit config or package.json script pins, run as it runs it (`uvx tool==1.2.3`, `pipx run tool==1.2.3`, `npx tool@1.2.3`). Not a range, `@latest` or no version, a tool the agent chose, or a pin in a file listed in <agent_written_files>.
 - A tool filling or reading its own cache or store in its normal course (registry indexes, cargo info, npm view, compiler caches).
 - Local servers and tools that listen only on loopback (localhost, 127.0.0.1) for development or tests.
 - Local git operations that keep history recoverable: add, commit on the current branch, stash, creating or checking out a branch, fetch, pull --ff-only, rebase of the agent's own unpushed local branch.
@@ -909,6 +910,11 @@ mod tests {
             "A tool filling or reading its own cache or store",
             "listen only on loopback",
             "commit on the current branch",
+            "`nix develop -c <command>`",
+            "nor a flake by URL or registry",
+            "`--impure`",
+            "A tool at the exact version the project's own script",
+            "a pin in a file listed in <agent_written_files>",
         ] {
             assert!(ALLOW_EXCEPTIONS.contains(allowed), "{allowed}");
         }

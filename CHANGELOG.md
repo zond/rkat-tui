@@ -69,6 +69,20 @@
 
 ### Changed
 
+- The classifier's built-in allow list names a project's own Nix flake:
+  `nix develop` (also `-c <command>`), `nix build`, `nix shell` and
+  `nix run` of the project's `flake.nix` with its `flake.lock` are
+  installing what the project declares, as `cargo fetch` and `npm ci`
+  are; a flake named by URL or registry (`nixpkgs#…`), `nix profile
+  install` and switches such as `--impure` or `--no-sandbox` are not.
+  `flake.nix` and `flake.lock` count as dependency files: after the
+  agent changes one, a build or install is treated as after any
+  dependency change. A tool run at the exact version the project's own
+  script, Makefile, justfile, CI or pre-commit configuration or
+  `package.json` script pins (`uvx ruff==0.6.9`, `pipx run
+  pdoc==14.7.0`, `npx prettier@3.3.3`) is allowed as those files run
+  it; a range, `@latest`, no version, a tool the agent chose, or a pin
+  in a file the agent wrote in the session is not.
 - The list dialogs (`/helpers`, `/schedules`, `/permissions`, `/approve`,
   `/agents`, `/wire`, `/unwire`, `/memory`, `/settings`) stay open after
   what you do in them and close only on Esc, `q` or Ctrl-C: stopping a

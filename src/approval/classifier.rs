@@ -469,6 +469,8 @@ pub const MANIFEST_FILES: &[&str] = &[
     "Gemfile.lock",
     "composer.json",
     "composer.lock",
+    "flake.nix",
+    "flake.lock",
 ];
 
 /// Whether `path`'s file name is a dependency manifest or lockfile

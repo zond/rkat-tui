@@ -12543,3 +12543,31 @@ helper a second time. That is the engine's rule, not ours.
 Pinned by `ui::tests::helpers::{a_helper_s_ending_note_is_one_folded_line_in_every_order,
 held_notes_before_another_client_s_message_fold_and_leave_its_words}`
 and `ui::transcript::restore::tests::a_stored_helper_ending_note_restores_folded`.
+
+## The project's own flake, and tools the project pins (owner, 2026-11-18)
+
+**Seen**: in auto mode the classifier needed a statement for `nix develop
+-c …` and `nix build` in a repository with `flake.nix` and `flake.lock`,
+and blocked `uvx <tool>==<version>` that the repository's committed script
+pinned, as installing third-party code.
+
+**What changed**: the install exception (`approval::prompts::ALLOW_EXCEPTIONS`)
+names `nix develop` (`-c`), `nix build`, `nix shell` and `nix run` of the
+project's own flake with its lockfile, and not a flake by URL or registry,
+`nix profile install` (T3 already) or `--impure`, `--no-sandbox`,
+`--override-input`. A new exception covers a tool at the exact version
+the project's own files pin, run as they run it, and not a range,
+`@latest`, no version, a tool the agent chose, or a pin in a file listed
+in `<agent_written_files>`. The classifier cannot know what git has
+committed; it is shown which files the agent's file tools wrote
+(`<agent_written_files>`), which manifests they changed, `package.json`
+for `npx` commands (the build context), and with its tools it can read
+the pinning file. The guard of the manifest rule is the one the
+build-trust logic keeps: `flake.nix` and `flake.lock` join
+`classifier::MANIFEST_FILES`, so an agent's change to them is a
+dependency change (listed to the classifier; an uncontained build or
+install after it asks). The system prompt stays under its 9 KiB bound.
+
+Corpus cases `a51`–`a55` (allow) and `b52`–`b57` (block); the
+deterministic tiers pass them (`corpus::every_case_passes_the_deterministic_tiers_as_labelled`).
+Their labels are for live runs, which were not made.

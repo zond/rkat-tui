@@ -377,7 +377,20 @@ declare, wherever the tool keeps its store (after the agent changed the
 manifest in this session only when something contains the shell: with
 `--no-confinement` and no declared sandbox, rkat-tui asks you before a
 build or install after such a change, see
-[builds](#builds-after-a-dependency-change)); a tool filling its own cache; local
+[builds](#builds-after-a-dependency-change)); for a project with its own
+`flake.nix` and `flake.lock`, `nix develop`, `nix develop -c <command>`,
+`nix build`, `nix shell` and `nix run` of that flake (no reference, `.` or
+`.#<output>`) with the store fetches and builds they need, the command
+inside judged as itself, but not a flake named by URL or registry
+(`github:…`, `nixpkgs#…`), `nix profile install`, or switches that loosen
+Nix's checks (`--impure`, `--no-sandbox`, `--override-input`); a tool at the exact
+version the project's own files pin, run as they run it (`uvx
+ruff==0.6.9`, `pipx run pdoc==14.7.0`, `npx prettier@3.3.3` named so in a
+script, Makefile, justfile, CI or pre-commit configuration or a
+`package.json` script), but not a range, `@latest`, no version, a tool the
+agent chose, or a pin in a file the agent wrote in the session (the
+classifier is shown which files those are, and checks the pin with its
+read-only tools; `package.json` is attached to `npx` commands); a tool filling its own cache; local
 servers on loopback; commits on the current branch; pushing a feature
 branch you asked for or the agent made. It is told the session's facts
 the gate saw: its scratch directory, the files its file tools created
@@ -833,8 +846,9 @@ linters and formatters (`cargo check`, `build`, `test`, `clippy`, `fmt
 #### Builds after a dependency change
 
 The gate keeps a digest of the build-defining files (`build.rs`,
-`.cargo/config*`, `rust-toolchain*`, `Cargo.toml`, `Cargo.lock`, and the
-other ecosystems' manifests and lockfiles at the project root) from the
+`.cargo/config*`, `rust-toolchain*`, `Cargo.toml`, `Cargo.lock`, `flake.nix`,
+`flake.lock`, and the other ecosystems' manifests and lockfiles at the
+project root) from the
 conversation's first call, and notes when the agent's file tools write
 one. A build after such a change:
 
