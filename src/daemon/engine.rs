@@ -368,7 +368,13 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     .with_models(Arc::clone(&helper_models))
     .with_profiles(Arc::clone(&profiles))
     .with_realm_config(realm_config.path().to_path_buf())
-    .with_helper_persona(revisions.seated(crate::bootstrap::persona::HELPER_PERSONA.to_string()));
+    .with_helper_persona(
+        super::instructions::helper_sections(memory)
+            .into_iter()
+            .map(|section| revisions.seated(section))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    );
     // The members' tool policy from the engine's deny rules (tests may
     // leave it out).
     let registry_for_policy = (!policy.without_registry)
@@ -955,13 +961,14 @@ impl crate::mobs::customizer::RootHost for AgentHost {
         }
     }
 
-    /// The persona, the agents' and the deferral's notes, the instruction
-    /// files and the notes index.
+    /// The persona, the agents', the deferral's and the compaction's
+    /// notes, the instruction files and the notes index.
     fn instructions(&self, identity: &meerkat_mob::AgentIdentity) -> Vec<String> {
-        let mut sections: Vec<String> = super::instructions::agent_sections(identity.as_str())
-            .into_iter()
-            .map(|section| self.revisions.seated(section))
-            .collect();
+        let mut sections: Vec<String> =
+            super::instructions::agent_sections(identity.as_str(), self.prepare.memory())
+                .into_iter()
+                .map(|section| self.revisions.seated(section))
+                .collect();
         // One line; a change of the settings later reaches a live agent as
         // a note.
         sections.push(self.helper_models.read().instruction());

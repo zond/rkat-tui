@@ -98,7 +98,7 @@ async fn an_agent_s_older_instructions_are_replaced_once() {
     assert_eq!(told_upgrade(&missed(&connection).await), 0, "told once");
     daemon.prompt(&connection, "second").await;
     let request = &llm.recorded()[0];
-    current_once(&request.system(), &agent_sections(&agent));
+    current_once(&request.system(), &agent_sections(&agent, true));
     // The rest of the prompt stayed: the base prompt and the earlier
     // turn are there.
     assert!(request.system().contains("# Inter-agent Communication"));
@@ -113,7 +113,7 @@ async fn an_agent_s_older_instructions_are_replaced_once() {
     assert_eq!(told_upgrade(&missed(&connection).await), 0);
     assert_eq!(updates(&ws.root).len(), 1);
     daemon.prompt(&connection, "third").await;
-    current_once(&llm.recorded()[0].system(), &agent_sections(&agent));
+    current_once(&llm.recorded()[0].system(), &agent_sections(&agent, true));
     drop(connection);
     daemon.stop().await;
 }
@@ -164,7 +164,7 @@ async fn a_compaction_keeps_the_replaced_instructions() {
         after.user()
     );
     assert!(!after.user().contains("turn 0"), "{}", after.user());
-    current_once(&after.system(), &agent_sections(&agent));
+    current_once(&after.system(), &agent_sections(&agent, true));
     // The summary's source: no earlier build's sentence either.
     let source = &requests[requests.len() - 2];
     assert!(!format!("{:?}", source.messages).contains(OLD));
@@ -277,7 +277,7 @@ async fn a_restored_helper_s_older_instructions_are_replaced() {
                 && format!("{:?}", r.messages).contains("SAY-IT-ONCE-MORE")
         })
         .unwrap();
-    current_once(&request.system(), &helper_sections());
+    current_once(&request.system(), &helper_sections(true));
     assert!(format!("{:?}", request.messages).contains("IDLE-ANSWER"));
     common::until(|| {
         llm.recorded()

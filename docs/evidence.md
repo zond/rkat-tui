@@ -12918,3 +12918,87 @@ Tests: `helper_endings::a_refused_retire_is_answered_so_and_an_interrupted_one_s
 call held at the engine by `Retirements::before_engine`),
 `mobs::endings::tests::a_restored_idle_child_does_not_hold_its_finished_parent`,
 `mobs::endings::tests::a_stopped_helper_s_retire_is_owed`.
+
+## Nothing appended after a compaction (owner, 2026-11-18)
+
+The owner asked why the daemon adds notes after a compaction when what
+they say is known already, and asked for a fixed set of standing
+knowledge that does not grow. A rig probe (the scripted model, memory
+on) recorded what the model's first request after a compaction held,
+before the change:
+
+- A compaction `compact_ready` asked for (in the run under way): the
+  instructions row; the roster note; the engine's summary as a user row
+  ("[Context compacted] A previous context produced the following summary
+  of work so far. The current tool and session state is preserved. Use
+  this summary to continue without duplicating work: …"); the recent
+  turns; and the run's own rows verbatim: the user's input, the `glob`,
+  the prepare request (`READY_SUFFIX`, "carry on … do not stop, sum up or
+  wait for the user"; a steer, which in one gate run landed only after
+  that request), the `compact_ready` call and its answer
+  (`REQUESTED`, "Carry on with your task now"), usually last (a steer that
+  lands meanwhile, a helper's note or a late prepare request, can follow
+  it). Our note (`CONTINUE_NOTE` with `MEMORY_NOTE`) was not in that
+  request: it is appended once the compaction completed and lands at the
+  turn's end, so the model read it first in the next turn, as a System
+  row after the run's last answer. 821c130's helper list came as one more
+  run input, a follow-up run of its own.
+- A compaction of the engine's (its threshold at a run's start; `/compact`
+  asks the same call): instructions, roster note, summary, the new input;
+  the previous compaction's `MEMORY_NOTE` moved up right after the
+  summary.
+- After the second compaction both kinds held the first note still (the
+  engine keeps every System row), and after the third two: one per
+  compaction, for the conversation's life.
+
+The engine's compaction keeps the open run's request and newest round in
+every scope (`meerkat-core` `agent/compact.rs` `CompactionScope`:
+`BeforeOpenRun` folds only what came before the run, `OpenRunRounds` the
+run's earlier rounds), so `compact_ready`'s answer cannot be folded away
+by the compaction it asked for. So no timely nudge was kept: the
+summary's own words say a compaction happened and to continue, and the
+tool's answer says to carry on now. `MEMORY_NOTE`, `CONTINUE_NOTE`, the
+helper list (`Contacts::held_line`) and `agents::note_compacted` are
+gone; what they said is the "After a compaction" section of the agent's
+and the helper's instructions (`bootstrap::persona::compaction_persona`,
+in `instructions::agent_sections`/`helper_sections`, so the keyed
+instructions update brings stored conversations up to it). The section
+and `compact_ready`'s answer name `memory_search` only when the realm's
+semantic memory is on (`Prepare::memory`); the two `memory_search` lines
+of the coding persona moved into it. Stored conversations keep the notes
+an earlier build appended (history; nothing rewrites them).
+
+Every System row a long session collects, from every source, and
+whether a newer one replaces it (all daemon appends go through
+`agents::notes::append_note_to`, each with an idempotency key of its own,
+so every append is a new row):
+
+| Row | Source | Replaces or stacks |
+|---|---|---|
+| The instructions (persona, agents, deferral, compaction sections) | seat; `instructions` bring-up | replaces (keyed `rkat-tui-instructions`) |
+| Roster note ("Other agents in this workspace now: …", wired line) | `rkat-tui-agents`, each join, attach or detach | stacks (its text says a new one replaces it; the model reads the newest) |
+| Joined / left notes | `rkat-tui-agents` | stack (events) |
+| Helper models changed ("… (This replaces what you were told before.)") | `rkat-tui-agents`, a settings change | stacks |
+| Read-only profile with comms | `rkat-tui-agents`, such a `mob_create` | stacks (event) |
+| Wire made or removed | `rkat-tui-wires` | stacks (events) |
+| Helpers connected / a connected peer left (helpers' sessions) | `rkat-tui-connect` | stack (events) |
+| A grant "for this session" | `rkat-tui`, the approval engine | stacks (each grant) |
+| Plan mode on / off while the agent is idle (a running one gets a run input) | `rkat-tui` | stacks, alternating |
+| `/remember` and a `!` command's output | the client (`mob/append_system_context`) | stack (the user's own context) |
+| After a compaction (memory, carry on) | `rkat-tui` | gone with this change |
+
+Run inputs (user rows, which a later compaction summarises): the prepare
+request and its reminder, helper endings, `/approve` notes, a watch's
+`files changed`, the checkpoint's status request, and before this change
+the helper list. No other cheap stacking case is pure state that
+`contacts` or the instructions already give: the roster note is (`contacts`
+lists the agents and their states), but the persona and the "do not
+message an idle agent" norm lean on it, so it is left as reported.
+
+Tests: `compact_prepare::nothing_of_ours_piles_up_after_one_or_three_compactions_it_asked_for`,
+`compact_prepare::the_engine_s_own_compactions_add_nothing_of_ours_either`,
+`compact_prepare::with_semantic_memory_off_memory_search_is_not_mentioned`,
+`compact_prepare::a_crossing_steers_the_instruction_and_compact_ready_compacts`
+(the restored conversation holds no note),
+`bootstrap::persona::tests::the_compaction_section_names_memory_search_only_with_memory`,
+`daemon::prepare::tests::compact_ready_s_answer_says_to_carry_on_and_names_memory_only_with_it`.

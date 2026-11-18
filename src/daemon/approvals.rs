@@ -907,9 +907,9 @@ impl Watcher {
 
     /// A compaction of `session` completed with `tokens` left: when it is
     /// the agent's current conversation, the smart compaction is armed
-    /// again below its threshold, and the agent is told to carry on (a
-    /// compaction its own `compact_ready` asked for) and, with semantic
-    /// memory on, that what was discarded is searchable.
+    /// again below its threshold. Nothing is appended for the agent: its
+    /// instructions say what to do after a compaction
+    /// ([`super::prepare`]).
     fn compacted(&self, session: &SessionId, tokens: u64) {
         if self.watched.current.current(&self.name).as_ref() != Some(session) {
             return;
@@ -917,39 +917,7 @@ impl Watcher {
         let Some(agents) = self.watched.agents.upgrade() else {
             return;
         };
-        let prepare = &agents.core().prepare;
-        let Some(note) = prepare.compacted(&self.name, tokens) else {
-            return;
-        };
-        let smart = note.starts_with(super::prepare::CONTINUE_NOTE);
-        tokio::spawn(super::agents::note_compacted(
-            Arc::clone(&self.watched.state),
-            self.name.clone(),
-            note,
-        ));
-        // After a compaction it asked for itself, in the run that goes on,
-        // the helpers it holds now: a run input, which the next compaction
-        // summarises away (an appended note is a system row, which every
-        // compaction keeps, so a list there would stack and go stale).
-        if smart {
-            let name = self.name.clone();
-            let session = session.clone();
-            tokio::spawn(async move {
-                let Some(line) = agents.core().contacts.held_line(&session).await else {
-                    return;
-                };
-                if let Err(err) = super::agents::steer_member(
-                    agents.core(),
-                    &meerkat_mob::MobId::from(super::MOB_ID),
-                    meerkat_mob::AgentIdentity::from(name.as_str()),
-                    line,
-                )
-                .await
-                {
-                    tracing::warn!(agent = %name, error = %err, "the reminder of the helpers held did not reach the agent");
-                }
-            });
-        }
+        agents.core().prepare.compacted(&self.name, tokens);
     }
 
     /// A run started: the engine lifts a Stop given to an earlier run,

@@ -11,8 +11,8 @@
 //!   workspaces it is wired to (`/wire`). A helper's kind, whether it runs
 //!   or since when it is idle, the first line of its task and whom it was
 //!   connected to come from the registry.
-//! - **Used by** the tool itself, and by the line the agent reads after a
-//!   compaction ([`Contacts::held_line`]).
+//! - **Used by** the tool itself: an agent's instructions say to call it
+//!   after a compaction ([`crate::bootstrap::persona::compaction_persona`]).
 
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Instant;
@@ -73,15 +73,6 @@ impl Held {
                 crate::text::span(now.saturating_duration_since(since).as_secs(), 1)
             ),
             None => "idle".to_string(),
-        }
-    }
-
-    /// `a (fresh · kept, idle for 2 h)`, as the reminder after a
-    /// compaction names it.
-    fn short(&self, now: Instant) -> String {
-        match &self.kind {
-            Some(kind) => format!("{} ({kind}, {})", self.name, self.state(now)),
-            None => format!("{} ({})", self.name, self.state(now)),
         }
     }
 }
@@ -379,23 +370,6 @@ impl Contacts {
                 (key.clone(), held)
             })
             .collect()
-    }
-
-    /// The line an agent reads after a compaction when it holds helpers:
-    /// who they are, and how to let them go (`None`: it holds none).
-    pub async fn held_line(&self, session: &SessionId) -> Option<String> {
-        let (owner, path, _, _) = self.caller(session)?;
-        let held = self.held(&owner, &path).await;
-        if held.is_empty() {
-            return None;
-        }
-        let now = Instant::now();
-        let names: Vec<String> = held.iter().map(|(_, held)| held.short(now)).collect();
-        Some(format!(
-            "You still hold {}: {}. Retire with `retire_helper` those you no longer need; `{CONTACTS}` shows them.",
-            crate::text::count(held.len(), "helper"),
-            names.join(", ")
-        ))
     }
 
     /// What `contacts` answers the member running as `session`.

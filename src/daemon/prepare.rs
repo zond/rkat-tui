@@ -23,12 +23,22 @@
 //! that ignores the instruction is compacted there as before. Helpers and
 //! forks have no such tool and get no instruction.
 //!
-//! Right after each compaction of an agent's conversation the agent gets
-//! one system note: after a compaction its own `compact_ready` asked for,
-//! that it carries on with its task ([`CONTINUE_NOTE`]; the request and
-//! the tool's answer say so too, so the compaction is no reason to end
-//! the turn), and, when semantic memory is on, that what was discarded is
-//! searchable ([`MEMORY_NOTE`]).
+//! Nothing is added to the conversation after a compaction. What an agent
+//! needs to know then is standing knowledge, in its instructions (the
+//! keyed `rkat-tui-instructions` slot, which a compaction keeps and an
+//! upgrade refreshes: [`crate::bootstrap::persona::compaction_persona`]):
+//! carry on with the task, earlier details are searchable with
+//! `memory_search` (said only when semantic memory is on), `contacts` lists
+//! the helpers it holds. That a compaction just happened the model sees in
+//! the engine's own summary message ("[Context compacted] … Use this
+//! summary to continue without duplicating work"). After a compaction its
+//! own `compact_ready` asked for, the run's own rows are kept verbatim
+//! (the engine folds only what came before the open run, or the run's
+//! earlier rounds, never its request or newest round), so the model's
+//! next request also holds the prepare request ([`READY_SUFFIX`]: carry
+//! on) and the tool's answer ([`REQUESTED`]: carry on now), its last row.
+//! An appended note would be a System row, which every compaction keeps:
+//! one per compaction would pile up for the conversation's life.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, Weak};
@@ -51,17 +61,13 @@ pub const READY_SUFFIX: &str = "Then call `compact_ready`, which compacts the co
 /// when the engine never compacts on its own.
 pub const REMINDER_PERCENT: u64 = 10;
 
-/// What `compact_ready` answers once the compaction was requested.
-pub const REQUESTED: &str = "compaction requested: it happens before your next step; details from before stay searchable with memory_search. Carry on with your task now; do not end your turn to report the compaction";
+/// What `compact_ready` answers once the compaction was requested (with
+/// semantic memory on, [`REQUESTED_MEMORY`] follows). The newest row of
+/// the run under way, so the first request after the compaction holds it.
+pub const REQUESTED: &str = "compaction requested: it happens before your next step. Carry on with your task now; do not end your turn to report the compaction.";
 
-/// The system note an agent gets after each compaction of its
-/// conversation (semantic memory on).
-pub const MEMORY_NOTE: &str = "Your context was compacted just now. What was discarded is indexed: search it with memory_search when you need an earlier detail.";
-
-/// The system note an agent gets after a compaction it asked for itself
-/// (`compact_ready`), with or without semantic memory: the compaction is
-/// no reason to stop.
-pub const CONTINUE_NOTE: &str = "Your context was compacted at your own request while you were working. Carry on with the task where you left off (your plan or notes say where): do not stop to report the compaction or wait for the user.";
+/// What follows [`REQUESTED`] with semantic memory on.
+pub const REQUESTED_MEMORY: &str = " Details from before it stay searchable with memory_search.";
 
 /// The share of the window below which `compact_ready` asked without an
 /// instruction compacts nothing.
@@ -85,9 +91,6 @@ struct Trigger {
     reminded: bool,
     /// The context of its last reading.
     tokens: Option<u64>,
-    /// Its `compact_ready` requested a compaction that has not completed
-    /// yet: the agent is told to carry on once it has.
-    requested: bool,
 }
 
 /// What a context reading asks of the watcher.
@@ -268,7 +271,6 @@ impl Prepare {
         if tokens < at {
             *trigger = Trigger {
                 tokens: Some(tokens),
-                requested: trigger.requested,
                 ..Trigger::default()
             };
             return Crossing::Nothing;
@@ -307,13 +309,9 @@ impl Prepare {
     }
 
     /// A compaction estimate of `agent`'s conversation (`tokens` left):
-    /// below the threshold the trigger is armed again.
-    ///
-    /// Returns the system note the agent gets now, if any: after a
-    /// compaction its own `compact_ready` asked for, [`CONTINUE_NOTE`]
-    /// (the compaction is no reason to stop); with semantic memory on,
-    /// [`MEMORY_NOTE`]; both in one note when both apply.
-    pub fn compacted(&self, agent: &str, tokens: u64) -> Option<String> {
+    /// below the threshold the trigger is armed again. Nothing is told the
+    /// agent (the module's doc says why).
+    pub fn compacted(&self, agent: &str, tokens: u64) {
         let threshold = self.threshold();
         let mut agents = self.agents.lock();
         let trigger = agents.entry(agent.to_string()).or_default();
@@ -324,12 +322,22 @@ impl Prepare {
             trigger.fired = false;
             trigger.reminded = false;
         }
-        let requested = std::mem::take(&mut trigger.requested);
-        match (requested, self.memory) {
-            (true, true) => Some(format!("{CONTINUE_NOTE} {MEMORY_NOTE}")),
-            (true, false) => Some(CONTINUE_NOTE.to_string()),
-            (false, true) => Some(MEMORY_NOTE.to_string()),
-            (false, false) => None,
+    }
+
+    /// Whether the realm's semantic memory is on (`memory_search` exists,
+    /// and the instructions name it).
+    #[must_use]
+    pub fn memory(&self) -> bool {
+        self.memory
+    }
+
+    /// What `compact_ready` answers once the compaction was requested.
+    #[must_use]
+    pub fn requested_text(&self) -> String {
+        if self.memory {
+            format!("{REQUESTED}{REQUESTED_MEMORY}")
+        } else {
+            REQUESTED.to_string()
         }
     }
 
@@ -429,14 +437,7 @@ impl Prepare {
         )
         .await;
         match asked {
-            Ok(Ok(_)) => {
-                self.agents
-                    .lock()
-                    .entry(agent.to_string())
-                    .or_default()
-                    .requested = true;
-                (REQUESTED.to_string(), false)
-            }
+            Ok(Ok(_)) => (self.requested_text(), false),
             Ok(Err(err)) => (
                 format!("the compaction could not be requested: {err}"),
                 true,
@@ -470,7 +471,6 @@ impl Prepare {
         for trigger in self.agents.lock().values_mut() {
             *trigger = Trigger {
                 tokens: trigger.tokens,
-                requested: trigger.requested,
                 ..Trigger::default()
             };
         }
@@ -729,49 +729,31 @@ mod tests {
         assert_eq!(p.run_started("main-a"), None);
     }
 
-    /// `compact_ready` after the instruction requests; asked unprompted it
-    /// requests too unless the context is below the floor.
-    /// After a compaction the agent's own `compact_ready` asked for, the
-    /// note tells it to carry on (with or without memory); another
-    /// compaction's note is only the memory hint, and only with memory.
-    #[tokio::test]
-    async fn a_requested_compaction_s_note_says_to_carry_on() {
+    /// `compact_ready`'s answer says to carry on, and names
+    /// `memory_search` only with semantic memory on; so does the request.
+    #[test]
+    fn compact_ready_s_answer_says_to_carry_on_and_names_memory_only_with_it() {
         let p = prepare(PrepareAt::Tokens(300_000), CompactMode::Native);
-        assert_eq!(p.compacted("main-a", 50_000), Some(MEMORY_NOTE.to_string()));
-        p.agents
-            .lock()
-            .entry("main-a".into())
-            .or_default()
-            .requested = true;
-        let note = p.compacted("main-a", 50_000).unwrap();
-        assert!(
-            note.starts_with(CONTINUE_NOTE) && note.ends_with(MEMORY_NOTE),
-            "{note}"
+        assert_eq!(
+            p.requested_text(),
+            "compaction requested: it happens before your next step. Carry on with your task now; do not end your turn to report the compaction. Details from before it stay searchable with memory_search."
         );
-        // Told once: the next compaction is not the agent's own.
-        assert_eq!(p.compacted("main-a", 50_000), Some(MEMORY_NOTE.to_string()));
         let plain = Prepare::new(
             PrepareSetting::of(&crate::config::registry::Layers::default()),
             &CompactionPolicy::default(),
             (Some(1_000_000), "big-model"),
             false,
         );
-        assert_eq!(plain.compacted("main-a", 50_000), None);
-        plain
-            .agents
-            .lock()
-            .entry("main-a".into())
-            .or_default()
-            .requested = true;
-        assert_eq!(
-            plain.compacted("main-a", 50_000),
-            Some(CONTINUE_NOTE.to_string())
-        );
-        for text in [READY_SUFFIX, REQUESTED, CONTINUE_NOTE] {
+        assert_eq!(plain.requested_text(), REQUESTED);
+        assert!(!plain.requested_text().contains("memory_search"));
+        for text in [READY_SUFFIX, REQUESTED] {
             assert!(text.to_lowercase().contains("carry on"), "{text}");
+            assert!(!text.contains("memory_search"), "{text}");
         }
     }
 
+    /// `compact_ready` after the instruction requests; asked unprompted it
+    /// requests too unless the context is below the floor.
     #[test]
     fn ready_requests_unless_below_the_floor() {
         let p = prepare(PrepareAt::Tokens(300_000), CompactMode::Native);

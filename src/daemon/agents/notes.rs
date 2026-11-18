@@ -190,22 +190,6 @@ pub(super) async fn note_agent(state: Arc<MobMcpState>, agent: String, text: Str
     }
 }
 
-/// Tell `agent` its context was just compacted: `note` is what
-/// [`crate::daemon::prepare::Prepare::compacted`] gave (carry on, and
-/// where what was discarded is); a failure is logged.
-pub(crate) async fn note_compacted(state: Arc<MobMcpState>, agent: String, note: String) {
-    if let Err(err) = append_note(
-        &state,
-        &agent,
-        crate::daemon::local::SYSTEM_CONTEXT_SOURCE,
-        note,
-    )
-    .await
-    {
-        tracing::warn!(%agent, error = %err, "the agent could not be told about its compaction");
-    }
-}
-
 /// Steer `text` into member `member` of `mob`: into its open run, which
 /// reads it at its next step, or as the input of a run that starts for
 /// it when it is idle. Every message the daemon sends a member to act on

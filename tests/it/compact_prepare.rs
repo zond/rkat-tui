@@ -4,8 +4,9 @@
 //! `compact_ready` makes the engine compact before the run's next model
 //! request; an ignored request gets one reminder and still ends in the
 //! normal automatic compaction; an idle agent gets it at its next turn, not by being woken;
-//! it fires once per crossing; a helper's context never fires it. After a
-//! compaction the agent is told what was discarded is searchable.
+//! it fires once per crossing; a helper's context never fires it. Nothing
+//! of ours is added to the conversation after a compaction, however many:
+//! the instructions carry what to do then.
 //!
 //! The scripted model's window is 1M tokens; the thresholds are tokens.
 
@@ -17,7 +18,8 @@ use crate::rig;
 use common::{Recorded, ScriptedLlmClient, Step, Workspace, within};
 use meerkat_core::AgentEvent;
 use rig::{Attached, Setup};
-use rkat_tui::daemon::prepare::{CONTINUE_NOTE, MEMORY_NOTE, READY_SUFFIX, REQUESTED};
+use rkat_tui::bootstrap::persona::{COMPACTION_HEADING, compaction_persona};
+use rkat_tui::daemon::prepare::{READY_SUFFIX, REQUESTED, REQUESTED_MEMORY};
 use rkat_tui::ui::{Effect, Msg};
 use serde_json::json;
 use std::sync::Arc;
@@ -172,8 +174,7 @@ async fn a_crossing_steers_the_instruction_and_compact_ready_compacts() {
         after.user()
     );
     assert!(!after.user().contains("turn 0"), "{}", after.user());
-    // Armed again below the threshold; after the compaction completed (the
-    // session ran again) the agent is told about memory_search.
+    // Armed again below the threshold.
     rig.send(Effect::StartTurn("again".into()));
     assert_eq!(rig.turn_finished().await.unwrap().text, "later");
     within(rig.saw(|msg| {
@@ -182,24 +183,22 @@ async fn a_crossing_steers_the_instruction_and_compact_ready_compacts() {
     .await;
     common::until_async(async || status(&rig).await.contains(": armed")).await;
     rig.quit().await;
-    // The note is in the conversation the next run reads.
+    // The conversation the next daemon reads holds no note of the
+    // compaction: its instructions say what to do after one.
     let llm = ScriptedLlmClient::new(vec![Step::Text("noted")]);
     let mut setup = Setup::args(&[]);
     setup.client_args = vec!["-c".to_string()];
     let mut again = Attached::start_with(&ws.root, &llm, setup).await;
     again.send(Effect::StartTurn("next".into()));
     again.turn_finished().await.unwrap();
+    let first = &llm.recorded()[0];
     assert!(
-        format!("{:?}", llm.recorded()[0].messages).contains(MEMORY_NOTE),
-        "{:?}",
-        llm.recorded()[0].messages
+        first.user().contains("SUMMARY of the earlier turns"),
+        "{}",
+        first.user()
     );
-    // It asked for that compaction itself: the note says to carry on.
-    assert!(
-        format!("{:?}", llm.recorded()[0].messages).contains(CONTINUE_NOTE),
-        "{:?}",
-        llm.recorded()[0].messages
-    );
+    assert_eq!(ours(&first.messages), Vec::<String>::new());
+    assert!(first.system().contains(&compaction_persona(true, false)));
     again.quit().await;
 }
 
@@ -497,40 +496,70 @@ async fn a_late_threshold_is_set_with_the_start_up_warning() {
     rig.quit().await;
 }
 
-/// The messages of the last request that holds the result of call `id`.
-fn last_request_with(llm: &ScriptedLlmClient, id: &str) -> Vec<meerkat_core::Message> {
+/// The System rows of `messages` other than the instructions and the
+/// roster note (the one row that names the other agents): what a
+/// compaction would have left of ours.
+fn ours(messages: &[meerkat_core::Message]) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(|m| match m {
+            meerkat_core::Message::System(s) => Some(s),
+            _ => None,
+        })
+        .filter(|s| {
+            let roster = s
+                .identity
+                .as_ref()
+                .and_then(|i| i.source.as_deref())
+                .is_some_and(|source| source == "rkat-tui-agents");
+            !roster && !s.content.contains(COMPACTION_HEADING)
+        })
+        .map(|s| s.content.clone())
+        .collect()
+}
+
+/// Whether `messages` are the engine's summary call.
+fn is_summary_call(messages: &[meerkat_core::Message]) -> bool {
+    common::user_texts(messages)
+        .last()
+        .is_some_and(|text| text.contains("CONTEXT COMPACTION"))
+}
+
+/// The agent's requests right after each summary call (a helper's in
+/// between left out): the first request after each compaction.
+fn after_summaries(llm: &ScriptedLlmClient) -> Vec<Recorded> {
+    let recorded = llm.recorded();
+    recorded
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| is_summary_call(&r.messages))
+        .filter_map(|(at, _)| {
+            recorded[at + 1..]
+                .iter()
+                .find(|r| !common::is_helper(&r.messages, "-TASK"))
+                .cloned()
+        })
+        .collect()
+}
+
+/// The agent's request whose run's inputs hold `marker`.
+fn request_for(llm: &ScriptedLlmClient, marker: &str) -> Recorded {
     llm.recorded()
         .into_iter()
-        .rfind(|r| {
-            r.messages.iter().any(|m| {
-                matches!(m, meerkat_core::Message::ToolResults { results, .. }
-                    if results.iter().any(|res| res.tool_use_id == id))
-            })
-        })
-        .map(|r| r.messages)
-        .unwrap_or_default()
+        .rfind(|r| common::run_inputs(&r.messages).contains(marker))
+        .unwrap_or_else(|| panic!("no request for {marker}"))
 }
 
-/// The agent's last request (no helper's).
-fn last_of_agent(llm: &ScriptedLlmClient) -> String {
-    let last = llm
-        .recorded()
-        .into_iter()
-        .rfind(|r| !common::is_helper(&r.messages, "-TASK"))
-        .unwrap();
-    format!("{:?}", last.messages)
-}
-
-/// After each compaction it asked for itself, the agent is told which
-/// helpers it holds now, as a run input: after the first, once, naming
-/// both kept helpers with their states; after the second (one retired
-/// between), the newest reminder names only the one it still holds (the
-/// first is a run input in the turns the engine keeps verbatim, so it goes
-/// only with a later compaction). The appended system note of each
-/// compaction stays (a compaction keeps system rows): two notes after two
-/// compactions.
+/// After one compaction the agent asked for with `compact_ready`, and after
+/// three, nothing of ours is in the conversation: no note of the
+/// compaction, no list of the helpers it holds (it holds two kept ones),
+/// only the instructions and the roster note as System rows. The first
+/// request after each compaction holds the engine's summary and
+/// `compact_ready`'s answer (the run's own rows, kept verbatim), which says
+/// to carry on; the instructions carry
+/// the compaction section with `memory_search` (semantic memory is on).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn after_its_own_compaction_the_agent_is_told_the_helpers_it_holds_now() {
+async fn nothing_of_ours_piles_up_after_one_or_three_compactions_it_asked_for() {
     use meerkat_core::Message;
     let ws = Workspace::new();
     let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
@@ -570,20 +599,14 @@ async fn after_its_own_compaction_the_agent_is_told_the_helpers_it_holds_now() {
                 ),
             ]);
         }
-        if user.contains("RETIRE-K1") {
-            return Step::Tool {
-                id: "r1",
-                name: "retire_helper",
-                args: json!({"name": "k1"}),
-            };
-        }
         if user.contains("COMPACT-NOW") {
             return glob("g1", 300_000);
         }
         Step::Text("ok")
     }));
     let llm = ScriptedLlmClient::new(vec![step; 80]);
-    let mut rig = rig(&llm, &ws, "warn", 900_000).await;
+    // The prepare request comes at 250k: the glob's 300k crosses it.
+    let mut rig = rig(&llm, &ws, "warn", 250_000).await;
     turns(&mut rig, 3).await;
     rig.send(Effect::StartTurn("START-HELPERS".into()));
     rig.turn_finished().await.expect("turn succeeds");
@@ -599,56 +622,169 @@ async fn after_its_own_compaction_the_agent_is_told_the_helpers_it_holds_now() {
     common::until(|| idle("k1") && idle("k2")).await;
     rig.daemon.idle(&rig.daemon.agent).await;
 
-    rig.send(Effect::StartTurn("COMPACT-NOW one".into()));
-    rig.turn_finished().await.expect("turn succeeds");
-    let answer = common::tool_result(&last_request_with(&llm, "c1"), "c1").text_content();
-    assert!(answer.contains(REQUESTED), "{answer}");
-    within(rig.saw(|msg| {
-        matches!(msg, Msg::Agent(env) if matches!(env.payload, AgentEvent::CompactionCompleted { .. }))
-    }))
-    .await;
-    common::until(|| {
-        llm.recorded().iter().any(|r| {
-            format!("{:?}", r.messages)
-                .contains("You still hold 2 helpers: k1 (fresh · kept, idle for")
-        })
-    })
-    .await;
-    rig.daemon.idle(&rig.daemon.agent).await;
-    rig.send(Effect::StartTurn("after one".into()));
-    rig.turn_finished().await.expect("turn succeeds");
-    let last = last_of_agent(&llm);
-    assert_eq!(last.matches("You still hold").count(), 1, "{last}");
-    assert!(
-        last.contains("k2 (fresh · kept, idle for")
-            && last.contains(
-                "Retire with `retire_helper` those you no longer need; `contacts` shows them."
-            ),
-        "{last}"
-    );
-
-    rig.send(Effect::StartTurn("RETIRE-K1".into()));
-    rig.turn_finished().await.expect("turn succeeds");
-    rig.send(Effect::StartTurn("COMPACT-NOW two".into()));
-    rig.turn_finished().await.expect("turn succeeds");
-    common::until(|| {
-        llm.recorded()
+    let answer = format!("{REQUESTED}{REQUESTED_MEMORY}");
+    for (round, name) in ["one", "two", "three"].iter().enumerate() {
+        rig.send(Effect::StartTurn(format!("COMPACT-NOW {name}")));
+        rig.turn_finished().await.expect("turn succeeds");
+        while completed(&rig) < round + 1 {
+            rig.wait_for(|msg| {
+                matches!(msg, Msg::Agent(env) if matches!(env.payload, AgentEvent::CompactionCompleted { .. }))
+            })
+            .await;
+        }
+        rig.daemon.idle(&rig.daemon.agent).await;
+        rig.send(Effect::StartTurn(format!("after {name}")));
+        rig.turn_finished().await.expect("turn succeeds");
+        // The first request after this compaction.
+        let first = after_summaries(&llm)
+            .into_iter()
+            .nth(round)
+            .expect("a request after the compaction");
+        // The engine's summary (the prepare request, a steer of the same
+        // run, is there too unless it landed after this request).
+        assert!(
+            first.user().contains("[Context compacted]"),
+            "{}",
+            first.user()
+        );
+        // The run's own rows after the summary: `compact_ready`'s answer is
+        // there (a steer that came meanwhile may follow it).
+        let summary = first
+            .messages
             .iter()
-            .any(|r| format!("{:?}", r.messages).contains("You still hold 1 helper: k2"))
-    })
-    .await;
-    rig.daemon.idle(&rig.daemon.agent).await;
-    rig.send(Effect::StartTurn("after two".into()));
-    rig.turn_finished().await.expect("turn succeeds");
-    let last = last_of_agent(&llm);
-    // The newest reminder names what it holds now; an older one is in the
-    // turns the compaction keeps verbatim, and goes with a later one.
-    let newest = &last[last.rfind("You still hold").unwrap()..];
+            .position(|m| matches!(m, Message::User(u) if u.text_content().starts_with("[Context compacted]")))
+            .expect("the summary");
+        assert!(
+            first.messages[summary..]
+                .iter()
+                .any(|m| matches!(m, Message::ToolResults { results, .. }
+                if results.iter().any(|r| r.tool_use_id == "c1" && r.text_content() == answer))),
+            "{:?}",
+            first.messages
+        );
+        assert_eq!(ours(&first.messages), Vec::<String>::new());
+        // And the next turn's: nothing landed after the compaction either.
+        let next = request_for(&llm, &format!("after {name}"));
+        assert_eq!(ours(&next.messages), Vec::<String>::new(), "after {name}");
+        let all = format!("{:?}", next.messages);
+        assert!(
+            !all.contains("Your context was compacted") && !all.contains("You still hold"),
+            "{all}"
+        );
+        assert!(next.system().contains(&compaction_persona(true, false)));
+    }
+    assert_eq!(completed(&rig), 3);
+    rig.quit().await;
+}
+
+/// How many compactions the client saw complete.
+fn completed(rig: &Attached) -> usize {
+    rig.events()
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::CompactionCompleted { .. }))
+        .count()
+}
+
+/// The engine's own compactions (here at its threshold in `auto` mode;
+/// `/compact` asks the same engine call) add nothing of ours either: after
+/// one and after three, the System rows of the agent's request are the
+/// instructions and the roster note only; the engine's summary is what
+/// says that a compaction happened.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_engine_s_own_compactions_add_nothing_of_ours_either() {
+    use meerkat_core::Message;
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if is_summary_call(messages) {
+            return Step::Text("SUMMARY of the work");
+        }
+        Step::TextUsage("ok", 60_000)
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 80]);
+    let setup = Setup::args(&[
+        "--set",
+        "auto.compact=auto",
+        "--set",
+        "auto.compact_auto_percent=5",
+        "--set",
+        "auto.compact_warn_percent=5",
+    ]);
+    let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
+    let mut seen = Vec::new();
+    for i in 0..10 {
+        rig.send(Effect::StartTurn(format!("turn {i}")));
+        rig.turn_finished().await.expect("turn succeeds");
+        if completed(&rig) > seen.len() {
+            seen.push(i);
+        }
+    }
+    assert!(completed(&rig) >= 3, "{seen:?}");
+    let firsts = after_summaries(&llm);
+    assert!(firsts.len() >= 3);
+    for first in &firsts {
+        assert!(first.user().contains("[Context compacted]"));
+        assert_eq!(ours(&first.messages), Vec::<String>::new());
+    }
+    let last = llm.recorded().last().unwrap().clone();
+    assert_eq!(ours(&last.messages), Vec::<String>::new());
     assert!(
-        newest.starts_with("You still hold 1 helper: k2 (fresh · kept"),
-        "{newest}"
+        !format!("{:?}", last.messages).contains("Your context was compacted"),
+        "{:?}",
+        last.messages
     );
-    assert!(last.matches("You still hold").count() <= 2, "{last}");
-    assert_eq!(last.matches(CONTINUE_NOTE).count(), 2, "{last}");
+    rig.quit().await;
+}
+
+/// With semantic memory off (its index cannot be opened), `memory_search`
+/// is named nowhere: not in the instructions (a conversation an earlier
+/// daemon seated with memory on is brought to the memory-off text) and
+/// not in `compact_ready`'s answer, which still says to carry on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_semantic_memory_off_memory_search_is_not_mentioned() {
+    use meerkat_core::Message;
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
+    let mut rig = rig(&llm, &ws, "warn", 900_000).await;
+    turns(&mut rig, 1).await;
+    rig.quit().await;
+    let index = common::realm_of(&ws.root).join("memory");
+    assert!(index.is_dir(), "{}", index.display());
+    std::fs::remove_dir_all(&index).unwrap();
+    std::fs::write(&index, "not an index").unwrap();
+
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if common::answers(messages, Some("c1")) {
+            return Step::Text("continued");
+        }
+        if common::run_inputs(messages).contains("COMPACT-NOW") {
+            return Step::ToolUsage {
+                id: "c1",
+                name: "compact_ready",
+                args: json!({}),
+                input: 300_000,
+            };
+        }
+        Step::Text("ok")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 20]);
+    let mut setup = Setup::args(&["--set", "auto.compact=warn"]);
+    setup.client_args = vec!["-c".to_string()];
+    let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
+    rig.send(Effect::StartTurn("COMPACT-NOW".into()));
+    rig.turn_finished().await.expect("turn succeeds");
+    let request = request_for(&llm, "COMPACT-NOW");
+    assert!(
+        !request.tools.iter().any(|tool| tool == "memory_search"),
+        "{:?}",
+        request.tools
+    );
+    let system = request.system();
+    assert!(
+        system.contains(&compaction_persona(false, false)),
+        "{system}"
+    );
+    assert!(!system.contains("memory_search"), "{system}");
+    let answer = common::tool_text(&llm.recorded().last().unwrap().messages, "c1");
+    assert_eq!(answer, REQUESTED);
     rig.quit().await;
 }

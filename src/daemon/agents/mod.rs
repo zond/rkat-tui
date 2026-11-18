@@ -32,7 +32,7 @@ mod triggers;
 pub use names::is_agent;
 use names::new_name;
 pub use notes::{APPROVED_LABEL, Leave};
-pub(crate) use notes::{append_note, append_note_to, note_compacted, steer_member};
+pub(crate) use notes::{append_note, append_note_to, steer_member};
 pub use triggers::READ_ONLY_COMMS_NOTE;
 pub use triggers::{HELPER_ENDED_LABEL, HELPER_IDLE_LABEL};
 
@@ -630,7 +630,7 @@ impl Agents {
         let whose = Whose {
             name: name.to_string(),
             agent: Some(name.to_string()),
-            sections: super::instructions::agent_sections(name),
+            sections: super::instructions::agent_sections(name, self.core.prepare.memory()),
         };
         let revisions = Arc::clone(&self.core.revisions);
         if !revisions.needs(session, &whose).await {
@@ -690,7 +690,7 @@ impl Agents {
                     .registry
                     .root_of_session(&tag.owner)
                     .map(|root| root.member.to_string()),
-                sections: helper_sections(),
+                sections: helper_sections(self.core.prepare.memory()),
             };
             if !self.core.revisions.needs(&session, &whose).await {
                 continue;

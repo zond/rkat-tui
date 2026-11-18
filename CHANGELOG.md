@@ -149,11 +149,19 @@
   retire them. A single-use helper whose run ends while one of its own
   helpers still runs is not done yet: that helper's ending is told to it,
   and it is done (and retired with its idle ones) after it read it.
-- After a compaction it asked for with `compact_ready`, an agent that
-  holds helpers is told which ones it holds now ("You still hold 2
-  helpers: k1 (fresh · kept, idle for 4m), …"), as a message in the run
-  that goes on, and its instructions say to call `contacts` after a
-  compaction and retire the helpers it no longer needs.
+- Nothing is added to an agent's conversation after a compaction any
+  more. Each compaction used to append a system note ("Your context was
+  compacted just now…", "…Carry on with the task where you left off…"),
+  which every later compaction kept, so a long conversation collected one
+  per compaction. What those notes said is now a short "After a
+  compaction" section of the agent's and each helper's instructions:
+  carry on where you left off without reporting the compaction or
+  waiting for the user, earlier details are found with `memory_search`
+  (named only when semantic memory is on, as is the hint in
+  `compact_ready`'s answer), and call `contacts` and retire the helpers
+  you no longer need. Conversations an earlier build compacted keep the
+  notes it added (they are history and are not rewritten); their
+  instructions are brought up to the new section on their next seat.
 - The engine's `peers` (helpers, agents and wires mixed, with no kind or
   state) and `list_members` (which left out fresh kept helpers) are no
   longer offered to agents and helpers: `contacts` replaces both. The

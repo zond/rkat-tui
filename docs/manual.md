@@ -2253,10 +2253,19 @@ tokens are estimates (four bytes a token).
 to focus the summary; Meerkat's compaction takes no instructions yet, so
 rkat-tui says so in a warning and compacts without them.
 
-After every compaction of an agent's conversation the agent gets one
-system note: "Your context was compacted just now. What was discarded is
-indexed: search it with memory_search when you need an earlier detail."
-(when semantic memory is on), and its instructions say the same.
+Nothing is added to the conversation after a compaction. The agent's
+instructions (and each helper's) carry a short section, "After a
+compaction", that says what to do then: carry on with the task where it
+left off rather than report the compaction or wait for you; earlier
+details are found with `memory_search` (said only when semantic memory is
+on); call `contacts` and retire the helpers it no longer needs. That a
+compaction just happened, the model sees in Meerkat's own summary
+message. A note appended after each compaction would be a system row,
+which every compaction keeps, so a long conversation would collect one
+per compaction; the instructions are one replaceable section that
+compaction keeps and an upgrade refreshes. A conversation an earlier
+build compacted keeps the notes that build added (they are its history);
+its instructions are brought up to this section on its next seat.
 
 #### Preparing for a compaction
 
@@ -2287,24 +2296,16 @@ call that crossed it ended the turn, the agent is idle: it is not woken,
 it is asked at the start of its next turn. When the agent calls
 `compact_ready` (its one signal: there is no separate "starting" call)
 the daemon requests the compaction (as `/compact` does) and the tool
-answers "compaction requested: it happens before your next step; details
-from before stay searchable with memory_search. Carry on with your task
-now; do not end your turn to report the compaction"; the usual compaction
-notices follow. The agent is meant to go on working as if nothing had
-happened: the request, the tool's answer and a system note after the
-compaction all say so, so your instruction need not. The agent may call `compact_ready` on its own too: it
+answers "compaction requested: it happens before your next step. Carry on
+with your task now; do not end your turn to report the compaction."
+(with semantic memory on, "Details from before it stay searchable with
+memory_search." follows); the usual compaction notices follow. The agent
+is meant to go on working as if nothing had happened: the request, the
+tool's answer and its instructions all say so, so your instruction need
+not. The compaction keeps the run under way as it was, so the model's
+next request holds the summary, the request and the tool's answer, last. The agent may call `compact_ready` on its own too: it
 compacts unless the context is below 20% of the window (then nothing is
 compacted and it is told why).
-
-After a compaction its `compact_ready` asked for, an agent that holds
-helpers is also told, as a message in the run that goes on, which ones
-it holds now ("You still hold 2 helpers: k1 (fresh · kept, idle for 4m),
-k2 (…). Retire with `retire_helper` those you no longer need; `contacts`
-shows them."); its instructions also say to call `contacts` after any
-compaction and retire what it no longer needs. The message is part of the
-conversation like any other, so a later compaction summarises it; the
-system notes after each compaction (carry on, memory search) are kept
-by every compaction and so accumulate, one per compaction.
 
 What bounds the agent's choice of moment: if the context grows past the
 midpoint between `compact_prepare_at` and the automatic compaction's

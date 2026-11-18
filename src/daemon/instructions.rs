@@ -51,20 +51,26 @@ const MODELS_LINE: &str = "Helper models:";
 
 /// The sections of an agent's instructions that are this build's own text
 /// (the instruction files, the notes index and the helper models are the
-/// workspace's and the settings', and stay as the conversation began).
+/// workspace's and the settings', and stay as the conversation began);
+/// `memory`: the realm's semantic memory is on.
 #[must_use]
-pub fn agent_sections(name: &str) -> Vec<String> {
+pub fn agent_sections(name: &str, memory: bool) -> Vec<String> {
     vec![
         crate::bootstrap::persona::CODING_PERSONA.to_string(),
         crate::bootstrap::persona::agents_persona(name),
         super::deferral::PERSONA.to_string(),
+        crate::bootstrap::persona::compaction_persona(memory, false),
     ]
 }
 
-/// The sections of a helper's instructions that are this build's own text.
+/// The sections of a helper's instructions that are this build's own text;
+/// `memory`: the realm's semantic memory is on.
 #[must_use]
-pub fn helper_sections() -> Vec<String> {
-    vec![crate::bootstrap::persona::HELPER_PERSONA.to_string()]
+pub fn helper_sections(memory: bool) -> Vec<String> {
+    vec![
+        crate::bootstrap::persona::HELPER_PERSONA.to_string(),
+        crate::bootstrap::persona::compaction_persona(memory, true),
+    ]
 }
 
 /// Tests: `section` as an earlier build might have written it (its
@@ -447,8 +453,8 @@ mod tests {
     /// No section of this build holds a line that would end it early.
     #[test]
     fn a_section_of_this_build_is_one_span() {
-        let mut all = agent_sections("main-ab12");
-        all.extend(helper_sections());
+        let mut all = agent_sections("main-ab12", true);
+        all.extend(helper_sections(true));
         for section in &all {
             let heading = section.lines().next().unwrap();
             assert!(heading.starts_with("# "), "{heading}");
@@ -464,7 +470,7 @@ mod tests {
 
     #[test]
     fn a_prompt_with_this_build_s_sections_is_left_alone() {
-        let sections = agent_sections("main-ab12");
+        let sections = agent_sections("main-ab12", true);
         assert_eq!(brought_up(&prompt(&sections), &sections), None);
     }
 
@@ -472,7 +478,7 @@ mod tests {
     /// prompt stays, the old sentences go, the new ones are there once.
     #[test]
     fn an_older_build_s_sections_are_replaced_in_place() {
-        let sections = agent_sections("main-ab12");
+        let sections = agent_sections("main-ab12", true);
         let old: Vec<String> = sections.iter().map(|s| stale(s)).collect();
         let new = brought_up(&prompt(&old), &sections).unwrap();
         assert_eq!(new, prompt(&sections).replace("\n\n\n", "\n\n"));
@@ -484,7 +490,7 @@ mod tests {
     /// with no heading of this build's gets them at its end.
     #[test]
     fn missing_sections_are_added() {
-        let sections = agent_sections("main-ab12");
+        let sections = agent_sections("main-ab12", true);
         let old = vec![stale(&sections[0]), stale(&sections[1])];
         let new = brought_up(&prompt(&old), &sections).unwrap();
         for section in &sections {
@@ -492,7 +498,7 @@ mod tests {
         }
         assert!(new.contains("Helper models: on your own."), "{new}");
         let bare = "You are a base prompt.\n";
-        let new = brought_up(bare, &helper_sections()).unwrap();
+        let new = brought_up(bare, &helper_sections(true)).unwrap();
         assert!(
             new.starts_with("You are a base prompt.\n\n# Working as a helper"),
             "{new}"
@@ -507,7 +513,7 @@ mod tests {
     /// `/remember` row.
     #[test]
     fn the_target_is_the_row_with_the_instructions() {
-        let sections = helper_sections();
+        let sections = helper_sections(true);
         let messages = vec![
             system("base\n\n# Working as a helper\n\nold\n"),
             system("# Remembered instruction\n\nx"),
