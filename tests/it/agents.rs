@@ -811,6 +811,13 @@ async fn restored_agents_are_told_the_roster_after_a_restart() {
     daemon.stop().await;
 }
 
+/// Whether `messages` are B's (no user text of A's "tell b").
+fn is_b(messages: &[Message]) -> bool {
+    !common::user_texts(messages)
+        .iter()
+        .any(|text| text.contains("tell b"))
+}
+
 /// A6 (the user's decision, 2026-11-10, changed on 2026-11-14): B's client
 /// detaches, A's message wakes B. Nobody started B's turn and nobody is
 /// with B, so its `curl` goes to the classifier, whose review fails: what
@@ -823,47 +830,68 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
     use rkat_tui::ui::{Departure, Effect, Msg};
     let ws = Workspace::new();
     let b_name = Arc::new(parking_lot::Mutex::new(String::new()));
-    let send = {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    // Each agent's step from its own requests: B, woken by A's message,
+    // starts its first call as A's last one starts (a fixed order of
+    // steps across both was a race, which once timed a gate run out).
+    let step = {
         let b_name = Arc::clone(&b_name);
+        let gate = Arc::clone(&gate);
         Step::Dynamic(Arc::new(move |messages: &[Message]| {
-            let peer = peer_id_of(messages, &b_name.lock()).unwrap_or_else(|| "none".into());
-            Step::Tool {
-                id: "m1",
-                name: "send_message",
-                args: json!({"peer_id": peer, "body": "fetch the release notes", "handling_mode": "queue"}),
+            let results = messages
+                .iter()
+                .filter(|m| matches!(m, Message::ToolResults { .. }))
+                .count();
+            if is_b(messages) {
+                // B, woken by the message with nobody attached.
+                return match results {
+                    0 => Step::Tool {
+                        id: "b1",
+                        name: "shell",
+                        args: json!({"command": "curl -s http://127.0.0.1:9/notes"}),
+                    },
+                    1 => Step::Tool {
+                        id: "b2",
+                        name: "write_file",
+                        args: json!({"path": "notes.md", "content": "release notes\n"}),
+                    },
+                    2 => Step::Gated(
+                        Arc::clone(&gate),
+                        Box::new(Step::Tool {
+                            id: "b3",
+                            name: "shell",
+                            args: json!({"command": "curl -s http://127.0.0.1:9/notes2"}),
+                        }),
+                    ),
+                    _ => Step::Text("fetched"),
+                };
+            }
+            match results {
+                0 => Step::Tool {
+                    id: "p1",
+                    name: "contacts",
+                    args: json!({}),
+                },
+                1 => {
+                    let peer =
+                        peer_id_of(messages, &b_name.lock()).unwrap_or_else(|| "none".into());
+                    Step::Tool {
+                        id: "m1",
+                        name: "send_message",
+                        args: json!({"peer_id": peer, "body": "fetch the release notes", "handling_mode": "queue"}),
+                    }
+                }
+                _ => Step::Text("told b"),
             }
         }))
     };
-    let gate = Arc::new(tokio::sync::Notify::new());
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "p1",
-            name: "contacts",
-            args: json!({}),
-        },
-        send,
-        Step::Text("told b"),
-        // B, woken by the message with nobody attached.
-        Step::Tool {
-            id: "b1",
-            name: "shell",
-            args: json!({"command": "curl -s http://127.0.0.1:9/notes"}),
-        },
-        Step::Tool {
-            id: "b2",
-            name: "write_file",
-            args: json!({"path": "notes.md", "content": "release notes\n"}),
-        },
-        Step::Gated(
-            Arc::clone(&gate),
-            Box::new(Step::Tool {
-                id: "b3",
-                name: "shell",
-                args: json!({"command": "curl -s http://127.0.0.1:9/notes2"}),
-            }),
-        ),
-        Step::Text("fetched"),
-    ]);
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
+    let b_calls = || {
+        llm.requests()
+            .into_iter()
+            .filter(|messages| is_b(messages))
+            .collect::<Vec<_>>()
+    };
     // The review of B's first curl (not of `notes2`) times out.
     let classifier = rig::ScriptedClassifier::failing_on("9/notes\"");
     let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
@@ -880,7 +908,7 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
     assert_eq!(a.turn_finished().await.unwrap().text, "told b");
     // B's third model call waits at the gate: its first two calls are
     // decided.
-    llm.wait_call(5).await;
+    common::until(|| b_calls().len() >= 3).await;
     let reviewed_curls = || {
         classifier
             .seen()
@@ -893,7 +921,7 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
         1,
         "the unattended curl went to the classifier"
     );
-    let results = tool_results(&llm.requests()[5]);
+    let results = tool_results(&b_calls()[2]);
     assert!(
         results.contains("needs a user attached to this agent"),
         "B reads why: {results}"
@@ -917,9 +945,9 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
     })
     .await;
     gate.notify_one();
-    llm.wait_call(6).await;
+    common::until(|| b_calls().len() >= 4).await;
     assert_eq!(reviewed_curls(), 2, "attached, B's next curl was reviewed");
-    let result = common::tool_text(&llm.requests()[6], "b3");
+    let result = common::tool_text(&b_calls()[3], "b3");
     assert!(
         !result.contains("needs a user attached"),
         "the reviewed curl ran: {result}"

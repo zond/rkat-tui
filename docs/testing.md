@@ -180,6 +180,15 @@ output now says why; report it rather than retrying silently:
   note never told. The check is now the endings' own state
   (`HelperEndings::at_work`), and the second test is now
   `a_nested_helper_s_note_after_its_parent_was_decided_reaches_the_parent`.
+- `a_peer_woken_agent_with_no_client_is_denied_what_needs_review`
+  (`tests/it/agents.rs`): timed out once in a full local gate (2026-11-18)
+  and passed 3 of 3 alone; 20 rounds on two cores beside two busy loops
+  did not reproduce it. Cause by reading: the scripted model's steps were
+  one fixed queue shared by both agents, and A's `send_message` wakes B,
+  whose first model call starts as A's last one does; when B's call came
+  first, B took A's "told b" and A took B's `curl`, and the test's waits on
+  call counts never came. Each agent's step is now chosen from its own
+  requests, and the waits count B's calls. No timeout was raised.
 - `parallel_escalations_share_one_timeout_including_the_queue`
   (`src/approval/engine.rs`): the paused tokio clock auto-advances while a task
   waits on `spawn_blocking`, so budget checks must happen after every await.
