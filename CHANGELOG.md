@@ -25,6 +25,13 @@
   stop that came before its retire. A message to it afterwards is refused
   saying it finished and was retired. Forks an earlier build kept seated
   are kept forks and stay until they are retired.
+- A single-use fork started under the name of an earlier fork that had
+  finished was taken as done by the earlier fork's outcome as soon as it
+  was followed (hidden today by two guards, but unsound). A fork's outcome
+  is now matched by its own job. The `assign` description says that a
+  name in use is refused and that an ended helper's name starts a
+  brand-new helper; the refusal of a name in use says it is "in use by a
+  member seated now".
 
 - An agent could not retire a helper it kept: the engine's
   `retire_member` lets a member retire only the members its own

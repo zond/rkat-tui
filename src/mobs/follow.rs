@@ -140,6 +140,9 @@ async fn follow(
             }
             // A single-use fork restored after a restart whose outcome the
             // engine recorded before the stop is done: retired once idle.
+            // The record is of its own job: an earlier fork of the same
+            // name (ended, its record kept for the epoch) is another job.
+            let mut fork_job: Option<String> = None;
             if tag.kind.is_fork() && tag.kind.life() == Some(super::HelperLife::Single) {
                 let recorded = outcome_on_record(&handle, &key.member).await;
                 tracing::debug!(helper = %key, recorded, "a single-use fork followed: its outcome on record");
@@ -195,12 +198,20 @@ async fn follow(
                         }
                         observe(&*observer, &tag, &envelope.payload).await;
                     }
-                    event = recv(&mut mob_events) => match event.map(|event| {
-                        if outcome_recorded(&event.kind, &key.member) {
-                            registry.endings().fork_outcome_recorded(&key, false);
+                    event = recv(&mut mob_events) => {
+                        if let Some(job) = event.as_ref().and_then(|event| completed_job(&event.kind, &key.member)) {
+                            // Its own job, read once it is needed (it is
+                            // seated by then: its job ran).
+                            if fork_job.is_none() {
+                                fork_job = fork_job_of(&handle, &key.member).await;
+                            }
+                            if own_outcome(job, fork_job.as_deref()) {
+                                registry.endings().fork_outcome_recorded(&key, false);
+                            } else {
+                                tracing::debug!(helper = %key, job, "an outcome of an earlier fork of this name: not this one's");
+                            }
                         }
-                        left(&event.kind, &key.member)
-                    }) {
+                        match event.map(|event| left(&event.kind, &key.member)) {
                         Some(Some(gone)) => {
                             // Deliver what it published before it left.
                             while let Some(Some(envelope)) = futures::FutureExt::now_or_never(stream.next()) {
@@ -217,7 +228,8 @@ async fn follow(
                             tracing::debug!(helper = %key, "the mob's events ended; following the helper's own stream to its end");
                             mob_events = None;
                         }
-                    },
+                        }
+                    }
                 }
             }
             match retired {
@@ -425,22 +437,53 @@ fn left(kind: &MobEventKind, identity: &AgentIdentity) -> Option<bool> {
     }
 }
 
-/// Whether `kind` is the engine's record of a completed `fork_off` outcome
-/// of the fork `identity` (`ForkJobTerminal`, written before the outcome is
-/// handed to its parent, which a restart hands over again from it).
-fn outcome_recorded(kind: &MobEventKind, identity: &AgentIdentity) -> bool {
-    matches!(kind, MobEventKind::ForkJobTerminal(terminal)
-        if &terminal.child == identity
-            && terminal.status == meerkat_core::event::BackgroundJobTerminalStatus::Completed)
+/// The job of the engine's record of a completed `fork_off` outcome that
+/// `kind` is, when it names the member `identity` (`ForkJobTerminal`,
+/// written before the outcome is handed to its parent, which a restart
+/// hands over again from it). The record is the job's: a name used again
+/// for a later fork is another job ([`own_outcome`]).
+fn completed_job<'a>(kind: &'a MobEventKind, identity: &AgentIdentity) -> Option<&'a str> {
+    match kind {
+        MobEventKind::ForkJobTerminal(terminal)
+            if &terminal.child == identity
+                && terminal.status
+                    == meerkat_core::event::BackgroundJobTerminalStatus::Completed =>
+        {
+            Some(terminal.job_id.as_str())
+        }
+        _ => None,
+    }
 }
 
-/// Whether `handle`'s mob holds a completed `fork_off` outcome of the fork
-/// `identity` (its `ForkJobTerminal` ledger of the current epoch).
+/// Whether the completed outcome of `recorded` (a job, [`completed_job`]) is
+/// the one the fork seated now runs (`own`, its roster entry's job): the
+/// engine keys an outcome by its job and member, and a name an ended fork
+/// had may be given to a new fork, whose job is another.
+fn own_outcome(recorded: &str, own: Option<&str>) -> bool {
+    own == Some(recorded)
+}
+
+/// The `fork_off` job the member `identity` of `handle`'s mob was seated to
+/// run (its roster entry's record; `None`: no fork, or not listed).
+async fn fork_job_of(handle: &MobHandle, identity: &AgentIdentity) -> Option<String> {
+    handle
+        .roster()
+        .await
+        .get(identity)
+        .and_then(|entry| entry.fork_job.as_ref())
+        .map(|job| job.job_id.clone())
+}
+
+/// Whether `handle`'s mob holds the completed `fork_off` outcome of the job
+/// the fork `identity` seated now runs (its `ForkJobTerminal` of the
+/// current epoch; an earlier fork's of the same name is not its).
 async fn outcome_on_record(handle: &MobHandle, identity: &AgentIdentity) -> bool {
-    match handle.fork_job_terminals().await {
-        Ok(terminals) => terminals.iter().any(|terminal| {
-            &terminal.child == identity
-                && terminal.status == meerkat_core::event::BackgroundJobTerminalStatus::Completed
+    let Some(job) = fork_job_of(handle, identity).await else {
+        return false;
+    };
+    match handle.fork_job_terminal(&job, identity).await {
+        Ok(terminal) => terminal.is_some_and(|terminal| {
+            terminal.status == meerkat_core::event::BackgroundJobTerminalStatus::Completed
         }),
         Err(err) => {
             tracing::debug!(helper = %identity, error = %err, "cannot read the mob's fork outcomes");
@@ -554,5 +597,44 @@ async fn mob_handle(state: &Weak<MobMcpState>, mob_id: &MobId) -> Result<MobHand
         }
         drop(state);
         tokio::time::sleep(MOB_RETRY).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use meerkat_core::event::BackgroundJobTerminalStatus;
+
+    fn terminal(job: &str, child: &str, status: BackgroundJobTerminalStatus) -> MobEventKind {
+        let outcome = serde_json::json!({"text": "done"});
+        MobEventKind::ForkJobTerminal(meerkat_mob::event::ForkJobTerminalEvent {
+            job_id: job.to_string(),
+            child: AgentIdentity::from(child),
+            owner_session_id: SessionId::new(),
+            retained_work: None,
+            status,
+            result_digest: meerkat_mob::event::detached_outcome_digest(&outcome),
+            outcome,
+        })
+    }
+
+    /// A fork's outcome is its job's: an earlier fork's record under the
+    /// same name is not the fork's seated now, and only a completed one
+    /// counts.
+    #[test]
+    fn an_outcome_is_the_fork_s_own_only_by_its_job() {
+        let x = AgentIdentity::from("x");
+        let first = terminal("job-1", "x", BackgroundJobTerminalStatus::Completed);
+        assert_eq!(completed_job(&first, &x), Some("job-1"));
+        assert!(own_outcome("job-1", Some("job-1")));
+        // The second `x` runs `job-2`: the first's record is not its own.
+        assert!(!own_outcome("job-1", Some("job-2")));
+        // A member whose job is not known yet takes no record for its own.
+        assert!(!own_outcome("job-1", None));
+        // Another member's, or a failed one, is no completed outcome of `x`.
+        let other = terminal("job-1", "y", BackgroundJobTerminalStatus::Completed);
+        assert_eq!(completed_job(&other, &x), None);
+        let failed = terminal("job-1", "x", BackgroundJobTerminalStatus::Failed);
+        assert_eq!(completed_job(&failed, &x), None);
     }
 }

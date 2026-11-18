@@ -309,6 +309,9 @@ pub struct HelperEndings {
     /// How many runs' ends were decided as a helper's going idle (told or
     /// not).
     idle_decided: std::sync::atomic::AtomicUsize,
+    /// How many fork outcomes on record were reported
+    /// ([`Self::fork_outcome_recorded`]).
+    outcomes_reported: std::sync::atomic::AtomicUsize,
     /// The peer ids and names of the `assign` helpers retired when they
     /// finished, newest last ([`Self::retired_peer`]).
     retired_peers: Arc<Mutex<VecDeque<(String, String)>>>,
@@ -472,6 +475,8 @@ impl HelperEndings {
     /// came before the last stop), so a fork that ran no run since is idle.
     /// A kept fork stays.
     pub fn fork_outcome_recorded(self: &Arc<Self>, key: &HelperKey, restored: bool) {
+        self.outcomes_reported
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let idle_after = {
             let mut tracked = self.tracked.lock();
             let Some(entry) = tracked.get_mut(key) else {
@@ -1010,6 +1015,15 @@ impl HelperEndings {
     #[must_use]
     pub fn settled(&self, key: &HelperKey) -> bool {
         self.is_settled(key)
+    }
+
+    /// Tests: how many fork outcomes on record were reported so far (each
+    /// fork's own once: the follower's live event or its look at start).
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn outcomes_reported(&self) -> usize {
+        self.outcomes_reported
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Tests: how many runs' ends were decided as a helper's going idle.

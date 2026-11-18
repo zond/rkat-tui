@@ -196,7 +196,7 @@ impl Assigner {
             .any(|member| member.agent_identity.as_str() == name)
         {
             return Err(format!(
-                "the name `{name}` is taken by another member (`list_members` shows them); call `assign` again with another name"
+                "the name `{name}` is in use by a member seated now (`list_members` shows them); call `assign` again with another name"
             ));
         }
         let role = members

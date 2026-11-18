@@ -123,13 +123,13 @@ pub const EXAMPLE: &str =
     r#"{"name": "scout", "task": "Find where the config file is parsed and say how."}"#;
 
 /// The tool's description: the two choices, and what each costs.
-pub const DESCRIPTION: &str = "Start a helper on a task. It runs alongside you, wired to you: you \
-     can message each other. context \"fresh\" (default): the task is all it knows, so give it \
-     what it needs. context \"fork\": it goes on from a copy of this conversation, which it \
-     carries on every turn, on your model. keep false (default): you are told when it finishes, \
-     with its answer, and it is retired. keep true, for several rounds of work with the same \
-     helper: it stays seated and idle after each run (you are told each time, with its answer; a \
-     message wakes it) until you retire it with retire_helper.";
+pub const DESCRIPTION: &str = "Start a helper on a task. It runs alongside you; you can message \
+     each other. context \"fresh\" (default): the task is all it knows, so give it what it \
+     needs. context \"fork\": it goes on from a copy of this conversation, which it carries on \
+     every turn, on your model. keep false (default): you are told when it finishes, with its \
+     answer, and it is retired. keep true, for several rounds of work with the same helper: it \
+     stays idle after each run (you are told each time; a message wakes it) until you retire it \
+     with retire_helper. A name in use is refused; an ended helper's name starts a brand-new one.";
 
 impl AssignToolDispatcher {
     /// `assign` over `host`.
@@ -408,6 +408,7 @@ mod tests {
             "several rounds of work",
             "retire_helper",
             "carries on every turn",
+            "an ended helper's name starts a brand-new one",
         ] {
             assert!(defs[0].description.contains(part), "{part}");
         }

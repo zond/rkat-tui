@@ -1333,7 +1333,15 @@ leave `model` out or start a fresh helper. The transcript shows the call
 as one line, `assign scout: <task>` (`assign (kept)`, `fork`, `fork
 (kept)` for the other three). A name is 1 to 32 lowercase letters, digits
 and `-`, not an agent's name and not one in use in the mob; anything else
-is refused with what to do.
+is refused with what to do. "In use" means seated now, anywhere in the
+workspace's mob: the agent's own helpers (running or kept idle), its
+helpers' helpers, and other agents' helpers. The name of a helper that
+ended (a single-use one finished, a kept one retired) is free again, for
+any kind: it starts a brand-new helper, with none of the earlier one's
+conversation, and its parent is told of it as of any other. A fork given
+an earlier fork's name is told by its own outcome, also across a
+restart. A retired helper cannot be brought back with its conversation;
+keep it (`keep: true`) while it may have more work.
 
 **When a kept helper goes idle.** A kept helper (`keep: true`, or a member
 of a mob the agent created with `mob_spawn_member`) stays seated after its

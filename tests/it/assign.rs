@@ -574,7 +574,7 @@ async fn assign_refuses_a_bad_or_taken_name_saying_what_is_allowed() {
     for refusal in [
         "`Bad Name` is not a helper name: a name is 1 to 32 lowercase letters, digits and '-'",
         "`main-ab12` is reserved for the workspace's agents",
-        "the name `scout` is taken by another member",
+        "the name `scout` is in use by a member seated now",
         "call `assign` again",
         "a fork runs on your own model",
     ] {

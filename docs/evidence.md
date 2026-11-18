@@ -12161,9 +12161,10 @@ earlier builds open as what they meant (`assigned`, `member`, and `fork`
 as a kept fork: 0.0.15 kept forks). The retire on `ForkJobTerminal`
 (previous entry) now applies to single-use forks only; a restored
 single-use fork whose outcome is on record (`MobHandle::fork_job_terminals`,
-read when the follower starts) is retired once idle. Not covered: a name
-reused for a second fork within one mob epoch whose own outcome was not
-recorded before a stop would be taken as done by the first's record.
+read when the follower starts) is retired once idle. A name used again
+for a second fork within one mob epoch was matched to the first's record
+by name: the next entry ("Helper names used again") found it and keys the
+record by the fork's job.
 
 **Retiring a kept helper: `retire_member` refused, `retire_helper`
 added.** The rig showed the agent's `retire_member` of its kept fresh
@@ -12220,3 +12221,78 @@ a_fork_s_outcome_arrives_later_in_the_transcript}`,
 `tools::assign::tests::the_tool_is_one_short_definition_that_asks_the_host`,
 `approval::policy::tests::the_tools_not_offered_are_denied_to_every_member`,
 `ui::tests::helpers::a_fork_s_line_says_idle_then_retired`, `tool_costs::`.
+
+## Helper names used again (owner question, 2026-11-18)
+
+The owner asked whether a helper's name can be used again, as long as the
+tool says how it works. Established on the rig (`helper_names::`):
+
+**A name in use is refused, for every kind, whoever holds it.** `assign`
+refuses a name any member of the caller's mob lists (`list_members`), and
+the workspace's mob `tui` holds every agent and every helper at every
+level. So the caller's own kept helper seated idle, its own helper
+running, its parent's helper (a nested helper asking for it) and another
+agent's helper are all refused alike, before the kind is looked at:
+"the name `k` is taken by another member (`list_members` shows them);
+call `assign` again with another name" until now, reworded to "is in use
+by a member seated now" (the caller's own helper is no "other member").
+An agent's name (`main-` and an id) is refused before that, as reserved
+for the workspace's agents.
+
+**An ended helper's name is free, for any kind, and gives a brand-new
+helper.** A finished single-use fresh helper's name started a kept fresh
+one, a retired kept fresh helper's a single-use fork, a retired kept
+fork's a single-use fresh helper; each ran its own task, held nothing of
+its namesake's conversation (`SpawnMemberSpec::new` launches
+`MemberLaunchMode::Fresh`, and the engine's `fork_off` forks the caller's
+transcript anew), was told once with its own answer after the earlier
+one's news, and a message to the new one reached it (not refused as
+the finished namesake's).
+
+**A fork's outcome is its job's, not its name's.** The engine keys a
+fork's terminal record by `(job_id, child)` (`ForkJobTerminalLedger` in
+`meerkat-mob` `runtime/handle.rs`; the job id is a fresh UUID per
+`fork_off` call, stored on the child's spawn event and roster entry as
+`ForkJobRecord`), and the record outlives the child for the mob's epoch.
+Our follower matched it by the child's name alone, both on the live
+`ForkJobTerminal` event and in its look at the ledger when it starts
+following a single-use fork. So the second fork `x` was taken as done by
+the first `x`'s record the moment it was followed, in its first run
+(log: `a single-use fork followed: its outcome on record helper=tui/x
+recorded=true`). Two guards hid it: a live fork is marked as told by the
+engine (`first_told_elsewhere`), so the look's report was ignored, and a
+restored single-use fork in its first run is retired as failed by the
+engine (lukacf/meerkat#2384) before it is followed. Fixed rather than
+refused: the follower takes a record for the fork's own only when its job
+is the job of the fork's roster entry (`mobs::follow::{completed_job,
+own_outcome, fork_job_of}`, `MobHandle::fork_job_terminal(job, child)`).
+The second fork's outcome then arrives as its own, the parent holds
+exactly the two outcomes in order, a restart after the second finished
+delivers neither again and retires nothing, and a restart with the
+second still in its first run leaves it to the engine, which tells the
+parent "finished (failed)" for it and does not deliver the first's again.
+
+**Bringing a retired helper back is not offered.** The owner asked
+whether a reused name could reattach the earlier helper. It does not, and
+must not by accident. The engine's route would be a spawn with
+`with_resume_bridge_session_id(<the retired member's session>)`, but a
+retirement archives the session, and a resume of an archived session is
+refused (`MobError::SessionUnavailableForResume` with
+`ArchivedNotRevivable`, `session_service.rs`; the dormant seat answers
+`SessionArchived`); revival of an archived session exists only for the
+store-owned identities of a declared mob (`MobHandle::unarchive_identity`),
+not for a helper spawned ad hoc. Read from the sources, not tried on the
+rig. Even with it, the whole earlier conversation would be sent again on
+every turn, a fork's job (its outcome record and single-use ending) is
+spent, and its wires would have to be made again. A helper that may get
+more work is kept (`keep: true`) instead.
+
+Pinned by `helper_names::{a_name_in_use_or_an_agent_s_is_refused_for_every_kind,
+an_ended_helper_s_name_starts_a_new_helper_of_any_kind,
+a_fork_s_name_used_again_is_told_by_its_own_outcome_also_after_a_restart,
+a_restart_does_not_take_the_first_fork_s_outcome_for_the_second_s}` (the
+last two failed with the name-only match: "the first `x`'s outcome was
+taken for the second's", 2 reports for 1),
+`mobs::follow::tests::an_outcome_is_the_fork_s_own_only_by_its_job`,
+`tools::assign::tests::the_tool_is_one_short_definition_that_asks_the_host`
+(the description's sentence).
