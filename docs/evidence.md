@@ -13082,3 +13082,39 @@ next request holds exactly the join and the leave note),
 `agents::restored_agents_are_told_nothing_and_contacts_shows_the_others`,
 `bootstrap::persona::tests::announcements_go_to_working_agents_once_per_task`,
 `daemon::agents::notes::tests::the_notes_name_the_agents`.
+
+## A note's folded line from its items, and a header for stored notes (review 7, M13)
+
+`note_summary` built the client's folded `Block::HelperNote` (title, first
+line, helpers, failed) by re-reading the note's own sentences ("went
+idle", "failed: ", ". Its file changes", …), live and in `restore.rs`:
+a change of wording would silently draw the whole note again. Now:
+
+- Live: the daemon makes the summary from the `NoteItem`s
+  (`endings::summary_of`) when it steers the note, and the `rkat/triggered`
+  push of the run the note starts carries it (`TriggeredNote::summary`, a
+  new optional field; `NoteSummary` gained `kind`: finished, idle,
+  idle-failed, failed, stopped, daemon-stopped, checkpoint, several). The
+  client draws that (`helper_note`'s `summary`). Whether such a run is
+  labelled "a helper went idle" is read from the kind, not from the
+  sentence's start.
+- Stored and steered into a running turn (only the text exists): every
+  note's first line is a header the code writes from `NoteKind` and reads
+  back (`NOTE_HEADER`, ``rkat-tui note: helper `review-x` failed: <reason>``,
+  ``rkat-tui note: 2 helpers: `a` finished; `b` was stopped by the user``;
+  a reason is put on one line and its `;` made `,`), and the answer's
+  first line is the paragraph after the sentence that leads it (a
+  position, not a phrase). The sentences below the header can change
+  freely: `every_note_s_header_reads_back_as_its_items_summary` checks
+  `note_summary(note_text(items)) == summary_of(items)` for every `How`
+  variant (empty, multi-line and over-long answers, reasons with `;` and
+  newlines, a helper retired with it), alone and in batches.
+- Notes earlier builds wrote have no header: the old sentence reader stays
+  for them (`legacy_summary`), pinned by their literal texts
+  (`notes_of_earlier_builds_still_fold`).
+
+Tests: `daemon::agents::endings::tests::every_note_s_header_reads_back_as_its_items_summary`,
+`daemon::agents::endings::tests::notes_of_earlier_builds_still_fold`,
+`ui::tests::helpers::the_daemon_s_summary_of_a_note_is_its_folded_line`,
+`helper_endings::an_ending_wakes_an_idle_agent_the_user_did_not_just_interrupt`
+(the push carries the summary).

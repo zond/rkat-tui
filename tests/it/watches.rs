@@ -19,7 +19,7 @@ use serde_json::json;
 
 /// Whether `m` announces a watch event naming `path`.
 fn changed(m: &Msg, path: &str) -> bool {
-    matches!(m, Msg::Triggered { label, prompt } if label == "files changed" && prompt.contains(path))
+    matches!(m, Msg::Triggered { label, prompt, .. } if label == "files changed" && prompt.contains(path))
 }
 
 /// `/status`'s line of this agent's watches (`None`: it has none).

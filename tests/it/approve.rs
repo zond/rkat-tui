@@ -160,7 +160,7 @@ async fn an_idle_agent_runs_its_call_again_once_approved() {
     assert_eq!(picker.rows.len(), 1, "{:?}", picker.rows);
     let id = rig.daemon.engine().blocks().list(&rig.daemon.session)[0].id;
     rig.send(Effect::PickedApproval(id, GrantScope::Once, None));
-    rig.saw(|m| matches!(m, Msg::Triggered { label, prompt } if label == APPROVED && prompt.starts_with(TOLD)))
+    rig.saw(|m| matches!(m, Msg::Triggered { label, prompt, .. } if label == APPROVED && prompt.starts_with(TOLD)))
         .await;
     assert_eq!(rig.turn_finished().await.unwrap().text, "after 2 results");
     assert!(path.exists(), "the repeated call ran");
@@ -495,7 +495,7 @@ async fn a_helper_s_approved_call_is_told_to_its_running_agent() {
     let call = rig.daemon.engine().blocks().list(&session)[0].clone();
     assert_eq!(call.helper.as_deref(), Some("scout"));
     rig.send(Effect::PickedApproval(call.id, GrantScope::Once, None));
-    rig.saw(|m| matches!(m, Msg::Triggered { label, prompt } if label == APPROVED && prompt.contains("that your helper `scout` made")))
+    rig.saw(|m| matches!(m, Msg::Triggered { label, prompt, .. } if label == APPROVED && prompt.contains("that your helper `scout` made")))
         .await;
     hold.notify_one();
     gate.notify_one();

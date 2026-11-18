@@ -133,6 +133,11 @@ pub struct Agents {
     /// The last note of a helper's ending sent to each agent: a run it
     /// starts is that ending's.
     helper_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
+    /// The folded line of each note of helpers' endings steered into an
+    /// agent, by agent and the note's words: the run it starts is
+    /// announced with it ([`endings::summary_of`]).
+    helper_summaries:
+        parking_lot::Mutex<std::collections::HashMap<String, (String, endings::NoteSummary)>>,
     /// The last note of an `/approve` sent to each agent: a run it starts
     /// is the user's ([`notes`]).
     approval_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
@@ -203,6 +208,7 @@ impl Agents {
             core,
             watch_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
             helper_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            helper_summaries: parking_lot::Mutex::new(std::collections::HashMap::new()),
             approval_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
             interrupted: endings::Interrupted::default(),
             held,
@@ -1026,6 +1032,7 @@ impl Agents {
         self.core.watches.forget(name);
         self.watch_sent.lock().remove(name);
         self.helper_sent.lock().remove(name);
+        self.helper_summaries.lock().remove(name);
         self.approval_sent.lock().remove(name);
         self.core.wires.forget(name);
         if let Some(session) = session {

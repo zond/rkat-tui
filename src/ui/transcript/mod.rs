@@ -1040,7 +1040,7 @@ impl Transcript {
         if whole {
             endings::note_summary(text)?;
         }
-        let mut note = helper_note(HELPER_ENDED_LABEL, text, !self.detail)?;
+        let mut note = helper_note(HELPER_ENDED_LABEL, text, None, !self.detail)?;
         if let Block::HelperNote {
             helpers, paired, ..
         } = &mut note
@@ -1054,7 +1054,15 @@ impl Transcript {
     /// prompt's block among the run's (`run_first` and later) is
     /// relabelled, else the labelled block is appended. When the run's
     /// own input showed it already ([`Self::remote_input`]) nothing is.
-    pub fn label_triggered(&mut self, run_first: BlockId, label: String, prompt: String) {
+    /// `summary`: a note of helpers' endings' folded line, as the daemon
+    /// made it.
+    pub fn label_triggered(
+        &mut self,
+        run_first: BlockId,
+        label: String,
+        prompt: String,
+        summary: Option<crate::daemon::agents::endings::NoteSummary>,
+    ) {
         if self.take_announced(&prompt, Heard::Input) {
             return;
         }
@@ -1065,7 +1073,7 @@ impl Transcript {
             .take_while(|(id, _)| *id >= run_first)
             .find(|(_, block)| matches!(block, Block::User { text } if *text == prompt))
             .map(|(id, _)| id);
-        let block = match helper_note(&label, &prompt, !self.detail) {
+        let block = match helper_note(&label, &prompt, summary, !self.detail) {
             Some(mut note) => {
                 // The notice of the same ending says what the line says:
                 // it goes (or, coming later, is not drawn).
@@ -2333,22 +2341,31 @@ pub(super) fn split_held(text: &str) -> Option<(&str, &str)> {
 /// note of helpers' endings (`label` is one of its helper labels): what
 /// the note reads back as, or, for words this build does not know, the
 /// label and the note's first line.
-pub(crate) fn helper_note(label: &str, prompt: &str, collapsed: bool) -> Option<Block> {
+pub(crate) fn helper_note(
+    label: &str,
+    prompt: &str,
+    summary: Option<crate::daemon::agents::endings::NoteSummary>,
+    collapsed: bool,
+) -> Option<Block> {
     use crate::daemon::agents::{HELPER_ENDED_LABEL, HELPER_IDLE_LABEL, endings};
     if label != HELPER_ENDED_LABEL && label != HELPER_IDLE_LABEL {
         return None;
     }
-    let summary = endings::note_summary(prompt).unwrap_or_else(|| endings::NoteSummary {
-        title: label.to_string(),
-        first: prompt
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
-        helpers: Vec::new(),
-        failed: false,
-    });
+    // The daemon's own, made from the endings; else the note's header.
+    let summary = summary
+        .or_else(|| endings::note_summary(prompt))
+        .unwrap_or_else(|| endings::NoteSummary {
+            title: label.to_string(),
+            first: prompt
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            helpers: Vec::new(),
+            failed: false,
+            kind: endings::NoteKind::Several,
+        });
     Some(Block::HelperNote {
         title: summary.title,
         first: summary.first,
@@ -2462,11 +2479,21 @@ mod tests {
         t.push(Block::User {
             text: "check the build".into(),
         });
-        t.label_triggered(run, "scheduled: nightly".into(), "check the build".into());
+        t.label_triggered(
+            run,
+            "scheduled: nightly".into(),
+            "check the build".into(),
+            None,
+        );
         assert!(matches!(&t.blocks()[0], Block::User { .. }));
         assert!(matches!(&t.blocks()[1], Block::Triggered { label, text }
             if label == "scheduled: nightly" && text == "check the build"));
-        t.label_triggered(t.next_id(), "scheduled: other".into(), "elsewhere".into());
+        t.label_triggered(
+            t.next_id(),
+            "scheduled: other".into(),
+            "elsewhere".into(),
+            None,
+        );
         assert_eq!(t.len(), 3);
         assert!(
             matches!(&t.blocks()[2], Block::Triggered { label, .. } if label == "scheduled: other")

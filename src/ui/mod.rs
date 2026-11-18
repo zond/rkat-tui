@@ -501,6 +501,9 @@ pub enum Msg {
         label: String,
         /// The run's input.
         prompt: String,
+        /// A note of helpers' endings: its folded line as the daemon made
+        /// it from the endings (`None`: read from the note's header).
+        summary: Option<crate::daemon::agents::endings::NoteSummary>,
     },
     /// The daemon listed the workspace's mob: these members are seated in
     /// it (a helper of the agent's own mob it does not name has ended).
@@ -2002,10 +2005,14 @@ impl App {
                     .peer_message(self.run_first_block, from, text);
                 self.scroll.bottom();
             }
-            Msg::Triggered { label, prompt } => {
+            Msg::Triggered {
+                label,
+                prompt,
+                summary,
+            } => {
                 self.failures.origin = Some(format!(" ({label})"));
                 self.transcript
-                    .label_triggered(self.run_first_block, label, prompt);
+                    .label_triggered(self.run_first_block, label, prompt, summary);
                 self.scroll.bottom();
             }
             Msg::SeatedHelpers(members) => self.transcript.seated_helpers(members),

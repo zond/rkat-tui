@@ -468,6 +468,7 @@ impl Runner {
                 self.send(Msg::Triggered {
                     label: fired.label,
                     prompt: fired.prompt,
+                    summary: fired.summary,
                 });
             }
             Push::Cost(totals) if totals.session_id == link.session => {

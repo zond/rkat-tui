@@ -332,8 +332,15 @@ async fn an_ending_wakes_an_idle_agent_the_user_did_not_just_interrupt() {
     let (how, told) = ended(&mut client, "slow").await;
     assert_eq!(how, "finished");
     assert!(told.is_some_and(|t| t.ends_with("was told")));
+    // The run is announced with the note's folded line, made from the
+    // ending itself.
     client
-        .saw(|m| matches!(m, Msg::Triggered { label, .. } if label == "a helper ended"))
+        .saw(|m| {
+            matches!(m, Msg::Triggered { label, summary: Some(summary), .. }
+                if label == "a helper ended"
+                    && summary.title == "helper slow finished"
+                    && summary.first == "LATE-ANSWER")
+        })
         .await;
     common::until(|| agent_heard(&llm, "LATE-ANSWER")).await;
     client.quit().await;

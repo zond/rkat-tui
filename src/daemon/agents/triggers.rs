@@ -82,20 +82,39 @@ impl Agents {
             if self.held.delivered(name, prompt) {
                 tracing::info!(agent = %name, "a note held after a failed steer reached the agent after all");
             }
-            // A note of one member's going idle (the daemon's own words,
-            // `super::endings`) is no ending.
-            let label = if prompt.starts_with("Your helper `") && prompt.contains("` went idle") {
+            // Its folded line, made from the items when the daemon sent
+            // it, else read from its header.
+            let summary = match self.helper_summaries.lock().remove(name) {
+                Some((text, summary)) if text == prompt => Some(summary),
+                _ => super::endings::note_summary(prompt),
+            };
+            // A note of one member's going idle is no ending.
+            let idle = summary.as_ref().is_some_and(|summary| {
+                matches!(
+                    summary.kind,
+                    super::endings::NoteKind::Idle | super::endings::NoteKind::IdleFailed
+                )
+            });
+            let label = if idle {
                 HELPER_IDLE_LABEL
             } else {
                 HELPER_ENDED_LABEL
             };
-            self.announce(
+            self.audit_run(
                 name,
-                session,
-                run,
-                label.to_string(),
-                prompt,
-                "a helper's ending",
+                Some((session, run)),
+                "run_triggered",
+                "a helper's ending".to_string(),
+            );
+            self.core.decisions.broadcast(
+                crate::daemon::protocol::TRIGGERED,
+                &crate::daemon::protocol::TriggeredNote {
+                    agent: name.to_string(),
+                    session_id: session.clone(),
+                    label: label.to_string(),
+                    prompt: prompt.to_string(),
+                    summary,
+                },
             );
             return;
         }
@@ -169,6 +188,7 @@ impl Agents {
                 session_id: session.clone(),
                 label,
                 prompt,
+                summary: None,
             },
         );
     }

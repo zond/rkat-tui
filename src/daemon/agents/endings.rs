@@ -157,10 +157,241 @@ fn ending_text(item: &NoteItem) -> String {
     }
 }
 
-/// The note telling a parent of `items` (one or more endings).
+/// What the first line of every note [`note_text`] writes starts with: a
+/// header the code writes from [`NoteKind`] and reads back
+/// ([`note_summary`]), so the fold of a stored note does not depend on
+/// the wording of the sentences below it.
+pub const NOTE_HEADER: &str = "rkat-tui note: ";
+
+/// What a note says of a helper, as its header and its folded line name
+/// it ([`NoteSummary::kind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteKind {
+    /// It finished (its answer follows).
+    Finished,
+    /// It went idle (its last message follows).
+    Idle,
+    /// It went idle after its run failed.
+    IdleFailed,
+    /// Its run failed.
+    Failed,
+    /// The user stopped it.
+    Stopped,
+    /// It ended when the daemon stopped.
+    DaemonStopped,
+    /// It stopped at its checkpoint (its status follows).
+    Checkpoint,
+    /// A note of several endings.
+    Several,
+}
+
+impl NoteKind {
+    /// The kinds of one ending, a longer header word before one it starts
+    /// with (`went idle after a failed run` before `went idle`).
+    const ONE: [Self; 7] = [
+        Self::Finished,
+        Self::IdleFailed,
+        Self::Idle,
+        Self::Failed,
+        Self::Stopped,
+        Self::DaemonStopped,
+        Self::Checkpoint,
+    ];
+
+    /// The kind of `how`.
+    #[must_use]
+    pub fn of(how: &How) -> Self {
+        match how {
+            How::Finished { .. } | How::Done { .. } => Self::Finished,
+            How::WentIdle { failed: None, .. } => Self::Idle,
+            How::WentIdle {
+                failed: Some(_), ..
+            } => Self::IdleFailed,
+            How::Failed { .. } => Self::Failed,
+            How::StoppedByUser => Self::Stopped,
+            How::DaemonStopped => Self::DaemonStopped,
+            How::CheckpointStopped { .. } => Self::Checkpoint,
+        }
+    }
+
+    /// Its words in a note's header.
+    fn word(self) -> &'static str {
+        match self {
+            Self::Finished => "finished",
+            Self::Idle => "went idle",
+            Self::IdleFailed => "went idle after a failed run",
+            Self::Failed => "failed",
+            Self::Stopped => "was stopped by the user",
+            Self::DaemonStopped => "ended when the daemon stopped",
+            Self::Checkpoint => "stopped at its checkpoint",
+            Self::Several => "ended",
+        }
+    }
+
+    /// What the folded line says of it (`reason`: why it failed).
+    fn what(self, reason: Option<&str>) -> String {
+        let reason = reason.unwrap_or_default();
+        match self {
+            Self::IdleFailed => format!("went idle: {reason}"),
+            Self::Failed => format!("failed: {reason}"),
+            Self::Stopped => "stopped by you".to_string(),
+            other => other.word().to_string(),
+        }
+    }
+
+    /// Whether it names why it failed.
+    fn has_reason(self) -> bool {
+        matches!(self, Self::IdleFailed | Self::Failed)
+    }
+
+    /// Whether the note carries the helper's answer (or status).
+    fn has_answer(self) -> bool {
+        matches!(self, Self::Finished | Self::Idle | Self::Checkpoint)
+    }
+}
+
+/// One ending as a note's header names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Entry {
+    label: String,
+    kind: NoteKind,
+    reason: Option<String>,
+}
+
+impl Entry {
+    fn of(item: &NoteItem) -> Self {
+        let reason = match &item.how {
+            How::Failed { reason }
+            | How::WentIdle {
+                failed: Some(reason),
+                ..
+            } => Some(one_line(&crate::mobs::endings::plain_reason(reason))),
+            _ => None,
+        };
+        Self {
+            label: item.label.clone(),
+            kind: NoteKind::of(&item.how),
+            reason,
+        }
+    }
+
+    /// Its words in the header: `` `review-x` failed: <reason> ``.
+    fn header(&self) -> String {
+        match &self.reason {
+            Some(reason) => format!("`{}` {}: {reason}", self.label, self.kind.word()),
+            None => format!("`{}` {}", self.label, self.kind.word()),
+        }
+    }
+
+    /// The entry [`Self::header`] wrote.
+    fn parse(text: &str) -> Option<Self> {
+        let (label, rest) = text.strip_prefix('`')?.split_once("` ")?;
+        NoteKind::ONE.iter().find_map(|&kind| {
+            let after = rest.strip_prefix(kind.word())?;
+            let reason = match (kind.has_reason(), after) {
+                (false, "") => None,
+                (true, after) => Some(after.strip_prefix(": ")?.to_string()),
+                (false, _) => return None,
+            };
+            Some(Self {
+                label: label.to_string(),
+                kind,
+                reason,
+            })
+        })
+    }
+
+    /// The folded line's words of it: `review-x failed: <reason>`.
+    fn what(&self) -> String {
+        format!("{} {}", self.label, self.kind.what(self.reason.as_deref()))
+    }
+}
+
+/// `text` on one line, with no `;` (the header separates entries by it).
+fn one_line(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(';', ",")
+}
+
+/// A note's header line for `entries`.
+fn header(entries: &[Entry]) -> String {
+    match entries {
+        [one] => format!("{NOTE_HEADER}helper {}", one.header()),
+        many => format!(
+            "{NOTE_HEADER}{} helpers: {}",
+            many.len(),
+            many.iter()
+                .map(Entry::header)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
+    }
+}
+
+/// The entries of a header line [`header`] wrote (without [`NOTE_HEADER`]).
+fn parse_header(line: &str) -> Option<Vec<Entry>> {
+    if let Some(one) = line.strip_prefix("helper ") {
+        return Some(vec![Entry::parse(one)?]);
+    }
+    let (count, list) = line.split_once(" helpers: ")?;
+    let count: usize = count.parse().ok()?;
+    let entries: Vec<Entry> = list.split("; ").map(Entry::parse).collect::<Option<_>>()?;
+    (entries.len() == count && count > 1).then_some(entries)
+}
+
+/// The summary of `entries`, the one answer's first line `first`.
+fn summary_from(entries: &[Entry], first: String) -> NoteSummary {
+    match entries {
+        [one] => NoteSummary {
+            title: format!("helper {}", one.what()),
+            first,
+            helpers: vec![one.label.clone()],
+            failed: one.kind.has_reason(),
+            kind: one.kind,
+        },
+        many => NoteSummary {
+            title: format!("{} helpers ended", many.len()),
+            first: many.iter().map(Entry::what).collect::<Vec<_>>().join("; "),
+            helpers: many.iter().map(|entry| entry.label.clone()).collect(),
+            failed: many.iter().any(|entry| entry.kind.has_reason()),
+            kind: NoteKind::Several,
+        },
+    }
+}
+
+/// The first line of `items`' one answer, as the note carries it (none for
+/// several, or for an ending without one).
+fn answer_first(items: &[NoteItem]) -> String {
+    let [item] = items else {
+        return String::new();
+    };
+    let answer = match &item.how {
+        How::Finished { answer }
+        | How::Done { answer }
+        | How::WentIdle {
+            answer,
+            failed: None,
+        }
+        | How::CheckpointStopped { status: answer, .. } => answer,
+        _ => return String::new(),
+    };
+    bounded(answer, None)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+/// The note telling a parent of `items` (one or more endings): a header
+/// line ([`NOTE_HEADER`]), then the endings in words.
 #[must_use]
 pub fn note_text(items: &[NoteItem]) -> String {
-    match items {
+    let entries: Vec<Entry> = items.iter().map(Entry::of).collect();
+    let words = match items {
         [one] => item_text(one),
         many => {
             let list = many
@@ -170,12 +401,21 @@ pub fn note_text(items: &[NoteItem]) -> String {
                 .join("\n");
             format!("{} notes about your helpers:\n{list}", many.len())
         }
-    }
+    };
+    format!("{}\n\n{words}", header(&entries))
 }
 
-/// A helper's ending note as a client folds it to one line: [`note_text`]'s
-/// words read back.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The folded line of the note [`note_text`] writes of `items`, made from
+/// the items themselves: what the daemon sends its clients with a run the
+/// note started ([`crate::daemon::protocol::TriggeredNote::summary`]).
+#[must_use]
+pub fn summary_of(items: &[NoteItem]) -> NoteSummary {
+    let entries: Vec<Entry> = items.iter().map(Entry::of).collect();
+    summary_from(&entries, answer_first(items))
+}
+
+/// A helper's ending note as a client folds it to one line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteSummary {
     /// What happened, in a few words: `helper review-x finished`,
     /// `helper review-x failed: <reason>`, `2 helpers ended`.
@@ -186,10 +426,14 @@ pub struct NoteSummary {
     pub helpers: Vec<String>,
     /// Whether one of them failed.
     pub failed: bool,
+    /// What it says of them.
+    pub kind: NoteKind,
 }
 
 /// The [`NoteSummary`] of `text` when it is a whole note [`note_text`]
-/// wrote (a held note that travels with the user's words is not one).
+/// wrote (a held note that travels with the user's words is not one):
+/// read from its header line, or, for a note an earlier build wrote (no
+/// header), from its sentences.
 #[must_use]
 pub fn note_summary(text: &str) -> Option<NoteSummary> {
     if crate::daemon::local::HELD_NOTE_SEPARATORS
@@ -198,6 +442,30 @@ pub fn note_summary(text: &str) -> Option<NoteSummary> {
     {
         return None;
     }
+    if let Some(rest) = text.strip_prefix(NOTE_HEADER) {
+        let (line, words) = rest.split_once("\n\n")?;
+        let entries = parse_header(line)?;
+        let first = match entries.as_slice() {
+            // The answer is the paragraph after the sentence that leads it
+            // (trimmed, so an empty one leaves a blank line).
+            [one] if one.kind.has_answer() => words
+                .split_once("\n\n")
+                .and_then(|(_, answer)| (!answer.starts_with('\n')).then_some(answer))
+                .and_then(|answer| answer.lines().next())
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            _ => String::new(),
+        };
+        return Some(summary_from(&entries, first));
+    }
+    legacy_summary(text)
+}
+
+/// [`note_summary`] of a note an earlier build wrote: its sentences read
+/// back (kept for stored conversations; this build's notes carry the
+/// header).
+fn legacy_summary(text: &str) -> Option<NoteSummary> {
     let Some((count, list)) = text.split_once(" notes about your helpers:\n") else {
         return item_summary(text);
     };
@@ -220,10 +488,12 @@ pub fn note_summary(text: &str) -> Option<NoteSummary> {
             .join("; "),
         helpers: items.iter().flat_map(|item| item.helpers.clone()).collect(),
         failed: items.iter().any(|item| item.failed),
+        kind: NoteKind::Several,
     })
 }
 
-/// [`note_summary`] of one ending's words ([`item_text`]).
+/// [`legacy_summary`] of one ending's words (an earlier build's
+/// [`item_text`]).
 fn item_summary(text: &str) -> Option<NoteSummary> {
     let first_of = |body: &str| {
         body.split_once("\n\n")
@@ -232,20 +502,19 @@ fn item_summary(text: &str) -> Option<NoteSummary> {
             .trim()
             .to_string()
     };
-    let summary = |label: &str, what: String, first: String, failed: bool| NoteSummary {
-        title: format!("helper {label} {what}"),
-        first,
-        helpers: vec![label.to_string()],
-        failed,
+    let summary = |label: &str, kind: NoteKind, reason: Option<String>, first: String| {
+        summary_from(
+            &[Entry {
+                label: label.to_string(),
+                kind,
+                reason,
+            }],
+            first,
+        )
     };
     if let Some(rest) = text.strip_prefix("The user stopped your helper `") {
         let (label, _) = rest.split_once('`')?;
-        return Some(summary(
-            label,
-            "stopped by you".into(),
-            String::new(),
-            false,
-        ));
+        return Some(summary(label, NoteKind::Stopped, None, String::new()));
     }
     let (label, rest) = text.strip_prefix("Your helper `")?.split_once("` ")?;
     let reason = |after: &str, until: &str| {
@@ -254,37 +523,22 @@ fn item_summary(text: &str) -> Option<NoteSummary> {
             .map(|(reason, _)| reason.to_string())
     };
     if rest.starts_with("finished") {
-        Some(summary(label, "finished".into(), first_of(rest), false))
+        Some(summary(label, NoteKind::Finished, None, first_of(rest)))
     } else if let Some(why) = reason("went idle after its run failed: ", ". It is still seated") {
         Some(summary(
             label,
-            format!("went idle: {why}"),
+            NoteKind::IdleFailed,
+            Some(why),
             String::new(),
-            true,
         ))
     } else if rest.starts_with("went idle") {
-        Some(summary(label, "went idle".into(), first_of(rest), false))
+        Some(summary(label, NoteKind::Idle, None, first_of(rest)))
     } else if let Some(why) = reason("failed: ", ". Its file changes") {
-        Some(summary(
-            label,
-            format!("failed: {why}"),
-            String::new(),
-            true,
-        ))
+        Some(summary(label, NoteKind::Failed, Some(why), String::new()))
     } else if rest.starts_with("ended when the rkat-tui daemon stopped") {
-        Some(summary(
-            label,
-            "ended when the daemon stopped".into(),
-            String::new(),
-            false,
-        ))
+        Some(summary(label, NoteKind::DaemonStopped, None, String::new()))
     } else if rest.starts_with("stopped at its checkpoint") {
-        Some(summary(
-            label,
-            "stopped at its checkpoint".into(),
-            first_of(rest),
-            false,
-        ))
+        Some(summary(label, NoteKind::Checkpoint, None, first_of(rest)))
     } else {
         None
     }
@@ -707,6 +961,11 @@ impl Agents {
                         self.held.hold(&name, &session, text, false);
                         format!("{name} is told with your next message to it")
                     } else {
+                        // The run it may start is announced with its
+                        // folded line, made from the items.
+                        self.helper_summaries
+                            .lock()
+                            .insert(name.clone(), (text.clone(), summary_of(&items)));
                         match self.steer_or_hold(&name, &session, text).await {
                             Ok(()) => format!("{name} was told"),
                             Err(reason) => {
@@ -976,6 +1235,265 @@ mod tests {
         }
     }
 
+    /// The note's words below its header line.
+    fn words(items: &[NoteItem]) -> String {
+        let text = note_text(items);
+        let (header, words) = text.split_once("\n\n").unwrap();
+        assert!(header.starts_with(NOTE_HEADER), "{header}");
+        words.to_string()
+    }
+
+    /// Every kind of ending, and the endings with something odd in them:
+    /// an empty answer, a reason over lines with a `;`, a long answer.
+    fn every_kind(answer: &str) -> Vec<NoteItem> {
+        let mut items = vec![
+            item(
+                "a",
+                How::Finished {
+                    answer: answer.into(),
+                },
+            ),
+            item(
+                "b",
+                How::Done {
+                    answer: answer.into(),
+                },
+            ),
+            item(
+                "c",
+                How::WentIdle {
+                    answer: answer.into(),
+                    failed: None,
+                },
+            ),
+            item(
+                "d",
+                How::WentIdle {
+                    answer: answer.into(),
+                    failed: Some("a 400; then\nnothing".into()),
+                },
+            ),
+            item(
+                "e",
+                How::Failed {
+                    reason: "InterruptedByRecovery".into(),
+                },
+            ),
+            item(
+                "f",
+                How::Failed {
+                    reason: "it timed out; twice".into(),
+                },
+            ),
+            item("g", How::StoppedByUser),
+            item("h", How::DaemonStopped),
+        ];
+        for retired in [true, false] {
+            items.push(item(
+                if retired { "i" } else { "j" },
+                How::CheckpointStopped {
+                    steps: 40,
+                    reason: "no progress".into(),
+                    status: answer.into(),
+                    retired,
+                },
+            ));
+        }
+        items[1].with = vec!["k".into()];
+        items
+    }
+
+    /// The header both ways: what [`note_text`] writes of every kind of
+    /// ending, alone and in a batch, [`note_summary`] reads back as the
+    /// summary [`summary_of`] makes from the items themselves. A wording
+    /// change of the sentences cannot break the fold; a change of the
+    /// header that breaks it fails here.
+    #[test]
+    fn every_note_s_header_reads_back_as_its_items_summary() {
+        for answer in [
+            "  The parser drops the last token.\nSecond line.",
+            "",
+            "one line",
+            &"x".repeat(MAX_ANSWER + 10),
+        ] {
+            let items = every_kind(answer);
+            for one in &items {
+                let one = std::slice::from_ref(one);
+                assert_eq!(
+                    note_summary(&note_text(one)),
+                    Some(summary_of(one)),
+                    "{}",
+                    note_text(one)
+                );
+            }
+            assert_eq!(
+                note_summary(&note_text(&items)),
+                Some(summary_of(&items)),
+                "{}",
+                note_text(&items)
+            );
+            assert_eq!(
+                note_summary(&note_text(&items[..2])),
+                Some(summary_of(&items[..2]))
+            );
+        }
+        // The header's words, pinned.
+        let text = note_text(&[item("review-x", How::StoppedByUser)]);
+        assert!(
+            text.starts_with("rkat-tui note: helper `review-x` was stopped by the user\n\n"),
+            "{text}"
+        );
+        let text = note_text(&[
+            item(
+                "review-x",
+                How::Done {
+                    answer: "ok".into(),
+                },
+            ),
+            item(
+                "lint-y",
+                How::Failed {
+                    reason: "it timed out".into(),
+                },
+            ),
+        ]);
+        assert!(
+            text.starts_with(
+                "rkat-tui note: 2 helpers: `review-x` finished; `lint-y` failed: it timed out\n\n"
+            ),
+            "{text}"
+        );
+        let kinds: Vec<NoteKind> = every_kind("a")
+            .iter()
+            .map(|item| summary_of(std::slice::from_ref(item)).kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                NoteKind::Finished,
+                NoteKind::Finished,
+                NoteKind::Idle,
+                NoteKind::IdleFailed,
+                NoteKind::Failed,
+                NoteKind::Failed,
+                NoteKind::Stopped,
+                NoteKind::DaemonStopped,
+                NoteKind::Checkpoint,
+                NoteKind::Checkpoint,
+            ]
+        );
+        // A header this build cannot read is no note of its own.
+        assert_eq!(
+            note_summary("rkat-tui note: helper `x` danced\n\nwords"),
+            None
+        );
+    }
+
+    /// Notes earlier builds wrote (no header) still fold: their literal
+    /// texts, as stored conversations hold them.
+    #[test]
+    fn notes_of_earlier_builds_still_fold() {
+        let line = |text: &str| {
+            let summary = note_summary(text).unwrap();
+            (summary.title, summary.first, summary.failed, summary.kind)
+        };
+        assert_eq!(
+            line(
+                "Your helper `scout` finished its task. Its answer:\n\nthe bug is in parse()\n\nIt is retired: it takes no more messages (start another helper for more work)."
+            ),
+            (
+                "helper scout finished".into(),
+                "the bug is in parse()".into(),
+                false,
+                NoteKind::Finished
+            )
+        );
+        assert_eq!(
+            line(
+                "Your helper `w1` went idle. Its last message:\n\nwaiting for more\n\nIt is still seated, idle: a message to it starts another run of it, so message it with `send_message` only to give it more work, and retire it with `retire_helper` when you are done with it."
+            ),
+            (
+                "helper w1 went idle".into(),
+                "waiting for more".into(),
+                false,
+                NoteKind::Idle
+            )
+        );
+        assert_eq!(
+            line(
+                "Your helper `w1` went idle after its run failed: a 400. It is still seated: message it with `send_message` to try again, or retire it with `retire_helper`."
+            ),
+            (
+                "helper w1 went idle: a 400".into(),
+                String::new(),
+                true,
+                NoteKind::IdleFailed
+            )
+        );
+        assert_eq!(
+            line(
+                "Your helper `scout` failed: it timed out. Its file changes stay on disk; its conversation is not continued."
+            ),
+            (
+                "helper scout failed: it timed out".into(),
+                String::new(),
+                true,
+                NoteKind::Failed
+            )
+        );
+        assert_eq!(
+            line(
+                "The user stopped your helper `scout`. Its file changes stay on disk; its conversation is not continued."
+            ),
+            (
+                "helper scout stopped by you".into(),
+                String::new(),
+                false,
+                NoteKind::Stopped
+            )
+        );
+        assert_eq!(
+            line(
+                "Your helper `scout` ended when the rkat-tui daemon stopped, before it finished. Its file changes stay on disk; its conversation is not continued."
+            ),
+            (
+                "helper scout ended when the daemon stopped".into(),
+                String::new(),
+                false,
+                NoteKind::DaemonStopped
+            )
+        );
+        assert_eq!(
+            line(
+                "Your helper `scout` stopped at its checkpoint after 40 steps and was not continued: no progress. Its last status:\n\nhalf done\n\nIt is still seated, idle: message it with `send_message` to go on, or retire it with `retire_helper`."
+            ),
+            (
+                "helper scout stopped at its checkpoint".into(),
+                "half done".into(),
+                false,
+                NoteKind::Checkpoint
+            )
+        );
+        let two = "2 notes about your helpers:\n- The user stopped your helper `a`. Its file changes stay on disk; its conversation is not continued.\n- Your helper `b` failed: it timed out. Its file changes stay on disk; its conversation is not continued.";
+        assert_eq!(
+            line(two),
+            (
+                "2 helpers ended".into(),
+                "a stopped by you; b failed: it timed out".into(),
+                true,
+                NoteKind::Several
+            )
+        );
+        // A held note with the user's words after it, under either
+        // separator, is no whole note.
+        for separator in crate::daemon::local::HELD_NOTE_SEPARATORS {
+            assert_eq!(
+                note_summary(&format!("{two}\n\n{separator}\n\nnow fix it")),
+                None
+            );
+        }
+    }
+
     /// A note names the helpers of its own a helper was retired with, and
     /// still reads back as its one line.
     #[test]
@@ -1112,7 +1630,7 @@ mod tests {
 
     #[test]
     fn each_ending_is_told_in_plain_words() {
-        let finished = note_text(&[item(
+        let finished = words(&[item(
             "scout",
             How::Finished {
                 answer: "the bug is in parse()".into(),
@@ -1124,7 +1642,7 @@ mod tests {
                 && finished.contains("\n\nthe bug is in parse()\n\n"),
             "{finished}"
         );
-        let done = note_text(&[item(
+        let done = words(&[item(
             "scout",
             How::Done {
                 answer: "  the bug is in parse()\n".into(),
@@ -1134,7 +1652,7 @@ mod tests {
             done,
             "Your helper `scout` finished its task. Its answer:\n\nthe bug is in parse()\n\nIt is retired: it takes no more messages (start another helper for more work)."
         );
-        let idle = note_text(&[item(
+        let idle = words(&[item(
             "w1",
             How::WentIdle {
                 answer: "waiting for more".into(),
@@ -1145,7 +1663,7 @@ mod tests {
             idle,
             "Your helper `w1` went idle. Its last message:\n\nwaiting for more\n\nIt is still seated, idle: a message to it starts another run of it, so message it with `send_message` only to give it more work, and retire it with `retire_helper` when you are done with it."
         );
-        let idle_failed = note_text(&[item(
+        let idle_failed = words(&[item(
             "w1",
             How::WentIdle {
                 answer: String::new(),
@@ -1157,17 +1675,17 @@ mod tests {
                 && idle_failed.contains("`retire_helper`"),
             "{idle_failed}"
         );
-        let stopped = note_text(&[item("scout", How::StoppedByUser)]);
+        let stopped = words(&[item("scout", How::StoppedByUser)]);
         assert_eq!(
             stopped,
             "The user stopped your helper `scout`. Its file changes stay on disk; its conversation is not continued."
         );
-        let lost = note_text(&[item("scout", How::DaemonStopped)]);
+        let lost = words(&[item("scout", How::DaemonStopped)]);
         assert!(
             lost.contains("ended when the rkat-tui daemon stopped"),
             "{lost}"
         );
-        let failed = note_text(&[item(
+        let failed = words(&[item(
             "scout",
             How::Failed {
                 reason: "InterruptedByRecovery".into(),
@@ -1183,7 +1701,7 @@ mod tests {
     #[test]
     fn a_long_answer_is_cut_and_says_where_the_rest_is() {
         let answer = "x".repeat(MAX_ANSWER + 10);
-        let cut = note_text(&[item(
+        let cut = words(&[item(
             "scout",
             How::Finished {
                 answer: answer.clone(),
@@ -1202,7 +1720,7 @@ mod tests {
 
     #[test]
     fn several_endings_go_as_one_note_listing_each() {
-        let text = note_text(&[
+        let text = words(&[
             item("a", How::StoppedByUser),
             item(
                 "b",

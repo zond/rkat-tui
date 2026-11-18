@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- The folded line of a helper's note (`✓ helper review-x finished: …`)
+  was made by reading the note's sentences back, so a change of their
+  wording would have shown the whole note again. The daemon now sends the
+  line with the run the note starts, made from the endings themselves,
+  and every note starts with a short header line (``rkat-tui note: helper
+  `review-x` finished``) that a reopened conversation folds by. Notes
+  earlier versions wrote still fold.
 - An agent's conversation grew by a note listing the workspace's other
   agents and their states every time a client attached to an agent or
   left it, and at every seat, switch and restart; each note claimed to

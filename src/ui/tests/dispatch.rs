@@ -1677,6 +1677,7 @@ fn an_approval_s_run_is_headed_by_why_it_started() {
     let mut app = App::new(StatusInfo::default());
     let note = "The user approved your blocked call `shell cmd` once. Run it again exactly as before (any other call is reviewed as usual).";
     app.update(Msg::Triggered {
+        summary: None,
         label: "approved: the agent is told and goes on".into(),
         prompt: note.into(),
     });

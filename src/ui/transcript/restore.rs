@@ -46,7 +46,7 @@ pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
 /// its folded block.
 fn restored_note(text: &str) -> Option<Block> {
     crate::daemon::agents::endings::note_summary(text)?;
-    super::helper_note(crate::daemon::agents::HELPER_ENDED_LABEL, text, true)
+    super::helper_note(crate::daemon::agents::HELPER_ENDED_LABEL, text, None, true)
 }
 
 /// A stored user message as the live view shows it
@@ -67,7 +67,9 @@ fn restored_user(text: String) -> Vec<Block> {
     }
     if let Some((held, words)) = super::split_held(&text) {
         let note = (!held.is_empty())
-            .then(|| super::helper_note(crate::daemon::agents::HELPER_ENDED_LABEL, held, true))
+            .then(|| {
+                super::helper_note(crate::daemon::agents::HELPER_ENDED_LABEL, held, None, true)
+            })
             .flatten();
         let words = (!words.is_empty()).then(|| Block::User {
             text: words.to_string(),

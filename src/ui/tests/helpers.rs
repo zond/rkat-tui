@@ -1093,6 +1093,39 @@ fn ending_note(label: &str, how: crate::mobs::endings::How) -> String {
     }])
 }
 
+/// The folded line the daemon sends with a run a helper's note started is
+/// the one drawn: the note's words are not read for it.
+#[test]
+fn the_daemon_s_summary_of_a_note_is_its_folded_line() {
+    use crate::daemon::agents::HELPER_ENDED_LABEL;
+    use crate::daemon::agents::endings::{NoteItem, summary_of};
+    use crate::mobs::endings::How;
+    let items = [NoteItem {
+        label: "scout".into(),
+        how: How::Failed {
+            reason: "it timed out".into(),
+        },
+        rest: None,
+        with: Vec::new(),
+    }];
+    let (mut app, _, _) = helper_app();
+    app.update(Msg::Triggered {
+        summary: Some(summary_of(&items)),
+        label: HELPER_ENDED_LABEL.into(),
+        // Words this build does not know: the summary says what happened.
+        prompt: "Something about scout, worded anew.".into(),
+    });
+    assert!(
+        matches!(
+            app.transcript.last(),
+            Some(Block::HelperNote { title, helpers, failed: true, .. })
+                if title == "helper scout failed: it timed out" && helpers == &["scout"]
+        ),
+        "{:?}",
+        app.transcript.last()
+    );
+}
+
 /// A run the daemon started with a helper's ending note is one folded line
 /// (how it ended and the answer's first line), not the whole note under a
 /// clock; a click opens the note. The daemon's notice of the same ending
@@ -1117,6 +1150,7 @@ fn a_helper_s_ending_note_is_one_folded_line() {
     let (mut app, _, _) = helper_app();
     ended(&mut app, "scout", "finished");
     app.update(Msg::Triggered {
+        summary: None,
         label: HELPER_ENDED_LABEL.into(),
         prompt: ending_note("scout", How::Done { answer: long }),
     });
@@ -1167,6 +1201,7 @@ fn a_helper_s_ending_note_is_one_folded_line() {
     // The run first, then the notice: still one line, no notice.
     let (mut app, _, _) = helper_app();
     app.update(Msg::Triggered {
+        summary: None,
         label: HELPER_ENDED_LABEL.into(),
         prompt: ending_note(
             "scout",
@@ -1186,6 +1221,7 @@ fn a_helper_s_ending_note_is_one_folded_line() {
     // Several endings in one note, and a helper going idle.
     let (mut app, _, _) = helper_app();
     app.update(Msg::Triggered {
+        summary: None,
         label: HELPER_ENDED_LABEL.into(),
         prompt: crate::daemon::agents::endings::note_text(&[
             crate::daemon::agents::endings::NoteItem {
@@ -1205,6 +1241,7 @@ fn a_helper_s_ending_note_is_one_folded_line() {
         ]),
     });
     app.update(Msg::Triggered {
+        summary: None,
         label: HELPER_IDLE_LABEL.into(),
         prompt: ending_note(
             "scout",
@@ -1235,6 +1272,7 @@ fn a_helper_s_ending_note_is_one_folded_line() {
     // `/export` has the whole note under a heading.
     let (mut app, _, _) = helper_app();
     app.update(Msg::Triggered {
+        summary: None,
         label: HELPER_ENDED_LABEL.into(),
         prompt: ending_note(
             "scout",
@@ -1579,6 +1617,7 @@ fn a_helper_s_ending_note_is_one_folded_line_in_every_order() {
     );
     let triggered = |app: &mut App, prompt: &str| {
         app.update(Msg::Triggered {
+            summary: None,
             label: HELPER_ENDED_LABEL.into(),
             prompt: prompt.into(),
         });
@@ -1691,6 +1730,7 @@ fn a_note_that_reaches_a_running_turn_is_one_folded_line() {
         told: Some("main-ab12 was told".into()),
     });
     app.update(Msg::Triggered {
+        summary: None,
         label: HELPER_ENDED_LABEL.into(),
         prompt: note.clone(),
     });

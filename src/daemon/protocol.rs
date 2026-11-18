@@ -1311,6 +1311,10 @@ pub struct TriggeredNote {
     pub label: String,
     /// The run's input.
     pub prompt: String,
+    /// A note of helpers' endings: its folded line, made from the endings
+    /// themselves (absent for any other run, and from an earlier daemon).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<crate::daemon::agents::endings::NoteSummary>,
 }
 
 /// [`SWITCHED`]'s parameters.
