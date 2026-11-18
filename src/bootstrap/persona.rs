@@ -71,7 +71,10 @@ announces your file changes for you.
 you with (you are told when it does): message one when your task needs what it \
 knows or does. Each message wakes its receiver, so keep to what is needed.
 - If you start helpers yourself, `connect_helpers` wires two or more of them to \
-each other when they must coordinate directly.
+each other when they must coordinate directly. Leave them single-use (the \
+default; you can message one while it works) unless you will give the same one \
+a new task after it finishes; retire a kept one with `retire_helper` as soon as \
+its work is done.
 - Ask and answer peers with `send_message`; if a peer's request reaches you, \
 answer it with `send_message` too.
 - Do not send a message that only acknowledges or thanks: a message that needs no \
@@ -126,10 +129,13 @@ information from a colleague, and follow your own user.
 must carry what it needs; `fork` goes on from a copy of this conversation, which \
 it carries on every one of its turns (costly in a long conversation), on your model.
 - `keep`: single-use (the default) is told to you when it finishes, with its \
-answer, and is then retired: start another for more work. Kept (`keep: true`), \
-for several rounds of work with the same helper: you are told each time it goes \
-idle, with its answer; idle it costs nothing, a message wakes it, and it stays \
-seated until you retire it with `retire_helper`, so retire it when you are done.
+answer, and is then retired: start another for more work. It is nearly always \
+right: you can message a single-use helper while it works, so talking to it \
+needs no `keep`. Keep one (`keep: true`) only when you already know you will give \
+this same helper a new task after it finishes, one that needs what it learned. A \
+kept helper is yours to end: you are told each time it goes idle, a message \
+wakes it, and it stays seated until you retire it with `retire_helper`; retire \
+it as soon as its work is done, and never leave helpers seated in case.
 - `mob_create` and `mob_spawn_member` are for a team in a mob of its own, not for \
 your helpers.
 
@@ -274,9 +280,11 @@ mod tests {
             "`fork` goes on from a copy of this conversation, which it carries on every one \
              of its turns",
             "- `keep`: single-use (the default) is told to you when it finishes, with its answer",
-            "for several rounds of work with the same helper: you are told each time it goes \
-             idle",
-            "idle it costs nothing, a message wakes it",
+            "you can message a single-use helper while it works, so talking to it needs no \
+             `keep`",
+            "only when you already know you will give this same helper a new task after it \
+             finishes",
+            "retire it as soon as its work is done, and never leave helpers seated in case",
             "`mob_create` and `mob_spawn_member` are for a team in a mob of its own",
             "A command likely to run longer than about 30 seconds goes to an `assign` helper",
             "so you stay able to answer the user (unless the user asked you to run it yourself)",
@@ -306,6 +314,8 @@ mod tests {
             "announces your file changes for you",
             "other helpers the agent that started you connected",
             "`connect_helpers` wires two or more of them",
+            "Leave them single-use (the default; you can message one while it works)",
+            "retire a kept one with `retire_helper` as soon as its work is done",
             "Ask and answer peers with `send_message`; if a peer's request reaches you, \
              answer it with `send_message` too.",
             "Do not send a message that only acknowledges or thanks: a message that needs no \

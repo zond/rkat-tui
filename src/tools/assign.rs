@@ -124,12 +124,14 @@ pub const EXAMPLE: &str =
 
 /// The tool's description: the two choices, and what each costs.
 pub const DESCRIPTION: &str = "Start a helper on a task. It runs alongside you; you can message \
-     each other. context \"fresh\" (default): the task is all it knows, so give it what it \
-     needs. context \"fork\": it goes on from a copy of this conversation, which it carries on \
-     every turn, on your model. keep false (default): you are told when it finishes, with its \
-     answer, and it is retired. keep true, for several rounds of work with the same helper: it \
-     stays idle after each run (you are told each time; a message wakes it) until you retire it \
-     with retire_helper. A name in use is refused; an ended helper's name starts a brand-new one.";
+     each other while it works. context \"fresh\" (default): the task is all it knows, so give \
+     it what it needs. context \"fork\": it goes on from a copy of this conversation, which it \
+     carries on every turn, on your model. keep false (default, nearly always right): you are \
+     told when it finishes, with its answer, and it is retired; start another for more work. \
+     Messaging it while it works needs no keep. keep true only to give this same helper a new \
+     task after it finished one: it stays seated, idle, until you retire it with \
+     retire_helper, which you must do as soon as its work is done. A name in use is refused; \
+     an ended helper's name starts a brand-new one.";
 
 impl AssignToolDispatcher {
     /// `assign` over `host`.
@@ -156,7 +158,7 @@ impl AssignToolDispatcher {
                     },
                     "keep": {
                         "type": "boolean",
-                        "description": "false (default): retired when it finishes. true: stays idle after each run until you retire it."
+                        "description": "false (default): retired when it finishes; you can message it while it runs. true: only to give it a new task after one; stays until you retire it."
                     },
                     "model": {
                         "type": "string",
@@ -375,7 +377,9 @@ mod tests {
         assert_eq!(defs[2].name.as_str(), RETIRE_HELPER);
         assert!(defs[2].description.len() < 200, "{}", defs[2].description);
         assert!(defs[1].description.len() < 400, "{}", defs[1].description);
-        assert!(defs[0].description.len() < 600, "{}", defs[0].description);
+        // 717 bytes: room for when not to keep a helper and that a kept
+        // one is the caller's to retire.
+        assert!(defs[0].description.len() < 750, "{}", defs[0].description);
         let schema = defs[0].input_schema.to_string();
         assert!(schema.contains(r#""required":["name","task"]"#), "{schema}");
         assert!(schema.contains(r#""enum":["fresh","fork"]"#), "{schema}");
@@ -403,9 +407,12 @@ mod tests {
         };
         let outcome = format!("{:?}", tools.dispatch(call).await.unwrap());
         assert!(outcome.contains("(Fork, keep true)"), "{outcome}");
-        // The description says when to keep one and how it ends.
+        // The description says when to keep one and how it ends: talking
+        // to a helper needs no keep, and a kept one is retired by its caller.
         for part in [
-            "several rounds of work",
+            "Messaging it while it works needs no keep",
+            "keep true only to give this same helper a new task after it finished one",
+            "which you must do as soon as its work is done",
             "retire_helper",
             "carries on every turn",
             "an ended helper's name starts a brand-new one",

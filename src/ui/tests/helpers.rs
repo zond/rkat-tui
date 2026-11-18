@@ -1520,6 +1520,62 @@ fn a_helper_s_ending_note_is_one_folded_line_in_every_order() {
     users_hold_no_note(&users);
 }
 
+/// The second field sighting's order: the agent's turn runs (a tool call
+/// done, a paragraph written) when its single-use helper finishes; the
+/// daemon's notice of the ending, the note's announcement, then the note
+/// as the input of the turn's next run, which the agent answers. The note
+/// is its one folded line, never the whole note as the user's message.
+#[test]
+fn a_note_that_reaches_a_running_turn_is_one_folded_line() {
+    use crate::daemon::agents::HELPER_ENDED_LABEL;
+    use crate::mobs::endings::How;
+    let note = ending_note(
+        "scout",
+        How::Done {
+            answer: "## Findings\n\nThe parser drops the last token.\n\n```rust\nlet x = 1;\n```"
+                .into(),
+        },
+    );
+    let (mut app, _, _) = helper_app();
+    app.update(Msg::RemoteTurn { prompt: None });
+    app.update(agent(AgentEvent::ToolCallRequested {
+        id: "t9".into(),
+        name: "read_file".into(),
+        args: test_args(json!({"path": "src/x.rs"})),
+    }));
+    app.update(agent(AgentEvent::ToolExecutionCompleted {
+        id: "t9".into(),
+        name: "read_file".into(),
+        is_error: false,
+        duration_ms: 1,
+    }));
+    app.update(agent(AgentEvent::TextComplete {
+        content: "Still checking the lexer.".into(),
+        assistant_message_id: None,
+    }));
+    app.update(Msg::HelperEnded {
+        path: vec!["scout".into()],
+        how: "finished".into(),
+        told: Some("main-ab12 was told".into()),
+    });
+    app.update(Msg::Triggered {
+        label: HELPER_ENDED_LABEL.into(),
+        prompt: note.clone(),
+    });
+    app.update(Msg::RemoteTurn { prompt: Some(note) });
+    app.update(agent(AgentEvent::TextComplete {
+        content: "The helper confirms it.".into(),
+        assistant_message_id: None,
+    }));
+    let (notes, users) = notes_and_users(&app);
+    assert_eq!(notes, vec!["helper scout finished".to_string()]);
+    assert_eq!(users, vec!["go".to_string()]);
+    let text = screen(&mut app, 40).join("\n");
+    assert!(text.contains("✓ helper scout finished"), "{text}");
+    assert!(!text.contains("Your helper"), "{text}");
+    assert!(!text.contains("let x = 1"), "{text}");
+}
+
 /// Another client's message that carries notes held after an interrupt
 /// shows them as their folded line and the message as its own words.
 #[test]

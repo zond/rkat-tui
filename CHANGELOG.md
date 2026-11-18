@@ -69,6 +69,15 @@
 
 ### Changed
 
+- The agents and helpers are told plainly when to keep a helper: `assign`'s
+  description, its `keep` parameter, the agents' and the helpers'
+  instructions and a kept helper's start say that a single-use helper can
+  be messaged while it works, so talking to it needs no `keep`; `keep:
+  true` is only for giving the same helper a new task after it finished
+  one, and a kept helper must be retired with `retire_helper` as soon as
+  its work is done. Kept helpers had piled up, most likely kept only to be
+  talked to and then never retired. Restored
+  conversations get the new instructions.
 - The classifier's built-in allow list names a project's own Nix flake:
   `nix develop` (also `-c <command>`), `nix build`, `nix shell` and
   `nix run` of the project's `flake.nix` with its `flake.lock` are

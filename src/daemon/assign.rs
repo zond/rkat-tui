@@ -94,10 +94,10 @@ pub fn started_text(name: &str, peer: &str, kind: HelperKind) -> String {
             "It is then retired; do not wait or poll for it."
         }
         (HelperContext::Fresh, HelperLife::Kept) => {
-            "It is kept: after each run it stays seated and idle, and you are told in a note with its answer; do not wait or poll for it. A message to it starts another run, so send one only with more work, and retire it with `retire_helper` when you need it no more."
+            "It is kept: after each run it stays seated and idle, and you are told in a note with its answer; do not wait or poll for it. A message to it starts another run, so send one only with more work. It stays until you retire it with `retire_helper`: do so as soon as its work is done."
         }
         (HelperContext::Fork, HelperLife::Kept) => {
-            "It is kept: it then stays seated and idle, and after each later run you are told in a note with its answer; do not wait or poll for it. A message to it starts another run, so send one only with more work, and retire it with `retire_helper` when you need it no more."
+            "It is kept: it then stays seated and idle, and after each later run you are told in a note with its answer; do not wait or poll for it. A message to it starts another run, so send one only with more work. It stays until you retire it with `retire_helper`: do so as soon as its work is done."
         }
     };
     format!(

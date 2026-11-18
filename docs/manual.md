@@ -1288,9 +1288,13 @@ What each costs: a fork carries the whole conversation on every one of its
 model calls (costly in a long one), and a fresh helper knows only what its
 task says, so the task must carry what it needs. A kept helper costs
 nothing while idle, but every message to it starts a run of it (and its
-answer one of the agent's), so it is for several rounds of work with the
-same helper; single-use is the default because left-over idle helpers cost
-attention. `mob_create` and `mob_spawn_member` make teams in mobs of their
+answer one of the agent's), so it is only for giving the same helper a new
+task after it finished one. Talking to a helper needs no `keep`: a
+single-use helper can be messaged, and can message the agent, while it
+works. Single-use is the default because left-over idle helpers cost
+attention, and the agents are told so: keep a helper only when you already
+know it will get a new task that needs what it learned, and retire a kept
+one with `retire_helper` as soon as its work is done. `mob_create` and `mob_spawn_member` make teams in mobs of their
 own (their members are kept fresh helpers); the engine's `fork_off`,
 `spawn_member` and `spawn_many_members` are not offered (a fork is the
 engine's own all the same: `assign` starts it through the engine's
