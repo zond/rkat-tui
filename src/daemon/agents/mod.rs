@@ -31,8 +31,9 @@ mod triggers;
 
 pub use names::is_agent;
 use names::new_name;
-pub use notes::Leave;
+pub use notes::{APPROVED_LABEL, Leave};
 pub(crate) use notes::{append_note, append_note_to, note_compacted, steer_member};
+pub use triggers::READ_ONLY_COMMS_NOTE;
 pub use triggers::{HELPER_ENDED_LABEL, HELPER_IDLE_LABEL};
 
 use std::collections::BTreeMap;

@@ -1006,6 +1006,11 @@ impl Transcript {
         if self.take_announced(&text, Heard::Triggered) {
             return;
         }
+        // The daemon's own words: its notice or its triggered line says
+        // so already, and they are never the user's band.
+        if composed_input(&text).is_some() {
+            return;
+        }
         if let Some(note) = self.folded_note(&text, true) {
             self.push(note);
             self.announce(text, Heard::Input);
@@ -1150,7 +1155,16 @@ impl Transcript {
     /// message reached a running turn, whose events named only the sender;
     /// the run that reads it carries the text), else it is a new block,
     /// folded to its first line unless everything is shown in full.
+    ///
+    /// A message with no words yet, or none at all (an empty or blank
+    /// body), draws nothing: a bare `✉ from agent …` says nothing, and as
+    /// a block of the session it would part the agent's streaming prose.
+    /// Its words, when they come with the run that reads it, are a block
+    /// then.
     pub fn peer_message(&mut self, run_first: BlockId, from: String, text: String) {
+        if text.trim().is_empty() {
+            return;
+        }
         let waiting = (!text.is_empty())
             .then(|| {
                 self.iter()
@@ -2256,6 +2270,45 @@ enum Heard {
 /// only.
 const MAX_ANNOUNCED: usize = 16;
 
+/// The one dim line a run's input is drawn as when the daemon or this
+/// client composed it, never as the user's band or the pinned line
+/// (`None`: not one of theirs). Live, each of these has its own notice or
+/// triggered line already and the input shows nothing more; a restored
+/// conversation shows this line in its place. A helper's ending note,
+/// held notes and `/compact`'s prompt are handled where they are read; a
+/// schedule's prompt was written by the user or the agent and stays its
+/// triggered line live.
+#[must_use]
+pub fn composed_input(text: &str) -> Option<&'static str> {
+    use crate::daemon::{checkpoint, prepare};
+    let text = text.trim();
+    let prepare_request = text.ends_with(prepare::READY_SUFFIX)
+        || ((text.starts_with("Compaction happens automatically at")
+            || text.starts_with("Your context is at "))
+            && text.ends_with("then `compact_ready`."));
+    if prepare_request {
+        Some("the agent was asked to prepare for compaction")
+    } else if text == checkpoint::CONTINUE_INSTRUCTION {
+        Some(checkpoint::CONTINUE_LABEL)
+    } else if text.starts_with("rkat-tui checkpoint: this run has made ") {
+        Some(checkpoint::STATUS_LABEL)
+    } else if text == crate::approval::mode::PLAN_ON_NOTE {
+        Some("plan mode on: the agent was told")
+    } else if text == crate::approval::mode::PLAN_OFF_NOTE {
+        Some("plan mode off: the agent was told")
+    } else if text.starts_with("The user approved your blocked call") {
+        Some(crate::daemon::agents::APPROVED_LABEL)
+    } else if text.starts_with("files changed: ") {
+        Some("files changed: the agent was told")
+    } else if text == crate::daemon::agents::READ_ONLY_COMMS_NOTE {
+        Some("the agent was told that a read-only profile cannot send messages")
+    } else if text == crate::ui::COMPACT_PROMPT {
+        Some("compacted")
+    } else {
+        None
+    }
+}
+
 /// `text` split into the held notes and the user's words that follow
 /// them, when it is a message the daemon put held notes before
 /// (`crate::daemon::local::HELD_NOTE_SEPARATOR`).
@@ -2704,6 +2757,96 @@ mod tests {
         });
         t.apply_agent_event(&text("After."));
         assert!(matches!(t.last(), Some(Block::Assistant { md }) if md == "After."));
+    }
+
+    /// The owner's sighting on 0.0.16: the agent's sentence cut into three
+    /// blocks while a kept helper ran folded, after a peer message with an
+    /// empty body. None of a folded helper's events (its tool calls'
+    /// start and end, its streamed text, its run's start) nor a peer
+    /// message without words parts the agent's prose, and the blank
+    /// message draws nothing.
+    #[test]
+    fn a_folded_helper_s_events_and_a_blank_peer_message_do_not_part_the_agent_s_prose() {
+        let mut t = Transcript::new();
+        t.push(Block::User { text: "go".into() });
+        t.apply_agent_event(&turn_started());
+        t.apply_scoped_event(&helper_event(&["scout"], turn_started()));
+        t.apply_agent_event(&text("Then nothing will be"));
+        t.apply_scoped_event(&helper_call(
+            &["scout"],
+            "h1",
+            "shell",
+            json!({"command": "ls"}),
+        ));
+        t.apply_scoped_event(&helper_event(
+            &["scout"],
+            AgentEvent::ToolExecutionStarted {
+                id: "h1".into(),
+                name: "shell".into(),
+            },
+        ));
+        t.apply_scoped_event(&helper_event(&["scout"], text("its own words, folded")));
+        t.peer_message(BlockId(0), "scout".into(), String::new());
+        t.peer_message(BlockId(0), "scout".into(), "  \n".into());
+        t.apply_agent_event(&text(" restored or discarded"));
+        t.apply_scoped_event(&helper_event(
+            &["scout"],
+            AgentEvent::ToolExecutionCompleted {
+                id: "h1".into(),
+                name: "shell".into(),
+                is_error: false,
+                duration_ms: 5,
+            },
+        ));
+        t.apply_agent_event(&text(" blindly."));
+        let whole = "Then nothing will be restored or discarded blindly.";
+        t.apply_agent_event(&text_done(whole));
+        let agent_prose: Vec<&Block> = t
+            .iter()
+            .filter(|(id, b)| t.owner_of(*id).is_none() && matches!(b, Block::Assistant { .. }))
+            .map(|(_, b)| b)
+            .collect();
+        assert_eq!(
+            agent_prose,
+            [&Block::Assistant { md: whole.into() }],
+            "{:#?}",
+            t.blocks()
+        );
+        assert!(
+            !t.blocks().iter().any(|b| matches!(b, Block::Peer { .. })),
+            "a blank peer message draws nothing"
+        );
+    }
+
+    /// A kept helper's "went idle" note steered into the running turn is
+    /// its folded line, never the user's `›` message.
+    #[test]
+    fn a_went_idle_note_joining_a_running_turn_is_its_folded_line() {
+        use crate::daemon::agents::endings::{NoteItem, note_text};
+        let mut t = Transcript::new();
+        t.push(Block::User { text: "go".into() });
+        t.apply_agent_event(&turn_started());
+        let note = note_text(&[NoteItem {
+            label: "scout".into(),
+            how: crate::mobs::endings::How::WentIdle {
+                answer: "found it".into(),
+                failed: None,
+            },
+            rest: None,
+        }]);
+        t.remote_input(note);
+        assert!(
+            matches!(t.last(), Some(Block::HelperNote { .. })),
+            "{:?}",
+            t.last()
+        );
+        assert_eq!(
+            t.blocks()
+                .iter()
+                .filter(|b| matches!(b, Block::User { .. }))
+                .count(),
+            1
+        );
     }
 
     /// The same rule the other way: the agent's tool call and notices of

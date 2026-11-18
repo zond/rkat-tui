@@ -4,6 +4,21 @@
 
 ### Fixed
 
+- The pinned bar at the top of the transcript (`↑ you: …`) could show
+  the daemon's own words as your message, for example the smart
+  compaction's "needs compacting soon … call `compact_ready`", and such
+  inputs were drawn as your message in a restored conversation. Every
+  input the daemon composes (the prepare instruction and its reminder,
+  the checkpoint's status request and its continue, the plan-mode notes,
+  an approval's note, a watch's `files changed`, the read-only profile
+  note) is now one dim line, live and restored, and never a message of
+  yours or the pinned one; the bar shows only what you (or another
+  client of the same agent) typed.
+- A peer message with no words (an empty or blank body, or one that
+  reached a running turn before its words) drew a bare `✉ from agent …`
+  line, and that line cut the agent's answer that was streaming into
+  separate blocks. Such a message now draws nothing, live and in a
+  restored conversation; its words, when they come, are its block.
 - Quitting just as a helper finished could leave the daemon's stop
   unclean (it ended with an error about a lifecycle commit), since the
   daemon's retire of the finished helper could meet the stop of its mob.

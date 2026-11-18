@@ -58,6 +58,13 @@ fn restored_user(text: String) -> Vec<Block> {
     if let Some(note) = restored_note(&text) {
         return vec![note];
     }
+    // The daemon's own words, as one dim line: never the user's band.
+    if let Some(line) = super::composed_input(&text) {
+        return vec![Block::Notice {
+            level: super::NoticeLevel::Info,
+            text: line.to_string(),
+        }];
+    }
     if let Some((held, words)) = super::split_held(&text) {
         let note = (!held.is_empty())
             .then(|| super::helper_note(crate::daemon::agents::HELPER_ENDED_LABEL, held, true))
@@ -119,6 +126,10 @@ fn peer_blocks(notice: &meerkat_core::SystemNoticeMessage) -> Vec<Block> {
                     .collect::<Vec<_>>()
                     .join("\n");
                 let body = crate::ui::peer::body(&from, &text);
+                // A blank message draws nothing, as live.
+                if body.trim().is_empty() {
+                    return None;
+                }
                 Some(Block::Peer {
                     from: crate::ui::peer::short_name(&from).to_string(),
                     text: body,
@@ -185,14 +196,14 @@ mod tests {
 
     /// A committed peer message (a comms notice, as the engine stores an
     /// incoming one) is restored as a block labelled with its sender; an
-    /// outgoing one is not shown.
+    /// outgoing one is not shown, nor one with a blank body.
     #[test]
     fn a_committed_peer_message_is_restored_labelled() {
         use meerkat_core::{
             CommsNoticeKind, ContentBlock, SystemNoticeBlock, SystemNoticeDirection,
             SystemNoticeKind, SystemNoticeMessage, SystemNoticePeer,
         };
-        let comms = |direction| SystemNoticeBlock::Comms {
+        let comms_with = |direction, words: &str| SystemNoticeBlock::Comms {
             kind: CommsNoticeKind::Message,
             direction,
             peer: Some(SystemNoticePeer {
@@ -209,24 +220,27 @@ mod tests {
             summary: Some("Peer message".into()),
             payload: None,
             content: vec![ContentBlock::Text {
-                text: "Peer message from tui/main/main-gak7:\nI am changing src/lib.rs".into(),
+                text: format!("Peer message from tui/main/main-gak7:\n{words}"),
             }],
             delivery_id: None,
             in_reply_to: None,
         };
-        let notice = |direction| {
+        let notice_with = |direction, words: &str| {
             Message::SystemNotice(SystemNoticeMessage {
                 kind: SystemNoticeKind::Comms,
                 runtime_origin: None,
                 body: Some("Peer message".into()),
-                blocks: vec![comms(direction)],
+                blocks: vec![comms_with(direction, words)],
                 created_at: meerkat_core::types::message_timestamp_now(),
             })
         };
+        let notice = |direction| notice_with(direction, "I am changing src/lib.rs");
         assert_eq!(
             blocks_from_messages(&[
                 notice(SystemNoticeDirection::Incoming),
-                notice(SystemNoticeDirection::Outgoing)
+                notice(SystemNoticeDirection::Outgoing),
+                notice_with(SystemNoticeDirection::Incoming, ""),
+                notice_with(SystemNoticeDirection::Incoming, "  \n "),
             ]),
             vec![Block::Peer {
                 from: "main-gak7".into(),
@@ -366,6 +380,54 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// Each input the daemon composed restores as its one dim line, never
+    /// as the user's message; the user's own words around them stay his.
+    #[test]
+    fn a_daemon_composed_input_restores_as_a_dim_line() {
+        use crate::daemon::{checkpoint, prepare};
+        let prepare_request = format!(
+            "Your context is at 150k of 200k tokens and needs compacting soon. At the next good point in your work: write down your plan. {}",
+            prepare::READY_SUFFIX
+        );
+        let composed = [
+            prepare_request,
+            "Your context is at 180k tokens and still growing: do it now: write down your plan, then `compact_ready`.".to_string(),
+            checkpoint::status_request(40),
+            checkpoint::CONTINUE_INSTRUCTION.to_string(),
+            crate::approval::mode::PLAN_ON_NOTE.to_string(),
+            crate::approval::mode::PLAN_OFF_NOTE.to_string(),
+            "The user approved your blocked call `shell git push` by allowing it once.".to_string(),
+            "files changed: src/a.rs, src/b.rs".to_string(),
+            crate::daemon::agents::READ_ONLY_COMMS_NOTE.to_string(),
+        ];
+        let mut messages = vec![Message::User(UserMessage::text("MY-ASK"))];
+        messages.extend(
+            composed
+                .iter()
+                .map(|text| Message::User(UserMessage::text(text.clone()))),
+        );
+        let blocks = blocks_from_messages(&messages);
+        assert_eq!(blocks.len(), 1 + composed.len(), "{blocks:#?}");
+        assert_eq!(
+            blocks[0],
+            Block::User {
+                text: "MY-ASK".into()
+            }
+        );
+        for block in &blocks[1..] {
+            assert!(
+                matches!(
+                    block,
+                    Block::Notice {
+                        level: super::super::NoticeLevel::Info,
+                        ..
+                    }
+                ),
+                "{block:?}"
+            );
+        }
     }
 
     #[test]

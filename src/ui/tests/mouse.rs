@@ -275,6 +275,71 @@ fn the_last_message_above_the_view_is_pinned_on_the_top_row() {
     assert!(top[0].contains("first question"), "{top:#?}");
 }
 
+/// Read calls enough to push the start of the transcript off the view.
+fn many_calls(app: &mut App, from: usize) {
+    for i in from..from + 15 {
+        let id = format!("t{i}");
+        app.update(agent(AgentEvent::ToolCallRequested {
+            id: id.clone(),
+            name: "read_file".into(),
+            args: test_args(json!({"path": format!("f{i}.rs")})),
+        }));
+        app.update(agent(AgentEvent::ToolExecutionCompleted {
+            id: id.clone(),
+            name: "read_file".into(),
+            is_error: false,
+            duration_ms: 1,
+        }));
+        app.update(agent(test_tool_result(&id, "     1\tx\n")));
+    }
+}
+
+/// The daemon's prepare instruction joining the user's turn is no user
+/// band: the pinned bar still shows what the user typed.
+#[test]
+fn a_daemon_composed_input_never_becomes_the_pinned_message() {
+    let mut app = App::new(StatusInfo::default());
+    type_str(&mut app, "MY-ASK about the parser");
+    app.update(key(KeyCode::Enter));
+    many_calls(&mut app, 0);
+    let prepare = format!(
+        "Your context is at 150k of 200k tokens and needs compacting soon. At the next good point in your work: write down your plan. {}",
+        crate::daemon::prepare::READY_SUFFIX
+    );
+    app.update(Msg::RemoteTurn {
+        prompt: Some(prepare),
+    });
+    app.update(Msg::RemoteTurn {
+        prompt: Some(crate::daemon::checkpoint::status_request(40)),
+    });
+    many_calls(&mut app, 15);
+    assert!(
+        !app.transcript
+            .iter()
+            .any(|(_, b)| matches!(b, Block::User { text } if *text != "MY-ASK about the parser")),
+        "no other user band"
+    );
+    let rows = transcript_rows(&mut app);
+    assert_eq!(
+        rows[0].trim_end(),
+        " ↑ you: MY-ASK about the parser",
+        "{rows:#?}"
+    );
+}
+
+/// A run the daemon started with its own words, and nothing the user
+/// typed: no pinned bar at all.
+#[test]
+fn with_nothing_typed_no_message_is_pinned() {
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::RemoteTurn {
+        prompt: Some(crate::daemon::checkpoint::CONTINUE_INSTRUCTION.to_string()),
+    });
+    many_calls(&mut app, 0);
+    let rows = transcript_rows(&mut app);
+    assert!(rows.iter().all(|row| !row.contains("↑ you")), "{rows:#?}");
+}
+
 #[test]
 fn clicks_are_ignored_under_a_modal() {
     let mut app = App::new(StatusInfo::default());
