@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-11-18
+
 ### Fixed
 
 - An agent alone in its workspace took its own idle helpers for other
