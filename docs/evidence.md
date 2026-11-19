@@ -13118,3 +13118,50 @@ Tests: `daemon::agents::endings::tests::every_note_s_header_reads_back_as_its_it
 `ui::tests::helpers::the_daemon_s_summary_of_a_note_is_its_folded_line`,
 `helper_endings::an_ending_wakes_an_idle_agent_the_user_did_not_just_interrupt`
 (the push carries the summary).
+
+## A limit on live helpers, and `assign`'s hold on its name (owner, review 7, M15, M16, L17)
+
+Nothing but the nesting depth bounded how many helpers an agent seats; a
+model in a loop could start them without end, each a billed session. The
+owner's decision: `helpers.max_live`, 8 by default, 1 to 64 (no
+"unlimited"), each agent and each helper its own limit, not a budget
+shared down the tree.
+
+- **What counts** (`mobs::held_by` over `mobs::seated_for`): the caller's
+  own helpers, one level below it in its tree and in its own mob (the mob
+  `assign` seats in): running, kept and idle, or restored and not rebuilt
+  yet; plus the `assign` calls under way and the helpers they started that
+  the roster does not list yet (a fork's seat lags its `fork_off`), held
+  up to 60 s. Members of mobs made with `mob_create`/`mob_spawn_member` are
+  the engine's path and are not counted: the persona already sends a team
+  there and not helpers, and counting them would refuse `assign` for a
+  team the limit does not bound.
+- **Project layer.** `OnlyLower`, as `helpers.max_depth`: a cloned
+  repository can make it stricter, never looser. `Never` (as
+  `agent.checkpoint_steps`) would also have kept it from being raised, but
+  a lower limit can only save cost.
+- **The hold** (`HelperRegistry::reserve` → `Reservation`): one lock checks
+  the name against the other calls under way, counts the seated helpers
+  with the calls under way, and inserts the call's entry, so two calls of
+  one step at 7 of 8 seat one, and two calls for one name refuse the
+  second with our "in use" text (L17; the engine's `MemberAlreadyExists`
+  is mapped to it too). The entry carries the kind the call asked for,
+  which the customizer takes (`take_intent`); dropping the `Reservation`
+  removes the entry, so a call cancelled mid-spawn leaves no kind for a
+  later seat of that name (M15) and no slot. `launched()` keeps the slot
+  until the roster lists the helper, or it retires, or its mob or
+  conversation goes (a helper that retired while its call was under way
+  holds nothing once the call returns).
+- A lowered limit applies to the next call (`Hook::HelperLimit`) and
+  retires nobody; the refusal says "more than this workspace's limit".
+
+Tests: `mobs::registry::tests::a_reservation_holds_a_name_and_a_slot_until_it_is_let_go`,
+`mobs::registry::tests::a_cancelled_call_leaves_no_intent_and_no_slot`,
+`mobs::registry::tests::concurrent_calls_take_the_last_slot_once`,
+`daemon::assign::tests::the_limit_counts_the_caller_s_own_helpers_in_its_mob`,
+`daemon::assign::tests::the_limit_s_refusal_names_the_helpers_and_what_to_do`,
+`config::registry::tests::the_helpers_limit_is_bounded_and_a_project_only_lowers_it`,
+`assign::the_ninth_helper_is_refused_until_one_is_retired_or_finishes`,
+`assign::two_calls_for_one_name_in_one_step_seat_one`,
+`assign::a_helper_s_limit_is_its_own`,
+`assign::a_lowered_limit_refuses_new_helpers_and_retires_none`.

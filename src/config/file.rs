@@ -147,6 +147,10 @@ pub struct HelpersSection {
     /// See [`HelperSettings::max_depth`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<u8>,
+    /// `helpers.max_live`: how many live helpers each agent and each
+    /// helper may hold from `assign` (the registry says what it takes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_live: Option<u64>,
     /// The model a helper runs on when its spawn names none
     /// ([`super::helper_models`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]

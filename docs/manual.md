@@ -1567,6 +1567,22 @@ levels: a helper at the limit gets no `assign`, `mob_create`,
 `mob_spawn_member` or `council` tool (left out of its tool list and denied
 by its tool access policy), and a deeper spawn is refused.
 
+**How many at once.** Each agent, and each helper that starts helpers,
+holds at most `helpers.max_live` helpers of its own from `assign` at a
+time (8 by default, at most 64; `--set helpers.max_live=N` or
+`/set helpers.max_live N`; a project file may only lower it). Its own
+are the ones it started itself, not its helpers' helpers: each helper
+has the same limit of its own, not a share of its parent's. A helper
+counts while it is seated: running, kept and idle, or still being
+started (so several `assign` calls in one model step cannot pass the
+limit together); one that finished or was retired does not. Members of a
+mob made with `mob_create` and `mob_spawn_member` are not counted. A call
+past the limit is refused with the helpers it holds, the kept idle ones
+first, and what to do (retire with `retire_helper` the ones it no longer
+needs, or wait for a single-use one to finish); `contacts` says
+`7 of 8 helpers` once the count is within two of the limit. A changed
+limit applies to the next `assign` at once; a lowered one retires nobody.
+
 **Helper models.** A helper's model never comes from a stored profile. For
 every fresh helper started with `assign` or `mob_spawn_member`
 (into any mob, by a profile's name, an inline profile or nothing), it is,
@@ -1870,6 +1886,7 @@ it may only lower a value, its lowering applies over every layer).
 | `auto.compact_prepare`: What every agent is asked to do before an automatic compaction (empty: none here). | text (at most 2000 characters) | none | may set it (the command line wins) | at once | `/compact prepare <text>\|off\|default` |
 | `auto.compact_prepare_at`: Where the agents are asked to prepare: tokens, or a share of the window. | tokens (`300000`, `300k`, `1.2m`) or a share of the window (`"65%"`) | 70% | may set it (the command line wins) | at once | `/compact prepare at <threshold>\|default` |
 | `helpers.max_depth`: How many levels of helpers a session may have (0: none). | a whole number from 0 to 255 | 1 | may only lower it | at the next start | — |
+| `helpers.max_live`: How many helpers each agent, and each helper, may hold at once from `assign` (running, kept and idle, or starting; at most 64): a call past it is refused, and a lowered limit retires nobody. Members of mobs made with `mob_create` do not count. | a whole number from 1 to 64 | 8 | may only lower it | at once | — |
 | `helpers.model`: The model a fresh helper started with `assign` or `mob_spawn_member` runs on when the call names none (through its owner's endpoint); a fork stays on its parent's. | a model, `[endpoint:]model` | the owner's model | may not set it | at once | — |
 | `helpers.allow_models`: The only models a fresh helper started with `assign` or `mob_spawn_member` may run on (not with `deny_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: any model | may not set it | at once | — |
 | `helpers.deny_models`: Models a fresh helper started with `assign` or `mob_spawn_member` may not run on (not with `allow_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: none | may not set it | at once | — |

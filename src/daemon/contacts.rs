@@ -104,6 +104,9 @@ pub struct View {
     pub ended: usize,
     /// Whether it may start helpers at all.
     pub may_hold: bool,
+    /// How many helpers it holds against its `assign` limit, and the
+    /// limit (`helpers.max_live`), when at it or within two of it.
+    pub limit: Option<(usize, usize)>,
     /// Helpers its parent connected it with.
     pub connected_with: Vec<Peer>,
     /// The workspace's other agents.
@@ -171,6 +174,9 @@ impl View {
                 })
                 .collect(),
             helpers_note,
+            helper_limit: self
+                .limit
+                .map(|(held, limit)| format!("{held} of {limit} helpers")),
             connected_with: self.connected_with.iter().map(Entry::of).collect(),
             agents_of_this_workspace: self.agents.iter().map(Entry::of).collect(),
             wired_agents: self.wired.iter().map(Entry::of).collect(),
@@ -190,6 +196,8 @@ struct Answer<'a> {
     your_helpers: Vec<HeldEntry<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     helpers_note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    helper_limit: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     connected_with: Vec<Entry<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -388,6 +396,24 @@ impl Contacts {
             None => Vec::new(),
         };
         let mut helpers = self.held(&owner, &path).await;
+        let may_hold = path.len() < usize::from(self.max_depth);
+        // What it holds against `assign`'s limit: its helpers in its own
+        // mob (`crate::mobs::held_by`) and the ones being seated.
+        let limit = self
+            .registry
+            .root_of_session(session)
+            .or_else(|| self.registry.member_key_of_session(session))
+            .filter(|_| may_hold)
+            .and_then(|me| {
+                let own: Vec<HelperKey> = helpers
+                    .iter()
+                    .filter(|(key, _)| key.mob == me.mob)
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                let held = own.len() + self.registry.starting(&owner, &path, &own).len();
+                let limit = self.registry.max_live();
+                (held + 2 >= limit).then_some((held, limit))
+            });
         let agent = self
             .registry
             .root_of_session(&owner)
@@ -427,7 +453,8 @@ impl Contacts {
                 .as_ref()
                 .map(|tag| tag.kind.text().unwrap_or_else(|| "helper".to_string())),
             ended: self.registry.ended_count(&owner, &path),
-            may_hold: path.len() < usize::from(self.max_depth),
+            may_hold,
+            limit,
             ..View::default()
         };
         for entry in directory {
@@ -596,6 +623,18 @@ mod tests {
         assert_eq!(
             alone.render(now),
             r#"{"you":"main-ab12 (an agent of this workspace)","helpers_note":"you hold no helpers now"}"#
+        );
+        // Near its `assign` limit, the count against it follows the note.
+        let near = View {
+            limit: Some((7, 8)),
+            ..view
+        };
+        assert!(
+            near.render(now).contains(
+                r#""helpers_note":"3 of your helpers have ended in this conversation","helper_limit":"7 of 8 helpers","#
+            ),
+            "{}",
+            near.render(now)
         );
     }
 }

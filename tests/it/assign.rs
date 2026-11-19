@@ -559,6 +559,334 @@ async fn a_member_that_just_messaged_its_parent_goes_idle_untold() {
     daemon.stop().await;
 }
 
+/// The result of the call `id` in the first request that answers it
+/// (every id is one caller's); empty until one does.
+fn result_of(llm: &ScriptedLlmClient, id: &str) -> String {
+    llm.recorded()
+        .iter()
+        .find(|r| common::after(&r.messages, id))
+        .map(|r| common::tool_text(&r.messages, id))
+        .unwrap_or_default()
+}
+
+/// An `assign` call `id` of a single-use helper `name` that never answers.
+fn hanging(id: &'static str, name: &str) -> (&'static str, &'static str, serde_json::Value) {
+    (
+        id,
+        "assign",
+        json!({"name": name, "task": "HELPER-HANG: wait"}),
+    )
+}
+
+/// `helpers.max_live` (8 by default) on a whole run: at 7 of 8, of two
+/// `assign` calls in one step exactly one is seated; `contacts` says
+/// `8 of 8 helpers`; the 9th call is refused with the limit's text; after
+/// a `retire_helper` the next succeeds, and after a single-use helper
+/// finishes, too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_ninth_helper_is_refused_until_one_is_retired_or_finishes() {
+    let ws = Workspace::new();
+    let finish = Arc::new(tokio::sync::Notify::new());
+    let step = {
+        let finish = Arc::clone(&finish);
+        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+            if common::is_helper(messages, "HELPER-KEPT") {
+                return Step::Text("KEPT-ANSWER");
+            }
+            if common::is_helper(messages, "HELPER-SINGLE") {
+                return Step::Gated(Arc::clone(&finish), Box::new(Step::Text("SINGLE-ANSWER")));
+            }
+            if common::is_helper(messages, "HELPER-HANG") {
+                return Step::Hang;
+            }
+            if common::after(messages, "b3") {
+                return Step::Text("done");
+            }
+            if common::told_finished(messages) {
+                return Step::Tools(vec![hanging("b3", "y12")]);
+            }
+            if common::after(messages, "b2") {
+                return Step::Text("waiting");
+            }
+            if common::after(messages, "b1") {
+                return Step::Tools(vec![hanging("b2", "y11")]);
+            }
+            if common::after(messages, "r1") {
+                return Step::Tools(vec![hanging("b1", "y10")]);
+            }
+            if common::after(messages, "a9") {
+                return Step::Tool {
+                    id: "r1",
+                    name: "retire_helper",
+                    args: json!({"name": "k0"}),
+                };
+            }
+            if common::after(messages, "p1") {
+                return Step::Tools(vec![hanging("a9", "y9")]);
+            }
+            if common::after(messages, "c1") {
+                return peers();
+            }
+            if common::after(messages, "a0") {
+                return Step::Tools(vec![hanging("c1", "x7"), hanging("c2", "x8")]);
+            }
+            if common::run_inputs(messages).contains("START-LIMIT") {
+                let mut calls: Vec<(&'static str, &'static str, serde_json::Value)> = [
+                    "a0", "a1", "a2", "a3", "a4", "a5",
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(n, id)| {
+                    (
+                        id,
+                        "assign",
+                        json!({"name": format!("k{n}"), "task": "HELPER-KEPT: answer", "keep": true}),
+                    )
+                })
+                .collect();
+                calls.push((
+                    "a6",
+                    "assign",
+                    json!({"name": "s0", "task": "HELPER-SINGLE: answer when told"}),
+                ));
+                return Step::Tools(calls);
+            }
+            Step::Text("noted")
+        }))
+    };
+    let llm = ScriptedLlmClient::new(vec![step; 80]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "START-LIMIT").await;
+    common::until(|| !result_of(&llm, "b2").is_empty()).await;
+    // Two calls of one step at 7 of 8: exactly one is seated.
+    let pair = [result_of(&llm, "c1"), result_of(&llm, "c2")];
+    let started = pair
+        .iter()
+        .filter(|text| text.contains("is running"))
+        .count();
+    let refused: Vec<&String> = pair
+        .iter()
+        .filter(|text| text.starts_with("you hold 8 helpers"))
+        .collect();
+    assert_eq!((started, refused.len()), (1, 1), "{pair:?}");
+    let contacts = result_of(&llm, "p1");
+    assert!(
+        contacts.contains(r#""helper_limit":"8 of 8 helpers""#),
+        "{contacts}"
+    );
+    // The 9th: refused with the limit, naming the helpers and what to do.
+    let ninth = result_of(&llm, "a9");
+    assert!(
+        ninth.starts_with("you hold 8 helpers")
+            && ninth.contains("which is this workspace's limit (helpers.max_live): ")
+            && ninth.contains("k0")
+            && ninth.contains("s0")
+            && ninth.ends_with(
+                "Retire with retire_helper the ones you no longer need, or wait for a single-use one to finish, then call assign again."
+            ),
+        "{ninth}"
+    );
+    // Kept and idle by then, all six: counted for the caller to retire.
+    assert!(ninth.contains("(6 of them kept and idle)"), "{ninth}");
+    assert!(
+        result_of(&llm, "r1").contains("Helper `k0` was retired"),
+        "{}",
+        result_of(&llm, "r1")
+    );
+    assert!(
+        result_of(&llm, "b1").contains("Helper `y10` is running"),
+        "{}",
+        result_of(&llm, "b1")
+    );
+    assert!(
+        result_of(&llm, "b2").starts_with("you hold 8 helpers"),
+        "{}",
+        result_of(&llm, "b2")
+    );
+    // The single-use helper finishes: its slot is free again.
+    finish.notify_one();
+    common::until(|| !result_of(&llm, "b3").is_empty()).await;
+    assert!(
+        result_of(&llm, "b3").contains("Helper `y12` is running"),
+        "{}",
+        result_of(&llm, "b3")
+    );
+    let seated = members(&connection).await;
+    assert!(
+        !seated
+            .iter()
+            .any(|m| m == "y9" || m == "y11" || m == "k0" || m == "s0"),
+        "{seated:?}"
+    );
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// Two `assign` calls of one step for one name: one is seated, the other
+/// refused with rkat-tui's own words (the name is held from before the
+/// spawn), never the engine's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_calls_for_one_name_in_one_step_seat_one() {
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if common::is_helper(messages, "HELPER-HANG") {
+            return Step::Hang;
+        }
+        if common::after(messages, "n1") {
+            return Step::Text("done");
+        }
+        if common::run_inputs(messages).contains("START-TWINS") {
+            return Step::Tools(vec![hanging("n1", "twin"), hanging("n2", "twin")]);
+        }
+        Step::Text("noted")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "START-TWINS").await;
+    let pair = [result_of(&llm, "n1"), result_of(&llm, "n2")];
+    let started = pair
+        .iter()
+        .filter(|text| text.contains("is running"))
+        .count();
+    let refused = pair
+        .iter()
+        .filter(|text| {
+            text.as_str()
+                == "the name `twin` is in use by a member seated now (`contacts` lists your helpers); call `assign` again with another name"
+        })
+        .count();
+    assert_eq!((started, refused), (1, 1), "{pair:?}");
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// Each parent has a limit of its own: with `helpers.max_live = 1` the
+/// agent's one helper starts one of its own, and only one; the agent's
+/// second is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_helper_s_limit_is_its_own() {
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if common::is_helper(messages, "HELPER-HANG") {
+            return Step::Hang;
+        }
+        if common::is_helper(messages, "LEAD-TASK") {
+            if common::after(messages, "l2") {
+                return Step::Hang;
+            }
+            if common::after(messages, "l1") {
+                return Step::Tools(vec![hanging("l2", "sub2")]);
+            }
+            return Step::Tools(vec![hanging("l1", "sub1")]);
+        }
+        if common::after(messages, "g2") {
+            return Step::Text("done");
+        }
+        if common::after(messages, "g1") {
+            return Step::Tools(vec![hanging("g2", "second")]);
+        }
+        if common::run_inputs(messages).contains("START-LEAD") {
+            return common::assign("g1", "lead", "LEAD-TASK: start helpers");
+        }
+        Step::Text("noted")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 20]);
+    let setup = rig::Setup::args(&[
+        "--set",
+        "helpers.max_depth=2",
+        "--set",
+        "helpers.max_live=1",
+    ]);
+    let daemon =
+        Running::start_with(&setup.command_line(&ws.root), setup.options(&ws.root, &llm)).await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "START-LEAD").await;
+    assert!(
+        result_of(&llm, "g2").starts_with(
+            "you hold 1 helper, which is this workspace's limit (helpers.max_live): lead."
+        ),
+        "{}",
+        result_of(&llm, "g2")
+    );
+    common::until(|| !result_of(&llm, "l2").is_empty()).await;
+    assert!(
+        result_of(&llm, "l1").contains("Helper `sub1` is running"),
+        "{}",
+        result_of(&llm, "l1")
+    );
+    assert!(
+        result_of(&llm, "l2").starts_with(
+            "you hold 1 helper, which is this workspace's limit (helpers.max_live): sub1."
+        ),
+        "{}",
+        result_of(&llm, "l2")
+    );
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// `helpers.max_live` lowered below what the agent holds applies at once:
+/// the next `assign` is refused saying it holds more than the limit, and
+/// none of its helpers is retired.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lowered_limit_refuses_new_helpers_and_retires_none() {
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if common::is_helper(messages, "HELPER-HANG") {
+            return Step::Hang;
+        }
+        if common::after(messages, "z1") || common::after(messages, "h1") {
+            return Step::Text("done");
+        }
+        let inputs = common::run_inputs(messages);
+        if inputs.contains("ONE-MORE") {
+            return Step::Tools(vec![hanging("z1", "z")]);
+        }
+        if inputs.contains("START-THREE") {
+            return Step::Tools(vec![
+                hanging("h1", "w1"),
+                hanging("h2", "w2"),
+                hanging("h3", "w3"),
+            ]);
+        }
+        Step::Text("noted")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 20]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "START-THREE").await;
+    let set = connection
+        .call(
+            "rkat/set_setting",
+            json!({"key": "helpers.max_live", "value": "2", "user": false}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        set["text"].as_str().unwrap().contains(
+            "from now on each agent and each helper may hold 2 helpers at once from `assign`; none seated now is retired"
+        ),
+        "{set}"
+    );
+    daemon.prompt(&connection, "ONE-MORE").await;
+    assert!(
+        result_of(&llm, "z1").starts_with(
+            "you hold 3 helpers, which is more than this workspace's limit of 2 (helpers.max_live): w1, w2, w3."
+        ),
+        "{}",
+        result_of(&llm, "z1")
+    );
+    let seated = members(&connection).await;
+    for helper in ["w1", "w2", "w3"] {
+        assert!(seated.iter().any(|m| m == helper), "{helper}: {seated:?}");
+    }
+    assert!(!seated.iter().any(|m| m == "z"), "{seated:?}");
+    drop(connection);
+    daemon.stop().await;
+}
+
 /// The name rules: a malformed name, an agent's name and a name in use are
 /// each refused with what to do; nothing is seated for them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

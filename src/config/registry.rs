@@ -332,6 +332,9 @@ pub enum Hook {
     /// The engine's turn limit for the sessions built from then on
     /// (`agent.checkpoint_steps`).
     CheckpointSteps,
+    /// The `assign` calls from then on are held to the new
+    /// `helpers.max_live`; nothing seated is retired.
+    HelperLimit,
 }
 
 /// Every scalar setting in force over `layers` as one table, each value at
@@ -799,6 +802,37 @@ pub const MIN_CHECKPOINT_STEPS: u64 = 10;
 /// [`CHECKPOINT_CONTINUES`]'s default.
 pub const DEFAULT_CHECKPOINT_CONTINUES: u64 = 5;
 
+/// How many live helpers each agent and each helper may hold from
+/// `assign` at once ([`crate::daemon::assign`]).
+pub const MAX_LIVE: Setting = Setting {
+    key: "helpers.max_live",
+    kind: Kind::Int {
+        min: 1,
+        max: MAX_HELPERS_LIVE,
+        clamp: true,
+    },
+    default: Fallback::Int(DEFAULT_HELPERS_LIVE),
+    project: ProjectRule::OnlyLower,
+    applies: Applies::Live,
+    about: "How many helpers each agent, and each helper, may hold at once from `assign` (running, kept and idle, or starting; at most 64): a call past it is refused, and a lowered limit retires nobody. Members of mobs made with `mob_create` do not count.",
+    flags: &[],
+    command: None,
+    hook: Hook::HelperLimit,
+};
+
+/// [`MAX_LIVE`]'s default.
+pub const DEFAULT_HELPERS_LIVE: u64 = 8;
+/// The most [`MAX_LIVE`] takes.
+pub const MAX_HELPERS_LIVE: u64 = 64;
+
+/// [`MAX_LIVE`] in force over `layers`, within its bounds (a file's value
+/// above the most reads as the most).
+#[must_use]
+pub fn helpers_live_in_force(layers: &Layers) -> usize {
+    let limit = int_in_force(&MAX_LIVE, layers).clamp(1, MAX_HELPERS_LIVE);
+    usize::try_from(limit).unwrap_or(usize::MAX)
+}
+
 /// A whole-number setting's value in force over `layers` (its default
 /// when a layer holds something else, which the layering refuses before).
 #[must_use]
@@ -950,6 +984,7 @@ pub static SETTINGS: &[Setting] = &[
         command: None,
         hook: Hook::None,
     },
+    MAX_LIVE,
     Setting {
         key: super::helper_models::MODEL_KEY,
         kind: Kind::Model,

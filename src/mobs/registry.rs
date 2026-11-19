@@ -324,6 +324,102 @@ impl std::fmt::Debug for SeatedHook {
     }
 }
 
+/// How long a helper whose `assign` call returned keeps its slot while its
+/// parent's mob does not list it yet (a fork whose spawn is still
+/// building): well past the follower's wait for a fork's seat.
+const LAUNCH_GRACE: std::time::Duration = std::time::Duration::from_mins(1);
+
+/// One `assign` call's hold on a helper ([`HelperRegistry::reserve`]).
+#[derive(Debug)]
+struct Pending {
+    /// The owner session of the parent's tree.
+    owner: SessionId,
+    /// The parent's own path in it (empty: the agent).
+    path: Vec<String>,
+    /// The kind the call asked for, until the helper's seat takes it.
+    kind: Option<HelperKind>,
+    /// When the call returned with the helper started (`None`: the call is
+    /// under way).
+    launched: Option<std::time::Instant>,
+    /// The helper retired, or its mob or conversation went, while the call
+    /// was under way: nothing is held once it returns.
+    gone: bool,
+}
+
+/// The helpers held for `owner`'s parent at `path` beside its `seated`
+/// ones: calls under way, and started helpers not seated yet. A started
+/// one seen seated, or past [`LAUNCH_GRACE`], is let go.
+fn starting_beside(
+    pending: &mut HashMap<HelperKey, Pending>,
+    owner: &SessionId,
+    path: &[String],
+    seated: &[HelperKey],
+) -> Vec<HelperKey> {
+    pending.retain(|key, held| {
+        held.launched
+            .is_none_or(|at| !(seated.contains(key) || at.elapsed() >= LAUNCH_GRACE))
+    });
+    let mut starting: Vec<HelperKey> = pending
+        .iter()
+        .filter(|(key, held)| &held.owner == owner && held.path == path && !seated.contains(key))
+        .map(|(key, _)| key.clone())
+        .collect();
+    starting.sort();
+    starting
+}
+
+/// Why [`HelperRegistry::reserve`] held nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refused {
+    /// Another `assign` call is seating a helper of that name.
+    NameInUse,
+    /// The parent is at its limit: its seated helpers and `starting` (the
+    /// ones being seated) make `limit` or more.
+    Full {
+        /// The helpers being seated for it, beside the seated ones.
+        starting: Vec<HelperKey>,
+        /// The limit in force.
+        limit: usize,
+    },
+}
+
+/// An `assign` call's hold on its helper's name and a slot under its
+/// parent's limit ([`HelperRegistry::reserve`]). Dropped, it lets both go
+/// (the spawn failed, or the call was cancelled mid-spawn), and so the kind
+/// the call asked for, which no later seat of that name then takes; once
+/// [`Self::launched`], the slot stays until the helper is seen seated (or
+/// leaves).
+#[derive(Debug)]
+#[must_use]
+pub struct Reservation<'a> {
+    registry: &'a HelperRegistry,
+    key: HelperKey,
+    launched: bool,
+}
+
+impl Reservation<'_> {
+    /// The helper was started: its slot stays until its mob lists it (it
+    /// counts from then as a seated helper) or it leaves.
+    pub fn launched(mut self) {
+        self.launched = true;
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        let mut pending = self.registry.pending.lock();
+        let keep = self.launched && pending.get(&self.key).is_some_and(|held| !held.gone);
+        if keep {
+            if let Some(held) = pending.get_mut(&self.key) {
+                held.kind = None;
+                held.launched = Some(std::time::Instant::now());
+            }
+        } else {
+            pending.remove(&self.key);
+        }
+    }
+}
+
 /// rkat-tui's helper bookkeeping, shared by the spawn customizer, the
 /// event followers, the session handles and the runner.
 #[derive(Debug)]
@@ -350,10 +446,15 @@ pub struct HelperRegistry {
     /// Where each helper and mob that left for good is reported
     /// ([`Self::on_gone`]).
     gone: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<Gone>>,
-    /// The kind each `assign` call asked for, by the helper it seats, until
-    /// its seat takes it ([`Self::intend`], [`Self::take_intent`]): a fork's
-    /// seat carries no label of the call (the engine's `fork_off` seats it).
-    intents: Mutex<HashMap<HelperKey, HelperKind>>,
+    /// The helpers `assign` calls are seating, by key: each holds its name
+    /// and a slot under its parent's limit, and the kind the call asked for
+    /// until its seat takes it ([`Self::reserve`], [`Self::take_intent`]):
+    /// a fork's seat carries no label of the call (the engine's `fork_off`
+    /// seats it).
+    pending: Mutex<HashMap<HelperKey, Pending>>,
+    /// How many helpers each agent and each helper may hold from `assign`
+    /// (`helpers.max_live`).
+    max_live: std::sync::atomic::AtomicUsize,
     /// Told the owner session whose seated helpers changed (one was
     /// seated or left), after the change ([`Self::on_seated`]).
     seated: std::sync::OnceLock<SeatedHook>,
@@ -400,7 +501,10 @@ impl HelperRegistry {
             scratch: crate::approval::scratch::ScratchDirs::off(),
             endings: std::sync::Arc::default(),
             gone: std::sync::OnceLock::new(),
-            intents: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
+            max_live: std::sync::atomic::AtomicUsize::new(
+                usize::try_from(crate::config::registry::DEFAULT_HELPERS_LIVE).unwrap_or(8),
+            ),
             seated: std::sync::OnceLock::new(),
             activity: Mutex::new(HashMap::new()),
             ended: Mutex::new(HashMap::new()),
@@ -448,21 +552,101 @@ impl HelperRegistry {
         &self.endings
     }
 
-    /// An `assign` call is about to seat `key` as `kind`.
-    pub fn intend(&self, key: HelperKey, kind: HelperKind) {
-        self.intents.lock().insert(key, kind);
+    /// How many helpers each agent and each helper may hold from `assign`
+    /// now (`helpers.max_live`).
+    #[must_use]
+    pub fn max_live(&self) -> usize {
+        self.max_live.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Hold the `assign` calls from now on to `limit` helpers each (at
+    /// least one). Nothing seated is retired.
+    pub fn set_max_live(&self, limit: usize) {
+        self.max_live
+            .store(limit.max(1), std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// An `assign` call of the parent at `path` of `owner`'s tree, which
+    /// holds the helpers `seated` now (its own, seated in its mob), is
+    /// about to seat `key` as `kind`: the name and a slot under the
+    /// parent's limit are held, checked and taken in one step, so two
+    /// calls of one model step cannot both take the last slot or one name.
+    /// The slot is released when the [`Reservation`] drops (the spawn
+    /// failed, or the call was cancelled), unless it was
+    /// [`Reservation::launched`].
+    ///
+    /// # Errors
+    ///
+    /// [`Refused`]: another call seats a helper of that name, or the
+    /// parent is at its limit.
+    pub fn reserve(
+        &self,
+        key: HelperKey,
+        kind: HelperKind,
+        owner: &SessionId,
+        path: &[String],
+        seated: &[HelperKey],
+    ) -> Result<Reservation<'_>, Refused> {
+        let limit = self.max_live();
+        let mut pending = self.pending.lock();
+        if pending.contains_key(&key) {
+            return Err(Refused::NameInUse);
+        }
+        let starting = starting_beside(&mut pending, owner, path, seated);
+        if seated.len() + starting.len() >= limit {
+            return Err(Refused::Full { starting, limit });
+        }
+        pending.insert(
+            key.clone(),
+            Pending {
+                owner: owner.clone(),
+                path: path.to_vec(),
+                kind: Some(kind),
+                launched: None,
+                gone: false,
+            },
+        );
+        Ok(Reservation {
+            registry: self,
+            key,
+            launched: false,
+        })
+    }
+
+    /// The helpers `assign` calls of the parent at `path` of `owner`'s tree
+    /// are seating, or started and not yet seen among its `seated` ones:
+    /// what counts against its limit beside them.
+    #[must_use]
+    pub fn starting(
+        &self,
+        owner: &SessionId,
+        path: &[String],
+        seated: &[HelperKey],
+    ) -> Vec<HelperKey> {
+        starting_beside(&mut self.pending.lock(), owner, path, seated)
     }
 
     /// The kind an `assign` call asked for `key`, taken (`None`: no call
-    /// asked; or `drop`ped after a seat that failed, [`Self::forget_intent`]).
+    /// under way asked; a cancelled or failed call's is gone with its
+    /// [`Reservation`]).
     #[must_use]
     pub fn take_intent(&self, key: &HelperKey) -> Option<HelperKind> {
-        self.intents.lock().remove(key)
+        self.pending
+            .lock()
+            .get_mut(key)
+            .and_then(|pending| pending.kind.take())
     }
 
-    /// The seat `key` was asked for did not happen.
-    pub fn forget_intent(&self, key: &HelperKey) {
-        self.intents.lock().remove(key);
+    /// `assign`'s hold on `key` goes with the helper: a started one's at
+    /// once, a call's under way when it returns.
+    fn release(&self, gone: impl Fn(&HelperKey, &Pending) -> bool) {
+        self.pending.lock().retain(|key, pending| {
+            if !gone(key, pending) {
+                return true;
+            }
+            pending.gone = true;
+            pending.launched.is_none()
+        });
     }
 
     /// The session that started the helper `key` (its parent): the session
@@ -662,6 +846,7 @@ impl HelperRegistry {
     pub fn forget_session(&self, session: &SessionId) {
         self.sessions.write().remove(session);
         self.live.lock().retain(|_, tag| &tag.owner != session);
+        self.release(|_, held| &held.owner == session);
         self.bindings.forget_owner(session);
     }
 
@@ -885,6 +1070,7 @@ impl HelperRegistry {
         let removed = self.live.lock().shift_remove(key);
         let tag = removed.or_else(|| self.bindings.member(key).map(|binding| binding.tag));
         self.activity.lock().remove(key);
+        self.release(|held, _| held == key);
         if let Some(tag) = &tag {
             *self
                 .ended
@@ -912,6 +1098,7 @@ impl HelperRegistry {
             }
             stays
         });
+        self.release(|key, _| &key.mob == mob);
         let _ = self.destroyed.send(mob.clone());
         if let Err(err) = self.bindings.remove_mob(mob) {
             tracing::warn!(mob = %mob, error = %err, "cannot drop the mob's bindings");
@@ -1169,6 +1356,139 @@ mod tests {
             Some("fork · single-use")
         );
         assert_eq!(HelperKind::Other.text(), None);
+    }
+
+    fn tui(member: &str) -> HelperKey {
+        HelperKey::new(MobId::from("tui"), AgentIdentity::from(member))
+    }
+
+    const FRESH: HelperKind = HelperKind::Started(HelperContext::Fresh, HelperLife::Single);
+
+    /// The limit counts the seated helpers and the calls under way: at one
+    /// below it, of two calls in one step the second is refused (and so is
+    /// a second call for one name); a call whose spawn failed lets its slot
+    /// and its name go; a started helper keeps its slot until its mob
+    /// lists it, then counts as seated, and leaving lets it go.
+    #[test]
+    fn a_reservation_holds_a_name_and_a_slot_until_it_is_let_go() {
+        let registry = HelperRegistry::in_memory();
+        registry.set_max_live(3);
+        let agent = SessionId::new();
+        let seated = [tui("a")];
+        let first = registry
+            .reserve(tui("b"), FRESH, &agent, &[], &seated)
+            .unwrap();
+        // One name, one call.
+        assert_eq!(
+            registry
+                .reserve(tui("b"), FRESH, &agent, &[], &seated)
+                .unwrap_err(),
+            Refused::NameInUse
+        );
+        let second = registry
+            .reserve(tui("c"), FRESH, &agent, &[], &seated)
+            .unwrap();
+        // `a` seated, `b` and `c` under way: the third is refused, naming
+        // the two being seated.
+        assert_eq!(
+            registry
+                .reserve(tui("d"), FRESH, &agent, &[], &seated)
+                .unwrap_err(),
+            Refused::Full {
+                starting: vec![tui("b"), tui("c")],
+                limit: 3
+            }
+        );
+        // Another parent, or a helper of the agent, has a limit of its own.
+        let helper_path = ["a".to_string()];
+        let other = registry
+            .reserve(tui("e"), FRESH, &agent, &helper_path, &[])
+            .unwrap();
+        // `c`'s spawn failed: its slot and its kind go.
+        drop(second);
+        assert_eq!(registry.take_intent(&tui("c")), None);
+        assert_eq!(registry.starting(&agent, &[], &seated), vec![tui("b")]);
+        // `b` was started: its seat takes the kind, its slot stays until
+        // its mob lists it.
+        assert_eq!(registry.take_intent(&tui("b")), Some(FRESH));
+        first.launched();
+        assert_eq!(registry.take_intent(&tui("b")), None);
+        assert_eq!(registry.starting(&agent, &[], &seated), vec![tui("b")]);
+        let both = [tui("a"), tui("b")];
+        assert!(registry.starting(&agent, &[], &both).is_empty());
+        assert!(registry.starting(&agent, &[], &seated).is_empty());
+        // Under way when it retired: nothing is held once the call returns.
+        let quick = registry
+            .reserve(tui("q"), FRESH, &agent, &[], &seated)
+            .unwrap();
+        registry.retired(&tui("q"));
+        quick.launched();
+        assert!(registry.starting(&agent, &[], &seated).is_empty());
+        // A lowered limit refuses the next and leaves the held alone.
+        registry.set_max_live(1);
+        assert!(matches!(
+            registry.reserve(tui("f"), FRESH, &agent, &[], &seated),
+            Err(Refused::Full { limit: 1, .. })
+        ));
+        assert_eq!(registry.starting(&agent, &helper_path, &[]), vec![tui("e")]);
+        other.launched();
+        registry.forget_session(&agent);
+        assert!(registry.starting(&agent, &helper_path, &[]).is_empty());
+    }
+
+    /// An `assign` call cancelled mid-spawn (its future dropped, as the
+    /// user's interrupt does) leaves no intent and no slot: a member later
+    /// seated under that name by another path takes no stale kind.
+    #[test]
+    fn a_cancelled_call_leaves_no_intent_and_no_slot() {
+        use futures::FutureExt;
+        let registry = HelperRegistry::in_memory();
+        registry.set_max_live(1);
+        let agent = SessionId::new();
+        let call = async {
+            let reservation = registry.reserve(tui("w"), FRESH, &agent, &[], &[]).unwrap();
+            std::future::pending::<()>().await;
+            reservation.launched();
+        };
+        let mut call = Box::pin(call);
+        assert!(call.as_mut().now_or_never().is_none());
+        assert_eq!(registry.starting(&agent, &[], &[]), vec![tui("w")]);
+        drop(call);
+        assert_eq!(registry.take_intent(&tui("w")), None);
+        assert!(registry.starting(&agent, &[], &[]).is_empty());
+        assert!(registry.reserve(tui("w"), FRESH, &agent, &[], &[]).is_ok());
+    }
+
+    /// Concurrent calls at one below the limit, from many threads: exactly
+    /// one takes the last slot.
+    #[test]
+    fn concurrent_calls_take_the_last_slot_once() {
+        let registry = std::sync::Arc::new(HelperRegistry::in_memory());
+        registry.set_max_live(8);
+        let agent = SessionId::new();
+        let seated: Vec<HelperKey> = (0..7).map(|n| tui(&format!("s{n}"))).collect();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let taken: Vec<bool> = (0..8)
+            .map(|n| {
+                let (registry, agent, seated, barrier) = (
+                    std::sync::Arc::clone(&registry),
+                    agent.clone(),
+                    seated.clone(),
+                    std::sync::Arc::clone(&barrier),
+                );
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    registry
+                        .reserve(tui(&format!("n{n}")), FRESH, &agent, &[], &seated)
+                        .map(Reservation::launched)
+                        .is_ok()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
+        assert_eq!(taken.iter().filter(|taken| **taken).count(), 1, "{taken:?}");
     }
 
     #[test]

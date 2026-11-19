@@ -19,6 +19,7 @@ fn samples(setting: &Setting) -> [Value; 2] {
         "auto.compact_prepare" => [text("update PLAN.md"), text("")],
         "auto.compact_prepare_at" => [int(60_000), text("65%")],
         "helpers.max_depth" => [int(2), int(0)],
+        "helpers.max_live" => [int(4), int(16)],
         "helpers.model" => [text("claude-haiku-5-5"), text("proxy:gpt-5.5")],
         "helpers.allow_models" | "helpers.deny_models" => [
             Value::Array(vec![text("claude-haiku-*")]),
@@ -103,7 +104,7 @@ fn typed_value(key: &str, layered: &Layered) -> Option<Value> {
             }
         }
         // Read where they apply, from the layers.
-        "agent.checkpoint_steps" | "agent.checkpoint_continues" => {
+        "agent.checkpoint_steps" | "agent.checkpoint_continues" | "helpers.max_live" => {
             int(int_in_force(Setting::find(key).unwrap(), &layered.layers))
         }
         "shell.user_timeout_secs" => int(layered.shell.user_timeout_secs),
@@ -362,6 +363,8 @@ fn values_are_parsed_checked_and_refused_with_what_the_key_takes() {
         ("auto.compact_prepare_at", "lots", "no threshold"),
         ("auto.classifier_model", "two words", "[endpoint:]model"),
         ("shell.user_timeout_secs", "0", "from 1"),
+        ("helpers.max_live", "65", "from 1 to 64"),
+        ("helpers.max_live", "0", "from 1 to 64"),
     ] {
         let err = find(key).parse(text).unwrap_err();
         assert!(
@@ -369,6 +372,27 @@ fn values_are_parsed_checked_and_refused_with_what_the_key_takes() {
             "{key}={text}: {err}"
         );
     }
+}
+
+/// `helpers.max_live` is 8 when no layer sets it, stays within 1 to 64
+/// whatever a file holds, and a project file may lower it but not raise it.
+#[test]
+fn the_helpers_limit_is_bounded_and_a_project_only_lowers_it() {
+    let at = |user: Option<i64>, project: Option<i64>| {
+        let value = |n: Option<i64>| n.map(Value::Integer);
+        helpers_live_in_force(&Layers {
+            user: table_with("helpers.max_live", value(user).as_ref()),
+            project: table_with("helpers.max_live", value(project).as_ref()),
+            ..Layers::default()
+        })
+    };
+    assert_eq!(at(None, None), 8);
+    assert_eq!(at(Some(20), None), 20);
+    assert_eq!(at(Some(1_000), None), 64);
+    assert_eq!(at(Some(0), None), 1);
+    assert_eq!(at(Some(20), Some(3)), 3);
+    assert_eq!(at(Some(4), Some(30)), 4);
+    assert_eq!(at(None, Some(30)), 8);
 }
 
 /// The manual's settings table is the registry's: regenerate it with

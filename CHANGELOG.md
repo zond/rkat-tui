@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- `helpers.max_live` (8 by default, at most 64; a project file may only
+  lower it): how many helpers each agent, and each helper, may hold at
+  once from `assign`, counting running, kept and idle, and starting ones.
+  Until now nothing but the nesting depth bounded them, so a model in a
+  loop could seat helpers without end, each a billed session. A call past
+  the limit is refused naming the helpers held and what to do; `contacts`
+  shows `7 of 8 helpers` near it; a lowered limit retires nobody.
+
+### Fixed
+
+- A cancelled `assign` call (an interrupt while its helper was being
+  started) left the kind it asked for behind, which a member later seated
+  under that name took; it now goes with the call.
+- Two `assign` calls of one step for one name could both pass the name
+  check, and the second then got the engine's wording; it now gets "the
+  name … is in use".
+
 ## [0.0.17] - 2026-11-19
 
 ### Fixed

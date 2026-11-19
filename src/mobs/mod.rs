@@ -72,7 +72,7 @@ use std::sync::Arc;
 
 use meerkat_core::SessionId;
 
-pub use registry::{Gone, HelperKey, HelperRegistry, SeatedHook};
+pub use registry::{Gone, HelperKey, HelperRegistry, Refused, SeatedHook};
 pub use registry::{HelperContext, HelperKind, HelperLife, HelperStatus, HelperTag};
 
 use meerkat_mob_mcp::MobMcpState;
@@ -118,6 +118,25 @@ pub async fn seated_for(
             rosters
                 .get(&key.mob)
                 .is_some_and(|roster| roster.contains(&key.member))
+        })
+        .collect()
+}
+
+/// The helpers among `seated` (one owner's, [`seated_for`]) that count
+/// against the `assign` limit of the parent at `path` of that tree, which
+/// sits in `mob`: the ones one level below it in its own mob, the mob
+/// `assign` seats in. A member of a mob it made with `mob_create` is not
+/// counted.
+#[must_use]
+pub fn held_by(
+    seated: Vec<(HelperKey, HelperTag)>,
+    mob: &meerkat_mob::MobId,
+    path: &[String],
+) -> Vec<(HelperKey, HelperTag)> {
+    seated
+        .into_iter()
+        .filter(|(key, tag)| {
+            &key.mob == mob && tag.path.len() == path.len() + 1 && tag.path.starts_with(path)
         })
         .collect()
 }

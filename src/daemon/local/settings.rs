@@ -90,7 +90,8 @@ impl Local {
             | Hook::Prepare
             | Hook::Ui
             | Hook::HelperModels
-            | Hook::CheckpointSteps => {
+            | Hook::CheckpointSteps
+            | Hook::HelperLimit => {
                 return Ok(());
             }
         }
@@ -198,6 +199,18 @@ impl Local {
                 (
                     vec![format!(
                         "the conversations and helpers started from now on reach a checkpoint after {steps} steps"
+                    )],
+                    None,
+                )
+            }
+            Hook::HelperLimit => {
+                let limit =
+                    crate::config::registry::helpers_live_in_force(&self.core.settings.layers());
+                self.core.registry.set_max_live(limit);
+                (
+                    vec![format!(
+                        "from now on each agent and each helper may hold {} at once from `assign`; none seated now is retired",
+                        crate::text::count(limit, "helper")
                     )],
                     None,
                 )

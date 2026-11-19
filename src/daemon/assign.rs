@@ -9,7 +9,13 @@
 //!   engine finds the caller as the spawner (`spawner_for_bridge_session`)
 //!   and the customizer shapes the helper as every helper (gate, tools,
 //!   persona, scratch directory, model rule, bookkeeping), with the kind
-//!   this call asked for ([`HelperRegistry::intend`]).
+//!   this call asked for ([`HelperRegistry::reserve`]).
+//! - **How many.** Each agent and each helper holds at most
+//!   `helpers.max_live` helpers of its own from `assign` at a time
+//!   ([`crate::mobs::held_by`]: running, kept and idle, or being seated); a
+//!   call's [`crate::mobs::registry::Reservation`] holds its name and a slot from
+//!   before the spawn, so two calls of one step cannot both take the last
+//!   one or one name, and a failed or cancelled call lets both go.
 //! - **Fresh.** Through the mob host's spawn, wired to its spawner both
 //!   ways (`auto_wire_parent`), exactly as the engine's `spawn_member`
 //!   seats a member.
@@ -33,7 +39,7 @@ use meerkat_core::{SessionId, ToolCallView, ToolDispatchContext};
 use meerkat_mob::{AgentIdentity, SpawnMemberSpec};
 use meerkat_mob_mcp::MobMcpState;
 
-use crate::mobs::{HelperContext, HelperKey, HelperKind, HelperLife, HelperRegistry};
+use crate::mobs::{HelperContext, HelperKey, HelperKind, HelperLife, HelperRegistry, Refused};
 use crate::tools::{AssignArgs, AssignHost, HelperStart};
 
 /// The longest name a helper gets.
@@ -71,6 +77,72 @@ pub fn name_refusal(name: &str) -> Option<String> {
 
 /// Why a fork with a `model` is refused.
 pub const FORK_MODEL_REFUSAL: &str = "a fork runs on your own model (it goes on from your conversation), so `model` cannot be given with `context: \"fork\"`; call `assign` again without `model`, or with `context: \"fresh\"` and a task that carries what the helper needs";
+
+/// The engine's words for a spawn of a member id its mob holds
+/// (`MobError::MemberAlreadyExists`), as a fork's refusal carries them.
+const MEMBER_EXISTS: &str = "mob member already exists";
+
+/// Why `name` cannot be given: a member is seated under it, or another
+/// `assign` call is seating one.
+#[must_use]
+pub fn name_in_use(name: &str) -> String {
+    format!(
+        "the name `{name}` is in use by a member seated now (`contacts` lists your helpers); call `assign` again with another name"
+    )
+}
+
+/// One helper a caller holds, as the limit's refusal names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Holding {
+    /// Its name.
+    pub name: String,
+    /// Whether it is kept and idle now (the ones to retire).
+    pub kept_idle: bool,
+}
+
+/// How many names the limit's refusal lists before it says how many more.
+const NAMES_LISTED: usize = 12;
+
+/// Why a caller holding `held` gets no other helper under `limit`
+/// (`helpers.max_live`): what it holds, the kept idle ones first (they are
+/// the ones to retire), and what to do.
+#[must_use]
+pub fn limit_refusal(held: &[Holding], limit: usize) -> String {
+    let idle = held.iter().filter(|holding| holding.kept_idle).count();
+    let group = |idle: bool| {
+        let mut names: Vec<&str> = held
+            .iter()
+            .filter(|holding| holding.kept_idle == idle)
+            .map(|holding| holding.name.as_str())
+            .collect();
+        names.sort_unstable();
+        names
+    };
+    let mut names = group(true);
+    names.extend(group(false));
+    let more = names.len().saturating_sub(NAMES_LISTED);
+    names.truncate(NAMES_LISTED);
+    let listed = match more {
+        0 => names.join(", "),
+        more => format!(
+            "{} and {more} more (`contacts` lists them all)",
+            names.join(", ")
+        ),
+    };
+    let count = crate::text::count(held.len(), "helper");
+    let idle = match idle {
+        0 => String::new(),
+        n => format!(" ({n} of them kept and idle)"),
+    };
+    let against = if held.len() > limit {
+        format!("more than this workspace's limit of {limit}")
+    } else {
+        "this workspace's limit".to_string()
+    };
+    format!(
+        "you hold {count}{idle}, which is {against} (helpers.max_live): {listed}. Retire with retire_helper the ones you no longer need, or wait for a single-use one to finish, then call assign again."
+    )
+}
 
 /// The answer to an `assign` that seated `name` as `kind`.
 #[must_use]
@@ -191,6 +263,7 @@ impl Assigner {
             .get()
             .and_then(Weak::upgrade)
             .ok_or("the daemon is stopping: no helper can be started")?;
+        let (owner, path) = self.place(caller, &parent).ok_or(not_here)?;
         let handle = state.handle_for(&parent.mob).await.map_err(|err| {
             format!("your mob cannot be reached, so no helper was started: {err}")
         })?;
@@ -199,9 +272,7 @@ impl Assigner {
             .iter()
             .any(|member| member.agent_identity.as_str() == name)
         {
-            return Err(format!(
-                "the name `{name}` is in use by a member seated now (`contacts` lists your helpers); call `assign` again with another name"
-            ));
+            return Err(name_in_use(&name));
         }
         let role = members
             .iter()
@@ -220,7 +291,38 @@ impl Assigner {
         let key = HelperKey::new(parent.mob.clone(), AgentIdentity::from(name.as_str()));
         // Its binding keeps the task's first line (`contacts` shows it).
         let given = task.clone();
-        self.registry.intend(key.clone(), kind);
+        // The name and a slot under the caller's limit, held until the
+        // spawn is done (or dropped with a call cancelled meanwhile).
+        let held = crate::mobs::held_by(
+            crate::mobs::seated_for(&state, &self.registry, &owner).await,
+            &parent.mob,
+            &path,
+        );
+        let held_keys: Vec<HelperKey> = held.iter().map(|(key, _)| key.clone()).collect();
+        let reservation = self
+            .registry
+            .reserve(key.clone(), kind, &owner, &path, &held_keys)
+            .map_err(|refused| match refused {
+                Refused::NameInUse => name_in_use(&name),
+                Refused::Full { starting, limit } => {
+                    let held: Vec<Holding> = held
+                        .iter()
+                        .map(|(key, tag)| Holding {
+                            name: tag.label().to_string(),
+                            kept_idle: tag.kind.life() == Some(HelperLife::Kept)
+                                && !self
+                                    .registry
+                                    .activity(key)
+                                    .is_some_and(|(running, _)| running),
+                        })
+                        .chain(starting.iter().map(|key| Holding {
+                            name: key.member.to_string(),
+                            kept_idle: false,
+                        }))
+                        .collect();
+                    limit_refusal(&held, limit)
+                }
+            })?;
         let seated = match start {
             HelperStart::Fresh => {
                 let mut spec = SpawnMemberSpec::new(role, AgentIdentity::from(name.as_str()))
@@ -236,15 +338,30 @@ impl Assigner {
                     .spawn_spec_with_generated_owner_context(spec, caller.clone())
                     .await
                     .map(|_| ())
-                    .map_err(|err| format!("the helper `{name}` was not started: {err}"))
+                    .map_err(|err| match err {
+                        meerkat_mob::MobError::MemberAlreadyExists(_) => name_in_use(&name),
+                        err => format!("the helper `{name}` was not started: {err}"),
+                    })
             }
             HelperStart::Fork => self.fork(caller, id, context, &name, task).await,
         };
-        self.registry.forget_intent(&key);
         if seated.is_ok() {
+            reservation.launched();
             self.registry.note_task(&key, &given);
         }
         seated.map(|()| started_text(&name, kind))
+    }
+
+    /// Where the caller of `key`, running as `caller`, sits: the owner
+    /// session of its tree and its own path (empty for an agent).
+    fn place(&self, caller: &SessionId, key: &HelperKey) -> Option<(SessionId, Vec<String>)> {
+        if self.registry.root_session(key).as_ref() == Some(caller) {
+            return Some((caller.clone(), Vec::new()));
+        }
+        self.registry
+            .bound_members()
+            .into_iter()
+            .find_map(|(bound, tag)| (&bound == key).then_some((tag.owner, tag.path)))
     }
 
     /// Fork `caller` as `name` on `task` through the engine's `fork_off` of
@@ -277,7 +394,14 @@ impl Assigner {
             .dispatch_with_context(call, context)
             .await
             .map(|_| ())
-            .map_err(|err| format!("the fork `{name}` was not started: {err}"))
+            .map_err(|err| {
+                let err = err.to_string();
+                if err.contains(MEMBER_EXISTS) {
+                    name_in_use(name)
+                } else {
+                    format!("the fork `{name}` was not started: {err}")
+                }
+            })
     }
 }
 
@@ -343,6 +467,81 @@ mod tests {
         assert!(
             name_refusal("main-ab12")
                 .is_some_and(|refused| refused.contains("reserved for the workspace's agents"))
+        );
+    }
+
+    /// What counts against a caller's limit: its own helpers one level
+    /// below it in its own mob; not its helpers' helpers, not another
+    /// agent's, not a member of a mob it made with `mob_create`.
+    #[test]
+    fn the_limit_counts_the_caller_s_own_helpers_in_its_mob() {
+        use meerkat_mob::MobId;
+        let agent = SessionId::new();
+        let other = SessionId::new();
+        let tag = |owner: &SessionId, path: &[&str]| crate::mobs::HelperTag {
+            owner: owner.clone(),
+            path: path.iter().map(ToString::to_string).collect(),
+            model: "m".into(),
+            kind: HelperKind::Started(HelperContext::Fresh, HelperLife::Kept),
+        };
+        let key = |mob: &str, member: &str| HelperKey::new(MobId::from(mob), member.into());
+        let seated = [
+            (key("tui", "a"), tag(&agent, &["a"])),
+            (key("tui", "b"), tag(&agent, &["b"])),
+            (key("tui", "a1"), tag(&agent, &["a", "a1"])),
+            (key("team", "t"), tag(&agent, &["t"])),
+            (key("tui", "x"), tag(&other, &["x"])),
+        ];
+        let names = |held: Vec<(HelperKey, crate::mobs::HelperTag)>| {
+            held.into_iter()
+                .map(|(key, _)| key.member.to_string())
+                .collect::<Vec<_>>()
+        };
+        let mine: Vec<_> = seated
+            .iter()
+            .filter(|(_, tag)| tag.owner == agent)
+            .cloned()
+            .collect();
+        assert_eq!(
+            names(crate::mobs::held_by(mine.clone(), &MobId::from("tui"), &[])),
+            ["a", "b"]
+        );
+        assert_eq!(
+            names(crate::mobs::held_by(
+                mine,
+                &MobId::from("tui"),
+                &["a".to_string()]
+            )),
+            ["a1"]
+        );
+    }
+
+    /// The limit's refusal: how many, which, the kept idle ones first and
+    /// counted, what to do; a long list is cut; over a lowered limit it
+    /// says so.
+    #[test]
+    fn the_limit_s_refusal_names_the_helpers_and_what_to_do() {
+        let held = |names: &[&str], idle: &[&str]| -> Vec<Holding> {
+            names
+                .iter()
+                .map(|name| Holding {
+                    name: (*name).to_string(),
+                    kept_idle: idle.contains(name),
+                })
+                .collect()
+        };
+        let eight = held(&["a", "b", "c", "d", "e", "f", "g", "h"], &["f", "h"]);
+        assert_eq!(
+            limit_refusal(&eight, 8),
+            "you hold 8 helpers (2 of them kept and idle), which is this workspace's limit (helpers.max_live): f, h, a, b, c, d, e, g. Retire with retire_helper the ones you no longer need, or wait for a single-use one to finish, then call assign again."
+        );
+        let many: Vec<String> = (0..20).map(|n| format!("w{n}")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        let text = limit_refusal(&held(&many, &[]), 4);
+        assert!(
+            text.starts_with("you hold 20 helpers, which is more than this workspace's limit of 4 (helpers.max_live): w0, w1,")
+                && text.contains("w19 and 8 more (`contacts` lists them all). Retire with retire_helper"),
+            "{text}"
         );
     }
 

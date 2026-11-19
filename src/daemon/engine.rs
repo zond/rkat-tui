@@ -292,8 +292,9 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             crate::config::helper_models::HelperModels::of(&layers).unwrap_or_default(),
         ));
     let daemon_endpoints = endpoints.clone();
-    // `assign` for every agent and helper; it seats through the mob state
-    // made below.
+    // `assign` for every agent and helper, held to `helpers.max_live`; it
+    // seats through the mob state made below.
+    registry.set_max_live(crate::config::registry::helpers_live_in_force(&layers));
     let contacts = Arc::new(super::contacts::Contacts::new(
         Arc::clone(&registry),
         helper_max_depth,
