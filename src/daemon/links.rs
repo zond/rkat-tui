@@ -242,10 +242,30 @@ impl Links {
         if recorded && a_to_b && b_to_a && self.serves(&a.key) && self.serves(&b.key) {
             return Ok(true);
         }
+        let made = self.make(&state, &a, &b, (recorded, a_to_b, b_to_a)).await;
+        // A pair not made leaves no socket it opened (review 7, L22): only
+        // the recorded pairs' ends stay served.
+        if made.is_err() {
+            self.close_unused();
+        }
+        made
+    }
+
+    /// [`Self::link`]'s work past its check: the sockets, the edges the
+    /// engine lacks (`had`: recorded, a to b, b to a) and the record.
+    async fn make(
+        &self,
+        state: &Arc<MobMcpState>,
+        a: &End,
+        b: &End,
+        had: (bool, bool, bool),
+    ) -> Result<bool, String> {
+        let (recorded, a_to_b, b_to_a) = had;
+        let state = Arc::clone(state);
         let a_at = self.listen(&state, &a.key)?;
         let b_at = self.listen(&state, &b.key)?;
-        let to_a = descriptor_when_seated(&state, &a, &a_at).await?;
-        let to_b = descriptor_when_seated(&state, &b, &b_at).await?;
+        let to_a = descriptor_when_seated(&state, a, &a_at).await?;
+        let to_b = descriptor_when_seated(&state, b, &b_at).await?;
         if !a_to_b {
             state
                 .mob_wire(&a.key.mob, a.key.member.clone(), PeerTarget::External(to_b))
@@ -276,7 +296,6 @@ impl Links {
                     .retain(|link| !link.joins(&a.key, &b.key));
                 unwire(&state, &a.key, &b.peer).await;
                 unwire(&state, &b.key, &a.peer).await;
-                self.close_unused();
                 return Err(err);
             }
         }

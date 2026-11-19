@@ -13639,3 +13639,14 @@ Review 7, L25 is not a defect: `helpers.max_depth` applies at the next
 start (`config::registry`, `Applies::NextStart`; the customizer's depth
 is fixed at start too), so `Contacts` holding the value of the start
 agrees with every other reader of it.
+
+## A connection not made closes its sockets (review 7, L22)
+
+`Links::link` opened both ends' sockets and then could fail (an end not
+seated, its mob unreachable, the engine refusing an edge); only the
+failed save closed the sockets no recorded pair uses (`close_unused`), so
+the other failures left them listening until the next `drop_links` or
+start. The work past the check is `Links::make` now, and `link` closes
+the unused sockets on any failure of it. Test:
+`connect::a_connection_not_made_leaves_no_socket_open` (ends in mobs that
+do not exist; it failed with the old path restored).

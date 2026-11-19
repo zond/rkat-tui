@@ -1199,3 +1199,33 @@ async fn a_connection_outlives_a_restart_and_goes_with_a_retired_end() {
     drop(connection);
     daemon.stop().await;
 }
+
+/// Review 7, L22: a connection across mobs that cannot be made (here the
+/// ends' mob does not exist, so no edge can be) leaves no socket it opened
+/// for its ends, and nothing is recorded: the refusal says why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_connection_not_made_leaves_no_socket_open() {
+    use rkat_tui::daemon::links::End;
+    use rkat_tui::mobs::HelperKey;
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let links = std::sync::Arc::clone(&daemon.local().core().links);
+    let end = |mob: &str, member: &str| End {
+        key: HelperKey::new(
+            meerkat_mob::MobId::from(mob),
+            meerkat_mob::AgentIdentity::from(member),
+        ),
+        peer: format!("{mob}/helper/{member}"),
+        name: member.to_string(),
+    };
+    let (a, b) = (end("nowhere-a", "left"), end("nowhere-b", "right"));
+    let err = links.link(a.clone(), b.clone()).await.unwrap_err();
+    assert!(err.contains("cannot be reached"), "{err}");
+    assert!(
+        !links.serves(&a.key) && !links.serves(&b.key),
+        "a socket of the pair not made stays open"
+    );
+    assert!(!links.joins(&a.key, &b.key));
+    daemon.stop().await;
+}
