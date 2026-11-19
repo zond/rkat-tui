@@ -13161,7 +13161,7 @@ Tests: `mobs::registry::tests::a_reservation_holds_a_name_and_a_slot_until_it_is
 `daemon::assign::tests::the_limit_counts_the_caller_s_own_helpers_in_its_mob`,
 `daemon::assign::tests::the_limit_s_refusal_names_the_helpers_and_what_to_do`,
 `config::registry::tests::the_helpers_limit_is_bounded_and_a_project_only_lowers_it`,
-`assign::the_ninth_helper_is_refused_until_one_is_retired_or_finishes`,
+`assign::the_helper_past_the_limit_is_refused_until_one_is_retired_or_finishes`,
 `assign::two_calls_for_one_name_in_one_step_seat_one`,
 `assign::a_helper_s_limit_is_its_own`,
 `assign::a_lowered_limit_refuses_new_helpers_and_retires_none`.

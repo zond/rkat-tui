@@ -474,6 +474,29 @@ output now says why; report it rather than retrying silently:
   either, so the cause is read from the hosted log and the engine's
   driver (`finalize_runtime_executor_exit` reads the shared lifecycle
   twice), not reproduced. No timeout was raised.
+- `the_ninth_helper_is_refused_until_one_is_retired_or_finishes`
+  (`tests/it/assign.rs`, now
+  `the_helper_past_the_limit_is_refused_until_one_is_retired_or_finishes`):
+  failed on hosted CI on 993043e at the rig's stop ("the wait at
+  tests/it/assign.rs:723", `daemon.stop()`; the log ends in the engine's
+  "unregister is still waiting for the runtime loop to hand off the exact
+  executor" every 5 s). The test's, not the product's: every assertion
+  before it had passed (each freed slot was taken at once), and the stop
+  waited on helpers the script left in a model call that never returns
+  (`Step::Hang`): the engine's unregister of such a session waits for its
+  runtime loop, which never hands off while the call hangs. The four cap
+  tests now hold their slots with kept helpers that answer at once and
+  stay seated idle (a kept idle helper counts against the limit, which is
+  what they test), the one that must stay running is released before the
+  stop, the boundary is tested at `helpers.max_live = 3` instead of 8,
+  and each step waits for the one result it reads (the kept helpers'
+  notes start runs of their own, so a prompt's end is not the end of the
+  run that answers it). No timeout was raised. Loaded rounds
+  (`taskset -c 0,1` beside two busy loops) of the four tests: 12 of 20
+  failed with the kept helpers but without the per-step waits (the
+  lowered-limit test read its result before its run ended), 0 of 20 with
+  them. The original hang at the stop was read from the hosted log, not
+  reproduced here.
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a
