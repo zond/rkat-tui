@@ -709,10 +709,15 @@ pub enum Stage1 {
 
 /// Parse a stage-1 response: the first word decides.
 pub fn parse_stage1(text: &str) -> Stage1 {
+    // The first line that says anything must be the word alone (around it
+    // only punctuation and space: `**ALLOW**`, `allow.`): an answer that
+    // goes on ("ALLOW? no: block it") is unclear and goes to stage 2.
     let first = text
-        .split(|c: char| !c.is_ascii_alphabetic())
-        .find(|w| !w.is_empty())
-        .unwrap_or_default();
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric());
     if first.eq_ignore_ascii_case("allow") {
         Stage1::Allow
     } else if first.eq_ignore_ascii_case("block") {
@@ -975,10 +980,15 @@ mod tests {
         assert_eq!(parse_stage1("ALLOW"), Stage1::Allow);
         assert_eq!(parse_stage1("  allow."), Stage1::Allow);
         assert_eq!(parse_stage1("**BLOCK**"), Stage1::Block);
-        assert_eq!(parse_stage1("Block - risky"), Stage1::Block);
+        assert_eq!(parse_stage1("\nBLOCK\nit deletes the tree"), Stage1::Block);
         assert_eq!(parse_stage1("I think ALLOW"), Stage1::Unclear);
         assert_eq!(parse_stage1(""), Stage1::Unclear);
         assert_eq!(parse_stage1("ALLOWED"), Stage1::Unclear);
+        // Review 7, N36: the first line is the word alone, or unclear
+        // (before, its first word decided: "ALLOW? no: block it" allowed).
+        assert_eq!(parse_stage1("ALLOW? no: block it"), Stage1::Unclear);
+        assert_eq!(parse_stage1("Block - risky"), Stage1::Unclear);
+        assert_eq!(parse_stage1("allow block"), Stage1::Unclear);
     }
 
     #[test]

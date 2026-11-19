@@ -73,6 +73,15 @@
   Your draft stays as it was under the dialog. Enter in the approval and
   "Plan ready" dialogs picks a row only after ↑/↓ moved to it; the numbers
   and letters are unchanged.
+- A helper whose ending was told is remembered for the daemon's life:
+  after 512 later endings it was forgotten, and a late event of it could
+  be told to its parent again.
+- A budget warning reads `⚠ the tool-call budget is 90% used (45 of 50)`
+  instead of naming the engine's type (`ToolCalls`).
+- The classifier's quick first stage allowed a call when the first word
+  of its answer was "allow", whatever followed ("ALLOW? no: block it").
+  Its answer's first line must now be the word alone; anything else goes
+  to the second stage, as an unclear answer always did.
 - With a helper unfolded in the main view, a message the agent sent it
   was drawn there as `✉ from agent main-…` at the left margin, as if the
   agent had received a message from itself. A message a helper receives

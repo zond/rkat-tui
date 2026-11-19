@@ -13378,3 +13378,24 @@ Tests: `ui::tests::helpers::a_message_is_drawn_once_in_the_view_of_the_member_th
 (each direction once per view, folded and unfolded),
 `ui::tests::helpers::no_block_of_a_folded_helper_is_in_the_main_view`
 (the invariant), `ui::render::tests::a_peer_message_is_labelled_with_its_sender`.
+
+## The allowlisted git reads run what `.git/config` names (review 7, N35)
+
+`git status`, `diff`, `log`, `show` and `blame` are tier 1 for the shell
+(`src/approval/shell.rs`: a positive option list, `-o` and the
+write-capable options refused). Git itself still runs what the
+repository's `.git/config` names: `core.fsmonitor` (on `status`),
+`diff.external` and textconv drivers (on `diff`, `log -p`, `show`), and a
+pager (off: the shell has no terminal). So a `.git/config` that names a
+program turns a tier-1 read into running it.
+
+Why a classifier miss is needed first: a cloned repository cannot ship
+`.git/config` (git never transfers it), and the file tools refuse to
+write under `.git/` (sealed). What remains is the agent's own shell
+writing that config (`git config core.fsmonitor …`, or a write into
+`.git/config`), and a shell call that is not tier 1 is reviewed (tier 3).
+The gadget therefore needs the classifier to allow such a write once;
+after that every allowlisted git read runs it unreviewed. A cheap
+hardening, not done yet (`.handover/review7-left.md`): once a session's
+shell has run any `git config` or written under `.git/`, the git reads
+stop being tier 1 for that session.

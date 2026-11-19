@@ -434,6 +434,26 @@ fn rejected_steer_returns_to_the_editor_with_a_notice() {
     ));
 }
 
+/// Review 7, L34: a budget warning names its budget in words, not the
+/// engine's type name.
+#[test]
+fn a_budget_warning_is_said_in_words() {
+    let mut app = App::new(StatusInfo::default());
+    app.update(agent(AgentEvent::BudgetWarning {
+        budget_type: meerkat_core::BudgetType::ToolCalls,
+        used: 45,
+        limit: 50,
+        percent: 0.9,
+    }));
+    assert_eq!(
+        last_notice(&app),
+        Some((
+            NoticeLevel::Warn,
+            "⚠ the tool-call budget is 90% used (45 of 50)".to_string()
+        ))
+    );
+}
+
 /// Review 7, M26: a steer nobody can say reached the agent is not put back
 /// in the editor (sent again it could reach the agent twice); the notice
 /// says it may have reached it.

@@ -1170,7 +1170,13 @@ switches under `/proc/sys`:
 macOS uses Seatbelt; other platforms have no sandbox. To run without
 confinement: `--no-confinement` (or `--confinement=off`), unless a realm
 `[confinement]` requires it, in which case the message points at the realm
-config instead.
+config instead. Unconfined, the agent's shell runs as you, so it can reach
+everything of rkat-tui's own the sandbox otherwise hides: the realm's
+`tui.toml` and rules, the helpers' bookkeeping, held notes and the
+agents' `/wire` sockets under `<config dir>/workspaces/<id>/`. The only
+barrier left is the approval gate (a shell write outside the project is
+reviewed, or asks you), so run unconfined only inside a sandbox of your
+own.
 
 ### Security decisions
 
@@ -3653,7 +3659,10 @@ workspace alone when one agent works there). To wire to an agent of a
 workspace whose daemon is not running, start `rkat-tui` there first.
 
 Running `/wire` is your consent, for both directions: there is no
-further question in either workspace. Your `rkat-tui` holds your
+further question in either workspace. A message to another agent is
+always allowed (it is not reviewed, outside plan mode), so a wire is also
+an unreviewed data path between the two workspaces: what one agent read
+in its project it can hand to the other. Your `rkat-tui` holds your
 authority on both daemons (it reads their endpoint files as `--list`
 does), asks each for its agent's card (its workspace, name, comms key
 and socket), and asks the other daemon, then yours, to trust and route

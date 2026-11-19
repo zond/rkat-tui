@@ -1889,10 +1889,15 @@ impl Transcript {
                 limit,
                 percent,
             } => {
+                let what = match budget_type {
+                    meerkat_core::BudgetType::Tokens => "the token budget",
+                    meerkat_core::BudgetType::Time => "the time budget",
+                    meerkat_core::BudgetType::ToolCalls => "the tool-call budget",
+                };
                 self.push_notice(
                     NoticeLevel::Warn,
                     format!(
-                        "⚠ budget: {budget_type:?} at {:.0}% ({used}/{limit})",
+                        "⚠ {what} is {:.0}% used ({used} of {limit})",
                         percent * 100.0
                     ),
                 );

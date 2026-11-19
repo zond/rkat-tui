@@ -61,7 +61,7 @@
 //! A single-use fork is retired once the engine recorded that outcome
 //! ([`HelperEndings::fork_outcome_recorded`]).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, OnceLock, Weak};
 
 use meerkat_core::AgentEvent;
@@ -70,10 +70,6 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 use super::{HelperKey, HelperTag};
-
-/// How many settled helpers are remembered, so a late event of one (its
-/// cancelled run's end after the user stopped it) tells nothing again.
-const SETTLED: usize = 512;
 
 /// How a helper ended, as its parent and the user are told.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -312,8 +308,12 @@ fn is_delegate(key: &HelperKey) -> bool {
 #[derive(Debug, Default)]
 pub struct HelperEndings {
     tracked: Mutex<HashMap<HelperKey, Tracked>>,
-    /// The helpers whose ending was settled, newest last.
-    settled: Mutex<VecDeque<HelperKey>>,
+    /// The helpers whose ending was settled, so a late event of one (its
+    /// cancelled run's end after the user stopped it) tells nothing again.
+    /// Kept for the daemon's life, however many end after it (one key a
+    /// helper: a few dozen bytes each); a key seated again is a new helper
+    /// and leaves it ([`Self::spawned`]).
+    settled: Mutex<HashSet<HelperKey>>,
     /// Where the endings to tell go (the daemon's delivery).
     sink: OnceLock<mpsc::UnboundedSender<Ended>>,
     /// The mob host (a helper is retired through it).
@@ -726,10 +726,8 @@ impl HelperEndings {
 
     /// The helper `key` (`tag`) was spawned or rebuilt.
     pub fn spawned(&self, key: &HelperKey, tag: &HelperTag) {
-        if self.is_settled(key) {
-            // The same member id spawned again: a new helper.
-            self.settled.lock().retain(|settled| settled != key);
-        }
+        // The same member id spawned again: a new helper.
+        self.settled.lock().remove(key);
         self.tracked.lock().entry(key.clone()).or_default().tag = Some(tag.clone());
     }
 
@@ -1215,11 +1213,7 @@ impl HelperEndings {
     /// Mark `key` settled; its tag, when one was known.
     fn settle(&self, key: &HelperKey) -> Option<HelperTag> {
         let tag = self.tracked.lock().remove(key).and_then(|t| t.tag);
-        let mut settled = self.settled.lock();
-        settled.push_back(key.clone());
-        while settled.len() > SETTLED {
-            settled.pop_front();
-        }
+        self.settled.lock().insert(key.clone());
         tag
     }
 
@@ -1499,6 +1493,27 @@ mod tests {
         // A late event of a settled one tells nothing.
         endings.run_ended(&first, Terminal::Cancelled);
         assert!(rx.try_recv().is_err());
+    }
+
+    /// Review 7, M5: a settled helper is remembered however many end after
+    /// it (the 512 kept before forgot it), so its late event tells nothing.
+    #[test]
+    fn a_helper_settled_long_ago_is_not_told_again() {
+        let (endings, mut rx) = endings();
+        let first = delegate_key("first");
+        endings.spawned(&first, &tag("first"));
+        endings.left_over(&first);
+        endings.run_ended(&first, Terminal::Completed("done".into()));
+        assert!(rx.try_recv().is_ok());
+        for n in 0..600 {
+            let key = delegate_key(&format!("h{n}"));
+            endings.spawned(&key, &tag(&format!("h{n}")));
+            endings.left(&key);
+        }
+        assert!(endings.settled(&first));
+        endings.left_over(&first);
+        endings.run_ended(&first, Terminal::Cancelled);
+        assert!(rx.try_recv().is_err(), "told once only");
     }
 
     #[test]
