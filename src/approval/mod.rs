@@ -318,7 +318,7 @@ pub const REVIEW_INCOMPLETE: &str = "the safety review could not be completed";
 pub const BLOCK_GUIDANCE: &str = "Do not work around this block: do not try to reach the same \
 effect another way (a different tool, a rewritten or encoded command, a script). Choose a \
 materially safer alternative within the user's request, or stop and ask the user (the user \
-can approve this call with /approve)";
+can approve this call with /permissions)";
 
 impl DenyReason {
     /// The reason as the agent reads it: what was denied, by whom and why,
@@ -421,7 +421,7 @@ pub fn scope_hint(
     });
     format!(
         "`{}` is outside the project and the directories the user allows. The user can allow \
-         it at once with `/approve` (once, for this session or always), or allow `{dir}` by \
+         it at once with `/permissions` (once, for this session or always), or allow `{dir}` by \
          starting rkat-tui with `{flag} {dir}`, or with `{key} = [\"{dir}\"]` under \
          `[confinement]` in their own tui.toml (`~/.rkat/tui/tui.toml`) and a daemon restart \
          (`/daemon stop`){rule}; or use a directory inside the project{temp} instead",
@@ -526,7 +526,7 @@ mod tests {
         assert!(msg.contains("materially safer alternative"), "{msg}");
         assert!(
             msg.ends_with(
-                "or stop and ask the user (the user can approve this call with /approve)."
+                "or stop and ask the user (the user can approve this call with /permissions)."
             ),
             "{msg}"
         );

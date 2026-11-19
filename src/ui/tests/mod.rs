@@ -15,6 +15,7 @@ mod escalations;
 mod helpers;
 mod keys;
 mod mouse;
+mod permissions;
 mod shell;
 mod turns;
 

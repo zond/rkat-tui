@@ -44,26 +44,24 @@ pub enum PickerKind {
     Unwire,
     /// `/agents`.
     Agents,
-    /// `/approve`.
-    Approve,
     /// `/settings`.
     Settings,
 }
 
 impl PickerKind {
-    /// The picker box's title.
+    /// The picker box's title (a picker with sections adds them,
+    /// [`ListPicker::title`]).
     #[must_use]
     pub fn title(self) -> &'static str {
         match self {
             Self::Schedules => " Schedules ",
-            Self::Permissions => " Approval rules ",
+            Self::Permissions => " Permissions ",
             Self::Helpers => " Helpers ",
             Self::Mode => " Permission mode ",
             Self::Memory => " Instruction files ",
             Self::Wire => " Agents of other workspaces ",
             Self::Unwire => " Wires to other workspaces ",
             Self::Agents => " Agents ",
-            Self::Approve => " Recently blocked ",
             Self::Settings => " Settings ",
         }
     }
@@ -95,6 +93,17 @@ pub enum PickAct {
     RemoveStatement(u64),
     /// Approve blocked call `id` for the scope, then the list again.
     Approve(u64, GrantScope),
+    /// Allow the kind of action `text` describes for the scope, typed
+    /// from scratch (no blocked call), then the list again.
+    AddStatement {
+        /// How long it holds (this session or always).
+        scope: GrantScope,
+        /// The statement as the user typed it.
+        text: String,
+    },
+    /// Add an approval rule (as `/permissions add`, or a literal one),
+    /// then the list again.
+    AddRule(RuleForm),
     /// Withdraw the approval once of call `id` (it is a blocked call
     /// again), then the list again.
     Withdraw(u64),
@@ -274,35 +283,106 @@ pub enum FieldFor {
         /// This session or always.
         scope: GrantScope,
     },
+    /// A kind of action to allow from scratch, for `scope`; Enter is
+    /// [`PickAct::AddStatement`].
+    Statement {
+        /// This session or always.
+        scope: GrantScope,
+    },
+    /// A new approval rule, its text `<tool> [pattern]`: Tab switches
+    /// allow and deny, Shift+Tab this workspace and the user's own file,
+    /// ↑/↓ a pattern and a literal; Enter is [`PickAct::AddRule`].
+    Rule {
+        /// A deny rule.
+        deny: bool,
+        /// Written to the user's own `tui.toml`.
+        user: bool,
+        /// The text after the tool is matched exactly, not as a pattern.
+        literal: bool,
+    },
+}
+
+/// A rule as the `/permissions` dialog's `r` form leaves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleForm {
+    /// A deny rule (else an allow rule).
+    pub deny: bool,
+    /// The tool's name or pattern.
+    pub tool: String,
+    /// The argument's pattern, or with `literal` its exact text.
+    pub pattern: Option<String>,
+    /// `pattern` is matched exactly.
+    pub literal: bool,
+    /// Written to the user's own `tui.toml` (every workspace).
+    pub user: bool,
+}
+
+/// The next of the three scopes a statement is allowed for (Tab).
+fn next_statement_scope(scope: GrantScope) -> GrantScope {
+    match scope {
+        GrantScope::Session => GrantScope::Always,
+        GrantScope::Always => GrantScope::AlwaysUser,
+        _ => GrantScope::Session,
+    }
+}
+
+/// What a statement's field says it allows for: the scope now, the one
+/// Tab switches to.
+fn statement_scope_words(scope: GrantScope) -> (&'static str, &'static str) {
+    match scope {
+        GrantScope::Always => (
+            "always for this workspace (the realm's tui.toml)",
+            "always in every workspace",
+        ),
+        GrantScope::AlwaysUser => (
+            "always in every workspace (your tui.toml)",
+            "for this session",
+        ),
+        _ => ("for this session", "always for this workspace"),
+    }
 }
 
 impl FieldFor {
     /// The most characters the field takes.
     fn max(&self) -> usize {
         match self {
-            Self::Setting { .. } => SETTING_CHARS,
-            Self::Effect { .. } => crate::approval::statements::MAX_STATEMENT_CHARS,
-        }
-    }
-
-    /// Tab: the other level, or the next scope.
-    fn toggle(&mut self) {
-        match self {
-            Self::Setting { user, .. } => *user = !*user,
-            Self::Effect { scope, .. } => {
-                *scope = match scope {
-                    GrantScope::Session => GrantScope::Always,
-                    GrantScope::Always => GrantScope::AlwaysUser,
-                    _ => GrantScope::Session,
-                };
+            Self::Setting { .. } | Self::Rule { .. } => SETTING_CHARS,
+            Self::Effect { .. } | Self::Statement { .. } => {
+                crate::approval::statements::MAX_STATEMENT_CHARS
             }
         }
     }
 
-    /// Enter: the act with `text` (trimmed).
-    fn done(&self, text: &str) -> PickAct {
-        let text = text.trim().to_string();
+    /// Tab (`back`: Shift+Tab): the other level, the next scope; for a
+    /// rule, allow or deny (Shift+Tab: this workspace or the user's file).
+    fn toggle(&mut self, back: bool) {
         match self {
+            Self::Setting { user, .. } => *user = !*user,
+            Self::Effect { scope, .. } | Self::Statement { scope } => {
+                *scope = next_statement_scope(*scope);
+            }
+            Self::Rule { deny, user, .. } => {
+                if back {
+                    *user = !*user;
+                } else {
+                    *deny = !*deny;
+                }
+            }
+        }
+    }
+
+    /// ↑/↓: a rule's pattern or literal; nothing in any other field.
+    fn flip(&mut self) {
+        if let Self::Rule { literal, .. } = self {
+            *literal = !*literal;
+        }
+    }
+
+    /// Enter: the act with `text` (trimmed), or why there is none yet
+    /// (a rule with no tool, a literal with nothing to match).
+    fn done(&self, text: &str) -> Result<PickAct, String> {
+        let text = text.trim().to_string();
+        Ok(match self {
             Self::Setting { key, user, filter } => PickAct::SetSetting {
                 key: key.clone(),
                 value: Some(text),
@@ -314,7 +394,37 @@ impl FieldFor {
                 scope: *scope,
                 text,
             },
-        }
+            Self::Statement { scope } => PickAct::AddStatement {
+                scope: *scope,
+                text,
+            },
+            Self::Rule {
+                deny,
+                user,
+                literal,
+            } => {
+                let (tool, rest) = text.split_once(char::is_whitespace).unwrap_or((&text, ""));
+                let rest = rest.trim();
+                if tool.is_empty() {
+                    return Err(
+                        "no rule added: type the tool's name (shell, write_file, …), then an optional pattern"
+                            .to_string(),
+                    );
+                }
+                if *literal && rest.is_empty() {
+                    return Err(format!(
+                        "no rule added: a literal rule needs the exact text after `{tool}` (↑/↓ makes it a pattern)"
+                    ));
+                }
+                PickAct::AddRule(RuleForm {
+                    deny: *deny,
+                    tool: tool.to_string(),
+                    pattern: (!rest.is_empty()).then(|| rest.to_string()),
+                    literal: *literal,
+                    user: *user,
+                })
+            }
+        })
     }
 
     /// The line over the field: what Enter does there, what Tab switches
@@ -330,19 +440,35 @@ impl FieldFor {
                 format!("{key} in {now} (Enter writes it · Tab: {other} · Esc cancels):")
             }
             Self::Effect { scope, .. } => {
-                let (now, other) = match scope {
-                    GrantScope::Always => (
-                        "always for this workspace (the realm's tui.toml)",
-                        "always in every workspace",
-                    ),
-                    GrantScope::AlwaysUser => (
-                        "always in every workspace (your tui.toml)",
-                        "for this session",
-                    ),
-                    _ => ("for this session", "always for this workspace"),
-                };
+                let (now, other) = statement_scope_words(*scope);
                 format!(
                     "allow this kind of action {now}, judged by the classifier (edit it; Enter allows · Tab: {other} · Esc cancels):"
+                )
+            }
+            Self::Statement { scope } => {
+                let (now, other) = statement_scope_words(*scope);
+                format!(
+                    "new statement: allow a kind of action {now}, judged by the classifier (type it; Enter allows · Tab: {other} · Esc cancels):"
+                )
+            }
+            Self::Rule {
+                deny,
+                user,
+                literal,
+            } => {
+                let kind = if *deny { "deny" } else { "allow" };
+                let file = if *user {
+                    "your tui.toml (every workspace)"
+                } else {
+                    "this workspace (the realm's tui.toml)"
+                };
+                let arg = if *literal {
+                    "<tool> <exact text>"
+                } else {
+                    "<tool> [pattern]"
+                };
+                format!(
+                    "new rule: {kind} · {file} · type {arg} (Enter adds · Tab allow/deny · Shift+Tab workspace/your tui.toml · ↑/↓ pattern/literal · Esc cancels):"
                 )
             }
         }
@@ -449,9 +575,202 @@ pub struct ListPicker {
     /// Keys of the picker itself, on any row and with none (a row's own
     /// key of the same code wins).
     pub keys: Vec<PickKey>,
+    /// The picker's sections, when it has them (`/permissions`): the
+    /// fields above are the one shown, Tab and Shift+Tab switch.
+    pub sections: Option<Sections>,
+}
+
+/// One section of a picker with sections: its rows and what goes with
+/// them, as [`ListPicker`]'s fields of the same names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page {
+    /// The rows, in order.
+    pub rows: Vec<PickRow>,
+    /// The highlighted row.
+    pub cursor: ListCursor,
+    /// What shows when there are no rows.
+    pub empty: String,
+    /// The key hint at the bottom.
+    pub footer: String,
+    /// Keys of the section itself.
+    pub keys: Vec<PickKey>,
+}
+
+impl Page {
+    /// A section of `rows`, the first highlighted.
+    #[must_use]
+    pub fn new(
+        rows: Vec<PickRow>,
+        empty: impl Into<String>,
+        footer: impl Into<String>,
+        keys: Vec<PickKey>,
+    ) -> Self {
+        Self {
+            rows,
+            cursor: ListCursor::default(),
+            empty: empty.into(),
+            footer: footer.into(),
+            keys,
+        }
+    }
+}
+
+/// A picker's sections ([`ListPicker::sections`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sections {
+    /// Each section's name, in order.
+    pub names: Vec<&'static str>,
+    /// The section shown: its page is the picker's own fields.
+    pub current: usize,
+    /// The other sections' pages, by index (`None` at `current`).
+    pages: Vec<Option<Page>>,
 }
 
 impl ListPicker {
+    /// A picker of `kind` over `pages` (each named), showing section
+    /// `current` (the last when past them).
+    #[must_use]
+    pub fn sectioned(kind: PickerKind, pages: Vec<(&'static str, Page)>, current: usize) -> Self {
+        let current = current.min(pages.len().saturating_sub(1));
+        let mut names = Vec::with_capacity(pages.len());
+        let mut stored = Vec::with_capacity(pages.len());
+        for (name, page) in pages {
+            names.push(name);
+            stored.push(Some(page));
+        }
+        let mut picker = Self::new(kind, Vec::new(), "", "");
+        picker.sections = Some(Sections {
+            names,
+            current,
+            pages: Vec::new(),
+        });
+        let shown = stored.get_mut(current).and_then(Option::take);
+        if let Some(sections) = &mut picker.sections {
+            sections.pages = stored;
+        }
+        if let Some(page) = shown {
+            picker.load(page);
+        }
+        picker
+    }
+
+    /// The shown section's page, out of the picker's own fields.
+    fn page(&self) -> Page {
+        Page {
+            rows: self.rows.clone(),
+            cursor: self.cursor,
+            empty: self.empty.clone(),
+            footer: self.footer.clone(),
+            keys: self.keys.clone(),
+        }
+    }
+
+    /// `page` as the picker's own fields.
+    fn load(&mut self, page: Page) {
+        self.rows = page.rows;
+        self.cursor = page.cursor;
+        self.empty = page.empty;
+        self.footer = page.footer;
+        self.keys = page.keys;
+    }
+
+    /// The section shown, when the picker has sections.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn section(&self) -> Option<usize> {
+        self.sections.as_ref().map(|sections| sections.current)
+    }
+
+    /// Show section `index` (nothing when the picker has none, or no
+    /// such section): the one shown keeps its rows and highlight for
+    /// when it comes back; the line under the rows goes.
+    pub fn show_section(&mut self, index: usize) {
+        let Some(sections) = &self.sections else {
+            return;
+        };
+        if index == sections.current || index >= sections.names.len() {
+            return;
+        }
+        let shown = self.page();
+        let Some(sections) = &mut self.sections else {
+            return;
+        };
+        let from = sections.current;
+        let next = sections.pages.get_mut(index).and_then(Option::take);
+        if let Some(slot) = sections.pages.get_mut(from) {
+            *slot = Some(shown);
+        }
+        sections.current = index;
+        if let Some(page) = next {
+            self.load(page);
+        }
+        self.line = None;
+    }
+
+    /// Tab (`back`: Shift+Tab): the next section, or the one before,
+    /// round.
+    fn switch_section(&mut self, back: bool) {
+        let Some(sections) = &self.sections else {
+            return;
+        };
+        let n = sections.names.len();
+        if n < 2 {
+            return;
+        }
+        let at = sections.current;
+        self.show_section(if back { (at + n - 1) % n } else { (at + 1) % n });
+    }
+
+    /// How many rows section `index` has.
+    fn rows_of(&self, index: usize) -> usize {
+        match &self.sections {
+            Some(sections) if index == sections.current => self.rows.len(),
+            Some(sections) => sections
+                .pages
+                .get(index)
+                .and_then(Option::as_ref)
+                .map_or(0, |page| page.rows.len()),
+            None => self.rows.len(),
+        }
+    }
+
+    /// The rows of section `index` (the shown one's own), when it exists.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn section_rows(&self, index: usize) -> Option<&[PickRow]> {
+        let sections = self.sections.as_ref()?;
+        if index == sections.current {
+            return Some(&self.rows);
+        }
+        sections
+            .pages
+            .get(index)?
+            .as_ref()
+            .map(|page| page.rows.as_slice())
+    }
+
+    /// The box's title: the kind's, and with sections each one's name
+    /// and rows, the shown one marked: ` Permissions: [Blocked 2] · In force 14 `.
+    #[must_use]
+    pub fn title(&self) -> String {
+        let Some(sections) = &self.sections else {
+            return self.kind.title().to_string();
+        };
+        let parts: Vec<String> = sections
+            .names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let n = self.rows_of(i);
+                if i == sections.current {
+                    format!("[{name} {n}]")
+                } else {
+                    format!("{name} {n}")
+                }
+            })
+            .collect();
+        format!(" {}: {} ", self.kind.title().trim(), parts.join(" · "))
+    }
     /// A picker of `kind` over `rows`, the first highlighted; `empty`
     /// shows when there are none, `footer` is the key hint.
     #[must_use]
@@ -470,6 +789,7 @@ impl ListPicker {
             footer: footer.into(),
             actions: 0,
             keys: Vec::new(),
+            sections: None,
         }
     }
 
@@ -539,17 +859,30 @@ impl ListPicker {
         }
         if let Some(PickerLine::Field(field)) = &mut self.line {
             return match key.code {
-                KeyCode::Enter => {
-                    let act = field.what.done(&field.text);
-                    self.line = None;
-                    ModalKey::Choose(act)
-                }
+                KeyCode::Enter => match field.what.done(&field.text) {
+                    Ok(act) => {
+                        self.line = None;
+                        ModalKey::Choose(act)
+                    }
+                    Err(why) => {
+                        self.line = Some(PickerLine::Refused(why));
+                        ModalKey::Stay
+                    }
+                },
                 KeyCode::Esc => {
                     self.line = None;
                     ModalKey::Stay
                 }
-                KeyCode::Tab | KeyCode::BackTab => {
-                    field.what.toggle();
+                KeyCode::Tab => {
+                    field.what.toggle(false);
+                    ModalKey::Stay
+                }
+                KeyCode::BackTab => {
+                    field.what.toggle(true);
+                    ModalKey::Stay
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    field.what.flip();
                     ModalKey::Stay
                 }
                 KeyCode::Backspace => {
@@ -570,6 +903,9 @@ impl ListPicker {
             KeyCode::Up | KeyCode::Char('k') => self.cursor.up(),
             KeyCode::Down | KeyCode::Char('j') => self.cursor.down(self.rows.len()),
             KeyCode::Esc | KeyCode::Char('q') => return ModalKey::Close,
+            // Between sections only here: no question or field is open.
+            KeyCode::Tab if self.sections.is_some() => self.switch_section(false),
+            KeyCode::BackTab if self.sections.is_some() => self.switch_section(true),
             code => match self
                 .selected()
                 .and_then(|row| row.key(code))
@@ -613,9 +949,29 @@ impl ListPicker {
     /// item: the last when the list got shorter, never one of the
     /// [`Self::actions`] rows after them). The line under the rows stays
     /// (an outcome, a refusal), but for a question or a field about an
-    /// item that is gone.
+    /// item that is gone. A picker with sections stays on the section it
+    /// shows, each section's highlight kept the same way.
     #[must_use]
-    pub fn refreshed(&self, fresh: Self) -> Self {
+    pub fn refreshed(&self, mut fresh: Self) -> Self {
+        let Some(open) = &self.sections else {
+            return self.refreshed_page(fresh);
+        };
+        fresh.show_section(open.current);
+        let mut out = self.refreshed_page(fresh);
+        if let Some(sections) = &mut out.sections {
+            for (old, new) in open.pages.iter().zip(sections.pages.iter_mut()) {
+                if let (Some(old), Some(new)) = (old, new.as_mut()) {
+                    let old = Self::new(self.kind, old.rows.clone(), "", "").at(old.cursor.index());
+                    let moved = old.refreshed_page(Self::new(self.kind, new.rows.clone(), "", ""));
+                    new.cursor = moved.cursor;
+                }
+            }
+        }
+        out
+    }
+
+    /// [`Self::refreshed`] of the rows shown.
+    fn refreshed_page(&self, fresh: Self) -> Self {
         let at = self.cursor.index();
         let id = self.selected().and_then(|row| row.id.as_deref());
         let same = id.and_then(|id| {
@@ -761,158 +1117,6 @@ fn capped(mut lines: Vec<String>, full: bool, width: usize) -> Vec<String> {
         *last = format!("{}…", truncate_to_width(last, room).trim_end_matches('…'));
     }
     lines
-}
-
-/// The footer of the `/approve` picker, before its Esc.
-const APPROVE_FOOTER: &str = "Enter approve once · s grant this session · a grant always here · A always in every workspace · e allow this kind of effect";
-
-/// What the `/approve` picker's footer adds when a call waits for the agent.
-const WITHDRAW_FOOTER: &str = " · w withdraw a waiting approval";
-
-/// What a key other than `w` says on a call approved once.
-const WAITING_REFUSAL: &str = "approved once already: it waits for the agent to run it again; w withdraws the approval, to approve it otherwise";
-
-/// The `/approve` picker: the calls the gate recently blocked and the calls
-/// approved once that wait for the agent to run them again, newest first.
-/// On a blocked call Enter or `o` approves it once, `s` for this session,
-/// `a` always for this workspace, `A` always in every workspace (the
-/// user's own `tui.toml`; a call no grant fits says so): each exact, the
-/// call itself or its directory or literal command. `e` opens a one-line
-/// field with the kind of effect the classifier objected to (empty when it
-/// named none), to edit and allow for this session or always: a statement
-/// the classifier judges. A call approved once is marked so; `w`
-/// withdraws its approval (it is a blocked call again), and every other
-/// key says so.
-#[must_use]
-pub fn approve_picker(calls: &[crate::approval::grants::BlockedCall], now: u64) -> ListPicker {
-    let rows = calls
-        .iter()
-        .rev()
-        .map(|call| {
-            let who = call
-                .helper
-                .as_ref()
-                .map_or_else(String::new, |helper| format!(" (helper {helper})"));
-            let rule = call
-                .rule
-                .as_ref()
-                .map_or_else(String::new, |rule| format!(" [{rule}]"));
-            let ago = crate::text::span(now.saturating_sub(call.at), 1);
-            if call.approved_once {
-                return waiting_row(call, &who, &rule, &ago);
-            }
-            let once = PickAct::Approve(call.id, GrantScope::Once);
-            let mut keys = vec![
-                PickKey::now(KeyCode::Enter, once.clone()),
-                PickKey::now(KeyCode::Char('o'), once),
-                PickKey::refused(KeyCode::Char('w'), "this call is not approved once; there is nothing to withdraw"),
-            ];
-            match &call.grant {
-                Some(grant) => {
-                    let what = grant.describe();
-                    keys.push(PickKey::confirmed(
-                        KeyCode::Char('s'),
-                        PickAct::Approve(call.id, GrantScope::Session),
-                        format!("Grant {what} for this session?"),
-                    ));
-                    keys.push(PickKey::confirmed(
-                        KeyCode::Char('a'),
-                        PickAct::Approve(call.id, GrantScope::Always),
-                        format!("Grant {what} always (written to the realm's tui.toml)?"),
-                    ));
-                    keys.push(PickKey::confirmed(
-                        KeyCode::Char('A'),
-                        PickAct::Approve(call.id, GrantScope::AlwaysUser),
-                        format!(
-                            "Grant {what} always, in every workspace (written to your own tui.toml)?"
-                        ),
-                    ));
-                }
-                None => {
-                    for code in ['s', 'a', 'A'] {
-                        keys.push(PickKey::refused(
-                            KeyCode::Char(code),
-                            "no grant fits this call; Enter approves it once",
-                        ));
-                    }
-                }
-            }
-            keys.push(PickKey::field(
-                KeyCode::Char('e'),
-                Field {
-                    what: FieldFor::Effect {
-                        id: call.id,
-                        scope: GrantScope::Session,
-                    },
-                    text: call.effect.clone().unwrap_or_default(),
-                },
-            ));
-            let grant = call.grant.as_ref().map_or_else(String::new, |grant| {
-                format!(" · s/a exact: {}", grant.describe())
-            });
-            let effect = call.effect.as_ref().map_or_else(
-                || " · e judged: a kind of effect you type".to_string(),
-                |effect| format!(" · e judged: \"{effect}\""),
-            );
-            PickRow::new(
-                format!(
-                    "#{} {}{who}: {}{rule} · {ago} ago",
-                    call.id, call.tool, call.summary
-                ),
-                keys,
-            )
-            .noted(format!("{}{grant}{effect}", call.reason))
-            .keyed(call.id.to_string())
-        })
-        .collect();
-    let withdraw = if calls.iter().any(|call| call.approved_once) {
-        WITHDRAW_FOOTER
-    } else {
-        ""
-    };
-    let footer = format!("{APPROVE_FOOTER}{withdraw} · Esc close");
-    ListPicker::new(
-        PickerKind::Approve,
-        rows,
-        "nothing was blocked recently",
-        footer,
-    )
-}
-
-/// The `/approve` row of `call`, approved once and waiting for the agent:
-/// `w` withdraws the approval; the keys that approve say it is approved
-/// already.
-fn waiting_row(
-    call: &crate::approval::grants::BlockedCall,
-    who: &str,
-    rule: &str,
-    ago: &str,
-) -> PickRow {
-    let mut keys = vec![PickKey::now(KeyCode::Char('w'), PickAct::Withdraw(call.id))];
-    keys.extend(
-        [
-            KeyCode::Enter,
-            KeyCode::Char('o'),
-            KeyCode::Char('s'),
-            KeyCode::Char('a'),
-            KeyCode::Char('A'),
-            KeyCode::Char('e'),
-        ]
-        .into_iter()
-        .map(|code| PickKey::refused(code, WAITING_REFUSAL)),
-    );
-    PickRow::new(
-        format!(
-            "#{} {}{who}: {}{rule} · approved once · waiting for the agent to run it again",
-            call.id, call.tool, call.summary
-        ),
-        keys,
-    )
-    .noted(format!(
-        "blocked {ago} ago: {} · w withdraws the approval (the call is blocked again)",
-        call.reason
-    ))
-    .keyed(call.id.to_string())
 }
 
 /// One line on what each mode asks and allows (the `/mode` picker's).
@@ -1174,6 +1378,10 @@ impl App {
             PickAct::AllowEffect { id, scope, text } => {
                 fx.push(Effect::PickedApproval(id, scope, Some(text)));
             }
+            PickAct::AddStatement { scope, text } => {
+                fx.push(Effect::PickedStatement { scope, text });
+            }
+            PickAct::AddRule(form) => fx.push(Effect::PickedRule(form)),
             PickAct::SetMode(mode) => fx.push(Effect::SetMode(mode)),
             PickAct::SetSetting {
                 key,
@@ -1437,7 +1645,7 @@ mod tests {
                 PickRow::new(format!("row{i} {long}"), vec![]).noted(format!("note{i} {long}"))
             })
             .collect();
-        let mut p = ListPicker::new(PickerKind::Approve, rows, "none", "keys");
+        let mut p = ListPicker::new(PickerKind::Permissions, rows, "none", "keys");
         let text = |p: &ListPicker, room| -> Vec<String> {
             list_picker_lines(p, 30, room)
                 .iter()
@@ -1579,6 +1787,17 @@ mod tests {
                 scope: GrantScope::Session,
                 text: "x".into(),
             },
+            PickAct::AddStatement {
+                scope: GrantScope::Always,
+                text: "x".into(),
+            },
+            PickAct::AddRule(RuleForm {
+                deny: false,
+                tool: "shell".into(),
+                pattern: None,
+                literal: false,
+                user: false,
+            }),
             PickAct::SetSetting {
                 key: "k".into(),
                 value: None,

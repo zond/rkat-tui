@@ -912,27 +912,26 @@ fn schedule_picker_snapshot() {
     );
 }
 
-/// The `/permissions` picker: its title, a row per rule, the question
-/// `d` asks and the hint that says how to add one.
+/// The `/permissions` dialog on In force: its title with both sections'
+/// counts, a row per rule, the question `d` asks and the footer that names
+/// `n`, `r` and the switch to Blocked.
 #[test]
 fn rule_picker_snapshot() {
     use ratatui::crossterm::event::KeyCode;
-    use rkat_tui::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
+    use rkat_tui::approval::desk::RuleRow;
+    use rkat_tui::approval::rules::RuleOrigin;
+    use rkat_tui::ui::{Section, permissions_dialog};
     let mut app = App::new(StatusInfo::default());
+    let rule = RuleRow {
+        n: 1,
+        deny: true,
+        tool: "shell".into(),
+        arg: Some("git push*".into()),
+        literal: false,
+        origin: RuleOrigin::Realm,
+    };
     app.update(Msg::ShowPicker {
-        picker: ListPicker::new(
-            PickerKind::Permissions,
-            vec![PickRow::new(
-                "1. deny shell pattern `git push*` · realm",
-                vec![PickKey::confirmed(
-                    KeyCode::Char('d'),
-                    PickAct::RemoveRule(1),
-                    "Remove rule 1? It leaves the workspace's rules for good.",
-                )],
-            )],
-            "no approval rules yet",
-            "↑/↓ move · d remove · /permissions add allow|deny <tool> [pattern] adds one · Esc close",
-        ),
+        picker: permissions_dialog(&[], 0, &[rule], &[], &[], Some(Section::InForce)),
         refresh: false,
     });
     app.update(Msg::Key(ratatui::crossterm::event::KeyEvent::from(
@@ -945,17 +944,17 @@ fn rule_picker_snapshot() {
     let all = rows(terminal.backend().buffer());
     let top = all
         .iter()
-        .position(|row| row.contains("┌ Approval rules"))
+        .position(|row| row.contains("┌ Permissions: Blocked 0 · [In force 1]"))
         .expect("the picker is drawn");
     assert_eq!(
         all[top..top + 6].to_vec(),
         vec![
-            "  ┌ Approval rules ──────────────────────────────────────────────────┐",
+            "  ┌ Permissions: Blocked 0 · [In force 1] ───────────────────────────┐",
             "  │1. deny shell pattern `git push*` · realm                         │",
             "  │Remove rule 1? It leaves the workspace's rules for good. y yes · n│",
             "  │or Esc no                                                         │",
-            "  │↑/↓ move · d remove · /permissions add allow|deny <tool> [pattern]│",
-            "  │adds one · Esc close                                              │",
+            "  │↑/↓ move · d remove · n new statement · r new rule · Tab Blocked ·│",
+            "  │Esc close                                                         │",
         ]
     );
 }

@@ -26,6 +26,7 @@ pub mod modal;
 mod mouse;
 pub mod paste;
 pub mod peer;
+pub mod permissions;
 pub mod picker;
 pub mod render;
 pub mod runtime;
@@ -68,12 +69,13 @@ pub use modal::{
     EscalationAnswer, EscalationDialog, EscalationId, Modal, ModalKey, ModelPicker, PlanChoice,
     PlanDialog, QuitChoice, QuitDialog, ResumePicker,
 };
+pub use permissions::{Section, permissions_dialog};
 #[cfg(any(test, feature = "test-support"))]
 pub use picker::Does;
 #[cfg(any(test, feature = "test-support"))]
 pub use picker::PickerLine;
 pub use picker::{
-    AgentEntry, Field, FieldFor, ListPicker, PickAct, PickKey, PickRow, PickerKind, approve_picker,
+    AgentEntry, Field, FieldFor, ListPicker, PickAct, PickKey, PickRow, PickerKind, RuleForm,
 };
 
 /// A picker's lines as text, `width` wide (tests of pickers built
@@ -765,32 +767,40 @@ pub enum Effect {
     RemoveRule(usize),
     /// List rules; answer with [`Msg::Notice`].
     ListRules,
-    /// `/permissions`: open the rule picker (answered with
-    /// [`Msg::ShowPicker`]).
-    RequestRulePicker,
-    /// The rule picker's confirmed removal of rule `n`: as
-    /// `/permissions rm <n>`, then the picker's list again.
+    /// `/permissions`: open its dialog on the section given, else on
+    /// Blocked when a call is blocked or an approval waits, else on In
+    /// force (answered with [`Msg::ShowPicker`]).
+    RequestPermissions(Option<Section>),
+    /// The `/permissions` dialog's confirmed removal of rule `n`: as
+    /// `/permissions rm <n>`, then the dialog's lists again.
     PickedRuleRemoval(usize),
-    /// The rule picker's confirmed removal of session grant `id`, then the
-    /// picker's list again.
+    /// The dialog's confirmed removal of session grant `id`, then its
+    /// lists again.
     PickedGrantRemoval(u64),
-    /// The rule picker's confirmed removal of statement `id`, then the
-    /// picker's list again.
+    /// The dialog's confirmed removal of statement `id`, then its lists
+    /// again.
     PickedStatementRemoval(u64),
+    /// The dialog's `n`: allow the kind of action `text` describes for
+    /// the scope, then its lists again.
+    PickedStatement {
+        /// This session, always for this workspace or in every workspace.
+        scope: crate::approval::grants::GrantScope,
+        /// The statement as typed.
+        text: String,
+    },
+    /// The dialog's `r`: add the rule, then its lists again.
+    PickedRule(RuleForm),
     /// `/auto stats`: the review numbers, as a notice.
     AutoStats,
     /// `/auto check`: measure the classifier model on these corpus cases
     /// (the daemon's `rkat/classifier_check`), the result as a notice.
     ClassifierCheck(crate::approval::corpus::Selection),
-    /// `/approve`: open the picker over the calls the gate recently
-    /// blocked (answered with [`Msg::ShowPicker`]).
-    RequestApprovePicker,
-    /// The `/approve` picker's choice: approve blocked call `id` for the
-    /// scope (with a statement: allow that kind of action instead), then
-    /// the picker's list again.
+    /// The `/permissions` dialog's Blocked choice: approve blocked call
+    /// `id` for the scope (with a statement: allow that kind of action
+    /// instead), then the dialog's lists again.
     PickedApproval(u64, crate::approval::grants::GrantScope, Option<String>),
-    /// The `/approve` picker's `w`: withdraw the approval once of call
-    /// `id`, then the picker's list again.
+    /// The Blocked section's `w`: withdraw the approval once of call
+    /// `id`, then the dialog's lists again.
     PickedWithdrawal(u64),
     /// `/trust`: record every project input's digest
     /// in the host trust record; their servers and hooks run from the next

@@ -154,7 +154,7 @@ async fn survives(way: Stop) {
         json!({"key": "ui.checklist", "value": "shown"}),
     )
     .await;
-    // `/approve`'s "always" for a directory and for a kind of action.
+    // `/permissions`' Blocked "always" for a directory and for a kind of action.
     let engine = daemon.engine();
     engine
         .grant(

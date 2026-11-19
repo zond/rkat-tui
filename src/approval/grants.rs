@@ -1,5 +1,5 @@
 //! What the user allows while the daemon runs: the calls the gate recently
-//! blocked, which `/approve` lists, and the grants an approval makes.
+//! blocked, which `/permissions` lists, and the grants an approval makes.
 //!
 //! A blocked call ([`BlockedCall`]) is kept per session, the newest
 //! [`MAX_RECENT_BLOCKS`]: a classifier block, a review that could not be
@@ -42,7 +42,7 @@ use super::classifier::GrantedDirs;
 use super::rules::{Rule, RuleKind, RuleOrigin};
 use crate::paths::ProjectRoot;
 
-/// How many blocked calls a session keeps for `/approve`.
+/// How many blocked calls a session keeps for `/permissions`.
 pub const MAX_RECENT_BLOCKS: usize = 10;
 
 /// How long an approval holds.
@@ -119,7 +119,7 @@ impl GrantTarget {
     }
 }
 
-/// A call the gate blocked that the user can approve (`/approve`).
+/// A call the gate blocked that the user can approve (`/permissions`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockedCall {
     /// Its number in the daemon (stable while it is listed).
@@ -138,7 +138,7 @@ pub struct BlockedCall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// The kind of effect the classifier objected to, in one general
-    /// sentence (its `EFFECT:` line), if it named one: `/approve` offers
+    /// sentence (its `EFFECT:` line), if it named one: `/permissions` offers
     /// it, editable, as a statement ([`super::statements`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect: Option<String>,
@@ -151,7 +151,7 @@ pub struct BlockedCall {
     pub grant: Option<GrantTarget>,
     /// The user approved it once and the agent has not run it again yet:
     /// it stays listed until the identical call uses the approval up
-    /// (`/approve` shows it as waiting; withdrawing makes it a blocked
+    /// (`/permissions` shows it as waiting; withdrawing makes it a blocked
     /// call again).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approved_once: bool,

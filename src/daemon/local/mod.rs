@@ -472,6 +472,7 @@ impl Local {
             method::RuleRows, Empty {} => Ok(self.rule_and_grant_rows(&caller));
             method::Blocked, Empty {} => self.blocked(&caller);
             method::Approve, protocol::ApproveParams { id, scope, effect } => self.approve(&caller, id, scope, effect.as_deref());
+            method::AllowStatement, protocol::StatementParams { text, scope } => self.allow_statement(&caller, &text, scope);
             method::RemoveGrant, protocol::GrantParams { id } => self.remove_grant(&caller, id);
             method::WithdrawApproval, protocol::GrantParams { id } => self.withdraw_approval(&caller, id);
             method::RemoveStatement, protocol::GrantParams { id } => self.remove_statement(&caller, id);

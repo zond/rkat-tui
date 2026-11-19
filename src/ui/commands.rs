@@ -17,8 +17,10 @@ pub enum RuleEffect {
 /// `/permissions` subcommands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RulesCommand {
-    /// Open the rule picker (`/permissions`).
-    Pick,
+    /// Open the `/permissions` dialog: on the section given
+    /// (`/permissions blocked`, `/permissions rules`), else on Blocked
+    /// when anything is blocked or waits, else on In force.
+    Pick(Option<super::permissions::Section>),
     /// List the active rules.
     List,
     /// Add a rule.
@@ -272,9 +274,6 @@ pub enum Command {
     Resume(Option<String>),
     /// `/permissions ...`.
     Rules(RulesCommand),
-    /// `/approve`: the calls the gate recently blocked, to approve once,
-    /// for this session or always.
-    Approve,
     /// `/auto [on|off|resume]`.
     Auto(AutoCommand),
     /// `/mode [default|accept-edits|plan|auto]`: show (`None`) or set the
@@ -607,12 +606,24 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "permissions",
         aliases: &[],
-        usage: "[list | add allow|deny <tool> [pattern] [--user] | rm <n>]",
-        summary: "pick an approval rule to remove, or list or add rules",
+        usage: "[blocked | rules | list | add allow|deny <tool> [pattern] [--user] | rm <n>]",
+        summary: "approve blocked calls; see, add and remove rules, grants and statements",
         help: &[
             (
                 "/permissions",
-                "open a list of the approval rules (allow or deny, tool,\npattern or literal, layer); d then y removes one (for good for\nthe workspace's and your own tui.toml's rules, until the daemon\nrestarts for one of the command line or the project)",
+                "open the permissions dialog, two sections (Tab and Shift+Tab\nswitch): Blocked, the calls the gate recently blocked (the\nnewest 10) and the approvals waiting for the agent; In force,\nthe rules, grants and statements with where each comes from.\nIt opens on Blocked when anything is there, else on In force",
+            ),
+            (
+                "  Blocked",
+                "Enter or o runs a call once, s allows its directory or call\nfor this session, a always for this workspace (the realm's\ntui.toml), A always in every workspace (your own tui.toml), e\nallows its kind of effect (a statement the classifier judges);\nthe agent is told at once and goes on; a call approved once\nwaits on the list until the agent runs it, w withdraws that\napproval",
+            ),
+            (
+                "  In force",
+                "d then y removes one (for good for the workspace's and your own\ntui.toml's, until the daemon restarts for one of the command\nline or the project); n allows a kind of action you type (Tab:\nthis session, always here, every workspace); r adds a rule\n(Tab allow/deny, Shift+Tab this workspace/your tui.toml, ↑/↓\npattern/literal)",
+            ),
+            (
+                "/permissions blocked|rules",
+                "open the dialog on Blocked, or on In force",
             ),
             ("/permissions list", "list approval rules"),
             (
@@ -622,17 +633,6 @@ pub static COMMANDS: &[CommandSpec] = &[
             ("/permissions rm <n>", "remove rule n (rm or remove)"),
         ],
         parse: |rest| parse_rules(&words(rest)).map(Command::Rules),
-    },
-    CommandSpec {
-        name: "approve",
-        aliases: &[],
-        usage: "",
-        summary: "approve a call the gate blocked: once, for this session or always",
-        help: &[(
-            "/approve",
-            "open a list of the calls the classifier recently blocked (the\nnewest 10): Enter or o runs one once, s allows its directory or\ncall for this session, a always for this workspace (the realm's\ntui.toml), A always in every workspace (your own tui.toml); the\nagent is told at once and goes on; a call approved once waits on\nthe list until the agent runs it, w withdraws that approval",
-        )],
-        parse: |rest| arg_free(rest, Command::Approve),
     },
     CommandSpec {
         name: "trust",
@@ -678,7 +678,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             ),
             (
                 "/auto stats",
-                "the classifier's reviews, stage-1 flags, blocks by rule, pauses,\n/approve overrides, how often you allow what is asked, its tokens\nand time, for this conversation and since the daemon started",
+                "the classifier's reviews, stage-1 flags, blocks by rule, pauses,\napprovals from /permissions, how often you allow what is asked, its tokens\nand time, for this conversation and since the daemon started",
             ),
             (
                 "/auto model [[endpoint:]<id>] [--user]",
@@ -1184,7 +1184,7 @@ Agent picker (/agents):
   d, then y                      retire the agent: only one idle with no client (its
                                  conversation stays in /resume); n or Esc keeps it
   Esc, q                         close
-Lists (/schedules, /permissions, /approve, /helpers, /mode, /memory, /wire, /unwire, /settings):
+Lists (/schedules, /permissions, /helpers, /mode, /memory, /wire, /unwire, /settings):
   Up/Down, j/k                   move; rows wrap (the highlighted one in full); a list stays open
                                  after its acts, refreshed on the same row, until Esc, q or Ctrl-C
                                  (a mode chosen, a helper's full view, an agent switch close it)
@@ -1192,13 +1192,22 @@ Lists (/schedules, /permissions, /approve, /helpers, /mode, /memory, /wire, /unw
                                  other key, Enter too, only points at y and n; Esc again closes
   Enter, p (/schedules)          pause the schedule, or resume a paused one
   d, then y (/schedules)         delete it; n or Esc keeps it
-  d, then y (/permissions)       remove the rule, the session grant or the statement (adding stays /permissions add)
   Enter, then y (/unwire)        unwire the agent of the other workspace
-  Enter, o (/approve)            approve the blocked call once (exact)
-  s, then y (/approve)           grant its directory or call for this session (exact)
-  a, then y (/approve)           grant it always (the realm's tui.toml; exact)
-  e (/approve)                   allow its kind of effect: edit the sentence, Tab session/always, Enter (judged by the classifier)
-  w (/approve)                   withdraw an approval once that waits for the agent (the call is blocked again)
+  Tab, Shift+Tab (/permissions)  switch between Blocked and In force (inside a field Tab switches
+                                 what the field does instead)
+  Enter, o (Blocked)             approve the blocked call once (exact)
+  s, then y (Blocked)            grant its directory or call for this session (exact)
+  a, then y (Blocked)            grant it always for this workspace (the realm's tui.toml; exact)
+  A, then y (Blocked)            grant it always in every workspace (your own tui.toml; exact)
+  e (Blocked)                    allow its kind of effect: edit the sentence, Tab session/always
+                                 here/every workspace, Enter (judged by the classifier)
+  w (Blocked)                    withdraw an approval once that waits for the agent (the call is
+                                 blocked again)
+  d, then y (In force)           remove the rule, the session grant or the statement
+  n (In force)                   allow a kind of action you type: Tab session/always here/every
+                                 workspace, Enter (judged by the classifier)
+  r (In force)                   add a rule: type <tool> [pattern]; Tab allow/deny, Shift+Tab this
+                                 workspace/your tui.toml, Up/Down pattern/literal, Enter
   Enter (/helpers)               open the helper's full view
   f (/helpers)                   fold or expand the helper's block in the transcript
   s, then y (/helpers)           stop the running helper (its run ends and it is retired; the
@@ -1321,7 +1330,13 @@ fn parse_rules(args: &[&str]) -> Option<RulesCommand> {
         return None;
     }
     match args.as_slice() {
-        [] => Some(RulesCommand::Pick),
+        [] => Some(RulesCommand::Pick(None)),
+        ["blocked"] => Some(RulesCommand::Pick(Some(
+            super::permissions::Section::Blocked,
+        ))),
+        ["rules"] => Some(RulesCommand::Pick(Some(
+            super::permissions::Section::InForce,
+        ))),
         ["list"] => Some(RulesCommand::List),
         ["add", effect, tool, pattern @ ..] => {
             let effect = match *effect {
@@ -1430,7 +1445,6 @@ mod tests {
             "model",
             "auto",
             "permissions",
-            "approve",
             "trust",
             "helpers",
             "tasks",
@@ -1447,7 +1461,11 @@ mod tests {
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 39);
+        // `/approve` is the Blocked section of `/permissions` now, with no
+        // alias left behind.
+        assert!(super::spec("approve").is_none());
+        assert!(!help_text().contains("/approve"), "{}", help_text());
+        assert_eq!(seen.len(), 38);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;
@@ -1855,7 +1873,23 @@ mod tests {
 
     #[test]
     fn rules_commands() {
-        assert_eq!(ok("/permissions"), Command::Rules(RulesCommand::Pick));
+        assert_eq!(ok("/permissions"), Command::Rules(RulesCommand::Pick(None)));
+        assert_eq!(
+            ok("/permissions blocked"),
+            Command::Rules(RulesCommand::Pick(Some(
+                crate::ui::permissions::Section::Blocked
+            )))
+        );
+        assert_eq!(
+            ok("/permissions rules"),
+            Command::Rules(RulesCommand::Pick(Some(
+                crate::ui::permissions::Section::InForce
+            )))
+        );
+        assert!(matches!(
+            parse("/approve"),
+            Some(Err(CommandError::Unknown(name))) if name == "approve"
+        ));
         assert_eq!(ok("/permissions list"), Command::Rules(RulesCommand::List));
         assert_eq!(
             ok("/permissions add allow shell cargo test *"),
@@ -1950,7 +1984,9 @@ mod tests {
             "1, y",
             "2, t",
             "3, a",
-            "/approve",
+            "/permissions blocked|rules",
+            "n (In force)",
+            "r (In force)",
             "4, n, Esc",
             "j/k, Enter",
             "stop the turn",
@@ -2009,7 +2045,7 @@ mod tests {
         }
         assert_eq!(
             usage_of("/permissions rm x"),
-            "/permissions [list | add allow|deny <tool> [pattern] [--user] | rm <n>]"
+            "/permissions [blocked | rules | list | add allow|deny <tool> [pattern] [--user] | rm <n>]"
         );
     }
 

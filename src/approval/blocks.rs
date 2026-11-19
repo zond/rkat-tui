@@ -1,5 +1,5 @@
 //! The calls the gate recently blocked that the user can approve
-//! (`/approve`, [`super::grants`]), and the approvals once: per session,
+//! (`/permissions`, [`super::grants`]), and the approvals once: per session,
 //! the newest [`MAX_RECENT_BLOCKS`] entries, each a blocked call or a call
 //! approved once that waits for the agent to run it again. An approval
 //! once stays on the list, marked ([`BlockedCall::approved_once`]), until
@@ -18,7 +18,7 @@ use parking_lot::Mutex;
 use super::engine::CacheKey;
 use super::grants::{BlockedCall, GrantScope, MAX_RECENT_BLOCKS};
 
-/// A blocked call as the gate keeps it: what `/approve` shows, and the
+/// A blocked call as the gate keeps it: what `/permissions` shows, and the
 /// key an approval once matches.
 #[derive(Debug, Clone)]
 pub(super) struct Blocked {
@@ -40,7 +40,7 @@ pub struct Blocks {
 
 /// Why a listed call cannot be acted on.
 fn not_listed(id: u64) -> String {
-    format!("no blocked call #{id} (`/approve` lists them)")
+    format!("no blocked call #{id} (`/permissions` lists them)")
 }
 
 impl Blocks {
@@ -150,7 +150,7 @@ impl Blocks {
             .get_mut(session)
             .and_then(|state| state.recent.iter_mut().find(|b| b.call.id == id));
         match entry {
-            None => Err(format!("no call #{id} on the `/approve` list")),
+            None => Err(format!("no call #{id} in `/permissions`' Blocked list")),
             Some(blocked) if !blocked.call.approved_once => Err(format!(
                 "call #{id} is not approved once; there is nothing to withdraw"
             )),

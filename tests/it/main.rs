@@ -57,6 +57,7 @@ mod mobs;
 mod models;
 mod peer_requests;
 mod permission_sync;
+mod permissions_dialog;
 mod pushes;
 mod realm_settings;
 mod realm_trust;

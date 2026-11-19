@@ -512,7 +512,7 @@ pub enum ClassifierVerdict {
         /// (its `PATH:` line), if it named one.
         path: Option<String>,
         /// The kind of effect it objected to, in one general sentence (its
-        /// `EFFECT:` line), if it named one: `/approve` offers it as a
+        /// `EFFECT:` line), if it named one: `/permissions` offers it as a
         /// statement the user can allow ([`super::statements`]).
         effect: Option<String>,
     },

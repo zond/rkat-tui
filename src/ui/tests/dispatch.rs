@@ -425,15 +425,23 @@ fn schedule_picker_acts_and_refreshes_in_place() {
     );
 }
 
-/// `/permissions` asks for the rule picker, `/permissions list` still
-/// lists; the picker's confirmed `d` is the removal, and it stays open
-/// for the list again.
+/// `/permissions` asks for its dialog (`blocked` and `rules` on a given
+/// section), `/permissions list` still lists; the dialog's confirmed `d`
+/// is the removal, and it stays open for the list again.
 #[test]
 fn rule_picker_removes_after_a_confirmation() {
     let mut app = App::new(StatusInfo::default());
     assert_eq!(
         submit(&mut app, "/permissions"),
-        vec![Effect::RequestRulePicker]
+        vec![Effect::RequestPermissions(None)]
+    );
+    assert_eq!(
+        submit(&mut app, "/permissions blocked"),
+        vec![Effect::RequestPermissions(Some(Section::Blocked))]
+    );
+    assert_eq!(
+        submit(&mut app, "/permissions rules"),
+        vec![Effect::RequestPermissions(Some(Section::InForce))]
     );
     assert_eq!(
         submit(&mut app, "/permissions list"),
@@ -1607,9 +1615,9 @@ fn detaching_drops_held_commands_with_a_notice() {
     assert!(last_notice(&app).is_some_and(|(_, text)| text.contains("/model opus")));
 }
 
-/// A blocked call for the `/approve` picker's tests (`approved_once`:
-/// approved once and waiting for the agent).
-fn blocked_call(id: u64, approved_once: bool) -> crate::approval::grants::BlockedCall {
+/// A blocked call for the `/permissions` Blocked section's tests
+/// (`approved_once`: approved once and waiting for the agent).
+pub(super) fn blocked_call(id: u64, approved_once: bool) -> crate::approval::grants::BlockedCall {
     crate::approval::grants::BlockedCall {
         id,
         tool: "shell".into(),
@@ -1625,15 +1633,19 @@ fn blocked_call(id: u64, approved_once: bool) -> crate::approval::grants::Blocke
     }
 }
 
-/// `/approve` shows a call approved once as waiting for the agent, drawn
-/// on its row and named in the footer; `w` there withdraws the approval
-/// (the list comes again), the keys that approve say it is approved
-/// already, and `w` on a blocked call says there is nothing to withdraw.
+/// The Blocked section shows a call approved once as waiting for the
+/// agent, drawn on its row and named in the footer; `w` there withdraws
+/// the approval (the list comes again), the keys that approve say it is
+/// approved already, and `w` on a blocked call says there is nothing to
+/// withdraw.
 #[test]
-fn the_approve_picker_marks_a_waiting_approval_and_withdraws_it() {
+fn the_blocked_section_marks_a_waiting_approval_and_withdraws_it() {
+    let blocked = |calls: &[crate::approval::grants::BlockedCall]| {
+        permissions_dialog(calls, 160, &[], &[], &[], None)
+    };
     let mut app = App::new(StatusInfo::default());
     app.update(Msg::ShowPicker {
-        picker: approve_picker(&[blocked_call(1, false), blocked_call(2, true)], 160),
+        picker: blocked(&[blocked_call(1, false), blocked_call(2, true)]),
         refresh: false,
     });
     let rows = screen(&mut app, 30).join("\n");
@@ -1656,16 +1668,17 @@ fn the_approve_picker_marks_a_waiting_approval_and_withdraws_it() {
         app.update(key(KeyCode::Char('w'))),
         vec![Effect::PickedWithdrawal(2)]
     );
-    assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Approve));
+    assert!(matches!(&app.modal, Some(Modal::List(p))
+        if p.kind == PickerKind::Permissions && p.section() == Some(Section::Blocked.index())));
     app.update(key(KeyCode::Down));
     assert!(app.update(key(KeyCode::Char('w'))).is_empty());
     assert!(matches!(&app.modal, Some(Modal::List(p))
         if matches!(&p.line, Some(PickerLine::Refused(why)) if why.contains("nothing to withdraw"))));
     // With only a waiting approval the list shows it, not "nothing was
     // blocked"; with none waiting the footer has no `w`.
-    let only = approve_picker(&[blocked_call(3, true)], 160);
+    let only = blocked(&[blocked_call(3, true)]);
     assert_eq!(only.rows.len(), 1);
-    let plain = approve_picker(&[blocked_call(1, false)], 160);
+    let plain = blocked(&[blocked_call(1, false)]);
     assert!(!plain.footer.contains("withdraw"), "{}", plain.footer);
 }
 

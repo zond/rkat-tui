@@ -215,7 +215,7 @@ async fn the_settings_picker_shows_and_changes_a_setting() {
     rig.quit().await;
 }
 
-/// `/approve`'s "always, in every workspace" and `/permissions add
+/// `/permissions`' Blocked "always, in every workspace" and `/permissions add
 /// --user` write the user's own `tui.toml`; a grant that reaches the
 /// settings files' directories is refused, for a session too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

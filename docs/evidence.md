@@ -13202,3 +13202,37 @@ Tests: `ui::tests::turns::a_compaction_is_one_folded_line_that_opens_to_its_summ
 `compact::warn_mode_warns_and_compacts_only_on_compact`,
 `compact_prepare::a_crossing_steers_the_instruction_and_compact_ready_compacts`
 (the read, and the restore after `-c`).
+
+## One dialog: `/approve` is `/permissions`' Blocked section (owner, 2026-11-19)
+
+The owner asked for one command and one dialog. `ListPicker` gained
+sections (`picker::Sections`, `Page`): the fields of the picker are the
+section shown, the others are kept as pages with their own highlight;
+Tab and Shift+Tab switch only where no question or field is open (a
+question is answered first, as every picker's; a field's Tab is the
+field's), and a refresh keeps the section the user is on and each
+section's highlight by row id. `ui/permissions.rs` builds both sections
+from the daemon's two lists (`rkat/blocked`, `rkat/rule_rows`), which the
+runner reads again after every act, so a grant or statement an approval
+made is in In force at once.
+
+Key clashes: none between the sections' own keys (Blocked: Enter, `o`,
+`s`, `a`, `A`, `e`, `w`; In force: `d`, `n`, `r`). A key of the other
+section says where it acts ("that key acts in In force: Tab switches to
+it") rather than doing nothing. `n` is also "no" for a pending question,
+which is answered before any row or section key, so the two never meet.
+In the rule form Tab is allow/deny, Shift+Tab workspace/your file and
+↑/↓ pattern/literal (three choices on one line; `RuleCommand::Add` gained
+`literal`, as the typed form has none). A statement from scratch is the
+engine's `allow_statement` (it was test-only), served as
+`rkat/allow_statement`; it emits the same `Granted` note and audit event
+as one from a blocked call. No broad-rule refusal exists for an added
+rule (only at auto mode's start), so the form says only what
+`Rule::new` refuses.
+
+Tests: `ui::tests::permissions::*` (both sections, the switch and the
+opening rule, `n` and `r` with their refusals, an approval in In force,
+the dialog open after each act), `permissions_dialog::a_statement_typed_with_n_reaches_the_classifier_and_its_file`,
+`permissions_dialog::a_rule_made_with_r_is_written_and_applies_at_once`,
+and the converted `approve::*`, `approvals::a_blocked_write_is_approved_for_the_session_through_the_daemon`,
+`approvals::the_rule_picker_removes_a_rule_from_the_daemon`, `render::rule_picker_snapshot`.

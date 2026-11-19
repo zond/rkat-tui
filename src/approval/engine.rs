@@ -264,7 +264,7 @@ struct SessionState {
 }
 
 /// What an approval or a grant tells the user (`notice`) and the agent
-/// (`note`: what is now allowed; for an approval from `/approve`, to run
+/// (`note`: what is now allowed; for an approval from `/permissions`, to run
 /// the call again and go on, worded as its helper's when a helper made
 /// it).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -487,7 +487,7 @@ struct Facts<'a> {
 }
 
 /// What evaluating a call found: the verdict, and what the audit line and
-/// the `/approve` list need besides.
+/// the `/permissions` Blocked list need besides.
 #[derive(Debug)]
 struct Evaluated {
     verdict: Verdict,
@@ -870,7 +870,7 @@ impl ApprovalEngine {
     }
 
     /// `run` of `session_id`, which started already, is one the user
-    /// started: the run the daemon started with the note of an `/approve`
+    /// started: the run the daemon started with the note of an approval (`/permissions`)
     /// (`crate::daemon::agents::Agents::steer`), when the agent's previous
     /// run ended between the daemon's look and its send, so no client's
     /// input was marked waiting for it ([`Self::human_input`]).
@@ -1170,7 +1170,7 @@ impl ApprovalEngine {
         }
     }
 
-    /// Keep a denial the user can approve (`/approve`): a classifier block,
+    /// Keep a denial the user can approve (`/permissions`): a classifier block,
     /// a failed review, an unattended call that would have asked. The
     /// newest [`super::grants::MAX_RECENT_BLOCKS`] are kept.
     fn remember_block(
@@ -1227,7 +1227,7 @@ impl ApprovalEngine {
     /// (`building`); else the directory of `path`, the path outside the
     /// allowed scope that was why; else the literal allow rule of its
     /// tool and first subject. The dialog ([`Self::escalate`]) and the
-    /// `/approve` list ([`Self::remember_block`]) both offer this one.
+    /// `/permissions` Blocked list ([`Self::remember_block`]) both offer this one.
     fn session_grant(
         &self,
         facts: &Facts<'_>,
@@ -1447,7 +1447,7 @@ impl ApprovalEngine {
                     // Not uniform with the other questions: unattended, it
                     // is denied as plan mode's (`DenyReason::PlanWired`),
                     // not as `DenyReason::Unattended` (the missed notice is
-                    // the same), so it is not offered on `/approve`.
+                    // the same), so it is not offered on `/permissions`.
                     return Outcome::Ask(
                         Ask::new(asking)
                             .unattended_as(Tier::Classifier, DenyReason::PlanWired { label }),
@@ -1474,7 +1474,7 @@ impl ApprovalEngine {
         let mode = self.mode();
         let build_asks = self.build_asks(session_id, facts, decision.tier);
         self.notice_build(session_id, facts);
-        // The user approved this very call once (`/approve`): it runs,
+        // The user approved this very call once (`/permissions`): it runs,
         // unless plan mode forbids it. Not uniform with the other
         // allows of a human: it is decided here, so a Stop does not deny
         // it (the user approved this very call after any Stop they gave).
@@ -1485,7 +1485,7 @@ impl ApprovalEngine {
             return Outcome::Decided(allow_at(
                 decision.tier,
                 Decider::Human,
-                "approved once by the user (/approve)",
+                "approved once by the user (/permissions)",
             ));
         }
         match self.route(facts, decision, mode) {
@@ -4936,7 +4936,7 @@ mod tests {
             approved.note
         );
         assert!(rig.engine.blocks().list(&rig.session).is_empty());
-        // The note is the caller's to deliver (`/approve` tells the agent
+        // The note is the caller's to deliver (`/permissions` tells the agent
         // and lets it go on), not an event.
         assert!(
             !drain(&mut rig.events)
@@ -5108,7 +5108,7 @@ mod tests {
         );
     }
 
-    /// `/approve`: a classifier block is kept (newest ten); approved once,
+    /// `/permissions`' Blocked: a classifier block is kept (newest ten); approved once,
     /// the next identical call runs without the classifier and only once;
     /// for this session, a directory grant makes writes there in-project
     /// edits and a rule grant runs the command, live and for that session

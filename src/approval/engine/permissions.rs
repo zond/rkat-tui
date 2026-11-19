@@ -182,7 +182,7 @@ impl ApprovalEngine {
     }
 
     /// The user withdraws the approval once of call `id` of `session_id`
-    /// (`/approve`'s `w`): the call is a blocked call again, listed, which
+    /// (`/permissions`' `w`): the call is a blocked call again, listed, which
     /// an identical call meets as before and the user may approve
     /// otherwise. The agent is not told (its next try is reviewed again).
     ///
@@ -215,7 +215,7 @@ impl ApprovalEngine {
     }
 
     /// [`Self::grant`]; `tell`: emit [`ApprovalEvent::Granted`] (an
-    /// approval from `/approve` words and delivers its own note).
+    /// approval from `/permissions` words and delivers its own note).
     fn grant_as(
         &self,
         session_id: &SessionId,
@@ -250,7 +250,7 @@ impl ApprovalEngine {
                 self.grants.add_always(id, dir);
             }
             (GrantScope::Always | GrantScope::AlwaysUser, GrantTarget::Builds) => {
-                return Err("builds after a dependency change are allowed for a session at a time; allow this kind of effect always with /approve's e instead".into());
+                return Err("builds after a dependency change are allowed for a session at a time; allow this kind of effect always with e in /permissions' Blocked section instead".into());
             }
             (GrantScope::Always | GrantScope::AlwaysUser, GrantTarget::Rule { tool, subject }) => {
                 let rule = Rule::literal(RuleKind::Allow, tool, subject, RuleOrigin::Realm)
@@ -324,7 +324,6 @@ impl ApprovalEngine {
     /// Why it was not added, for the user: refused by
     /// [`super::super::statements::normalize`], [`MAX_STATEMENTS`] active, the same
     /// one active, "once" asked, or the realm file not written.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn allow_statement(
         &self,
         session_id: &SessionId,
@@ -401,7 +400,7 @@ impl ApprovalEngine {
 
     /// The user allows the kind of action of blocked call `id` in their
     /// words `text` (its `EFFECT:` sentence, edited) for `scope`: the call
-    /// leaves the `/approve` list and the statement is added
+    /// leaves the `/permissions` Blocked list and the statement is added
     /// ([`Self::allow_statement`]). As [`Self::approve`], the note for
     /// whoever made the call is returned, not emitted.
     ///
@@ -641,7 +640,7 @@ impl ApprovalEngine {
 /// How a statement's note says the classifier reads it.
 const NARROWLY: &str = " The safety review reads it narrowly: actions of that kind are no longer blocked for that reason; other actions are reviewed as before.";
 
-/// What an approval from `/approve` of the blocked call `what` tells the
+/// What an approval from `/permissions` of the blocked call `what` tells the
 /// user (`notice`) and the agent (`note`): its own call, or the call its
 /// helper `helper` made (the agent is told either way: an approval holds
 /// for the agent and its helpers alike). `how` is how the

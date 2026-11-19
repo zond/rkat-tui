@@ -260,6 +260,10 @@ pub enum RuleCommand {
         /// workspace's.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         user: bool,
+        /// `pattern` is matched exactly, not as a glob (the `/permissions`
+        /// dialog's `r` form).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        literal: bool,
     },
     /// `/permissions remove <n>`.
     Remove {
@@ -305,6 +309,7 @@ pub fn run_rule_command(engine: &ApprovalEngine, command: &RuleCommand) -> RuleO
             tool,
             pattern,
             user,
+            literal,
         } => {
             let kind = if *deny {
                 RuleKind::Deny
@@ -316,9 +321,16 @@ pub fn run_rule_command(engine: &ApprovalEngine, command: &RuleCommand) -> RuleO
             } else {
                 crate::config::registry::Level::Workspace
             };
-            match Rule::new(kind, tool, pattern.as_deref(), RuleOrigin::Realm)
-                .and_then(|rule| engine.add_rule(rule, level))
-            {
+            let rule = match (pattern, literal) {
+                (Some(text), true) => Rule::literal(kind, tool, text.clone(), RuleOrigin::Realm),
+                (None, true) => {
+                    return RuleOutcome::failed(
+                        "rule not added: a literal rule needs the exact text to match",
+                    );
+                }
+                (pattern, false) => Rule::new(kind, tool, pattern.as_deref(), RuleOrigin::Realm),
+            };
+            match rule.and_then(|rule| engine.add_rule(rule, level)) {
                 Ok(()) if *user => RuleOutcome::ok("rule added to your tui.toml (every workspace)"),
                 Ok(()) => RuleOutcome::ok("rule added"),
                 Err(err) => RuleOutcome::failed(format!("rule not added: {err}")),
@@ -540,6 +552,7 @@ mod tests {
             tool: "write_file".into(),
             pattern: None,
             user: false,
+            literal: false,
         };
         let wire = serde_json::to_value(&add).unwrap();
         assert_eq!(

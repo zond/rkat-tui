@@ -1171,7 +1171,7 @@ pub static SECTIONS: &[Section] = &[
         project: "may only add deny rules",
         applies: PERMISSIONS_APPLY,
         flags: "`--allow` / `--deny <tool>[=<glob>]`",
-        commands: "/permissions, /approve",
+        commands: "/permissions (In force: r adds, d removes; Blocked: a, A)",
     },
     Section {
         key: "auto.allow",
@@ -1179,7 +1179,7 @@ pub static SECTIONS: &[Section] = &[
         project: "may not set it",
         applies: "at once",
         flags: "—",
-        commands: "/approve, /permissions",
+        commands: "/permissions (In force: n adds, d removes; Blocked: e)",
     },
     Section {
         key: "auto.trusted_hosts",
@@ -1195,7 +1195,7 @@ pub static SECTIONS: &[Section] = &[
         project: "may not set it",
         applies: "the gate and the file tools at once; a confined shell at the next start",
         flags: "`--confinement-read` / `--confinement-write <dir>`",
-        commands: "/approve",
+        commands: "/permissions (Blocked: a, A)",
     },
     Section {
         key: "endpoints.<name>",

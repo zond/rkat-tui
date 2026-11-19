@@ -1,6 +1,6 @@
 //! The review numbers `/auto stats` shows: how often the classifier
 //! reviews, flags and blocks (by rule), how often auto mode pauses, how
-//! often the user overrides a block with `/approve`, how often the user
+//! often the user overrides a block with `/permissions`, how often the user
 //! allows what is put to them, and what the classifier costs in tokens and
 //! time, since the daemon started and per session. They are there to tell
 //! whether the policy fits this user's work: a rule that blocks often and
@@ -29,7 +29,7 @@ pub struct ReviewStats {
     pub errors: u64,
     /// Times auto mode paused after blocks.
     pub pauses: u64,
-    /// Blocked calls the user approved with `/approve` (once, for the
+    /// Blocked calls the user approved with `/permissions` (once, for the
     /// session or always).
     pub approvals: u64,
     /// Questions the user answered.
@@ -93,7 +93,7 @@ impl ReviewStats {
             )
         };
         format!(
-            "reviews {} · flagged by stage 1 {} ({}) · blocked {blocked}{rules} · failed {} · pauses {} · /approve overrides {} ({} of blocks) · asked you {}, allowed {} ({}) · classifier {} in / {} out tokens, {:.1} s{checkpoints}",
+            "reviews {} · flagged by stage 1 {} ({}) · blocked {blocked}{rules} · failed {} · pauses {} · approved in /permissions {} ({} of blocks) · asked you {}, allowed {} ({}) · classifier {} in / {} out tokens, {:.1} s{checkpoints}",
             self.reviews,
             self.flagged,
             pct(self.flagged, self.reviews),
@@ -197,7 +197,7 @@ mod tests {
             "reviews 10",
             "flagged by stage 1 4 (40%)",
             "blocked 2 (T3 2)",
-            "/approve overrides 1 (50% of blocks)",
+            "approved in /permissions 1 (50% of blocks)",
             "asked you 4, allowed 3 (75%)",
             "1200 in / 80 out tokens, 2.5 s",
         ] {

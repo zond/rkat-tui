@@ -84,7 +84,7 @@ pub fn note_messages(note: ApprovalNote) -> Vec<Msg> {
             {
                 // A classifier block can be approved: the notice says how.
                 let reason = if !allowed && decider == Decider::Classifier {
-                    reason.map(|reason| format!("{reason} (/approve lists it)"))
+                    reason.map(|reason| format!("{reason} (/permissions lists it)"))
                 } else {
                     reason
                 };

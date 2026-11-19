@@ -11,8 +11,25 @@
   loop could seat helpers without end, each a billed session. A call past
   the limit is refused naming the helpers held and what to do; `contacts`
   shows `7 of 8 helpers` near it; a lowered limit retires nobody.
+- In `/permissions`' In force section, `n` allows a kind of action you
+  type from scratch (a statement the classifier reads; Tab: this session,
+  always for this workspace, always in every workspace; the same limits,
+  refusals, audit line and note to the agent as one made from a blocked
+  call), and `r` adds a rule from a small form on the dialog's line (allow
+  or deny, the tool, an optional pattern or a literal matched exactly, for
+  this workspace or your own `tui.toml`), applied at once.
 
 ### Changed
+
+- `/approve` is now the Blocked section of `/permissions`: one dialog
+  with two sections, Blocked (the calls the gate recently blocked and the
+  approvals waiting, with the same keys as before) and In force (the
+  rules, grants and statements), Tab and Shift+Tab between them; its title
+  counts both (`Permissions: [Blocked 2] · In force 14`). It opens on
+  Blocked when anything is there, else on In force; `/permissions
+  blocked` and `/permissions rules` open one. An approval that makes a
+  grant or a statement shows in In force at once. `/approve` itself is
+  gone; what the agent and the block notices say names `/permissions`.
 
 - Scrolled up in the transcript (or a helper's full view), what you read
   no longer moves while output arrives: a peer's message, a helper's

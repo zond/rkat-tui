@@ -1,4 +1,5 @@
-//! `/approve` tells whoever made the blocked call at once, and an idle
+//! An approval from `/permissions`' Blocked section tells whoever made
+//! the blocked call at once, and an idle
 //! agent goes on by itself (the owner's decision of 2026-11-16): the note
 //! is steered into a running turn, or starts a run of its own that the
 //! user's act started (attended, shown under "approved: …"), also right
@@ -23,7 +24,7 @@ use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
 };
 use rkat_tui::approval::grants::GrantScope;
-use rkat_tui::ui::{Effect, Msg, PickerKind, TurnFailure};
+use rkat_tui::ui::{Effect, Msg, PickerKind, Section, TurnFailure};
 use serde_json::json;
 use tokio::sync::Notify;
 
@@ -116,12 +117,14 @@ fn agent(path: PathBuf) -> Step {
     }))
 }
 
-/// The id of the call the client's `/approve` lists first (the newest).
+/// The `/permissions` dialog as the client's `/permissions blocked`
+/// opens it: its Blocked section shown, the newest call first.
 async fn listed(client: &mut Client) -> rkat_tui::ui::ListPicker {
-    client.send(Effect::RequestApprovePicker);
+    client.send(Effect::RequestPermissions(Some(Section::Blocked)));
     let shown = client
         .wait_for(|msg| {
-            matches!(msg, Msg::ShowPicker { picker, refresh: false } if picker.kind == PickerKind::Approve)
+            matches!(msg, Msg::ShowPicker { picker, refresh: false }
+                if picker.kind == PickerKind::Permissions && picker.section() == Some(Section::Blocked.index()))
         })
         .await;
     let Msg::ShowPicker { picker, .. } = shown else {
@@ -305,8 +308,8 @@ async fn grants_from_approve_wake_the_agent_once_and_removing_one_does_not() {
 }
 
 /// A call approved once waits on the list, marked, while the agent has not
-/// run it again (its model call is held); `/approve` with only that entry
-/// shows it. Withdrawn, it is blocked again: the agent's repeat is
+/// run it again (its model call is held); the Blocked section with only
+/// that entry shows it. Withdrawn, it is blocked again: the agent's repeat is
 /// blocked, and listed once. Approved again, the repeat runs and the list
 /// is empty.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -572,7 +575,7 @@ async fn an_ended_helper_s_approved_call_goes_to_its_agent() {
 }
 
 /// The approval-events loop waits for no turn: with the agent's turn
-/// running, an `/approve` and then another block of the gate; that
+/// running, an approval from `/permissions` and then another block of the gate; that
 /// block's push reaches the client while the turn still runs. Before the
 /// fix the loop awaited the approval's note, which the engine applies only
 /// when the turn ends, and the push came after it.

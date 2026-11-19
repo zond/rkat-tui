@@ -10,7 +10,7 @@ the test protocol for working on rkat-tui itself.
 - [Overview](#overview)
 - [First run](#first-run)
 - [Sessions](#sessions) ([Reading the transcript](#reading-the-transcript), [Checkpoints of long runs](#checkpoints-of-long-runs))
-- [How approval works](#how-approval-works) ([Permission modes](#permission-modes))
+- [How approval works](#how-approval-works) ([The permissions dialog](#the-permissions-dialog), [Permission modes](#permission-modes))
 - [Confinement](#confinement) ([Security decisions](#security-decisions), [Security model and its limits](#security-model-and-its-limits))
 - [Helpers](#helpers)
 - [Settings](#settings)
@@ -246,8 +246,8 @@ A tool with no line of its own (an MCP tool, say) shows `<tool>: <its
 first argument>`. `▸` at the end means there is more: a click on the
 line, or Ctrl-O for every call, shows the full arguments (a command as
 written, other arguments pretty-printed, after `┊`), the output (after
-`│`) or the diff, and a denial's whole reason (with how to `/approve`
-it). `/export` writes the same lines.
+`│`) or the diff, and a denial's whole reason (with how to approve
+it in `/permissions`). `/export` writes the same lines.
 
 **Scrolling.** At the bottom the transcript follows new output. Scrolled
 up (PgUp, Shift+↑, the wheel), what you are reading stays where it is
@@ -353,7 +353,7 @@ unavailable, a review that could not be completed, or the classifier
 with its reason and rule. A classifier block tells the agent not to work
 around it (no other tool, rewritten or encoded command or script for the
 same effect) and to choose a materially safer way within your request or
-ask you; you can approve it with [`/approve`](#approving-a-blocked-call).
+ask you; you can approve it in [`/permissions`](#approving-a-blocked-call).
 A review that could not be completed (the classifier timed out
 or its provider failed) is not a block: with you there you are asked,
 the dialog saying the review could not be completed; with nobody to ask
@@ -509,8 +509,8 @@ model … misjudged a routine case: auto mode may block ordinary work;
 `[auto] classifier_model` chooses another"); `[auto] classifier_probe =
 false` turns the check off. `/auto stats` shows the numbers for this
 conversation and since the daemon started: reviews, how many the quick
-first stage flagged, blocks by rule, failed reviews, pauses, `/approve`
-overrides (the share of blocks you overrode: the false-block signal),
+first stage flagged, blocks by rule, failed reviews, pauses, approvals
+in `/permissions` (the share of blocks you overrode: the false-block signal),
 how often you allowed what you were asked (near 100% means the questions
 carry no information), and the classifier's tokens and time. Each audit
 line of a reviewed call carries the same as a `review` field (stage,
@@ -598,10 +598,34 @@ stopping it again afterwards), prints the progress on stderr and the
 same report on stdout, and exits 0 within the targets, 3 outside them and
 1 when the check could not complete.
 
-### Approving a blocked call
+### The permissions dialog
+
+`/permissions` opens one dialog with two sections; Tab and Shift+Tab
+switch between them (only while no question or field is open: inside a
+field Tab switches what the field does, and an open question is answered
+first). The title names both with their rows and marks the one shown:
+"Permissions: [Blocked 2] · In force 14".
+
+- **Blocked**: the calls the gate recently blocked and the approvals
+  waiting for the agent to use them; you approve them here
+  ([below](#approving-a-blocked-call)).
+- **In force**: the rules, grants and statements in force, each with where
+  it comes from; you remove them here, and add a statement (`n`) or a rule
+  (`r`) ([below](#in-force-rules-grants-and-statements)).
+
+It opens on Blocked when a call is blocked or an approval waits, else on
+In force; `/permissions blocked` and `/permissions rules` open the one
+named. It stays open after everything you do in it, the lists refreshed
+in place on the same row: an approval that makes a grant or a statement
+shows in In force at once. What was done, or why it was refused, is
+stated under the list as well as in the transcript. `q`, Esc or Ctrl-C
+close it; a key of the other section says where it acts ("that key acts
+in In force: Tab switches to it").
+
+#### Approving a blocked call
 
 A classifier block in auto mode goes back to the agent without a dialog;
-its notice ends with "(/approve lists it)". `/approve` opens a list of
+its notice ends with "(/permissions lists it)". The Blocked section lists
 the calls the gate recently blocked for your agent (the newest 10, with
 its helpers'): classifier blocks, reviews that could not be completed,
 and calls of an unattended turn that would have asked you. Each row shows
@@ -616,7 +640,8 @@ approval would make. On a row:
   row `w` **withdraws** the approval: the row is a blocked call again
   (approve it another way, or leave it), and the agent's next try is
   reviewed as before. The keys that approve say it is approved already.
-  `/approve` with only a waiting approval shows that row.
+  With only a waiting approval the dialog opens on Blocked and shows that
+  row.
 - `s`, then `y`, grants it **for this session**: when a path outside the
   project and your allowed directories was why (the file tool's target or
   the classifier's `PATH:`), the path's own directory, or its parent when
@@ -643,9 +668,9 @@ approval would make. On a row:
 
 The footer spells the choices: "Enter approve once · s grant this
 session · a grant always here · A always in every workspace · e allow
-this kind of effect · Esc close" (with "w withdraw a waiting approval"
-before Esc while one waits). `s`
-and `a` ask first, on a line of their own that names what will happen
+this kind of effect · Tab In force · Esc close" (with "w withdraw a
+waiting approval" before Tab while one waits). `s`, `a`
+and `A` ask first, on a line of their own that names what will happen
 ("Grant writes under `/data/store` for this session? y yes · n or Esc
 no"). While that question is up only `y` (grants), `n` and Esc (cancel the
 question; a second Esc closes the list) answer it; Enter is deliberately
@@ -655,7 +680,8 @@ never approve the row once. The `e` field is a text field and keeps Enter
 as its confirm, as its line says. Whatever was done is stated under the
 list ("approved once: …", "granted for this session: writes under …",
 "granted always: …") as well as in the transcript, and the row leaves the
-list (an approval once stays, waiting, as above).
+list (an approval once stays, waiting, as above); a grant or statement it
+made is in In force from then on.
 
 The list says of each choice whether it is exact (Enter/`o`: this call
 once; `s`/`a`: its directory or its literal command) or judged by the
@@ -674,10 +700,7 @@ on it now. A call a helper made is told to the agent, named as that
 helper's call ("that your helper `scout` made"): the approval holds for
 the agent and its helpers, so it makes the call again itself or through
 a helper. Removing a grant or a statement tells the agent nothing and starts
-no turn. `/permissions` lists the grants in
-force after the rules, each with where it comes from (`default`, `flag`,
-`config`, `always`, `session`), then the statements; `d` then `y` removes
-a session grant or a statement. Every approval, grant and removal is in
+no turn. Every approval, grant and removal is in
 the audit log (`approved_once`, `approval_withdrawn`, `approval_told`,
 `grant_added`, `grant_removed`, `statement_added`, `statement_removed`).
 A waiting approval lives in the daemon only and belongs to the
@@ -685,7 +708,7 @@ conversation, like the list: a daemon restart ends it, ten newer blocks
 push it off the list (it lapses then), and after `/new` or `/resume` the
 list is the other conversation's.
 
-### Allowing a kind of effect
+#### Allowing a kind of effect
 
 A grant is exact: one directory, one literal command. Often what you mean
 is a kind of action ("pushing to main of this repository is fine, I work
@@ -693,11 +716,13 @@ alone"). When the classifier blocks, it names the kind of effect it
 objects to in one general sentence (its `EFFECT:` line, without what
 varies between calls), for example "building the project after the agent
 changed its dependencies" or "installing a package the agent chose with a
-global scope". `/approve` shows it on the row (`e judged: "…"`); `e` opens
+global scope". The Blocked section shows it on the row (`e judged: "…"`); `e` opens
 a one-line field with the sentence, which you edit as you like (a block
 without one opens it empty, to type your own), Tab switches between for
 this session, always for this workspace and always in every workspace,
-Enter allows it, Esc leaves it. That is a
+Enter allows it, Esc leaves it. In In force, `n` opens the same field
+empty, with no blocked call: a kind of action you allow before anything
+is blocked. That is a
 **statement**: the classifier reads the active statements in its
 environment, beside the directories you allow, under "The user allows
 these kinds of action (statements in their own words)". A statement
@@ -722,10 +747,48 @@ active at once, each at most 200 characters; control characters are
 stripped, and an empty statement or one that only says "anything" ("allow
 everything", "do whatever you want") is refused with the reason. The
 agent gets one system note when a statement is added ("The user now
-allows: …"). `/permissions` lists them with their origin (`session`,
-`always`, `config`); `d` removes a session or always one (the realm file
-too) and one of your own file from that file; one given on the daemon's
-command line ends when the daemon stops, as the refusal says.
+allows: …"), and the audit log has it (`statement_added`), whether it
+came from `e` or `n`.
+
+#### In force: rules, grants and statements
+
+The In force section lists, in order, the approval rules (each row's
+number, allow or deny, tool, pattern or literal, and the layer it came
+from), the grants (with where each comes from: `default`, `flag`,
+`config`, `always`, `session`) and the statements (`session`, `always`,
+`config`). Its footer: "↑/↓ move · d remove · n new statement · r new
+rule · Tab Blocked · Esc close".
+
+- `d` asks, and `y` removes the highlighted row. A rule goes as
+  `/permissions rm <n>` does: one of the realm (or added during this run)
+  or of your own `tui.toml` is gone for good (removed from its file); one
+  written in the project's `.rkat/tui.toml` or on the daemon's command
+  line is removed until the daemon restarts, and the question says so. A
+  session grant goes; any other grant says which file to edit. A session
+  or always statement goes (the realm file too), one of your own file from
+  that file; one given on the daemon's command line ends when the daemon
+  stops, as the refusal says.
+- `n` opens the statement field empty: "new statement: allow a kind of
+  action for this session, judged by the classifier (type it; Enter allows
+  · Tab: always for this workspace · Esc cancels):". Type the kind of
+  action; Tab goes through for this session, always for this workspace
+  (the realm's `tui.toml`) and always in every workspace (your
+  `tui.toml`); Enter allows it, with the limits and refusals above.
+- `r` opens a small form for a new rule on the dialog's line: "new rule:
+  allow · this workspace (the realm's tui.toml) · type <tool> [pattern]
+  (Enter adds · Tab allow/deny · Shift+Tab workspace/your tui.toml · ↑/↓
+  pattern/literal · Esc cancels):". Type the tool's name, then an optional
+  pattern (`shell cargo test *`); Tab makes it a deny rule (and back),
+  Shift+Tab writes it to your own `tui.toml` for every workspace instead of
+  the realm's, ↑/↓ makes the text after the tool a literal, matched
+  exactly (`shell git push --force`). Enter adds it, at once, as
+  `/permissions add` does (a pattern that does not parse is refused with
+  the reason); no tool, or a literal with nothing after the tool, is
+  refused on the line.
+
+The typed forms stay: `/permissions add allow|deny <tool> [pattern]
+[--user]`, `/permissions rm <n>` and `/permissions list` (the rules as a
+notice).
 
 ### The project's hosts and the hosts you trust
 
@@ -889,7 +952,7 @@ one. A build after such a change:
   the conversation go to the classifier as before, which is told you
   allow them. Allowed once, the files as they are become the new
   baseline. In a turn nobody attended it is denied, and the notice of
-  what you missed says so when you attach; `/approve` lists it with the
+  what you missed says so when you attach; `/permissions` lists it with the
   same session grant.
 
 A `build.rs` of a workspace member is seen when the file tools write it,
@@ -1749,7 +1812,7 @@ The friendly commands are shorthands for the same path and take
 (`auto.classifier_model`), `/mode <mode> --user` (`auto.mode`; `/mode`
 and Shift+Tab record the workspace's), Ctrl-T (the workspace's
 `ui.checklist`), `/permissions add … --user` (a rule in your file), and
-`/approve`'s `A` (always, in every workspace).
+`/permissions`' `A` and `n` (always, in every workspace).
 
 **What a change says.** Every change answers with the key and value,
 the level and the file written, the value now in force and the layer it
@@ -1825,17 +1888,12 @@ only add deny rules and `[auto]` settings; its `[endpoints]`, `[pricing]`,
 yours to pick) and its `auto.allow` statements. Broad allow rules (blanket shell, interpreters, package-manager run
 commands) are dropped when auto mode starts.
 
-**`/permissions`** opens a list of the rules in effect: each row's number,
-allow or deny, tool, pattern or literal, and the layer it came from. `d`
-asks, and `y` removes the highlighted rule, as `/permissions rm <n>`
-does: a rule of the realm (or one added during this run) or of your own
-`tui.toml` is gone for good (removed from its file); one written in the
-project's `.rkat/tui.toml` or on the daemon's command line is removed
-until the daemon restarts, and the question says so. Adding stays typed:
-`/permissions add allow|deny <tool> [pattern] [--user]` (the list's last line says
-so; `--user` writes the rule to your own `tui.toml`, for every
-workspace). Removing a rule of your own `tui.toml` removes it from that
-file. `/permissions list` prints the rules as a notice.
+**`/permissions`**' In force section lists the rules in effect and
+removes or adds them ([In force](#in-force-rules-grants-and-statements));
+`/permissions add allow|deny <tool> [pattern] [--user]` adds one typed
+(`--user` writes the rule to your own `tui.toml`, for every workspace),
+`/permissions rm <n>` removes one, and `/permissions list` prints them as
+a notice.
 
 **The realm file.** The workspace's realm `tui.toml` lives in its state
 directory under the config directory, out of the agent's and a
@@ -1913,10 +1971,10 @@ it may only lower a value, its lowering applies over every layer).
 | `ui.checklist`: Whether the task checklist shows under the input. | `hidden`, `shown` | hidden | may set it (the command line wins) | at once | Ctrl+T |
 | `pricing.fetch`: Whether the community price list is fetched for the cost readout. | `true` or `false` | true | may only set `false` | at the next start | `--no-pricing-fetch` |
 | `daemon.principal`: The person every attached client decides approval requests as. | text (at most 200 characters) | the login name ($USER, else $LOGNAME, else owner) | may not set it | at the next start | — |
-| `[[allow]] / [[deny]]`: Rules: `tool`, then `arg` (a glob) or `literal`. | a section | none | may only add deny rules | at once from your own and the workspace's file (a project file's at the next start) | `--allow` / `--deny <tool>[=<glob>]`; /permissions, /approve |
-| `auto.allow`: Statements: kinds of action you allow, which the classifier reads. | a section | none | may not set it | at once | —; /approve, /permissions |
+| `[[allow]] / [[deny]]`: Rules: `tool`, then `arg` (a glob) or `literal`. | a section | none | may only add deny rules | at once from your own and the workspace's file (a project file's at the next start) | `--allow` / `--deny <tool>[=<glob>]`; /permissions (In force: r adds, d removes; Blocked: a, A) |
+| `auto.allow`: Statements: kinds of action you allow, which the classifier reads. | a section | none | may not set it | at once | —; /permissions (In force: n adds, d removes; Blocked: e) |
 | `auto.trusted_hosts`: Hosts you trust with the project's data (`host` or `*.domain`), which the classifier reads beside the hosts of the project's git remotes; other rules still apply there. | a section | none | may not set it | at once | `--set 'auto.trusted_hosts=["<host>"]'`; — (edit the file) |
-| `confinement.extra_read / extra_write`: Extra directories for the confined shell, which the approval gate is told too. | a section | none | may not set it | the gate and the file tools at once; a confined shell at the next start | `--confinement-read` / `--confinement-write <dir>`; /approve |
+| `confinement.extra_read / extra_write`: Extra directories for the confined shell, which the approval gate is told too. | a section | none | may not set it | the gate and the file tools at once; a confined shell at the next start | `--confinement-read` / `--confinement-write <dir>`; /permissions (Blocked: a, A) |
 | `endpoints.<name>`: `dialect`, `base_url`, `api_key_env`, `priority`, `api_style` (an inline `api_key` is refused). | a section | none | may not set it | at the next start | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]`; — |
 | `pricing."<model id>"`: `input`, `output`, `cached_input`, `cache_write` in USD per million tokens. | a section | none | may not set it | at the next start | `--set 'pricing."<id>".input=15'`; — |
 | `thinking."<endpoint:id or id>"`: Anthropic thinking: `"adaptive"`, `{ enabled = <budget tokens> }` or `"default"`. | a section | none | may not set it | at the next start | `--set 'thinking."proxy:my-alias"=adaptive'`; — |
@@ -2532,8 +2590,7 @@ feature by feature.
 
 
 `/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/audit [n]`, `/schedules [pause|resume|delete <name>]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
-`/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`; alone, it opens a list of the rules and the grants in force: d then y removes the highlighted rule or session grant),
-`/approve` (the calls the gate recently blocked: Enter once, s for this session, a always; see [Approving a blocked call](#approving-a-blocked-call)),
+`/permissions [blocked|rules|list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`; alone, it opens the dialog of the calls the gate recently blocked and of the rules, grants and statements in force; see [The permissions dialog](#the-permissions-dialog)),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume|stats|check [all|<n>|<case id>…]]` (see [Checking your classifier model](#checking-your-classifier-model)), `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [workspace|user|system]`, `/init`, `/compact [now|status|prepare [at <threshold>|default] [<text>|off|default]|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
 `/helpers [list [all]|expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
@@ -2603,7 +2660,7 @@ asks about the agent this client works with, and says so.
 
 #### List dialogs
 
-The lists of `/approve`, `/permissions`, `/schedules`, `/agents`, `/wire`,
+The lists of `/permissions`, `/schedules`, `/agents`, `/wire`,
 `/unwire`, `/mode`, `/memory`, `/settings` and `/helpers` share their keys:
 ↑/↓ (or k/j) move, each row's keys act on it, Esc, `q` or Ctrl-C close.
 A list stays open after what you do in it, and closes only on those keys:
@@ -2618,7 +2675,7 @@ to an agent or starting a new one in `/agents`; so do choosing a model in
 after its Ctrl-C and `y`, showing the helper's end. Rows wrap
 to the dialog's width: the highlighted row in full, every other at most
 two lines of its text and two of its note, ending in "…". A key that asks
-first (retire, delete, remove, unwire, `/approve`'s `s` and `a`) puts its
+first (retire, delete, remove, unwire, `/permissions`' `s`, `a` and `A`) puts its
 question on a line of its own in the warning colour, naming what will
 happen and its keys ("Delete schedule nightly? It never fires again. y
 yes · n or Esc no"). While it is up only `y` (do it), `n` and Esc (cancel

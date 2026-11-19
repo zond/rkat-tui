@@ -47,7 +47,7 @@ pub struct AutoSettings {
     pub classifier_probe: bool,
     /// The kinds of action the user allows (`[auto] allow`), from the
     /// user-level file and the command line (`config`) and the realm's
-    /// (`always`, what `/approve` writes), each checked
+    /// (`always`, what `/permissions` writes), each checked
     /// ([`crate::approval::statements::normalize`]); never a project
     /// file's. A section, not a scalar setting: the layering adds them.
     #[serde(skip)]

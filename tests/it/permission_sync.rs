@@ -292,7 +292,7 @@ async fn a_bad_entry_is_skipped_and_named_while_the_good_one_applies() {
 
 /// Two daemons on one user's `tui.toml` (the first its own process, the
 /// real `rkat-tui-mob`): a directory and a statement granted "always, in
-/// every workspace" in the second (what `/approve`'s `A` does) reach the
+/// every workspace" in the second (what `/permissions`' Blocked `A` does) reach the
 /// first while it runs, in force there as your file's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn always_in_every_workspace_in_one_daemon_reaches_the_other() {

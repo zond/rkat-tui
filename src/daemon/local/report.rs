@@ -429,6 +429,27 @@ impl Local {
         })
     }
 
+    /// `rkat/allow_statement`: the user allows the kind of action `text`
+    /// describes for `scope`, typed from scratch; the engine tells the
+    /// agent in one system note ([`crate::approval::ApprovalEvent::Granted`]).
+    pub(super) fn allow_statement(
+        &self,
+        caller: &Caller,
+        text: &str,
+        scope: crate::approval::grants::GrantScope,
+    ) -> Result<RuleOutcome, Refusal> {
+        let session = self.session_of_caller(caller)?;
+        let done = self.core.engine.allow_statement(&session, text, scope);
+        self.after_permission_command();
+        Ok(match done {
+            Ok(approved) => RuleOutcome {
+                ok: true,
+                text: approved.notice,
+            },
+            Err(text) => RuleOutcome { ok: false, text },
+        })
+    }
+
     /// `rkat/withdraw_approval`: withdraw the approval once of call `id`
     /// of `caller`'s agent; it is a blocked call again.
     pub(super) fn withdraw_approval(

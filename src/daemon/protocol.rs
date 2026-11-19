@@ -291,14 +291,19 @@ methods! {
     /// engine with its number, its patterns and its layer.
     RuleRows = "rkat/rule_rows" (Empty) -> crate::approval::desk::RuleRows;
     /// The calls the gate recently blocked for this client's agent that the
-    /// user can approve (`/approve`), oldest first.
+    /// user can approve (`/permissions`' Blocked section), oldest first.
     Blocked = "rkat/blocked" (Empty) -> BlockedList;
     /// Approve a blocked call once, for this session or always; with an
     /// `effect`, allow that kind of action (a statement the classifier
     /// reads) for this session or always instead.
     Approve = "rkat/approve" (ApproveParams) -> crate::approval::desk::RuleOutcome;
-    /// Withdraw an approval once that waits for the agent (`/approve`'s
-    /// `w`): the call is a blocked call again.
+    /// Allow a kind of action the user typed (`/permissions`' `n`), for
+    /// this client's agent's session or always: a statement the
+    /// classifier reads from the next review on; the agent is told in one
+    /// system note.
+    AllowStatement = "rkat/allow_statement" (StatementParams) -> crate::approval::desk::RuleOutcome;
+    /// Withdraw an approval once that waits for the agent (the Blocked
+    /// section's `w`): the call is a blocked call again.
     WithdrawApproval = "rkat/withdraw_approval" (GrantParams) -> crate::approval::desk::RuleOutcome;
     /// Remove a statement of this client's agent's session, or one added
     /// always (`/permissions`).
@@ -1034,6 +1039,16 @@ pub struct ApproveParams {
     /// the call's grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect: Option<String>,
+}
+
+/// [`method::AllowStatement`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatementParams {
+    /// The kind of action to allow, in the user's words.
+    pub text: String,
+    /// How long it holds: this session, always for this workspace or in
+    /// every workspace.
+    pub scope: crate::approval::grants::GrantScope,
 }
 
 /// [`method::RemoveGrant`]'s parameters.

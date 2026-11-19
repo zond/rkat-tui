@@ -258,7 +258,7 @@ impl EscalationDialog {
 
 /// Type (or paste) `text` into a one-line field `buf` of at most `max`
 /// characters: a line break or tab is a space, control characters go,
-/// what does not fit is dropped (the deny comment, the `/approve`
+/// what does not fit is dropped (the deny comment, the `/permissions`
 /// statement field).
 pub(super) fn push_line_text(buf: &mut String, text: &str, max: usize) {
     let room = max.saturating_sub(buf.chars().count());
@@ -680,7 +680,7 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &mut Modal) {
             model_picker_lines(picker, inner_w, usize::from(area.height.saturating_sub(4))),
         ),
         Modal::List(picker) => (
-            picker.kind.title().to_string(),
+            picker.title(),
             list_picker_lines(picker, inner_w, usize::from(area.height.saturating_sub(4))),
         ),
         Modal::PlanReady(dialog) => (" Plan ready ".to_string(), plan_lines(*dialog, inner_w)),

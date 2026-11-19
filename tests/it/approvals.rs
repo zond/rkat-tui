@@ -455,13 +455,13 @@ async fn a_deny_rule_added_in_attach_mode_refuses_the_next_call() {
     daemon.stop().await;
 }
 
-/// The `/permissions` picker lists the daemon's rules and its confirmed
-/// `d` removes one: the notice says so, the list comes again without it,
-/// and the daemon's engine no longer has it.
+/// The `/permissions` dialog's In force section lists the daemon's rules
+/// and its confirmed `d` removes one: the notice says so, the list comes
+/// again without it, and the daemon's engine no longer has it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_rule_picker_removes_a_rule_from_the_daemon() {
     use ratatui::crossterm::event::KeyCode;
-    use rkat_tui::ui::{PickAct, PickerKind};
+    use rkat_tui::ui::{PickAct, PickerKind, Section};
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![]);
     let daemon = start(&ws.root, &llm, &Setup::default()).await;
@@ -475,9 +475,10 @@ async fn the_rule_picker_removes_a_rule_from_the_daemon() {
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "rule added"))
         .await;
-    client.send(Effect::RequestRulePicker);
+    client.send(Effect::RequestPermissions(Some(Section::InForce)));
     let shown = client
-        .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, refresh: false } if picker.kind == PickerKind::Permissions))
+        .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, refresh: false }
+            if picker.kind == PickerKind::Permissions && picker.section() == Some(Section::InForce.index())))
         .await;
     let Msg::ShowPicker { picker, .. } = shown else {
         unreachable!()
@@ -506,7 +507,8 @@ async fn the_rule_picker_removes_a_rule_from_the_daemon() {
         .await;
     client
         .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, refresh: true }
-            if picker.kind == PickerKind::Permissions && picker.rows.iter().all(|row| !row.text.contains("write_file"))))
+            if picker.kind == PickerKind::Permissions
+                && picker.section_rows(Section::InForce.index()).is_some_and(|rows| rows.iter().all(|row| !row.text.contains("write_file")))))
         .await;
     client.send(Effect::ListRules);
     client
@@ -522,16 +524,17 @@ async fn the_rule_picker_removes_a_rule_from_the_daemon() {
     daemon.stop().await;
 }
 
-/// `/approve` through the daemon: the classifier blocks a write to a
-/// directory outside the project; the block's notice says `/approve`
-/// lists it; the picker offers the directory; "for this session" makes
-/// the next write there an in-project edit with no classifier call, the
-/// agent is told in a system note, `/permissions` lists the grant as the
-/// session's and removes it, and the audit log records both.
+/// `/permissions`' Blocked section through the daemon: the classifier
+/// blocks a write to a directory outside the project; the block's notice
+/// says `/permissions` lists it; the dialog opens on Blocked and offers
+/// the directory; "for this session" makes the next write there an
+/// in-project edit with no classifier call, the agent is told in a system
+/// note, the refreshed dialog's In force lists the grant as the session's
+/// and `d` removes it, and the audit log records both.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
     use rkat_tui::approval::grants::{GrantScope, GrantTarget};
-    use rkat_tui::ui::PickerKind;
+    use rkat_tui::ui::{PickerKind, Section};
     let ws = Workspace::new();
     let store = ws.sibling("store");
     std::fs::create_dir_all(&store).unwrap();
@@ -564,12 +567,13 @@ async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
     client
         .saw(|msg| {
             matches!(msg, Msg::Approval(notice)
-            if notice.reason.as_deref().is_some_and(|r| r.contains("(/approve lists it)")))
+            if notice.reason.as_deref().is_some_and(|r| r.contains("(/permissions lists it)")))
         })
         .await;
-    client.send(Effect::RequestApprovePicker);
+    client.send(Effect::RequestPermissions(None));
     let shown = client
-        .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, .. } if picker.kind == PickerKind::Approve))
+        .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, .. }
+            if picker.kind == PickerKind::Permissions && picker.section() == Some(Section::Blocked.index())))
         .await;
     let Msg::ShowPicker { picker, .. } = shown else {
         unreachable!()
@@ -590,11 +594,28 @@ async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
         .wait_for(|msg| matches!(msg, Msg::ShowPicker { refresh: true, .. }))
         .await;
     assert!(
-        matches!(&refreshed, Msg::ShowPicker { picker, .. } if picker.rows.is_empty()),
+        matches!(&refreshed, Msg::ShowPicker { picker, .. }
+            if picker.section_rows(Section::Blocked.index()).is_some_and(<[_]>::is_empty)),
         "{refreshed:?}"
     );
+    // The grant shows in In force at once, removable there.
+    let Msg::ShowPicker { picker, .. } = &refreshed else {
+        unreachable!()
+    };
+    let in_force = picker.section_rows(Section::InForce.index()).unwrap();
+    let granted = in_force
+        .iter()
+        .find(|row| row.text == format!("grant writes under `{}` · session", store.display()))
+        .unwrap_or_else(|| panic!("{in_force:?}"));
+    assert!(
+        granted.keys.iter().any(|key| matches!(
+            &key.does,
+            rkat_tui::ui::Does::Ask(rkat_tui::ui::PickAct::RemoveGrant(_), _)
+        )),
+        "{granted:?}"
+    );
     client
-        .wait_for(|msg| matches!(msg, Msg::PickerDone { kind: rkat_tui::ui::PickerKind::Approve, text } if text.starts_with("granted for this session: writes under")))
+        .wait_for(|msg| matches!(msg, Msg::PickerDone { kind: PickerKind::Permissions, text } if text.starts_with("granted for this session: writes under")))
         .await;
     // The idle agent is told and goes on by itself: a run of the note, in
     // which it writes again, now without review.

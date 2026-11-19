@@ -6,7 +6,7 @@
 //! appended to its system context, read at its next turn and waking
 //! nobody ([`append_note`], [`Agents::send_notes`]), or steered into its
 //! run, which starts one when it is idle ([`steer_member`],
-//! [`Agents::steer`]): a helper's ending and an approval from `/approve`
+//! [`Agents::steer`]): a helper's ending and an approval from `/permissions`
 //! ([`Agents::approved`]).
 
 use std::sync::Arc;
@@ -194,12 +194,12 @@ pub(crate) enum Wake {
     /// A helper of it ended ([`super::endings`]): a run it starts is no
     /// user's, attributed as "a helper ended".
     HelperEnded,
-    /// The user approved a blocked call of it (`/approve`): a run it
+    /// The user approved a blocked call of it (`/permissions`): a run it
     /// starts is the user's (attended, [`crate::approval::attendance`]).
     Approved,
 }
 
-/// The line a client shows over the note of an approval from `/approve`
+/// The line a client shows over the note of an approval from `/permissions`
 /// (the run it starts, or the running turn it went into).
 pub const APPROVED_LABEL: &str = "approved: the agent is told and goes on";
 
@@ -293,7 +293,7 @@ impl Agents {
         true
     }
 
-    /// The user approved a blocked call of `session` from `/approve`:
+    /// The user approved a blocked call of `session` from `/permissions`:
     /// tell the agent that runs `session` at once, so it goes on.
     ///
     /// - **Who.** The agent, for its own calls and its helpers' alike (a
@@ -304,7 +304,7 @@ impl Agents {
     ///   again itself or through a helper.
     /// - **How.** Steered ([`Self::steer`]): into the agent's running
     ///   turn (it reads it at its next step), or as a run of its own when it
-    ///   is idle. That run is the user's (the user's `/approve` is the
+    ///   is idle. That run is the user's (the user's approval is the
     ///   user's act): attended, and its clients show it under
     ///   [`APPROVED_LABEL`].
     /// - **Not held after an interrupt.** A helper's ending to an agent

@@ -138,7 +138,7 @@ pub struct Agents {
     /// announced with it ([`endings::summary_of`]).
     helper_summaries:
         parking_lot::Mutex<std::collections::HashMap<String, (String, endings::NoteSummary)>>,
-    /// The last note of an `/approve` sent to each agent: a run it starts
+    /// The last note of an approval (`/permissions`) sent to each agent: a run it starts
     /// is the user's ([`notes`]).
     approval_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
     /// The agents whose last run the user interrupted ([`endings`]).

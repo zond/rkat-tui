@@ -5,8 +5,9 @@
 //! active statements in its environment ([`super::prompts`]) and they
 //! clear the block rules for actions of the kind they describe, read
 //! narrowly, never sending data to a host the user has not named. The
-//! user adds one from `/approve` (a blocked call's `EFFECT:` sentence,
-//! edited) for this session or always, or writes it in their own
+//! user adds one from `/permissions` (a blocked call's `EFFECT:` sentence,
+//! edited, or one typed from scratch with `n`) for this session or
+//! always, or writes it in their own
 //! `tui.toml` (`[auto] allow = ["…"]`, the user-level and realm files
 //! only, never a project's `.rkat/tui.toml`).
 //!
@@ -39,9 +40,9 @@ pub const MAX_STATEMENT_CHARS: usize = 200;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StatementOrigin {
-    /// Added for the agent's session (`/approve`).
+    /// Added for the agent's session (`/permissions`).
     Session,
-    /// Added always (`/approve`): the realm's `tui.toml`.
+    /// Added always (`/permissions`): the realm's `tui.toml`.
     Always,
     /// The user's own `tui.toml` (user level) or the command line.
     Config,
