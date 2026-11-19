@@ -541,7 +541,8 @@ fn queued_block_status_count_and_hints() {
     });
     let rows = render_sized(&mut app, now, 100);
     assert!(
-        rows.iter().any(|r| r == "› also fix tests  · delivering…"),
+        rows.iter()
+            .any(|r| r == "› also fix tests  · goes in at the agent's next step"),
         "rows: {rows:#?}"
     );
     // The placeholder is dim.

@@ -134,6 +134,131 @@ async fn a_prompt_queued_behind_a_running_turn_runs_next() {
     rig.quit().await;
 }
 
+/// The owner's rule (2026-11-19): what the user types during a run goes
+/// in at the next spot, the first model request that starts after it was
+/// sent. Measured through the client: a message typed (a) while the tools
+/// of step 0 run (a reviewed call whose review is held) rides request 1;
+/// (b) typed while request 1 is in flight before any text rides request 2,
+/// and is marked delivered while request 2 is still streaming (the mark
+/// comes when the carrying request starts, not when its answer ends); (c)
+/// typed while request 2 streams text rides request 3. (d) The engine
+/// (0.9.16) stages one steer per model request, oldest first: two typed
+/// while request 3 is in flight ride requests 4 and 5. Pinned: the day a
+/// release lets every waiting steer join the next request, (d) fails and
+/// the pending line's words change (`docs/evidence.md`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_typed_message_rides_the_first_request_after_it() {
+    let ws = Workspace::new();
+    let review = Arc::new(Notify::new());
+    let in_flight = Arc::new(Notify::new());
+    let streaming = Arc::new(Notify::new());
+    let unknown = meerkat_comms::Keypair::generate()
+        .public_key()
+        .to_peer_id()
+        .to_string();
+    let contacts = |id: &'static str| Step::Tool {
+        id,
+        name: "contacts",
+        args: json!({}),
+    };
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "s0",
+            name: "send_message",
+            args: json!({"peer_id": unknown, "body": "x", "handling_mode": "queue"}),
+        },
+        Step::Gated(Arc::clone(&in_flight), Box::new(contacts("c1"))),
+        Step::Streaming("part", Arc::clone(&streaming), Box::new(contacts("c2"))),
+        Step::Gated(Arc::clone(&in_flight), Box::new(contacts("c3"))),
+        contacts("c4"),
+        Step::Text("done"),
+    ]);
+    let classifier = ScriptedClassifier::holding(Arc::clone(&review));
+    let mut rig = Attached::start_with(
+        &ws.root,
+        &llm,
+        Setup::default().classifier(Arc::clone(&classifier) as _),
+    )
+    .await;
+    let carried = |llm: &ScriptedLlmClient, at: usize, text: &str| {
+        llm.requests()
+            .get(at)
+            .is_some_and(|messages| format!("{messages:?}").contains(text))
+    };
+    rig.send(Effect::StartTurn("go".into()));
+    // (a) The review of step 0's call is held: its tools run.
+    common::until(|| !classifier.seen().is_empty()).await;
+    rig.send(steer(1, "TYPED-A"));
+    rig.wait_for(|msg| {
+        matches!(
+            msg,
+            Msg::SteerAck {
+                id: PendingId(1),
+                result: Ok(())
+            }
+        )
+    })
+    .await;
+    review.notify_one();
+    llm.wait_call(1).await;
+    assert!(carried(&llm, 1, "TYPED-A"), "{:?}", llm.requests()[1]);
+    // (b) Request 1 is in flight, no text yet.
+    rig.send(steer(2, "TYPED-B"));
+    rig.wait_for(|msg| {
+        matches!(
+            msg,
+            Msg::SteerAck {
+                id: PendingId(2),
+                result: Ok(())
+            }
+        )
+    })
+    .await;
+    in_flight.notify_one();
+    llm.wait_call(2).await;
+    assert!(!carried(&llm, 1, "TYPED-B"));
+    assert!(carried(&llm, 2, "TYPED-B"), "{:?}", llm.requests()[2]);
+    // Marked while request 2 is still held mid-stream.
+    rig.wait_for(|msg| matches!(msg, Msg::SteerDelivered(PendingId(2))))
+        .await;
+    // (c) Request 2 streams text.
+    rig.wait_for(|msg| {
+        matches!(msg, Msg::Agent(env) if matches!(&env.payload, AgentEvent::TextDelta { delta, .. } if delta == "part"))
+    })
+    .await;
+    rig.send(steer(3, "TYPED-C"));
+    rig.wait_for(|msg| {
+        matches!(
+            msg,
+            Msg::SteerAck {
+                id: PendingId(3),
+                result: Ok(())
+            }
+        )
+    })
+    .await;
+    streaming.notify_one();
+    llm.wait_call(3).await;
+    assert!(!carried(&llm, 2, "TYPED-C"));
+    assert!(carried(&llm, 3, "TYPED-C"), "{:?}", llm.requests()[3]);
+    rig.wait_for(|msg| matches!(msg, Msg::SteerDelivered(PendingId(3))))
+        .await;
+    // (d) Two typed while request 3 is in flight.
+    for (id, text) in [(4, "TYPED-D1"), (5, "TYPED-D2")] {
+        rig.send(steer(id, text));
+        rig.wait_for(move |msg| matches!(msg, Msg::SteerAck { id: PendingId(i), result: Ok(()) } if *i == id))
+            .await;
+    }
+    in_flight.notify_one();
+    llm.wait_call(5).await;
+    assert!(carried(&llm, 4, "TYPED-D1") && !carried(&llm, 4, "TYPED-D2"));
+    assert!(carried(&llm, 5, "TYPED-D2"), "{:?}", llm.requests()[5]);
+    let outcome = rig.turn_finished().await;
+    assert_eq!(outcome.expect("turn succeeds").text, "done");
+    assert_eq!(llm.requests().len(), 6, "one run, no follow-up");
+    rig.quit().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_steered_message_is_applied_at_the_next_tool_boundary() {
     let ws = Workspace::new();

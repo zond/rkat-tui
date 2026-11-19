@@ -151,7 +151,9 @@ impl QueuedLabel {
     pub fn text(self) -> &'static str {
         match self {
             Self::Queued => "queued",
-            Self::Delivering => "delivering…",
+            // The engine stages one steer per model request, oldest first:
+            // "next" is the first step that has room for it.
+            Self::Delivering => "goes in at the agent's next step",
             Self::Deferred => "will send after this turn",
             Self::Shell => "runs after this turn",
             Self::Command => "when the turn ends",

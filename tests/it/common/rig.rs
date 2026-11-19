@@ -931,6 +931,9 @@ pub struct ScriptedClassifier {
     allow_when_done: bool,
     /// A review of a call whose arguments hold this text times out.
     fail_on: Option<String>,
+    /// Each review waits for this gate first (the call it reviews is
+    /// being dispatched meanwhile).
+    hold: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl ScriptedClassifier {
@@ -940,6 +943,16 @@ impl ScriptedClassifier {
         Arc::new(Self {
             allow_when_done: true,
             fail_on: Some(text.to_string()),
+            ..Self::default()
+        })
+    }
+
+    /// Allow everything, each review once `gate` is notified.
+    #[allow(dead_code)]
+    pub fn holding(gate: Arc<tokio::sync::Notify>) -> Arc<Self> {
+        Arc::new(Self {
+            allow_when_done: true,
+            hold: Some(gate),
             ..Self::default()
         })
     }
@@ -995,6 +1008,9 @@ impl ActionClassifier for ScriptedClassifier {
             input.transcript.render(),
         ));
         self.environments.lock().push(input.environment.clone());
+        if let Some(gate) = &self.hold {
+            gate.notified().await;
+        }
         if let Some(text) = &self.fail_on
             && input.args.to_string().contains(text.as_str())
         {

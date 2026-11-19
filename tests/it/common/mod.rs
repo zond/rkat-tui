@@ -201,6 +201,9 @@ pub enum Step {
     Hang,
     /// The inner step, once the gate is notified.
     Gated(Arc<Notify>, Box<Step>),
+    /// A text delta at once, then (once the gate is notified) the inner
+    /// step: a response that is streaming when it is held.
+    Streaming(&'static str, Arc<Notify>, Box<Step>),
     /// The step this function makes of the request's messages (e.g. a call
     /// naming an id an earlier tool result returned).
     Dynamic(Arc<dyn Fn(&[Message]) -> Step + Send + Sync>),
@@ -275,7 +278,7 @@ impl Step {
             })],
             Self::StreamError => vec![Err(LlmError::ServerOverloaded)],
             Self::Hang => Vec::new(),
-            Self::Gated(_, inner) => inner.events(model),
+            Self::Gated(_, inner) | Self::Streaming(_, _, inner) => inner.events(model),
             Self::Dynamic(_) => panic!("a dynamic step is resolved before it streams"),
         }
     }
@@ -438,6 +441,19 @@ impl LlmClient for ScriptedLlmClient {
             Step::Dynamic(make) => make(&request.messages),
             other => other,
         };
+        if let Step::Streaming(first, gate, inner) = step {
+            let events = inner.events(&request.model);
+            let head = futures::stream::iter(vec![Ok(LlmEvent::TextDelta {
+                delta: first.to_string(),
+                meta: None,
+            })]);
+            let tail = futures::stream::once(async move {
+                gate.notified().await;
+                futures::stream::iter(events)
+            })
+            .flatten();
+            return Box::pin(head.chain(tail));
+        }
         let (gate, step) = step.into_parts();
         let hang = matches!(step, Step::Hang);
         let events = step.events(&request.model);

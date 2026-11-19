@@ -44,6 +44,13 @@
   again (where the compaction left no line at all). `/export` writes the
   summary under its own heading.
 
+- A message typed while the agent works now shows *goes in at the
+  agent's next step* instead of *delivering…*, and the manual says when
+  that is: the first model request that starts after it was sent (one
+  already under way does not take it), one waiting message per request,
+  oldest first (the engine's rule), so a second message typed meanwhile
+  goes in one request later.
+
 ### Removed
 
 - The engine's `reply_to_peer` is no longer offered to agents or helpers.

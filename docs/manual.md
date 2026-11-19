@@ -188,11 +188,16 @@ still holds for the conversation (a message steered too late for the
 running step runs as a follow-up run of the same turn first). The UI says
 how it ended: completed, failed (the first failure wins) or interrupted.
 A steered message counts as delivered only when the stream shows it
-written at a boundary or the run that carries it starts. One the agent
+written at a boundary or the run that carries it starts. Until then it
+shows *goes in at the agent's next step*: it joins the first model
+request that starts after it was sent (one already under way does not
+take it), and the engine takes one waiting message per request, oldest
+first, so a second message typed meanwhile (or a note the daemon sent
+just before) goes in one request later. One the agent
 has not read when the turn ends (the runtime started no run for it within
-10 s; a notice says so) stays shown as *delivering…*, is marked when the
+10 s; a notice says so) stays shown so, is marked when the
 agent reads it, and ↑ can still take it back. When the daemon reports the
-agent idle with nothing held while a message is still *delivering…*, the
+agent idle with nothing held while a message still waits, the
 client asks the daemon what the runtime recorded for it: written into a
 run, it is marked delivered; ended without one (a force-cancel, the agent
 retired or was stopped), it returns to the editor with a notice saying

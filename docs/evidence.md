@@ -13531,3 +13531,47 @@ of an agent or a helper declares any `NOT_OFFERED` tool, now with
 `reply_to_peer`), `approval::policy::tests::the_tools_not_offered_are_denied_to_every_member`,
 `tool_costs` (the comms family is `contacts` and `send_message`),
 `ui::transcript::restore::tests::a_stored_call_of_a_withdrawn_tool_restores_as_its_block`.
+
+Found on the way, not changed: the engine's own system prompt still has
+its "Inter-agent Communication" block and the `mob-communication` skill,
+which name `reply_to_peer`, `send_request`, `send_response` and `peers`
+(engine text, appended with the comms tools).
+
+## When a typed message goes in (owner, 2026-11-19)
+
+The owner: messages typed during a run felt one step late (text 1, m1
+typed, text 2 without it, m2 typed, text 3, only then m1 marked). The
+rule he set: what he types goes in at the next available spot.
+
+The engine (0.9.16): a steer is admitted at once (`mob/member_send`
+answers at admission; the daemon's proxy forwards a steer to a running
+agent without waiting: `after_mode_changes` is awaited only for a prompt
+to an idle agent, held notes go with a prompt only). Each model request
+takes what waits at its boundary when it is built
+(`execute_calling_llm_request_unboxed` → `take_pending_at_exact_boundary`
+→ `apply_durable_boundary_appends`, which emits `BoundaryAppendApplied`
+before the provider call). The boundary window holds one durable delivery
+(`Session::prepare_active_turn_boundary`), and the runtime stages one
+steer at a time, each waiting for its boundary: N waiting steers ride the
+next N requests, oldest first. Recalling the staged one (it is reported
+`recalled`) does not free its boundary: a probe admitted three steers
+during a held tool call, recalled the first two, and the third rode
+request 2, not request 1. So no reordering or merging of ours can make a
+second waiting message ride the same request; it is the engine's, drafted
+as an ask in `.handover/upstream-steer-batching.md` (not posted).
+
+Measured through a client (`client_turns::a_typed_message_rides_the_first_request_after_it`):
+typed while step 0's tools run (a held review), it rides request 1; typed
+while request 1 is in flight before any text, request 2; typed while
+request 2 streams, request 3; two typed while request 3 is in flight,
+requests 4 and 5. The client marks a steer delivered on its
+`BoundaryAppendApplied`, which comes when the carrying request starts:
+the test sees the mark while that request is still held mid-stream.
+Nothing of ours adds a step. The owner's sequence fits a message typed
+while the request after text 1 was already under way, or one queued
+behind another message or a daemon note.
+
+What changed: the pending line says *goes in at the agent's next step*
+(was *delivering…*), and the manual says when that is. The test's case
+(d) pins the engine's one-per-request rule and fails the day a release
+lets all waiting steers join the next request.
