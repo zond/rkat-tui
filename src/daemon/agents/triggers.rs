@@ -5,11 +5,9 @@
 use std::sync::Arc;
 
 use meerkat_core::SessionId;
-use meerkat_mob::{AgentIdentity, MobId};
 
-use super::super::MOB_ID;
 use super::Agents;
-use super::notes::{note_agent, steer_member};
+use super::notes::{Delivery, hold_or_steer, note_agent};
 
 /// The label of a run a note of helpers' endings started.
 pub const HELPER_ENDED_LABEL: &str = "a helper ended";
@@ -235,13 +233,15 @@ impl Agents {
         let text = batch.text();
         self.watch_sent.lock().insert(name.clone(), text.clone());
         let _sending = self.core.activity.sending(&name);
-        let sent = steer_member(
-            &self.core,
-            &MobId::from(MOB_ID),
-            AgentIdentity::from(name.as_str()),
-            text.clone(),
-        )
-        .await;
+        let later = {
+            let name = name.clone();
+            move |err: String| {
+                tracing::warn!(agent = %name, error = %err, "a held watch event did not reach the agent");
+            }
+        };
+        let sent = hold_or_steer(&self.core, &name, text.clone())
+            .await
+            .accepted(later);
         if let Err(err) = sent {
             tracing::warn!(agent = %name, error = %err, "a watch event did not reach the agent");
             self.watch_sent.lock().remove(&name);
@@ -268,39 +268,45 @@ impl Agents {
         let name = name.to_string();
         tokio::spawn(async move {
             let _sending = agents.core.activity.sending(&name);
-            let sent = steer_member(
-                &agents.core,
-                &MobId::from(MOB_ID),
-                AgentIdentity::from(name.as_str()),
-                text.clone(),
-            )
-            .await;
-            let notice = match sent {
-                Ok(()) => {
-                    agents.audit_run(&name, None, "compact_prepare", text);
-                    crate::daemon::protocol::AgentNotice {
+            let notice = |warn: bool, text: String| {
+                agents.core.decisions.broadcast(
+                    crate::daemon::protocol::AGENT_NOTICE,
+                    &crate::daemon::protocol::AgentNotice {
                         agent: name.clone(),
-                        warn: false,
-                        text: if reminder {
-                            crate::daemon::prepare::Prepare::reminded_notice(tokens)
-                        } else {
-                            crate::daemon::prepare::Prepare::asked_notice(tokens)
-                        },
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(agent = %name, error = %err, "the prepare instruction did not reach the agent");
-                    crate::daemon::protocol::AgentNotice {
-                        agent: name.clone(),
-                        warn: true,
-                        text: format!("the agent was not asked to prepare for compaction: {err}"),
-                    }
+                        warn,
+                        text,
+                    },
+                );
+            };
+            let asked = || {
+                if reminder {
+                    crate::daemon::prepare::Prepare::reminded_notice(tokens)
+                } else {
+                    crate::daemon::prepare::Prepare::asked_notice(tokens)
                 }
             };
-            agents
-                .core
-                .decisions
-                .broadcast(crate::daemon::protocol::AGENT_NOTICE, &notice);
+            // Held for the open run, it is asked now: it goes with the
+            // user's next message or after the next model call's tools.
+            let delivery = hold_or_steer(&agents.core, &name, text.clone()).await;
+            let held = matches!(delivery, Delivery::Held(_));
+            if held {
+                agents.audit_run(&name, None, "compact_prepare", text.clone());
+                notice(false, asked());
+            }
+            match delivery.outcome().await {
+                Ok(()) if !held => {
+                    agents.audit_run(&name, None, "compact_prepare", text);
+                    notice(false, asked());
+                }
+                Ok(()) => {}
+                Err(err) => {
+                    tracing::warn!(agent = %name, error = %err, "the prepare instruction did not reach the agent");
+                    notice(
+                        true,
+                        format!("the agent was not asked to prepare for compaction: {err}"),
+                    );
+                }
+            }
         });
     }
 }

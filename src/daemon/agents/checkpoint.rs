@@ -123,13 +123,8 @@ impl Agents {
                 CONTINUE_LABEL.to_string(),
                 CONTINUE_INSTRUCTION.to_string(),
             );
-            let sent = steer_member(
-                &self.core,
-                &MobId::from(MOB_ID),
-                AgentIdentity::from(name),
-                CONTINUE_INSTRUCTION.to_string(),
-            )
-            .await;
+            let sent =
+                super::notes::steer_agent(&self.core, name, CONTINUE_INSTRUCTION.to_string()).await;
             if let Err(err) = sent {
                 tracing::warn!(agent = %name, error = %err, "the agent was not told to go on");
                 self.notice(

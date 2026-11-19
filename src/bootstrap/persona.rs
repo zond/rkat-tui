@@ -21,6 +21,9 @@ You are an interactive coding agent operating in the user's project directory.
 - Shell commands run in the foreground only: the shell's `background` option and \
 the shell job tools are not available here (the call is refused); give a long \
 command a `timeout_secs` instead.
+- The engine's own sections of these instructions also name reply_to_peer, \
+send_request, send_response and peers: those four tools do not exist here; \
+`send_message` does what the first three would, `contacts` what peers would.
 - Some tool calls are reviewed by an approval policy. If a call is blocked \
 (`policy_denied`), do not try to achieve the same effect another way. Tell the user \
 what was blocked and why, and choose a safer approach or ask how to proceed.
@@ -74,7 +77,10 @@ a new task after it finishes; retire a kept one with `retire_helper` as soon as 
 its work is done.
 - Ask and answer peers with `send_message`; if a peer's request reaches you, \
 answer it with `send_message` too. A message names its sender, not its peer_id: \
-answer to the peer_id `contacts` gives for that name.
+answer to the peer_id `contacts` gives for that name. \
+The engine's own sections of these instructions also name reply_to_peer, \
+send_request, send_response and peers: those four tools do not exist here; \
+`send_message` does what the first three would, `contacts` what peers would.
 - Do not send a message that only acknowledges or thanks: a message that needs no \
 answer gets none.
 ";
@@ -262,6 +268,24 @@ mod tests {
         }
     }
 
+    /// The engine's own comms section and skill still describe these
+    /// (`docs/evidence.md`, "Our notes never go ahead of the user's
+    /// message"): agents and helpers are told they do not exist.
+    #[test]
+    fn the_engines_comms_tools_we_do_not_offer_are_said_to_be_absent() {
+        let line = "those four tools do not exist here; `send_message` does what the first \
+                    three would, `contacts` what peers would.";
+        assert!(CODING_PERSONA.contains(line));
+        assert!(HELPER_PERSONA.contains(line));
+        for gone in ["reply_to_peer", "send_request", "send_response", "peers"] {
+            assert!(
+                crate::approval::policy::NOT_OFFERED.contains(&gone),
+                "{gone}"
+            );
+            assert!(CODING_PERSONA.contains(gone), "{gone}");
+        }
+    }
+
     /// The section's size, measured (review 7, the roster note's rules
     /// pointed at `contacts`: 4,850 bytes): it does not creep.
     #[test]
@@ -381,6 +405,8 @@ mod tests {
              gives for that name.",
             "Do not send a message that only acknowledges or thanks: a message that needs no \
              answer gets none.",
+            "those four tools do not exist here; `send_message` does what the first three \
+             would, `contacts` what peers would.",
         ] {
             assert!(HELPER_PERSONA.contains(line), "{line}");
         }

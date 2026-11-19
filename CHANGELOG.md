@@ -21,6 +21,20 @@
 
 ### Changed
 
+- What you type to a working agent is no longer held back by rkat-tui's
+  own notes to it. The engine takes one message into a running turn per
+  model request, so a note (a helper's ending, an approval, a watch's
+  change, the prepare-for-compaction request, a plan-mode change) sent
+  just before you typed cost your message a whole request. Notes to a
+  working agent now wait: they travel with your next message, in front of
+  its words, or go together as one message after the agent's next tool
+  calls, or start its next run when the turn ends. A note can reach the
+  agent one model call later than before; what an idle agent gets is
+  unchanged.
+- The agents' instructions say that `reply_to_peer`, `send_request`,
+  `send_response` and `peers`, which the engine's own sections of the
+  prompt still describe, do not exist here (`send_message` and `contacts`
+  replace them); the engine offers no way to drop those sections.
 - `/approve` is now the Blocked section of `/permissions`: one dialog
   with two sections, Blocked (the calls the gate recently blocked and the
   approvals waiting, with the same keys as before) and In force (the

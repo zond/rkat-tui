@@ -733,8 +733,14 @@ impl Watcher {
         following: &mut Following,
     ) {
         let session = || event_session(&envelope.source, following.session.as_ref());
-        if let AgentEvent::TurnCompleted { .. } = &envelope.payload {
-            following.steps += 1;
+        match &envelope.payload {
+            AgentEvent::TurnCompleted { .. } => following.steps += 1,
+            // The model call asked for tools: the notes held for the run
+            // go now, as one steer the agent reads after those tools. (The
+            // call's `TurnCompleted` comes once its tools are done, right
+            // before the next request: too late to be sure of it.)
+            AgentEvent::ToolCallRequested { .. } => self.send_held(),
+            _ => {}
         }
         match &envelope.payload {
             AgentEvent::RunStarted {
@@ -1020,6 +1026,20 @@ impl Watcher {
     /// A run ended: the agent may be idle, its turn's watches and the
     /// run's schedule bookkeeping end, the counts are written behind and
     /// the session's tool catalog is read again.
+    /// The notes held for the agent's open run, sent as one steer.
+    fn send_held(&self) {
+        let Some(agents) = self.watched.agents.upgrade() else {
+            return;
+        };
+        let Some(held) = self.watched.activity.take_notes(&self.name) else {
+            return;
+        };
+        let name = self.name.clone();
+        tokio::spawn(async move {
+            crate::daemon::agents::send_taken(agents.core(), &name, held).await;
+        });
+    }
+
     fn run_ended(&self, session: &SessionId, run: Option<&meerkat_core::RunId>) {
         let Watched {
             activity,
@@ -1028,8 +1048,17 @@ impl Watcher {
             origins,
             ..
         } = &self.watched;
-        activity.run_ended(&self.name, run);
+        let held = activity.run_ended(&self.name, run);
         if let Some(agents) = agents.upgrade() {
+            // Notes held for the run go as an idle agent's do: they start
+            // its next run.
+            if let Some(held) = held {
+                let agents = Arc::clone(&agents);
+                let name = self.name.clone();
+                tokio::spawn(async move {
+                    crate::daemon::agents::send_taken(agents.core(), &name, held).await;
+                });
+            }
             agents.run_ended(&self.name);
             if let Some(run) = run {
                 agents.core().schedules.run_ended(run);

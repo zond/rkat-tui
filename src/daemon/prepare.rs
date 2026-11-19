@@ -7,7 +7,9 @@
 //! (its event watcher, [`super::approvals::watch`]). When a reading of an
 //! agent's own conversation reaches `compact_prepare_at` and the trigger
 //! is armed, the agent is asked as a steer into its run (when that model
-//! call asked for tools, so the run goes on), or the steer is held for the
+//! call asked for tools, so the run goes on; held like every note of ours
+//! until the user's next message or the next call's tool request,
+//! [`super::agents::hold_or_steer`]), or the steer is held for the
 //! start of its next run (the call ended the run: an idle agent is never
 //! woken for it). The request gives leeway: find a good stopping point
 //! soon, finish the step in hand, then the instruction, then

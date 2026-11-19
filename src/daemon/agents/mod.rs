@@ -32,7 +32,7 @@ mod triggers;
 pub use names::is_agent;
 use names::new_name;
 pub use notes::{APPROVED_LABEL, Leave};
-pub(crate) use notes::{append_note, append_note_to, steer_member};
+pub(crate) use notes::{Delivery, append_note, append_note_to, hold_or_steer, send_taken};
 pub use triggers::READ_ONLY_COMMS_NOTE;
 pub use triggers::{HELPER_ENDED_LABEL, HELPER_IDLE_LABEL};
 

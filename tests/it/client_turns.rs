@@ -171,13 +171,43 @@ async fn a_typed_message_rides_the_first_request_after_it() {
         Step::Streaming("part", Arc::clone(&streaming), Box::new(contacts("c2"))),
         Step::Gated(Arc::clone(&in_flight), Box::new(contacts("c3"))),
         contacts("c4"),
+        Step::Gated(Arc::clone(&in_flight), Box::new(contacts("c5"))),
+        // Its review is held.
+        Step::Gated(
+            Arc::clone(&in_flight),
+            Box::new(Step::Tool {
+                id: "s6",
+                name: "send_message",
+                args: json!({"peer_id": unknown, "body": "y", "handling_mode": "queue"}),
+            }),
+        ),
+        // Its context crosses the prepare threshold.
+        Step::ToolUsage {
+            id: "c7",
+            name: "contacts",
+            args: json!({}),
+            input: 30_000,
+        },
+        Step::Gated(Arc::clone(&in_flight), Box::new(contacts("c8"))),
         Step::Text("done"),
     ]);
     let classifier = ScriptedClassifier::holding(Arc::clone(&review));
     let mut rig = Attached::start_with(
         &ws.root,
         &llm,
-        Setup::default().classifier(Arc::clone(&classifier) as _),
+        Setup::args(&[
+            "--set",
+            "auto.compact=auto",
+            "--set",
+            "auto.compact_auto_percent=5",
+            "--set",
+            "auto.compact_warn_percent=5",
+            "--set",
+            &format!("auto.compact_prepare={PREPARE}"),
+            "--set",
+            "auto.compact_prepare_at=20000",
+        ])
+        .classifier(Arc::clone(&classifier) as _),
     )
     .await;
     let carried = |llm: &ScriptedLlmClient, at: usize, text: &str| {
@@ -253,11 +283,94 @@ async fn a_typed_message_rides_the_first_request_after_it() {
     llm.wait_call(5).await;
     assert!(carried(&llm, 4, "TYPED-D1") && !carried(&llm, 4, "TYPED-D2"));
     assert!(carried(&llm, 5, "TYPED-D2"), "{:?}", llm.requests()[5]);
+    // (e) A note of ours (a helper's ending, say) comes while request 5 is
+    // in flight, just before the user types: it is held, and rides with
+    // the user's message, which rides request 6.
+    let agent = rig.agent().await;
+    let local = rig.daemon.local();
+    let note = |text: &'static str| {
+        let (local, agent) = (Arc::clone(&local), agent.clone());
+        tokio::spawn(async move { local.steer_for_test(&agent, text).await })
+    };
+    let note_e = note("NOTE-E");
+    common::until(|| local.held_notes_for_test(&agent) == 1).await;
+    rig.send(steer(6, "TYPED-E"));
+    rig.wait_for(|msg| {
+        matches!(
+            msg,
+            Msg::SteerAck {
+                id: PendingId(6),
+                result: Ok(())
+            }
+        )
+    })
+    .await;
+    assert_eq!(
+        local.held_notes_for_test(&agent),
+        0,
+        "it went with the message"
+    );
+    in_flight.notify_one();
+    llm.wait_call(6).await;
+    assert!(carried(&llm, 6, "TYPED-E") && carried(&llm, 6, "NOTE-E"));
+    note_e.await.unwrap().unwrap();
+    // (g) Two notes held while request 6 is in flight, nobody typing: they
+    // go as ONE steer once the call asked for tools (its review is held),
+    // and ride request 7.
+    let notes = [note("NOTE-G1"), note("NOTE-G2")];
+    common::until(|| local.held_notes_for_test(&agent) == 2).await;
+    in_flight.notify_one();
+    for note in notes {
+        note.await.unwrap().unwrap();
+    }
+    // The call's tool waits for its review meanwhile.
+    common::until(|| classifier.seen().len() == 2).await;
+    review.notify_one();
+    llm.wait_call(7).await;
+    let added = |at: usize| {
+        let requests = llm.requests();
+        user_texts(&requests[at])[user_texts(&requests[at - 1]).len()..].to_vec()
+    };
+    let both = added(7);
+    assert!(
+        both.len() == 1 && both[0].contains("NOTE-G1") && both[0].contains("NOTE-G2"),
+        "{both:?}"
+    );
+    // (f) Request 7's context crosses the prepare threshold (read when its
+    // tools are done): the prepare request is held while request 8 is in
+    // flight; the user types then, and the message rides request 9 with it.
+    rig.saw(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("asked the agent to prepare")))
+        .await;
+    llm.wait_call(8).await;
+    assert_eq!(local.held_notes_for_test(&agent), 1);
+    rig.send(steer(7, "TYPED-F"));
+    rig.wait_for(|msg| {
+        matches!(
+            msg,
+            Msg::SteerAck {
+                id: PendingId(7),
+                result: Ok(())
+            }
+        )
+    })
+    .await;
+    assert_eq!(
+        local.held_notes_for_test(&agent),
+        0,
+        "it went with the message"
+    );
+    in_flight.notify_one();
+    llm.wait_call(9).await;
+    assert!(!carried(&llm, 8, PREPARE));
+    assert!(carried(&llm, 9, "TYPED-F") && carried(&llm, 9, PREPARE));
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.expect("turn succeeds").text, "done");
-    assert_eq!(llm.requests().len(), 6, "one run, no follow-up");
+    assert_eq!(llm.requests().len(), 10, "one run, no follow-up");
     rig.quit().await;
 }
+
+/// The prepare instruction of [`a_typed_message_rides_the_first_request_after_it`].
+const PREPARE: &str = "PREPARE-NOW";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_steered_message_is_applied_at_the_next_tool_boundary() {

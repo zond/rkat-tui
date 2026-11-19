@@ -1027,13 +1027,27 @@ impl Agents {
     /// durably): it travels with the next message to the agent or goes
     /// into its next run, once. Why it failed, in plain words.
     async fn steer_or_hold(
-        &self,
+        self: &Arc<Self>,
         name: &str,
         session: &SessionId,
         text: String,
     ) -> Result<(), String> {
+        // Held for the agent's open run and not taken later: held here,
+        // as a steer that failed now is.
+        let later = {
+            let (agents, name, session, text) = (
+                Arc::clone(self),
+                name.to_string(),
+                session.clone(),
+                text.clone(),
+            );
+            move |err: String| {
+                tracing::warn!(agent = %name, error = %err, "a helper's held note did not reach the agent; it is held for its next run");
+                agents.held.hold(&name, &session, text, true);
+            }
+        };
         let Err(err) = self
-            .steer(name, text.clone(), super::notes::Wake::HelperEnded)
+            .steer(name, text.clone(), super::notes::Wake::HelperEnded, later)
             .await
         else {
             return Ok(());

@@ -13684,3 +13684,79 @@ the model switch said the engine's words, and now says the same busy
 refusal as before the check when the agent runs at the time of the
 engine's refusal (`local::model::reconfigure_refusal`). Test:
 `daemon::local::model::tests::a_run_started_after_the_check_is_the_busy_refusal`.
+
+## Our notes never go ahead of the user's message (2026-11-19)
+
+Owner's rule: what the user types goes in at the next available spot.
+Measured in fa8e782 (`client_turns::a_typed_message_rides_the_first_request_after_it`):
+the engine writes ONE steer into a running turn per model request,
+oldest first. Read in meerkat 0.9.16: a running session's boundary has
+one durable slot (`meerkat-core` `session.rs`, `prepare_active_turn_boundary`:
+the open window's `durable`, else `next_boundary_durable`, else
+`Unavailable`), and each admitted steer is registered there by an
+asynchronous task the runtime spawns after it accepted the input
+(`meerkat-runtime` `meerkat_machine/mod.rs`, "asynchronous accepted-input
+boundary optimization"; `commit_durable_live_boundary_input`), one input
+per delivery. A daemon note steered just before the user typed therefore
+took the slot, and the user's message rode one request later.
+
+Routes ruled out: an append to the system context during a run is applied
+only when the turn ends (above, "A new agent's attach never waits" and "A
+mode change reaches the agent"); recalling a staged steer does not free
+its slot (fa8e782's probe).
+
+What we do: a note of ours to a workspace agent with an open run is held
+in the daemon (`daemon::activity::HeldNote`, under the lock of the open
+runs, so a run's end cannot strand one) and goes (1) with the user's next
+message to the agent, in front of its words under the held-note separator
+(`Local::observe`, the same path as the endings held after an
+interrupt), one slot; else (2) as one steer of every note held then when
+the run's model call asks for tools (its first `ToolCallRequested`: the
+call's `TurnCompleted` comes only once its tools are done, right before
+the next request, meerkat-core `agent/state.rs`, so a steer sent then
+races that boundary; the prepare reading made there waits for the next
+call); else
+(3) when the run ends, as one steer that starts the next run, as a note to
+an idle agent always did. The daemon's stop, the agent's retirement or
+reseat answer a held note as not sent (a helper's ending is then held
+durably, as after any failed steer). Every note path goes through
+`agents::hold_or_steer`: helpers' endings and approvals
+(`Agents::steer`), watch batches, the prepare request (its notice is
+shown when it is held), an agent's checkpoint continue, the plan-mode
+note (the mode change does not wait for a held note). The cost: a note
+that comes during a model call's tools reaches the agent one call later
+than before.
+
+Test, new cases of `a_typed_message_rides_the_first_request_after_it`:
+(e) a note held while request 5 is in flight, the user types, request 6
+carries both; (g) two notes held while request 6 is in flight go as one
+user message in request 7 (sent at its tool request, its review held);
+(f) the prepare request read after request 7's tools is held while
+request 8 is in flight, and rides request 9 with the message typed then.
+A note sent at a tool request can still miss the boundary after those
+tools when they are instant (the registration race below); it then rides
+one request later, behind nothing of the user's.
+
+Combining the user's own typed messages (several typed while one is
+staged would ride one request together) was evaluated and left out: it
+needs the daemon to hold a message and hand it over late, and a message
+handed over late is reliably in the next boundary only if its
+registration is done before the runner parks. That registration happens
+in the runtime's own spawned task after `mob/member_send` answers, with
+no event or state that says it is done (`InputLifecycleState` has no
+"registered"); awaiting it from inside our tool admission would deadlock
+(`prepare_active_turn_boundary` returns only once the runner is parked,
+which needs the tools to finish). With instant tools a held message could
+then ride a request later than if it had been sent at once. The
+upstream ask stays the route (`.handover/upstream-steer-batching.md`:
+take every durable delivery admitted before a boundary).
+
+The engine's own "Inter-agent Communication" section
+(`meerkat-tools` `CommsToolSurface::usage_instructions`) and the
+`mob-communication` skill (preloaded unconditionally by `meerkat-mob`
+`build.rs`) still name `reply_to_peer`, `send_request`, `send_response`
+and `peers`; neither `SpawnMemberSpec` nor the profile can drop them. The
+agents' coding persona and the helpers' persona now say those four do not
+exist here and what replaces them
+(`bootstrap::persona::tests::the_engines_comms_tools_we_do_not_offer_are_said_to_be_absent`). Ask: a host switch for the comms usage
+section and the preloaded skill.

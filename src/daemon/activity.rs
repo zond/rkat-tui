@@ -78,6 +78,62 @@ struct State {
     idle: Option<IdleNote>,
     /// A question to the runtime is under way.
     checking: bool,
+    /// The daemon's own notes held for the open run ([`Activity::hold_note`]).
+    notes: Vec<HeldNote>,
+}
+
+/// A note of the daemon's own (a helper's ending, an approval, a watch's
+/// batch, the prepare request) for an agent whose run is open, held here
+/// instead of steered at once.
+///
+/// The engine writes one steer into a running turn per model request,
+/// oldest first (`docs/evidence.md`, "Our notes never go ahead of the
+/// user's message"), so a note steered just before the user types would
+/// cost the user's message a whole request. A held note goes:
+///
+/// - with the user's next message to the agent, in front of its words, in
+///   the same slot ([`Activity::take_notes`] from the proxy);
+/// - else, when the run's model call asked for tools, as one steer with
+///   every other note held then (the agent reads it after those tools);
+/// - else, when the run ends, as one steer that starts the agent's next
+///   run, as a note to an idle agent always did.
+///
+/// `done` is told whether the engine took it.
+#[derive(Debug)]
+pub struct HeldNote {
+    /// What the agent is told.
+    pub text: String,
+    /// Told the engine's answer, once.
+    pub done: tokio::sync::oneshot::Sender<Result<(), String>>,
+}
+
+/// The notes taken from an agent's hold ([`Activity::take_notes`]): the
+/// agent counts as busy until `sending` is dropped.
+#[derive(Debug)]
+pub struct TakenNotes {
+    /// The notes, oldest first.
+    pub notes: Vec<HeldNote>,
+    /// Keeps the agent busy while they are sent (until this is dropped).
+    _sending: Sending,
+}
+
+impl TakenNotes {
+    /// The notes' texts as one, oldest first.
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.notes
+            .iter()
+            .map(|note| note.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    /// Tell every note's sender `result`.
+    pub fn answer(self, result: &Result<(), String>) {
+        for note in self.notes {
+            let _ = note.done.send(result.clone());
+        }
+    }
 }
 
 impl State {
@@ -152,6 +208,70 @@ impl Activity {
     /// [`SETTLE_WAIT`].
     pub fn stop(&self) {
         self.stopped.send_replace(true);
+        let held: Vec<HeldNote> = self
+            .agents
+            .lock()
+            .values_mut()
+            .flat_map(|state| std::mem::take(&mut state.notes))
+            .collect();
+        for note in held {
+            let _ = note.done.send(Err("the daemon stopped first".to_string()));
+        }
+    }
+
+    /// Hold `note` for `agent`'s open run ([`HeldNote`]); `Err` gives it
+    /// back when no run of it is open (or the daemon stops): it is then
+    /// sent at once, as to an idle agent.
+    ///
+    /// # Errors
+    ///
+    /// The note itself, when it is not held.
+    pub fn hold_note(&self, agent: &str, note: HeldNote) -> Result<(), HeldNote> {
+        if *self.stopped.borrow() {
+            return Err(note);
+        }
+        let mut agents = self.agents.lock();
+        match agents.get_mut(agent) {
+            Some(state) if !state.open.is_empty() => {
+                state.notes.push(note);
+                Ok(())
+            }
+            _ => Err(note),
+        }
+    }
+
+    /// The notes held for `agent`, taken (`None`: none).
+    #[must_use]
+    pub fn take_notes(&self, agent: &str) -> Option<TakenNotes> {
+        let mut agents = self.agents.lock();
+        let state = agents.get_mut(agent)?;
+        Self::taken(&self.this, agent, state)
+    }
+
+    /// Tests: how many notes are held for `agent`.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn held_notes(&self, agent: &str) -> usize {
+        self.agents
+            .lock()
+            .get(agent)
+            .map_or(0, |state| state.notes.len())
+    }
+
+    /// `state`'s notes, taken with a [`Sending`] guard (under the lock).
+    fn taken(this: &Weak<Self>, agent: &str, state: &mut State) -> Option<TakenNotes> {
+        if state.notes.is_empty() {
+            return None;
+        }
+        state.change();
+        state.sending += 1;
+        Some(TakenNotes {
+            notes: std::mem::take(&mut state.notes),
+            _sending: Sending {
+                activity: this.clone(),
+                agent: agent.to_string(),
+            },
+        })
     }
 
     /// `agent`'s run `run` of `session` started: whoever waited for it
@@ -200,9 +320,10 @@ impl Activity {
         told(&open.0, &open.1);
     }
 
-    /// `agent`'s run `run` ended.
-    pub fn run_ended(&self, agent: &str, run: Option<&RunId>) {
-        {
+    /// `agent`'s run `run` ended: the notes held for it, when no run of it
+    /// is open any more (they go as an idle agent's would).
+    pub fn run_ended(&self, agent: &str, run: Option<&RunId>) -> Option<TakenNotes> {
+        let notes = {
             let mut agents = self.agents.lock();
             let state = agents.entry(agent.to_string()).or_default();
             state.change();
@@ -210,8 +331,14 @@ impl Activity {
                 state.open.remove(run);
                 state.last_ended = Some(run.clone());
             }
-        }
+            if state.open.is_empty() {
+                Self::taken(&self.this, agent, state)
+            } else {
+                None
+            }
+        };
         self.settle(agent);
+        notes
     }
 
     /// An input for `agent` is on its way to the engine until the guard is
@@ -232,20 +359,31 @@ impl Activity {
     /// never come) or its inputs changed outside the stream (a recall):
     /// decide again.
     pub fn changed(&self, agent: &str, reseated: bool) {
-        {
+        let dropped = {
             let mut agents = self.agents.lock();
             let state = agents.entry(agent.to_string()).or_default();
             state.change();
             if reseated {
                 state.open.clear();
+                std::mem::take(&mut state.notes)
+            } else {
+                Vec::new()
             }
+        };
+        for note in dropped {
+            let _ = note
+                .done
+                .send(Err("the agent was seated again first".to_string()));
         }
         self.settle(agent);
     }
 
-    /// `agent` retired.
+    /// `agent` retired (a note held for it is answered as not sent).
     pub fn forget(&self, agent: &str) {
-        self.agents.lock().remove(agent);
+        let state = self.agents.lock().remove(agent);
+        for note in state.map(|state| state.notes).unwrap_or_default() {
+            let _ = note.done.send(Err("the agent retired first".to_string()));
+        }
     }
 
     /// Whether a run of `agent` the daemon saw start has not ended yet.
@@ -607,5 +745,53 @@ mod tests {
         assert_eq!(*told.lock(), vec![first.clone(), first], "at once");
         activity.changed("a", true);
         assert_eq!(activity.open_run("a"), None, "a new incarnation");
+    }
+
+    fn note(text: &str) -> (HeldNote, tokio::sync::oneshot::Receiver<Result<(), String>>) {
+        let (done, told) = tokio::sync::oneshot::channel();
+        (
+            HeldNote {
+                text: text.to_string(),
+                done,
+            },
+            told,
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn notes_are_held_only_for_an_open_run_and_go_together() {
+        let session = SessionId::new();
+        let (activity, world) = activity(&session);
+        // No run open: given back, to be sent at once.
+        let (idle, _) = note("idle");
+        assert_eq!(activity.hold_note("a", idle).unwrap_err().text, "idle");
+        let run = RunId::new();
+        activity.run_started("a", &session, Some(&run));
+        let (one, one_told) = note("one");
+        let (two, two_told) = note("two");
+        activity.hold_note("a", one).unwrap();
+        activity.hold_note("a", two).unwrap();
+        let taken = activity.take_notes("a").unwrap();
+        assert_eq!(taken.text(), "one\n\ntwo");
+        assert!(activity.take_notes("a").is_none(), "taken once");
+        // Busy while they are sent, even with the run ended.
+        assert!(activity.run_ended("a", Some(&run)).is_none());
+        settle().await;
+        assert!(world.lock().told.is_empty(), "not idle while they go");
+        taken.answer(&Ok(()));
+        assert_eq!(one_told.await.unwrap(), Ok(()));
+        assert_eq!(two_told.await.unwrap(), Ok(()));
+        // Held at a run's end: they go with it; at the stop: answered.
+        let run = RunId::new();
+        activity.run_started("a", &session, Some(&run));
+        let (late, _) = note("late");
+        activity.hold_note("a", late).unwrap();
+        let ended = activity.run_ended("a", Some(&run)).unwrap();
+        assert_eq!(ended.text(), "late");
+        activity.run_started("a", &session, Some(&RunId::new()));
+        let (stopped, stopped_told) = note("stopped");
+        activity.hold_note("a", stopped).unwrap();
+        activity.stop();
+        assert!(stopped_told.await.unwrap().is_err());
     }
 }

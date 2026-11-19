@@ -307,21 +307,26 @@ impl Local {
     }
 
     /// Tests: a message of the daemon's own to `agent`, as its notes go
-    /// ([`crate::daemon::agents::steer_member`]).
+    /// (held for an open run, [`crate::daemon::agents::hold_or_steer`]);
+    /// answered once the engine took it.
     ///
     /// # Errors
     ///
     /// The engine's refusal, as text.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn steer_for_test(&self, agent: &str, text: &str) -> Result<(), String> {
-        crate::daemon::agents::steer_member(
-            &self.core,
-            &meerkat_mob::MobId::from(crate::daemon::MOB_ID),
-            meerkat_mob::AgentIdentity::from(agent),
-            text.to_string(),
-        )
-        .await
-        .map_err(|err| err.to_string())
+        crate::daemon::agents::hold_or_steer(&self.core, agent, text.to_string())
+            .await
+            .outcome()
+            .await
+    }
+
+    /// Tests: how many of the daemon's notes are held for `agent`'s open
+    /// run ([`crate::daemon::activity::HeldNote`]).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn held_notes_for_test(&self, agent: &str) -> usize {
+        self.core.activity.held_notes(agent)
     }
 
     /// How many requests of the engine method `method` the clients sent
@@ -588,10 +593,29 @@ impl Local {
                     // The endings of helpers held since the user interrupted
                     // the agent go with this message, before its words (the
                     // classifier's transcript has the user's words only).
-                    if let Some(held) = self.agents.take_held(&agent, &session)
+                    // So do the notes held for its open run: the user's
+                    // message takes the next model request's one steer,
+                    // and they ride with it rather than ahead of it.
+                    let carries = params
+                        .get("content")
+                        .is_some_and(|content| content.is_string() || content.is_array());
+                    let open = carries
+                        .then(|| self.core.activity.take_notes(&agent))
+                        .flatten();
+                    let held = [
+                        self.agents.take_held(&agent, &session),
+                        open.as_ref().map(crate::daemon::activity::TakenNotes::text),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                    if !held.is_empty()
                         && let Some(content) = params.get_mut("content")
                     {
-                        prepend_note(content, &held);
+                        prepend_note(content, &held.join("\n\n"));
+                    }
+                    if let Some(open) = open {
+                        open.answer(&Ok(()));
                     }
                 }
             }

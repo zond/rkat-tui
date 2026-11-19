@@ -187,6 +187,104 @@ pub(crate) async fn steer_member(
     }
 }
 
+/// What became of a note to a workspace agent ([`hold_or_steer`]).
+pub(crate) enum Delivery {
+    /// Held for the agent's open run: the receiver is told whether the
+    /// engine took it ([`crate::daemon::activity::HeldNote`]).
+    Held(tokio::sync::oneshot::Receiver<Result<(), String>>),
+    /// No run of it was open: steered at once, which starts one.
+    Steered(Result<(), String>),
+}
+
+impl Delivery {
+    /// `Ok` once the note is held or the engine took it; a held note the
+    /// engine does not take later is handed to `failed` with why.
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal of a note steered at once.
+    pub(crate) fn accepted(
+        self,
+        failed: impl FnOnce(String) + Send + 'static,
+    ) -> Result<(), String> {
+        match self {
+            Self::Steered(result) => result,
+            Self::Held(told) => {
+                tokio::spawn(async move {
+                    if let Err(err) = Self::Held(told).outcome().await {
+                        failed(err);
+                    }
+                });
+                Ok(())
+            }
+        }
+    }
+
+    /// Whether the engine took the note, once it is known.
+    pub(crate) async fn outcome(self) -> Result<(), String> {
+        match self {
+            Self::Steered(result) => result,
+            Self::Held(told) => told
+                .await
+                .unwrap_or_else(|_| Err("the note was dropped before it went".to_string())),
+        }
+    }
+}
+
+/// A note of the daemon's own to the workspace's agent `agent`: held for
+/// its open run, so it never takes a model request's one steer ahead of
+/// the user's message ([`crate::daemon::activity::HeldNote`]), else
+/// steered at once ([`steer_member`]), which starts a run of it.
+pub(crate) async fn hold_or_steer(core: &Core, agent: &str, text: String) -> Delivery {
+    let (done, told) = tokio::sync::oneshot::channel();
+    match core
+        .activity
+        .hold_note(agent, crate::daemon::activity::HeldNote { text, done })
+    {
+        Ok(()) => Delivery::Held(told),
+        Err(note) => Delivery::Steered(
+            steer_member(
+                core,
+                &MobId::from(MOB_ID),
+                AgentIdentity::from(agent),
+                note.text,
+            )
+            .await
+            .map_err(|err| err.to_string()),
+        ),
+    }
+}
+
+/// [`hold_or_steer`], waiting for the outcome.
+///
+/// # Errors
+///
+/// The engine's refusal, in words.
+pub(crate) async fn steer_agent(core: &Core, agent: &str, text: String) -> Result<(), String> {
+    hold_or_steer(core, agent, text).await.outcome().await
+}
+
+/// Send the notes `taken` from `agent`'s hold as one steer, and tell each
+/// note's sender how it went.
+pub(crate) async fn send_taken(
+    core: &Core,
+    agent: &str,
+    taken: crate::daemon::activity::TakenNotes,
+) {
+    let result = steer_member(
+        core,
+        &MobId::from(MOB_ID),
+        AgentIdentity::from(agent),
+        taken.text(),
+    )
+    .await
+    .map_err(|err| err.to_string());
+    if let Err(err) = &result {
+        tracing::warn!(%agent, error = %err, notes = taken.notes.len(), "the held notes did not reach the agent");
+    }
+    taken.answer(&result);
+}
+
 /// Why the daemon steers a message into one of its agents
 /// ([`Agents::steer`]): who a run it starts belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,10 +313,20 @@ impl Agents {
     /// [`ApprovalEngine::human_input`]: crate::approval::ApprovalEngine::human_input
     /// [`ApprovalEngine::user_started`]: crate::approval::ApprovalEngine::user_started
     ///
+    /// A note held for the agent's open run ([`hold_or_steer`]) answers
+    /// `Ok` at once; should the engine not take it later, `failed` is told
+    /// why.
+    ///
     /// # Errors
     ///
     /// The engine's refusal of the send, in words.
-    pub(crate) async fn steer(&self, name: &str, text: String, wake: Wake) -> Result<(), String> {
+    pub(crate) async fn steer(
+        &self,
+        name: &str,
+        text: String,
+        wake: Wake,
+        failed: impl FnOnce(String) + Send + 'static,
+    ) -> Result<(), String> {
         let sent = match wake {
             Wake::HelperEnded => &self.helper_sent,
             Wake::Approved => &self.approval_sent,
@@ -242,19 +350,14 @@ impl Agents {
         if fault == Some(crate::daemon::core::NoteFault::Refused) {
             return Err("the note was refused on purpose (test)".to_string());
         }
-        let steered = steer_member(
-            &self.core,
-            &MobId::from(MOB_ID),
-            AgentIdentity::from(name),
-            text,
-        )
-        .await;
+        let steered = match hold_or_steer(&self.core, name, text).await {
+            Delivery::Steered(steered) => steered,
+            held @ Delivery::Held(_) => return held.accepted(failed),
+        };
         #[cfg(any(test, feature = "test-support"))]
         let steered = match (steered, fault) {
             (Ok(()), Some(crate::daemon::core::NoteFault::Late)) => {
-                Err(meerkat_mob::MobError::Internal(
-                    "the note was answered late on purpose (test)".into(),
-                ))
+                Err("the note was answered late on purpose (test)".to_string())
             }
             (steered, _) => steered,
         };
@@ -262,11 +365,10 @@ impl Agents {
         // engine have taken it all the same, the run it starts is still
         // recognised, and the copy held meanwhile goes then
         // ([`super::endings::HeldNotes::delivered`]).
-        steered.map_err(|err| {
+        steered.inspect_err(|_| {
             if wake == Wake::Approved {
                 sent.lock().remove(name);
             }
-            err.to_string()
         })
     }
 
@@ -315,31 +417,46 @@ impl Agents {
     ///   interrupted run, not a message.)
     ///
     /// A failure is a warning to the agent's clients.
-    pub async fn approved(&self, session: &SessionId, approved: crate::approval::Approved) {
+    pub async fn approved(
+        self: &Arc<Self>,
+        session: &SessionId,
+        approved: crate::approval::Approved,
+    ) {
         let Some(name) = self.agent_running_as(session) else {
             tracing::info!("the approval's conversation is no agent's now: nobody is told");
             return;
         };
         let text = approved.note;
-        match self.steer(&name, text.clone(), Wake::Approved).await {
+        let later = {
+            let (agents, name) = (Arc::clone(self), name.clone());
+            move |err: String| {
+                agents.approval_sent.lock().remove(&name);
+                agents.approval_not_told(name, &err);
+            }
+        };
+        match self.steer(&name, text.clone(), Wake::Approved, later).await {
             Ok(()) => {
                 self.audit_run(&name, None, "approval_told", text.clone());
                 self.tell_triggered(&name, session, APPROVED_LABEL.to_string(), text);
             }
-            Err(err) => {
-                tracing::warn!(agent = %name, error = %err, "the agent was not told of the approval");
-                self.core.decisions.broadcast(
-                    crate::daemon::protocol::AGENT_NOTICE,
-                    &crate::daemon::protocol::AgentNotice {
-                        agent: name,
-                        warn: true,
-                        text: format!(
-                            "the agent was not told of the approval (it runs the call when it tries it again): {err}"
-                        ),
-                    },
-                );
-            }
+            Err(err) => self.approval_not_told(name, &err),
         }
+    }
+
+    /// The approval's note did not reach `name` (`err`): a warning to its
+    /// clients.
+    fn approval_not_told(&self, name: String, err: &str) {
+        tracing::warn!(agent = %name, error = %err, "the agent was not told of the approval");
+        self.core.decisions.broadcast(
+            crate::daemon::protocol::AGENT_NOTICE,
+            &crate::daemon::protocol::AgentNotice {
+                agent: name,
+                warn: true,
+                text: format!(
+                    "the agent was not told of the approval (it runs the call when it tries it again): {err}"
+                ),
+            },
+        );
     }
 }
 

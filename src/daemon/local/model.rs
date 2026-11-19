@@ -324,8 +324,9 @@ impl Local {
     }
 
     /// Tell `agent` plan mode is on (`plan`) or off. An agent with a run
-    /// open gets the note steered into that run (it reads it at its next
-    /// step): an append to its system context would land only when the
+    /// open gets the note in that run, held as every note of ours is
+    /// ([`crate::daemon::agents::hold_or_steer`]: with the user's next
+    /// message, else after the model call's tools): an append to its system context would land only when the
     /// turn ends, and the mode change (`rkat/set_mode`) would answer only
     /// then. An idle agent gets it appended, which the engine applies at
     /// once and which starts no run: a mode change wakes nobody. (An agent
@@ -342,14 +343,20 @@ impl Local {
         };
         let told = if self.core.activity.running(agent) {
             let _sending = self.core.activity.sending(agent);
-            crate::daemon::agents::steer_member(
-                &self.core,
-                &meerkat_mob::MobId::from(crate::daemon::MOB_ID),
-                meerkat_mob::AgentIdentity::from(agent),
-                note.to_string(),
-            )
-            .await
-            .map_err(|err| err.to_string())
+            // Held for the open run like every note of ours: the mode
+            // change does not wait for it.
+            match crate::daemon::agents::hold_or_steer(&self.core, agent, note.to_string()).await {
+                crate::daemon::agents::Delivery::Held(told) => {
+                    let agent = agent.to_string();
+                    tokio::spawn(async move {
+                        if let Ok(Err(err)) = told.await {
+                            tracing::warn!(%agent, error = %err, "the plan-mode note did not reach the agent");
+                        }
+                    });
+                    Ok(())
+                }
+                crate::daemon::agents::Delivery::Steered(told) => told,
+            }
         } else {
             crate::daemon::agents::append_note(
                 &self.core.state,
