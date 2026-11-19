@@ -47,7 +47,7 @@ use crate::daemon::context::{FamilySize, family_sizes};
 /// offer ([`crate::approval::policy::NOT_OFFERED`]: `delegate`, `fork_off`),
 /// which every agent's tool access policy denies, so no search may offer
 /// them.
-pub const DIRECT_MOB_TOOLS: [&str; 8] = crate::approval::policy::NOT_OFFERED;
+pub const DIRECT_MOB_TOOLS: [&str; 9] = crate::approval::policy::NOT_OFFERED;
 
 /// The engine's mob tool surface of every member's build, by the session
 /// it was built for: `assign` with `context: "fork"` forks its caller

@@ -219,7 +219,6 @@ pub const REVIEWED_BUILTINS: &[&str] = &[
     "web_search",
     "generate_image",
     "send_message",
-    "reply_to_peer",
     // Mob tools beyond `delegate`: a temporary council of helpers, and a
     // member concluding its kickoff objective.
     "council",
@@ -247,8 +246,7 @@ pub const BLOB_SAVE_FILE: &str = "blob_save_file";
 
 /// The comms sends that name their recipient (`peer_id`): to another
 /// agent of the workspace they are tier 1 (`ApprovalEngine`'s agent
-/// peers), to anything else reviewed. (`reply_to_peer` names none: it
-/// answers the turn's sender, and is reviewed.)
+/// peers), to anything else reviewed.
 pub const AGENT_SEND_TOOLS: &[&str] = &["send_message"];
 
 /// The engine's tools rkat-tui does not offer. Every member's tool access
@@ -272,11 +270,14 @@ pub const AGENT_SEND_TOOLS: &[&str] = &["send_message"];
 /// - `peers` (helpers, agents and wires mixed, with no kind or state) and
 ///   `list_members` (its own mob's roster, without fresh kept helpers):
 ///   `contacts` (`crate::daemon::contacts`) lists everyone a member can
-///   message, what each is and the `peer_id` `send_message` takes.
-///   `reply_to_peer` needs neither (it is pre-addressed); a mob an agent
-///   made with `mob_create` is listed with `mob_list_members`, which
-///   stays.
-pub const NOT_OFFERED: [&str; 8] = [
+///   message, what each is and the `peer_id` `send_message` takes. A mob
+///   an agent made with `mob_create` is listed with `mob_list_members`,
+///   which stays.
+/// - `reply_to_peer` (the owner's decision of 2026-11-19): one way to
+///   answer is enough. Agents and helpers answer a message with
+///   `send_message` to the sender's `peer_id` (`contacts`), a send the gate
+///   can attribute to its recipient.
+pub const NOT_OFFERED: [&str; 9] = [
     "delegate",
     "fork_off",
     "spawn_member",
@@ -285,6 +286,7 @@ pub const NOT_OFFERED: [&str; 8] = [
     "send_response",
     "peers",
     "list_members",
+    "reply_to_peer",
 ];
 
 /// What a tool call does, as far as the policy is concerned.

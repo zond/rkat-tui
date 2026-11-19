@@ -44,6 +44,13 @@
   again (where the compaction left no line at all). `/export` writes the
   summary under its own heading.
 
+### Removed
+
+- The engine's `reply_to_peer` is no longer offered to agents or helpers.
+  They answer a message with `send_message` to the sender's peer id, which
+  `contacts` gives for the name the message shows; such a send to an agent
+  or helper is allowed without review, as `reply_to_peer` was not.
+
 ### Fixed
 
 - After a `/compact`, a run of the agent that came straight after the
@@ -73,8 +80,7 @@
   itself is not. A helper's message to its parent (the agent, or the
   helper that started it), to the workspace's agents, to its own helpers
   and to the other helpers of the same agent is now allowed by the policy,
-  for fresh, kept and forked helpers alike. `reply_to_peer` stays
-  reviewed: the gate cannot tell whom it answers.
+  for fresh, kept and forked helpers alike.
 - In a helper's full view a click on a folded line (a tool call, a
   message, reasoning, an outcome) did not unfold it, and a drag selected
   and copied nothing. The view's rows now take a click, a drag (drawn

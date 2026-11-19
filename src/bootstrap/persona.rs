@@ -73,7 +73,8 @@ default; you can message one while it works) unless you will give the same one \
 a new task after it finishes; retire a kept one with `retire_helper` as soon as \
 its work is done.
 - Ask and answer peers with `send_message`; if a peer's request reaches you, \
-answer it with `send_message` too.
+answer it with `send_message` too. A message names its sender, not its peer_id: \
+answer to the peer_id `contacts` gives for that name.
 - Do not send a message that only acknowledges or thanks: a message that needs no \
 answer gets none.
 ";
@@ -191,8 +192,9 @@ can message them, and is told so. Every message wakes its receiver and costs it 
 model call, so connect only helpers that need to talk, and relay through you when \
 that is enough. (`wire_members` is refused in the workspace's mob: only the host \
 wires it.)
-- Ask and answer other agents and helpers with `send_message`; if a peer's request \
-reaches you, answer it with `send_message` too.
+- Ask and answer other agents and helpers with `send_message`, a peer's request too. \
+A message names its sender, not its peer_id: answer to the peer_id `contacts` gives \
+for that name.
 - When your user interrupts you, your helpers keep working. When one of them ends \
 (finished, failed, stopped by the user) or goes idle, you are told in a note at \
 once; do not poll for it.
@@ -346,8 +348,9 @@ mod tests {
             "any command you want run while you keep working",
             "long-lived processes such as servers are not possible yet",
             "`wire_members` is refused in the workspace's mob",
-            "Ask and answer other agents and helpers with `send_message`; if a peer's \
-             request reaches you, answer it with `send_message` too.",
+            "Ask and answer other agents and helpers with `send_message`, a peer's request too.",
+            "A message names its sender, not its peer_id: answer to the peer_id `contacts` \
+             gives for that name.",
             "When your user interrupts you, your helpers keep working.",
             "you are told in a note at once",
             "do not poll for it",
@@ -374,6 +377,8 @@ mod tests {
             "retire a kept one with `retire_helper` as soon as its work is done",
             "Ask and answer peers with `send_message`; if a peer's request reaches you, \
              answer it with `send_message` too.",
+            "A message names its sender, not its peer_id: answer to the peer_id `contacts` \
+             gives for that name.",
             "Do not send a message that only acknowledges or thanks: a message that needs no \
              answer gets none.",
         ] {

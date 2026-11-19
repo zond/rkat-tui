@@ -1009,6 +1009,141 @@ async fn a_helper_s_message_to_its_parent_is_not_reviewed() {
     daemon.stop().await;
 }
 
+/// The sender of the newest peer message in `messages` holding `body`, as
+/// the message names it (`Peer message from <sender>:`).
+fn sender_of(messages: &[Message], body: &str) -> Option<String> {
+    messages.iter().rev().find_map(|m| {
+        let Message::SystemNotice(_) = m else {
+            return None;
+        };
+        let text = format!("{m:?}").replace("\\n", "\n");
+        let at = text.find("Peer message from ")?;
+        let rest = &text[at + "Peer message from ".len()..];
+        let (sender, said) = rest.split_once(":\n")?;
+        said.starts_with(body).then(|| sender.to_string())
+    })
+}
+
+/// The peer id the last `contacts` result in `messages` gives for the
+/// peer a message named `sender` (its name, or a comms name ending in it).
+fn peer_named(messages: &[Message], sender: &str) -> Option<String> {
+    fn find(value: &serde_json::Value, sender: &str) -> Option<String> {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let (Some(name), Some(id)) = (
+                    map.get("name").and_then(serde_json::Value::as_str),
+                    map.get("peer_id").and_then(serde_json::Value::as_str),
+                ) && (name == sender || sender.ends_with(&format!("/{name}")))
+                {
+                    return Some(id.to_string());
+                }
+                map.values().find_map(|v| find(v, sender))
+            }
+            serde_json::Value::Array(items) => items.iter().find_map(|v| find(v, sender)),
+            _ => None,
+        }
+    }
+    messages.iter().rev().find_map(|m| match m {
+        Message::ToolResults { results, .. } => results.iter().find_map(|r| {
+            serde_json::from_str::<serde_json::Value>(&r.text_content())
+                .ok()
+                .and_then(|v| find(&v, sender))
+        }),
+        _ => None,
+    })
+}
+
+/// With `reply_to_peer` withdrawn, a message is answered with
+/// `send_message`: an agent answers its helper's message, and the helper
+/// the agent's answer, each to the peer id `contacts` gives for the name
+/// the received message shows (no other lookup).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_message_is_answered_to_the_sender_it_names() {
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        let helper = common::user_texts(messages)
+            .concat()
+            .contains("HELPER-TASK");
+        // (what this side answers, with what, its contacts and send ids)
+        let (heard, reply, (c, m)) = if helper {
+            ("ANSWER", "ACK-ANSWER", ("hc", "hm"))
+        } else {
+            ("QUESTION", "ANSWER", ("ac", "am"))
+        };
+        if common::answers(messages, Some(m)) {
+            return Step::Text("REPLIED");
+        }
+        if common::answers(messages, Some(c)) {
+            let sender = sender_of(messages, heard).unwrap_or_default();
+            return match peer_named(messages, &sender) {
+                Some(peer) => Step::Tool {
+                    id: m,
+                    name: "send_message",
+                    args: json!({"peer_id": peer, "body": reply, "handling_mode": "queue"}),
+                },
+                None => Step::Text("NO-MATCH"),
+            };
+        }
+        if helper {
+            if sender_of(messages, "ANSWER").is_some()
+                && !format!("{messages:?}").contains("\"hm\"")
+            {
+                return Step::Tool {
+                    id: c,
+                    name: "contacts",
+                    args: json!({}),
+                };
+            }
+            if common::answers(messages, Some("p1")) {
+                return send(peer_id(messages, "main-"), "QUESTION");
+            }
+            if common::answers(messages, Some("m1")) {
+                return Step::Text("ASKED");
+            }
+            return peers();
+        }
+        if sender_of(messages, "QUESTION").is_some() && !format!("{messages:?}").contains("\"am\"")
+        {
+            return Step::Tool {
+                id: c,
+                name: "contacts",
+                args: json!({}),
+            };
+        }
+        if common::run_inputs(messages) == "go" && !common::answers(messages, None) {
+            return common::keep("k1", "asker", "HELPER-TASK: ask");
+        }
+        Step::Text("NOTED")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 40]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "go").await;
+    common::until(|| heard(&llm, true, "ANSWER")).await;
+    common::until(|| heard(&llm, false, "ACK-ANSWER")).await;
+    assert!(
+        !llm.recorded()
+            .iter()
+            .any(|r| format!("{:?}", r.messages).contains("NO-MATCH")),
+        "a sender's name matched nothing in contacts"
+    );
+    for id in ["am", "hm"] {
+        let result = llm
+            .recorded()
+            .iter()
+            .find(|r| common::answers(&r.messages, Some(id)))
+            .map(|r| common::tool_text(&r.messages, id))
+            .unwrap();
+        assert!(
+            result.contains("\"status\":\"sent\"") && result.contains("\"accepted\""),
+            "{id}: {result}"
+        );
+    }
+    daemon.idle(&daemon.agent).await;
+    drop(connection);
+    daemon.stop().await;
+}
+
 /// The name rules: a malformed name, an agent's name and a name in use are
 /// each refused with what to do; nothing is seated for them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -13466,9 +13466,9 @@ when its path has one label, else the helper whose path is its parent
 path: `PeerKind::Parent`, "a message to your parent agent" or "… `x`, the
 helper that started you"), the workspace's agents, its own helpers, and
 the rest of its agent's tree (`SameTree`), from the bound and the live
-helpers both. `reply_to_peer` stays reviewed: the gate sees only its
-arguments, and the turn's sender (or the delivery its `reply_to` names) is
-the engine's to resolve.
+helpers both. `reply_to_peer` was left reviewed here (the gate sees only
+its arguments; the turn's sender is the engine's to resolve) and then
+withdrawn ("`reply_to_peer` is not offered" below).
 
 Tests: `assign::a_helper_s_message_to_its_parent_is_not_reviewed` (a
 fresh single-use helper, a second one under the same name, a kept one
@@ -13501,3 +13501,33 @@ Tests: `ui::tests::mouse::a_click_in_a_helper_s_view_unfolds_the_call_under_it`,
 `ui::tests::mouse::a_drag_in_a_helper_s_view_copies_the_view_s_text`
 (each with the view scrolled back too; both failed with the old empty
 rows restored in the renderer).
+
+## `reply_to_peer` is not offered (owner decision, 2026-11-19)
+
+One way to answer is enough: `reply_to_peer` joins
+`approval::policy::NOT_OFFERED` (denied in every member's tool access
+policy, which the customizer gives the agents, fresh, kept and rebuilt
+helpers and members of mobs an agent creates; a fork carries its
+source's). It names no recipient, so the gate could not allow it as a
+message to an agent peer and every call of it went to the classifier;
+`send_message` to the sender's peer id is.
+
+Checked first that an answer needs no other lookup than `contacts`: the
+engine renders a received message as `Peer message from <sender>:\n<body>`
+(`meerkat_core::interaction::format_peer_message_projection`), the sender
+by name only, and `send_message` takes a typed `PeerId`, so the peer id
+is not in the message and rkat-tui does not shape that text. The
+personas now say so: a message names its sender, not its peer_id, and the
+answer goes to the peer_id `contacts` gives for that name. The names
+match: a helper's message to its parent and the parent's answer each find
+the sender in `contacts` by the name the message shows (the comms name
+`<mob>/<role>/<member>` ends in the member name `contacts` lists; a wired
+agent's message names its label, which `contacts` lists as is).
+
+Tests: `assign::a_message_is_answered_to_the_sender_it_names` (an agent
+answers its helper and the helper the agent, both acknowledged),
+`assign::the_tools_not_offered_are_refused_before_the_gate` (no request
+of an agent or a helper declares any `NOT_OFFERED` tool, now with
+`reply_to_peer`), `approval::policy::tests::the_tools_not_offered_are_denied_to_every_member`,
+`tool_costs` (the comms family is `contacts` and `send_message`),
+`ui::transcript::restore::tests::a_stored_call_of_a_withdrawn_tool_restores_as_its_block`.

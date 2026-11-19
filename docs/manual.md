@@ -3475,7 +3475,8 @@ move, Esc or `q` closes it, and:
   refusal shows its reason on the picker.
 
 **Wired.** Every agent is wired to every other one as a peer: `send_message`
-and `reply_to_peer` reach them.
+reaches them. A received message names its sender; the agent answers with
+`send_message` to the `peer_id` that `contacts` gives for that name.
 
 **`contacts`.** One tool tells an agent or a helper whom it can message
 and what each is, instead of the engine's `peers` (helpers, agents and

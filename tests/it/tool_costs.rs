@@ -83,19 +83,17 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     assert!(bytes["mob"] < 12_000, "{report}");
     // The engine's comms tools, but `send_request` and `send_response`
     // (withdrawn: a result-less response stops the requester on this
-    // release, and messages suffice) and `peers` (rkat-tui's `contacts`
-    // lists whom the agent can message and what each is).
+    // release, and messages suffice), `peers` (rkat-tui's `contacts`
+    // lists whom the agent can message and what each is) and
+    // `reply_to_peer` (`send_message` answers).
     let mut comms = main.tools_of("comms");
     comms.sort();
-    assert_eq!(
-        comms,
-        ["contacts", "reply_to_peer", "send_message"],
-        "{report}"
-    );
+    assert_eq!(comms, ["contacts", "send_message"], "{report}");
     // 8,977 bytes on 0.9.16 with `contacts` in place of `peers` (9,364
-    // with `peers`; above 12,000 with `send_response`).
-    assert!(bytes["comms"] < 9_300, "{report}");
-    assert_eq!(main.tools_of("comms").len(), 3, "{report}");
+    // with `peers`; above 12,000 with `send_response`), and about 3,700
+    // without `reply_to_peer`.
+    assert!(bytes["comms"] < 4_500, "{report}");
+    assert_eq!(main.tools_of("comms").len(), 2, "{report}");
     // rkat-tui's own: small, and kept so. The skill tool is one short
     // definition.
     assert_eq!(main.tools_of("skills"), ["skill_read"], "{report}");
@@ -178,7 +176,7 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     helper_comms.sort();
     assert_eq!(
         helper_comms,
-        ["contacts", "reply_to_peer", "send_message"],
+        ["contacts", "send_message"],
         "{helper_bytes:?}"
     );
     // A helper reads skills too.

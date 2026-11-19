@@ -375,6 +375,32 @@ mod tests {
         assert!(matches!(&restored[1], Block::Tool { name, .. } if name == "read_file"));
     }
 
+    /// A stored call of a tool no longer offered (`reply_to_peer`, which an
+    /// earlier build offered) restores as a tool block like any call.
+    #[test]
+    fn a_stored_call_of_a_withdrawn_tool_restores_as_its_block() {
+        use meerkat_core::{BlockAssistantMessage, StopReason};
+        let call = BlockAssistantMessage::new(
+            vec![AssistantBlock::ToolUse {
+                id: "call_1".into(),
+                name: "reply_to_peer".into(),
+                args: serde_json::value::RawValue::from_string(
+                    r#"{"body":"done","handling_mode":"queue"}"#.into(),
+                )
+                .unwrap(),
+                meta: None,
+            }],
+            StopReason::ToolUse,
+        );
+        let restored = blocks_from_messages(&[Message::BlockAssistant(call)]);
+        assert!(
+            matches!(restored.as_slice(), [Block::Tool { name, .. }] if name == "reply_to_peer"),
+            "{restored:#?}"
+        );
+        let lines = crate::ui::render::block_lines(&restored[0], 80);
+        assert!(!lines.is_empty(), "{restored:#?}");
+    }
+
     /// A conversation re-opened shows a note of a helper's ending the daemon
     /// started a run with as the live view does, folded, not as a prompt
     /// of the user's; a note held after an interrupt that travelled with
