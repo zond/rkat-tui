@@ -13607,3 +13607,15 @@ one notice, written by a flush, one "saved again", in the file reopened;
 a bind during it refused and left nowhere),
 `storage::a_bindings_write_on_a_full_disk_is_told_and_its_recovery_too`
 (the client's notices and the audit lines).
+
+## A helper's last events are read as its live ones (review 7, M9)
+
+When a helper left its mob, the follower drained the events its stream
+still held, but read only run ends there: a `RunStarted` drained was not
+counted (the endings' run count one short, so a "a later run started"
+check could misjudge a helper retired while a run was starting), a tool
+call to the parent was not noted, the session was not bound and the
+registry kept the helper "running". Verified by reading; harmless for a
+helper that is gone in most paths, but the two loops disagreed. Now one
+`Follower::on_event` reads every event, in the live loop and in the
+drain. Test: `mobs::follow::tests::every_event_a_follower_reads_is_handled_alike`.

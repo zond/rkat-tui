@@ -162,49 +162,19 @@ async fn follow(
                 registry.bind_session(&key, &tag, session);
             }
             let mut retired = None;
-            // Its parent's peer id, once a message of it needs it: a run
-            // whose last call messaged the parent tells the parent nothing
-            // more when it goes idle.
-            let mut parent_peer: Option<String> = None;
-            // The model calls of its current run (a checkpoint names them).
-            let mut steps: u64 = 0;
+            let mut seen = RunSeen::default();
+            let follower = Follower {
+                state: &state,
+                registry: &registry,
+                observer: &*observer,
+                key: &key,
+                tag: &tag,
+            };
             loop {
                 tokio::select! {
                     envelope = stream.next() => {
                         let Some(envelope) = envelope else { break };
-                        if let EventSourceIdentity::Session { session_id } = &envelope.source {
-                            registry.bind_session(&key, &tag, session_id);
-                        }
-                        match &envelope.payload {
-                            AgentEvent::RunStarted { .. } => {
-                                steps = 0;
-                                registry.ran(&key, true);
-                                registry.endings().run_started(&key);
-                            }
-                            AgentEvent::TurnCompleted { .. } => steps += 1,
-                            AgentEvent::ToolCallRequested { name, args, .. } => {
-                                let to_parent = if name == "send_message" {
-                                    if parent_peer.is_none() {
-                                        parent_peer = peer_of_parent(&state, &registry, &tag).await;
-                                    }
-                                    let peer = args
-                                        .as_value()
-                                        .get("peer_id")
-                                        .and_then(serde_json::Value::as_str)
-                                        .map(str::to_string);
-                                    peer.is_some() && peer == parent_peer
-                                } else {
-                                    false
-                                };
-                                registry.endings().called(&key, to_parent);
-                            }
-                            _ => {}
-                        }
-                        if let Some(terminal) = super::endings::Terminal::of(&envelope.payload) {
-                            registry.ran(&key, false);
-                            registry.endings().run_ended(&key, counted(terminal, steps));
-                        }
-                        observe(&*observer, &tag, &envelope.payload).await;
+                        follower.on_event(&mut seen, &envelope).await;
                     }
                     event = recv(&mut mob_events) => {
                         if let Some(job) = event.as_ref().and_then(|event| completed_job(&event.kind, &key.member)) {
@@ -221,12 +191,11 @@ async fn follow(
                         }
                         match event.map(|event| left(&event.kind, &key.member)) {
                         Some(Some(gone)) => {
-                            // Deliver what it published before it left.
+                            // Deliver what it published before it left,
+                            // each event as the loop above does (review 7,
+                            // M9: only run ends were read here).
                             while let Some(Some(envelope)) = futures::FutureExt::now_or_never(stream.next()) {
-                                if let Some(terminal) = super::endings::Terminal::of(&envelope.payload) {
-                                    registry.endings().run_ended(&key, counted(terminal, steps));
-                                }
-                                observe(&*observer, &tag, &envelope.payload).await;
+                                follower.on_event(&mut seen, &envelope).await;
                             }
                             retired = Some(gone);
                             break;
@@ -268,6 +237,74 @@ async fn follow(
 }
 
 /// `terminal` with the `steps` its run made, when it reached its limit.
+/// What the follower keeps of the helper's current run.
+#[derive(Debug, Default)]
+struct RunSeen {
+    /// The model calls of its current run (a checkpoint names them).
+    steps: u64,
+    /// Its parent's peer id, once a message of it needs it: a run whose
+    /// last call messaged the parent tells the parent nothing more when it
+    /// goes idle.
+    parent_peer: Option<String>,
+}
+
+/// One helper as its follower reads its events.
+struct Follower<'a> {
+    state: &'a Weak<MobMcpState>,
+    registry: &'a Arc<HelperRegistry>,
+    observer: &'a dyn HelperWatch,
+    key: &'a super::registry::HelperKey,
+    tag: &'a HelperTag,
+}
+
+impl Follower<'_> {
+    /// What one event of the helper means for the registry, its endings and
+    /// the observer. The live loop and the drain when the helper leaves its
+    /// mob both read every event through here.
+    async fn on_event(
+        &self,
+        seen: &mut RunSeen,
+        envelope: &meerkat_core::event::EventEnvelope<AgentEvent>,
+    ) {
+        let (registry, key, tag) = (self.registry, self.key, self.tag);
+        if let EventSourceIdentity::Session { session_id } = &envelope.source {
+            registry.bind_session(key, tag, session_id);
+        }
+        match &envelope.payload {
+            AgentEvent::RunStarted { .. } => {
+                seen.steps = 0;
+                registry.ran(key, true);
+                registry.endings().run_started(key);
+            }
+            AgentEvent::TurnCompleted { .. } => seen.steps += 1,
+            AgentEvent::ToolCallRequested { name, args, .. } => {
+                let to_parent = if name == "send_message" {
+                    if seen.parent_peer.is_none() {
+                        seen.parent_peer = peer_of_parent(self.state, registry, tag).await;
+                    }
+                    let peer = args
+                        .as_value()
+                        .get("peer_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string);
+                    peer.is_some() && peer == seen.parent_peer
+                } else {
+                    false
+                };
+                registry.endings().called(key, to_parent);
+            }
+            _ => {}
+        }
+        if let Some(terminal) = super::endings::Terminal::of(&envelope.payload) {
+            registry.ran(key, false);
+            registry
+                .endings()
+                .run_ended(key, counted(terminal, seen.steps));
+        }
+        observe(self.observer, tag, &envelope.payload).await;
+    }
+}
+
 fn counted(terminal: super::endings::Terminal, steps: u64) -> super::endings::Terminal {
     match terminal {
         super::endings::Terminal::Limit { .. } => super::endings::Terminal::Limit { steps },
@@ -624,6 +661,80 @@ mod tests {
             result_digest: meerkat_mob::event::detached_outcome_digest(&outcome),
             outcome,
         })
+    }
+
+    struct Watch(parking_lot::Mutex<usize>);
+
+    #[async_trait::async_trait]
+    impl HelperWatch for Watch {
+        async fn turn(&self, _tag: &HelperTag, _usage: &TurnUsage) {}
+        fn run_ended(&self, _session: &SessionId) {
+            *self.0.lock() += 1;
+        }
+        fn mob_hosts(&self, _mob: &MobId) {}
+        fn retired(&self, _tag: &HelperTag) {}
+    }
+
+    /// Review 7, M9: an event read while draining a helper that left its
+    /// mob means what it means in the live loop: a run's start marks it
+    /// running and a run's end idle again (the drain read run ends only, so
+    /// a start drained there was never counted), and the observer hears
+    /// the end.
+    #[tokio::test]
+    async fn every_event_a_follower_reads_is_handled_alike() {
+        use meerkat_core::types::{ContentInput, RunInput, TranscriptMessageIdentity};
+        let registry = Arc::new(HelperRegistry::in_memory());
+        let key =
+            super::super::registry::HelperKey::new(MobId::from("m"), AgentIdentity::from("x"));
+        let tag = HelperTag {
+            owner: SessionId::new(),
+            path: vec!["x".into()],
+            model: "m".into(),
+            kind: crate::mobs::HelperKind::Other,
+        };
+        let watch = Watch(parking_lot::Mutex::new(0));
+        let state = Weak::new();
+        let follower = Follower {
+            state: &state,
+            registry: &registry,
+            observer: &watch,
+            key: &key,
+            tag: &tag,
+        };
+        let mut seen = RunSeen::default();
+        let event = |payload| meerkat_core::event::EventEnvelope::new("s", 0, None, payload);
+        follower
+            .on_event(
+                &mut seen,
+                &event(AgentEvent::RunStarted {
+                    session_id: SessionId::new(),
+                    identity: TranscriptMessageIdentity::default(),
+                    input: RunInput::Content {
+                        content: ContentInput::Text("go".into()),
+                    },
+                    request_reasoning: None,
+                    reasoning_effort: None,
+                }),
+            )
+            .await;
+        assert!(matches!(registry.activity(&key), Some((true, _))));
+        follower
+            .on_event(
+                &mut seen,
+                &event(AgentEvent::RunCompleted {
+                    session_id: SessionId::new(),
+                    identity: TranscriptMessageIdentity::default(),
+                    result: "ok".into(),
+                    structured_output: None,
+                    extraction_required: false,
+                    usage: Default::default(),
+                    terminal_cause_kind: None,
+                    assistant_message_id: None,
+                }),
+            )
+            .await;
+        assert!(matches!(registry.activity(&key), Some((false, _))));
+        assert_eq!(*watch.0.lock(), 1);
     }
 
     /// A fork's outcome is its job's: an earlier fork's record under the
