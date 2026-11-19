@@ -44,6 +44,11 @@
   again (where the compaction left no line at all). `/export` writes the
   summary under its own heading.
 
+- Once an agent's shell in a conversation touches git's configuration
+  (`git config`, a write under `.git/`, `.gitconfig`, git's config
+  environment), its git commands there are reviewed instead of allowed as
+  reads: git runs what its configuration names (an fsmonitor, a diff
+  program), so a read is no longer only a read.
 - A message typed while the agent works now shows *goes in at the
   agent's next step* instead of *delivering…*, and the manual says when
   that is: the first model request that starts after it was sent (one

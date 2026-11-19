@@ -13395,10 +13395,18 @@ write under `.git/` (sealed). What remains is the agent's own shell
 writing that config (`git config core.fsmonitor …`, or a write into
 `.git/config`), and a shell call that is not tier 1 is reviewed (tier 3).
 The gadget therefore needs the classifier to allow such a write once;
-after that every allowlisted git read runs it unreviewed. A cheap
-hardening, not done yet (`.handover/review7-left.md`): once a session's
-shell has run any `git config` or written under `.git/`, the git reads
-stop being tier 1 for that session.
+after that every allowlisted git read runs it unreviewed. The hardening
+(done later the same day): once a session's shell call touches git's
+configuration (`shell::touches_git_config`: `git config`, anything under
+`.git/`, `.gitconfig`, `GIT_CONFIG*`, the program-naming keys; a read of
+them counts, conservatively), that session's git commands are no tier 1
+(`policy::after_git_config`, applied in `ApprovalEngine::tier_of`, which
+marks the session before it decides, so `git config … && git status` is
+reviewed whole). Tests: `approval::engine::tests::git_reads_are_reviewed_once_the_session_touched_git_config`,
+`approval::shell::tests::git_config_touches_and_git_runs_are_recognised`,
+the corpus case `b58-git-read-after-fsmonitor-config` (the deterministic
+harness applies the same rule from a case's prior actions and fails when
+a git command after such a change is tier 1).
 
 ## A wire message during a compaction did reach the agent (owner, 0.0.17)
 

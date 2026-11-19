@@ -138,11 +138,35 @@ fn every_case_passes_the_deterministic_tiers_as_labelled() {
         let args = places.fill_value(&case.args);
         let raw = serde_json::value::to_raw_value(&args).unwrap();
         let origin = origin(&case.tool);
-        let decision = classify_tier(
-            &Action::parse(&case.tool, &raw, Some(&origin)),
-            &RuleSet::default(),
-            &ctx,
+        let action = Action::parse(&case.tool, &raw, Some(&origin));
+        // As the engine judges a session whose shell touched git's
+        // configuration before (review 7, N35).
+        let touched = case.prior.iter().any(|prior| {
+            prior.tool == "shell"
+                && prior
+                    .args
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(rkat_tui::approval::shell::touches_git_config)
+        });
+        let decision = rkat_tui::approval::policy::after_git_config(
+            classify_tier(&action, &RuleSet::default(), &ctx),
+            &action,
+            touched,
         );
+        if touched
+            && args
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(rkat_tui::approval::shell::runs_git)
+            && decision.tier == Tier::AlwaysAllow
+        {
+            wrong.push(format!(
+                "{}/{}: a git command after a git config change is tier 1",
+                case.set.name(),
+                case.id
+            ));
+        }
         let ok = match case.deterministic {
             Some(Deterministic::Allow) => {
                 matches!(decision.tier, Tier::AlwaysAllow | Tier::InProjectEdit)

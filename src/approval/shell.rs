@@ -1063,6 +1063,34 @@ pub fn allowlisted(command: &str, ctx: &PolicyContext<'_>) -> Result<(), NotAllo
     allowlisted_in(command, None, ctx)
 }
 
+/// Whether `command` runs git: a word of it is `git` or ends in `/git`
+/// (conservative: `echo git` counts too).
+#[must_use]
+pub fn runs_git(command: &str) -> bool {
+    command
+        .split(|c: char| c.is_whitespace() || ";&|()`$<>\"'".contains(c))
+        .any(|word| word == "git" || word.ends_with("/git"))
+}
+
+/// Whether `command` may change what git runs: `git config`, anything
+/// under `.git/`, a git config file, git's config environment, or the
+/// keys that name programs (review 7, N35). Conservative: a read of them
+/// counts too.
+#[must_use]
+pub fn touches_git_config(command: &str) -> bool {
+    const MARKS: [&str; 7] = [
+        "git config",
+        ".git/",
+        ".gitconfig",
+        "git_config",
+        "core.fsmonitor",
+        "core.hookspath",
+        "diff.external",
+    ];
+    let lower = command.to_ascii_lowercase();
+    MARKS.iter().any(|mark| lower.contains(mark))
+}
+
 /// Like [`allowlisted`], with an explicit working directory (the shell tool's
 /// `working_dir`, relative to the project root). The working directory itself
 /// must lie inside the project.
@@ -1912,6 +1940,30 @@ mod tests {
         }
         // Tab and newline keep their meaning.
         assert_eq!(words("ls\t-la\nls"), ["ls", "-la", "ls"]);
+    }
+
+    /// Review 7, N35: what counts as touching git's configuration, and as
+    /// running git.
+    #[test]
+    fn git_config_touches_and_git_runs_are_recognised() {
+        for touches in [
+            "git config core.fsmonitor ./x",
+            "printf '[core]\\n' >> .git/config",
+            "cp hook .git/hooks/pre-commit",
+            "GIT_CONFIG_GLOBAL=/tmp/c git status",
+            "echo x > ~/.gitconfig",
+        ] {
+            assert!(touches_git_config(touches), "{touches}");
+        }
+        for not in ["git status", "cargo build", "ls -la src"] {
+            assert!(!touches_git_config(not), "{not}");
+        }
+        for runs in ["git status", "cd a && git log", "/usr/bin/git diff"] {
+            assert!(runs_git(runs), "{runs}");
+        }
+        for not in ["ls", "cargo test", "gitk"] {
+            assert!(!runs_git(not), "{not}");
+        }
     }
 
     #[test]

@@ -261,6 +261,10 @@ struct SessionState {
     /// files outside the project its file tools created, the manifests
     /// they changed.
     facts: SessionFacts,
+    /// Its shell touched git's configuration (`git config`, `.git/`, …):
+    /// its git commands are reviewed from then on
+    /// ([`super::policy::after_git_config`]).
+    git_config_touched: bool,
 }
 
 /// What an approval or a grant tells the user (`notice`) and the agent
@@ -1322,6 +1326,10 @@ impl ApprovalEngine {
         self.emit(ApprovalEvent::Notice(BUILD_AFTER_CHANGE_NOTICE.to_string()));
     }
 
+    /// The tier of `facts`' call for `session_id`. A shell call that
+    /// touches git's configuration marks the session first (this call
+    /// included: `git config … && git status` is reviewed whole), after
+    /// which its git commands are no tier 1.
     fn tier_of(&self, session_id: &SessionId, facts: &Facts<'_>) -> TierDecision {
         let trust_project_builds = self.builds.trusted(session_id, &facts.action);
         let granted = self.grants.dirs_for(session_id);
@@ -1331,11 +1339,25 @@ impl ApprovalEngine {
             posix_shell: self.posix_shell,
             granted: &granted,
         };
-        classify_tier_with(
+        let git_config_touched = {
+            let mut sessions = self.sessions.lock();
+            let state = sessions.entry(session_id.clone()).or_default();
+            if let ActionKind::Shell { command, .. } = &facts.action.kind
+                && super::shell::touches_git_config(command)
+            {
+                state.git_config_touched = true;
+            }
+            state.git_config_touched
+        };
+        super::policy::after_git_config(
+            classify_tier_with(
+                &facts.action,
+                &facts.subjects,
+                &self.rules_for(session_id),
+                &ctx,
+            ),
             &facts.action,
-            &facts.subjects,
-            &self.rules_for(session_id),
-            &ctx,
+            git_config_touched,
         )
     }
 
@@ -3006,6 +3028,59 @@ mod tests {
         let request = rig.escalations.recv().await.unwrap();
         request.respond.send(HumanDecision::AllowOnce).unwrap();
         assert!(task.await.unwrap().is_allowed());
+    }
+
+    /// Review 7, N35: the allowlisted git reads run what `.git/config`
+    /// names, so once the session's shell touched that configuration they
+    /// are reviewed: `git status` is tier 1, then a `git config` call (the
+    /// classifier allows it), then `git status` goes to the classifier; a
+    /// command that runs no git stays tier 1.
+    #[tokio::test]
+    async fn git_reads_are_reviewed_once_the_session_touched_git_config() {
+        let allow = || {
+            Ok(ClassifierVerdict::Allow {
+                reason: "ok".into(),
+            })
+        };
+        let rig = rig(vec![allow(), allow()], DEFAULT_ESCALATION_TIMEOUT);
+        rig.engine.set_mode(PermissionMode::Auto);
+        let status = json!({"command": "git status"});
+        let before = call(&rig, "g1", "shell", &status).await;
+        assert!(
+            matches!(
+                before,
+                Verdict::Allow {
+                    tier: Tier::AlwaysAllow,
+                    ..
+                }
+            ),
+            "{before:?}"
+        );
+        let config = json!({"command": "git config core.fsmonitor ./watch.sh"});
+        assert!(call(&rig, "g2", "shell", &config).await.is_allowed());
+        let after = call(&rig, "g3", "shell", &status).await;
+        assert!(
+            matches!(
+                after,
+                Verdict::Allow {
+                    tier: Tier::Classifier,
+                    by: Decider::Classifier,
+                    ..
+                }
+            ),
+            "{after:?}"
+        );
+        let ls = call(&rig, "g4", "shell", &json!({"command": "ls"})).await;
+        assert!(
+            matches!(
+                ls,
+                Verdict::Allow {
+                    tier: Tier::AlwaysAllow,
+                    ..
+                }
+            ),
+            "{ls:?}"
+        );
     }
 
     /// The owner's decision (review 5, AP2 and AP3): a message to an agent

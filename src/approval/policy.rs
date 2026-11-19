@@ -642,6 +642,32 @@ impl TierDecision {
     }
 }
 
+/// Why a git command is reviewed once the session's shell touched git's
+/// configuration ([`after_git_config`]).
+pub const GIT_AFTER_CONFIG: &str = "git runs what its configuration names (an fsmonitor, a diff program), and this session's shell changed or read that configuration or wrote under .git/: its git commands are reviewed from now on";
+
+/// `decision` for `action`, with the tier 1 of a git command taken back
+/// once `config_touched` (this session's shell ran `git config`, wrote
+/// under `.git/`, …: [`shell::touches_git_config`]). The allowlisted git
+/// reads execute what `.git/config` names; a clone cannot ship that file
+/// and the file tools seal `.git`, so the one way in is the agent's own
+/// shell, and after it the reads are reviewed (review 7, N35).
+#[must_use]
+pub fn after_git_config(
+    decision: TierDecision,
+    action: &Action<'_>,
+    config_touched: bool,
+) -> TierDecision {
+    match &action.kind {
+        ActionKind::Shell { command, .. }
+            if config_touched && decision.tier == Tier::AlwaysAllow && shell::runs_git(command) =>
+        {
+            TierDecision::new(Tier::Classifier, GIT_AFTER_CONFIG)
+        }
+        _ => decision,
+    }
+}
+
 /// Classify an action into a tier.
 #[cfg(any(test, feature = "test-support"))]
 pub fn classify_tier(
