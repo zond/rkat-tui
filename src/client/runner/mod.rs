@@ -77,6 +77,7 @@ mod wires;
 
 use conn::{Conn, ConnEvent, Leaving};
 use steers::Steers;
+use turn::Turn;
 
 /// What is sent in place of a prompt that repeats the one a failed turn
 /// already committed ([`turn::send_outbound`]).
@@ -335,7 +336,7 @@ enum Report {
         result: Result<protocol::ModelSet, String>,
     },
     /// The daemon answered an interrupt (`rkat/interrupt`): of the turn's
-    /// interrupt `epoch` ([`Turn::interrupt_epoch`]), or of a press with no
+    /// interrupt `epoch` ([`turn::state::Interrupt::epoch`]), or of a press with no
     /// turn open (`None`).
     Interrupted {
         epoch: Option<u64>,
@@ -510,113 +511,6 @@ struct Adopted {
     usage: Option<protocol::Usage>,
 }
 
-/// The UI's current turn.
-#[derive(Debug, Default)]
-struct Turn {
-    active: bool,
-    /// Runs started and not ended.
-    open_runs: HashSet<RunId>,
-    /// The run to stop.
-    current_run: Option<RunId>,
-    /// The run the daemon says is open ([`protocol::RUNNING`]) whose start
-    /// and end this client has not seen: it started before this client's
-    /// stream opened. A live start of it moves it to `open_runs`; the
-    /// daemon's idle notice naming it is its end, which may have fallen
-    /// before the stream too.
-    noted: Option<RunId>,
-    /// The turn was joined on the daemon's note, not on an event.
-    from_note: bool,
-    /// A run of this turn started.
-    saw_run: bool,
-    /// The runs that ended in it: the daemon's idle notice names the run
-    /// it follows ([`protocol::IdleNote::last_run`]).
-    ended: HashSet<RunId>,
-    result: Option<Result<TurnSummary, TurnFailure>>,
-    /// The first press of the user's interrupt.
-    interrupted_at: Option<Instant>,
-    /// The run the interrupt is for (`None` until the daemon names it,
-    /// when this client knew no run's id): its force and its hard cancel
-    /// act on that run only, never on one that started after it ended.
-    interrupted_run: Option<RunId>,
-    /// The last press of the interrupt (presses within
-    /// [`INTERRUPT_REPEAT`] of each other are one interrupt).
-    last_press: Option<Instant>,
-    /// "Already stopped" was said for this interrupt.
-    said_stopped: bool,
-    /// The `rkat/interrupt` calls of this turn not answered yet, each by
-    /// the interrupt it was sent for (its epoch): the turn does not end
-    /// before they are (their answer returns the messages). Counted for
-    /// the turn, not for its current interrupt: a call of an earlier
-    /// interrupt of the turn ("a pause, then Esc") is still awaited, and
-    /// its late answer or timeout takes it off.
-    unanswered_interrupts: Vec<u64>,
-    /// Which interrupt of the runner this turn's is
-    /// ([`Runner`]'s `interrupts`); an answer of another is not its.
-    interrupt_epoch: u64,
-    force_cancelled: bool,
-    /// The unconfirmed interrupt was followed by a hard cancel of the
-    /// agent's current run ([`Runner::on_deadline`]).
-    escalated: bool,
-    /// The run `/compact` started on an idle agent ([`Runner::compact_asked`]):
-    /// only its compaction events reach the UI.
-    quiet: bool,
-    /// An interrupt the daemon has not confirmed ends the turn then.
-    give_up_at: Option<Instant>,
-    /// The prompt that started it, as sent (`None`: another client's run).
-    prompt: Option<String>,
-    /// A steer of this client joined it.
-    steered: bool,
-    /// Which of the UI's turns it is (`Runner::turns`; 0: another
-    /// client's run).
-    id: u64,
-}
-
-impl Turn {
-    fn record(&mut self, end: Result<TurnSummary, TurnFailure>) {
-        self.result = Some(crate::ui::merge_turn_end(self.result.take(), end));
-    }
-
-    fn deadline(&self) -> Option<Instant> {
-        self.give_up_at
-    }
-
-    /// Joined on the daemon's note, with no run start seen yet: the next
-    /// run start is shown as the start of a run this client did not start.
-    fn joined_unseen(&self) -> bool {
-        self.from_note && !self.saw_run
-    }
-
-    /// The run `run` started (or was resumed), as the stream shows it: the
-    /// run to stop. Another run noted before it has ended unseen (an
-    /// agent runs one run at a time).
-    fn run_seen(&mut self, run: &RunId) {
-        if let Some(noted) = self.noted.take()
-            && noted != *run
-        {
-            self.ended.insert(noted);
-        }
-        self.open_runs.insert(run.clone());
-        self.current_run = Some(run.clone());
-    }
-
-    /// Whether the run the interrupt is for has not ended (as far as this
-    /// turn saw; a run the daemon has not named yet counts as open).
-    fn interrupted_run_open(&self) -> bool {
-        self.interrupted_run
-            .as_ref()
-            .is_none_or(|run| !self.ended.contains(run))
-    }
-
-    /// The run `run` ended.
-    fn run_over(&mut self, run: &RunId) {
-        if self.noted.as_ref() == Some(run) {
-            self.noted = None;
-        }
-        self.open_runs.remove(run);
-        self.ended.insert(run.clone());
-    }
-}
-
 /// Why a call to the daemon brought no answer.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CallFailure {
@@ -724,7 +618,7 @@ pub struct Runner {
     /// `Some(true)`: an idle notice came meanwhile, ask again on the answer.
     asking_fates: Option<bool>,
     /// How many interrupts this runner started (each turn's interrupt is
-    /// numbered, [`Turn::interrupt_epoch`]).
+    /// numbered, [`turn::state::Interrupt::epoch`]).
     interrupts: u64,
     /// The last interrupted turn's last press, and whether "already
     /// stopped" was said for it: a press soon after its end acts on
@@ -1471,7 +1365,23 @@ mod tests {
         agent_entries, others_notice, report_lines, schedule_picker, settings_picker,
     };
     use super::turn::model_switch;
+    use super::turn::state::{Deadline, Interrupt, Kind, Open};
     use super::*;
+
+    /// The runner's open turn.
+    fn open(runner: &Runner) -> &Open {
+        runner.turn.open_ref().expect("a turn is open")
+    }
+
+    /// The runner's open turn, to change.
+    fn open_mut(runner: &mut Runner) -> &mut Open {
+        runner.turn.open_mut().expect("a turn is open")
+    }
+
+    /// A turn of this client's prompt, the UI's turn `id`.
+    fn prompted(id: u64) -> Turn {
+        Turn::prompt(id, "x".into())
+    }
 
     /// Attached on `link`.
     fn up(link: Link) -> Conn {
@@ -2123,11 +2033,8 @@ mod tests {
             // Not `async`: it cannot wait on the daemon.
             runner.handle_effect(effect);
         }
-        assert!(runner.turn.active, "the unanswered prompt's turn runs");
-        assert!(
-            runner.turn.interrupted_at.is_some(),
-            "Esc interrupted it at once"
-        );
+        assert!(runner.turn.is_open(), "the unanswered prompt's turn runs");
+        assert!(runner.turn.interrupted(), "Esc interrupted it at once");
         // The steer is expected at the next boundary while its send runs.
         assert!(runner.steers.holds(PendingId(1)));
         // Nothing was answered: no turn end, no acknowledgement yet.
@@ -2181,11 +2088,7 @@ mod tests {
     async fn a_steers_answer_files_it_under_its_input() {
         let dir = tempfile::tempdir().unwrap();
         let (mut runner, mut ui_rx) = runner(dir.path());
-        runner.turn = Turn {
-            active: true,
-            id: 1,
-            ..Turn::default()
-        };
+        runner.turn = prompted(1);
         let early = InputId::new();
         for id in 1..=3 {
             runner.steers.sending(PendingId(id));
@@ -2373,23 +2276,20 @@ mod tests {
         };
         let (earlier, first, follow_up) = (RunId::new(), RunId::new(), RunId::new());
         runner.idle_reported(feed.idle(&earlier, 0));
-        runner.turn = Turn {
-            active: true,
-            ..Turn::default()
-        };
+        runner.turn = prompted(0);
         runner.on_event(feed.started(&first), None);
         runner.on_event(feed.completed(&first), None);
-        assert!(runner.turn.active, "the stale notice ends nothing");
+        assert!(runner.turn.is_open(), "the stale notice ends nothing");
         // Another client's steer runs as a follow-up run: still the turn.
         runner.on_event(feed.started(&follow_up), None);
         runner.idle_reported(feed.idle(&first, 0));
-        assert!(runner.turn.active, "a run is open");
+        assert!(runner.turn.is_open(), "a run is open");
         // The notice may come before the run's end shows here.
         runner.idle_reported(feed.idle(&follow_up, 0));
-        assert!(runner.turn.active);
+        assert!(runner.turn.is_open());
         assert_eq!(turn_ends(&drain(&mut rx)), 0);
         runner.on_event(feed.completed(&follow_up), None);
-        assert!(!runner.turn.active);
+        assert!(!runner.turn.is_open());
         assert_eq!(turn_ends(&drain(&mut rx)), 1);
     }
 
@@ -2417,26 +2317,22 @@ mod tests {
                 seq: 0,
             };
             let (compact, helper) = (RunId::new(), RunId::new());
-            runner.turn = Turn {
-                active: true,
-                quiet: true,
-                ..Turn::default()
-            };
+            runner.turn = Turn::open(Kind::Compaction { id: 0 });
             if compaction_first {
                 runner.on_event(feed.started_with(&compact, COMPACT_PROMPT), None);
                 runner.on_event(feed.completed(&compact), None);
-                assert!(runner.turn.quiet, "{compaction_first}");
+                assert!(runner.turn.is_quiet(), "{compaction_first}");
             }
             runner.on_event(
                 feed.started_with(&helper, "Your helper `scout` finished its task."),
                 None,
             );
             assert!(
-                !runner.turn.quiet,
+                !runner.turn.is_quiet(),
                 "{compaction_first}: the quiet turn ended"
             );
             assert!(
-                runner.turn.active,
+                runner.turn.is_open(),
                 "{compaction_first}: the helper's run is a turn"
             );
             let msgs = drain(&mut rx);
@@ -2469,7 +2365,7 @@ mod tests {
             );
             runner.on_event(feed.completed(&helper), None);
             runner.idle_reported(feed.idle(&helper, 0));
-            assert!(!runner.turn.active, "{compaction_first}");
+            assert!(!runner.turn.is_open(), "{compaction_first}");
             assert_eq!(turn_ends(&drain(&mut rx)), 1, "{compaction_first}");
         }
     }
@@ -2499,23 +2395,23 @@ mod tests {
         let (earlier, run) = (RunId::new(), RunId::new());
         runner.idle_reported(feed.idle(&earlier, 0));
         runner.run_noted(run.clone());
-        assert!(runner.turn.active);
-        assert_eq!(runner.turn.current_run.as_ref(), Some(&run));
+        assert!(runner.turn.is_open());
+        assert_eq!(open(&runner).runs.current.as_ref(), Some(&run));
         assert_eq!(remote_turns(&drain(&mut rx)), vec![None]);
         runner.settle_turn();
-        assert!(runner.turn.active, "the stale notice ends nothing");
+        assert!(runner.turn.is_open(), "the stale notice ends nothing");
         runner.on_event(feed.resumed(&run), None);
         runner.run_noted(run.clone());
-        assert_eq!(runner.turn.noted, None, "the stream shows it now");
-        assert!(runner.turn.open_runs.contains(&run));
+        assert_eq!(open(&runner).runs.noted, None, "the stream shows it now");
+        assert!(open(&runner).runs.open.contains(&run));
         assert!(remote_turns(&drain(&mut rx)).is_empty(), "one turn");
         runner.on_event(feed.completed(&run), None);
         runner.idle_reported(feed.idle(&run, 0));
-        assert!(!runner.turn.active);
+        assert!(!runner.turn.is_open());
         assert_eq!(turn_ends(&drain(&mut rx)), 1);
         runner.run_noted(run.clone());
         runner.on_event(feed.completed(&run), None);
-        assert!(!runner.turn.active, "the run ended in the last turn");
+        assert!(!runner.turn.is_open(), "the run ended in the last turn");
         let msgs = drain(&mut rx);
         assert!(remote_turns(&msgs).is_empty(), "{msgs:?}");
     }
@@ -2536,9 +2432,9 @@ mod tests {
         let run = RunId::new();
         runner.run_noted(run.clone());
         runner.idle_reported(feed.idle(&run, 0));
-        assert!(!runner.turn.active, "its end did not show here");
+        assert!(!runner.turn.is_open(), "its end did not show here");
         runner.on_event(feed.completed(&run), None);
-        assert!(!runner.turn.active);
+        assert!(!runner.turn.is_open());
         let msgs = drain(&mut rx);
         assert_eq!(turn_ends(&msgs), 1, "{msgs:?}");
         assert_eq!(remote_turns(&msgs), vec![None], "{msgs:?}");
@@ -2546,19 +2442,19 @@ mod tests {
         let (noted, next) = (RunId::new(), RunId::new());
         runner.run_noted(noted.clone());
         runner.on_event(feed.started(&next), None);
-        assert_eq!(runner.turn.current_run.as_ref(), Some(&next));
-        assert_eq!(runner.turn.noted, None);
-        assert!(runner.turn.ended.contains(&noted));
+        assert_eq!(open(&runner).runs.current.as_ref(), Some(&next));
+        assert_eq!(open(&runner).runs.noted, None);
+        assert!(open(&runner).runs.ended.contains(&noted));
         assert_eq!(
             remote_turns(&drain(&mut rx)),
             vec![None, Some("x".to_string())],
             "the new run's prompt shows"
         );
         runner.idle_reported(feed.idle(&noted, 0));
-        assert!(runner.turn.active, "the next run is open");
+        assert!(runner.turn.is_open(), "the next run is open");
         runner.on_event(feed.completed(&next), None);
         runner.idle_reported(feed.idle(&next, 0));
-        assert!(!runner.turn.active);
+        assert!(!runner.turn.is_open());
         assert_eq!(turn_ends(&drain(&mut rx)), 1);
     }
 
@@ -2602,18 +2498,13 @@ mod tests {
             session: SessionId::new(),
             seq: 0,
         };
-        runner.turn = Turn {
-            active: true,
-            prompt: Some("x".into()),
-            id: 1,
-            ..Turn::default()
-        };
+        runner.turn = prompted(1);
         let run = RunId::new();
         runner.run_noted(run.clone());
-        assert_eq!(runner.turn.current_run.as_ref(), Some(&run));
+        assert_eq!(open(&runner).runs.current.as_ref(), Some(&run));
         runner.on_event(feed.started(&run), None);
-        assert!(runner.turn.open_runs.contains(&run));
-        assert_eq!(runner.turn.noted, None);
+        assert!(open(&runner).runs.open.contains(&run));
+        assert_eq!(open(&runner).runs.noted, None);
         assert!(remote_turns(&drain(&mut rx)).is_empty());
     }
 
@@ -2633,20 +2524,17 @@ mod tests {
         for by_boundary in [false, true] {
             let (run, later) = (RunId::new(), RunId::new());
             let input = InputId::new();
-            runner.turn = Turn {
-                active: true,
-                ..Turn::default()
-            };
+            runner.turn = prompted(0);
             runner.on_event(feed.started(&run), None);
             runner.steers.sending(PendingId(7));
             // Its own run's content is its text (`started` runs "x").
             runner.steers.sent_text(PendingId(7), "x");
             runner.on_event(feed.completed(&run), None);
             runner.idle_reported(feed.idle(&run, 0));
-            assert!(runner.turn.active, "its send is unanswered");
+            assert!(runner.turn.is_open(), "its send is unanswered");
             runner.sent(0, Some(PendingId(7)), Ok(Some(input.clone())));
             // The daemon decided before the steer arrived; it holds it now.
-            assert!(!runner.turn.active, "nothing on its way any more");
+            assert!(!runner.turn.is_open(), "nothing on its way any more");
             let msgs = drain(&mut rx);
             assert_eq!(turn_ends(&msgs), 1);
             assert!(
@@ -2698,10 +2586,7 @@ mod tests {
             seq: 0,
         };
         let (first, note, own) = (RunId::new(), RunId::new(), RunId::new());
-        runner.turn = Turn {
-            active: true,
-            ..Turn::default()
-        };
+        runner.turn = prompted(0);
         runner.on_event(feed.started(&first), None);
         runner.steers.sending(PendingId(7));
         runner
@@ -2812,14 +2697,19 @@ mod tests {
 
     #[test]
     fn a_turn_keeps_its_worst_end() {
-        let mut turn = Turn::default();
+        let mut turn = prompted(1);
         turn.record(Ok(TurnSummary::default()));
         turn.record(Err(TurnFailure::Interrupted));
         turn.record(Ok(TurnSummary::default()));
-        assert_eq!(turn.result, Some(Err(TurnFailure::Interrupted)));
+        let result = |turn: &Turn| turn.open_ref().unwrap().result.clone();
+        assert_eq!(result(&turn), Some(Err(TurnFailure::Interrupted)));
         turn.record(Err(TurnFailure::Failed("x".into())));
         turn.record(Err(TurnFailure::Interrupted));
-        assert_eq!(turn.result, Some(Err(TurnFailure::Failed("x".into()))));
+        assert_eq!(result(&turn), Some(Err(TurnFailure::Failed("x".into()))));
+        // With no turn open there is nothing to record into.
+        let mut idle = Turn::Idle;
+        idle.record(Err(TurnFailure::Interrupted));
+        assert!(idle.open_ref().is_none());
     }
 
     /// An interrupt the daemon does not confirm in time is followed by a
@@ -2830,16 +2720,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut runner, mut ui_rx) = runner(dir.path());
         runner.conn = up(link("live", SessionId::new()).await);
-        runner.turn = Turn {
-            active: true,
-            interrupted_at: Some(Instant::now()),
-            give_up_at: Some(Instant::now()),
-            ..Turn::default()
-        };
+        runner.turn = prompted(0);
+        open_mut(&mut runner).interrupt = Some(interrupt_at(Instant::now(), 0, None));
         runner.on_deadline();
-        assert!(runner.turn.active, "it waits once more");
-        assert!(runner.turn.escalated);
-        assert!(runner.turn.give_up_at.is_some_and(|at| at > Instant::now()));
+        assert!(runner.turn.is_open(), "it waits once more");
+        let deadline = open(&runner).interrupt.as_ref().unwrap().deadline;
+        assert!(
+            matches!(deadline, Deadline::Escalated(at) if at > Instant::now()),
+            "{deadline:?}"
+        );
         let notices: Vec<String> = std::iter::from_fn(|| ui_rx.try_recv().ok())
             .filter_map(|msg| match msg {
                 Msg::Notice { text, .. } => Some(text),
@@ -2853,9 +2742,10 @@ mod tests {
                     .contains("the interrupted run did not end within 10s; cancelling it at once")),
             "{notices:?}"
         );
-        runner.turn.give_up_at = Some(Instant::now());
+        open_mut(&mut runner).interrupt.as_mut().unwrap().deadline =
+            Deadline::Escalated(Instant::now());
         runner.on_deadline();
-        assert!(!runner.turn.active);
+        assert!(!runner.turn.is_open());
         let ended = std::iter::from_fn(|| ui_rx.try_recv().ok())
             .find(|msg| matches!(msg, Msg::TurnFinished(_)));
         assert!(
@@ -2865,6 +2755,20 @@ mod tests {
             ),
             "{ended:?}"
         );
+    }
+
+    /// An interrupt numbered `epoch`, first pressed `now`, for `run`, due
+    /// at once.
+    fn interrupt_at(now: Instant, epoch: u64, run: Option<RunId>) -> Interrupt {
+        Interrupt {
+            epoch,
+            first: now,
+            last_press: now,
+            run,
+            forced: false,
+            said_stopped: false,
+            deadline: Deadline::Waiting(now),
+        }
     }
 
     use super::turn::ALREADY_STOPPED;
@@ -2975,25 +2879,17 @@ mod tests {
         runner.conn = up(link);
         let (first, later) = (RunId::new(), RunId::new());
         let now = Instant::now();
-        runner.turn = Turn {
-            active: true,
-            saw_run: true,
-            interrupted_at: Some(now),
-            last_press: Some(now),
-            give_up_at: Some(now),
-            interrupted_run: Some(first.clone()),
-            interrupt_epoch: 1,
-            ..Turn::default()
-        };
-        runner.turn.run_seen(&first);
-        runner.turn.run_over(&first);
+        runner.turn = Turn::open(Kind::Joined);
+        open_mut(&mut runner).interrupt = Some(interrupt_at(now, 1, Some(first.clone())));
+        open_mut(&mut runner).runs.seen(&first);
+        open_mut(&mut runner).runs.over(&first);
         // A follow-up run (another client's message) is open now.
-        runner.turn.run_seen(&later);
+        open_mut(&mut runner).runs.seen(&later);
         for _ in 0..3 {
             runner.interrupt();
         }
         runner.on_deadline();
-        assert!(runner.turn.active, "the turn ends as its runs do");
+        assert!(runner.turn.is_open(), "the turn ends as its runs do");
         assert!(interrupts_sent(&mut requests).await.is_empty());
         let said = notices(&mut ui_rx);
         assert_eq!(
@@ -3008,7 +2904,7 @@ mod tests {
 
         // After the turn's end, a press right away acts on nothing either,
         // and says nothing again.
-        runner.turn.run_over(&later);
+        open_mut(&mut runner).runs.over(&later);
         runner.finish_turn();
         runner.interrupt();
         assert!(interrupts_sent(&mut requests).await.is_empty());
@@ -3029,12 +2925,8 @@ mod tests {
         let (link, mut requests) = link_recording("live", SessionId::new()).await;
         runner.conn = up(link);
         let run = RunId::new();
-        runner.turn = Turn {
-            active: true,
-            saw_run: true,
-            ..Turn::default()
-        };
-        runner.turn.run_seen(&run);
+        runner.turn = Turn::open(Kind::Joined);
+        open_mut(&mut runner).runs.seen(&run);
         runner.steers.sending(PendingId(1));
         let input = InputId::new();
         runner.steers.admitted(PendingId(1), input.clone());
@@ -3050,9 +2942,11 @@ mod tests {
         );
         // Past the grace, the run still open, and another run noted meanwhile
         // as current: the force names the interrupted run.
-        runner.turn.interrupted_at = Instant::now().checked_sub(STOP_GRACE * 2);
-        runner.turn.last_press = runner.turn.interrupted_at;
-        runner.turn.current_run = Some(RunId::new());
+        let past = Instant::now().checked_sub(STOP_GRACE * 2).unwrap();
+        let interrupt = open_mut(&mut runner).interrupt.as_mut().unwrap();
+        interrupt.first = past;
+        interrupt.last_press = past;
+        open_mut(&mut runner).runs.current = Some(RunId::new());
         runner.interrupt();
         let forced = interrupts_sent(&mut requests).await;
         assert_eq!(forced.len(), 1, "{forced:?}");
@@ -3060,7 +2954,8 @@ mod tests {
         assert_eq!(forced[0]["hard"], true);
         // The run goes on past the deadline: it is cancelled at once, by
         // its id.
-        runner.turn.give_up_at = Some(Instant::now());
+        open_mut(&mut runner).interrupt.as_mut().unwrap().deadline =
+            Deadline::Waiting(Instant::now());
         runner.on_deadline();
         let hard = interrupts_sent(&mut requests).await;
         assert_eq!(hard.len(), 1, "{hard:?}");
@@ -3174,11 +3069,7 @@ mod tests {
             let (mut runner, mut ui_rx) = runner(dir.path());
             let (link, sends) = link_losing_answers(fate).await;
             runner.conn = up(link);
-            runner.turn = Turn {
-                active: true,
-                id: 1,
-                ..Turn::default()
-            };
+            runner.turn = prompted(1);
             runner.steer(PendingId(1), "and this");
             let report = loop {
                 let (_, report) = runner.reports_rx.recv().await.unwrap();
@@ -3236,14 +3127,14 @@ mod tests {
                 }
             };
             assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 1);
-            let turn = runner.turn.id;
-            runner.sent(turn, None, report);
+            let id = runner.turn.id().unwrap();
+            runner.sent(id, None, report);
             let msgs = drain(&mut ui_rx);
             if admitted {
-                assert!(runner.turn.active, "its run shows when it reports");
+                assert!(runner.turn.is_open(), "its run shows when it reports");
                 assert_eq!(turn_ends(&msgs), 0);
             } else {
-                assert!(!runner.turn.active);
+                assert!(!runner.turn.is_open());
                 assert!(
                     msgs.iter().any(|m| matches!(
                         m,
@@ -3273,21 +3164,19 @@ mod tests {
                 seq: 0,
             };
             let run = RunId::new();
-            runner.turn = Turn {
-                active: true,
-                id: 1,
-                ..Turn::default()
-            };
+            runner.turn = prompted(1);
             runner.on_event(feed.started(&run), None);
             runner.interrupt();
-            let first = runner.turn.interrupt_epoch;
+            let epoch = |runner: &Runner| open(runner).interrupt.as_ref().unwrap().epoch;
+            let first = epoch(&runner);
             runner.on_event(feed.completed(&run), None);
             runner.idle_reported(feed.idle(&run, 0));
-            assert!(runner.turn.active, "the first interrupt is unanswered");
+            assert!(runner.turn.is_open(), "the first interrupt is unanswered");
             // A pause, then Esc: a new interrupt of the turn.
-            runner.turn.last_press = Instant::now().checked_sub(INTERRUPT_REPEAT * 2);
+            open_mut(&mut runner).interrupt.as_mut().unwrap().last_press =
+                Instant::now().checked_sub(INTERRUPT_REPEAT * 2).unwrap();
             runner.interrupt();
-            let second = runner.turn.interrupt_epoch;
+            let second = epoch(&runner);
             assert_ne!(first, second, "{first_answered_first}");
             assert_eq!(interrupts_sent(&mut requests).await.len(), 2);
             let answer = || {
@@ -3305,7 +3194,7 @@ mod tests {
                 [second, first]
             };
             runner.interrupt_answered(Some(order[0]), answer());
-            assert!(runner.turn.active, "{first_answered_first}: one is left");
+            assert!(runner.turn.is_open(), "{first_answered_first}: one is left");
             // The first call timed out, the second was answered: either
             // way it is no longer awaited.
             let last = if order[1] == first {
@@ -3315,7 +3204,7 @@ mod tests {
             };
             runner.interrupt_answered(Some(order[1]), last);
             assert!(
-                !runner.turn.active,
+                !runner.turn.is_open(),
                 "{first_answered_first}: the turn ended"
             );
             let msgs = drain(&mut ui_rx);
@@ -3331,18 +3220,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut runner, mut ui_rx) = runner(dir.path());
         let run = RunId::new();
-        runner.turn = Turn {
-            active: true,
-            saw_run: true,
-            interrupted_at: Some(Instant::now()),
-            interrupted_run: Some(run.clone()),
-            unanswered_interrupts: vec![4],
-            interrupt_epoch: 4,
-            result: Some(Err(TurnFailure::Interrupted)),
-            ..Turn::default()
-        };
-        runner.turn.run_seen(&run);
-        runner.turn.run_over(&run);
+        runner.turn = Turn::open(Kind::Joined);
+        let turn = open_mut(&mut runner);
+        turn.interrupt = Some(Interrupt {
+            deadline: Deadline::Off,
+            ..interrupt_at(Instant::now(), 4, Some(run.clone()))
+        });
+        turn.unanswered_interrupts = vec![4];
+        turn.result = Some(Err(TurnFailure::Interrupted));
+        turn.runs.seen(&run);
+        turn.runs.over(&run);
         let (unread, read) = (InputId::new(), InputId::new());
         runner.steers.sending(PendingId(1));
         runner.steers.admitted(PendingId(1), read.clone());
@@ -3355,7 +3242,7 @@ mod tests {
             held: 0,
         });
         runner.settle_turn();
-        assert!(runner.turn.active, "it waits for the interrupt's answer");
+        assert!(runner.turn.is_open(), "it waits for the interrupt's answer");
         runner.interrupt_answered(
             Some(4),
             Ok(protocol::Interrupted {
@@ -3366,7 +3253,7 @@ mod tests {
                 read: vec![read],
             }),
         );
-        assert!(!runner.turn.active);
+        assert!(!runner.turn.is_open());
         let msgs: Vec<Msg> = std::iter::from_fn(|| ui_rx.try_recv().ok()).collect();
         let at = |pred: &dyn Fn(&Msg) -> bool| msgs.iter().position(pred);
         let returned = at(&|m| matches!(m, Msg::Returned(ids) if ids == &[PendingId(2)])).unwrap();

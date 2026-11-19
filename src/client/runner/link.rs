@@ -392,7 +392,7 @@ impl Runner {
                 NoticeLevel::Info,
                 "the daemon has shut down; /quit to leave",
             );
-            if self.turn.active {
+            if self.turn.is_open() {
                 self.turn.record(Err(TurnFailure::Interrupted));
                 self.finish_turn();
             }

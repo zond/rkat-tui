@@ -1,8 +1,13 @@
 //! The UI's turn: prompts and steers (sent in order by one task), Esc,
 //! the agent's events and when the turn ends, and the model the turn runs
-//! on.
+//! on. The turn's state and its transitions are [`state`]'s.
 
 use super::*;
+
+pub(super) mod state;
+
+pub(super) use state::Turn;
+use state::{Kind, Overdue, Press, RunStart};
 
 impl Runner {
     pub(super) fn start_turn(&mut self, text: &str) {
@@ -23,12 +28,7 @@ impl Runner {
             .then_some(session)
         });
         self.turns += 1;
-        self.turn = Turn {
-            active: true,
-            prompt: Some(text.clone()),
-            id: self.turns,
-            ..Turn::default()
-        };
+        self.turn = Turn::prompt(self.turns, text.clone());
         self.outbound(Outbound {
             connection,
             text,
@@ -41,13 +41,13 @@ impl Runner {
     }
 
     pub(super) fn steer(&mut self, id: PendingId, text: &str) {
-        if !self.turn.active {
+        let Some(turn) = self.turn.id() else {
             self.send(Msg::SteerAck {
                 id,
                 result: Err(SteerFailure::NotRunning),
             });
             return;
-        }
+        };
         let Some(connection) = self.connection() else {
             self.send(Msg::SteerAck {
                 id,
@@ -66,7 +66,7 @@ impl Runner {
             text,
             steer: Some(id),
             retry: None,
-            turn: self.turn.id,
+            turn,
             reports: self.reporter(),
             ui_tx: self.ui_tx.clone(),
         });
@@ -91,7 +91,7 @@ impl Runner {
     /// Send `text` of turn `turn` once more after the agent's reload (a
     /// turn that ended meanwhile, or a steer no longer followed, is not).
     pub(super) fn send_again(&mut self, turn: u64, steer: Option<PendingId>, text: String) {
-        if !self.turn.active || self.turn.id != turn {
+        if self.turn.id() != Some(turn) {
             if let Some(id) = steer {
                 self.steers.forget(id);
             }
@@ -137,11 +137,11 @@ impl Runner {
         steer: Option<PendingId>,
         result: Result<Option<InputId>, SendFailure>,
     ) {
-        let current = self.turn.active && self.turn.id == turn;
+        let current = self.turn.id() == Some(turn);
         match (steer, result) {
             (Some(id), Ok(input)) => {
-                if current {
-                    self.turn.steered = true;
+                if current && let Some(open) = self.turn.open_mut() {
+                    open.steered();
                 }
                 self.admitted.push(id);
                 self.send(Msg::SteerAck { id, result: Ok(()) });
@@ -155,10 +155,10 @@ impl Runner {
                 };
                 if delivered {
                     self.send(Msg::SteerDelivered(id));
-                } else if current && self.turn.interrupted_at.is_some() {
+                } else if current && self.turn.interrupted() {
                     // Admitted after the user interrupted the turn: it is
                     // taken back too (with a run it started).
-                    self.send_interrupt(protocol::InterruptTarget::Inputs, false);
+                    self.send_interrupt(Some(protocol::InterruptTarget::Inputs), false);
                 }
             }
             (Some(id), Err(SendFailure::NotSent(why))) => {
@@ -291,7 +291,7 @@ impl Runner {
     /// acts or says why not.
     pub(super) fn interrupt(&mut self) {
         let now = Instant::now();
-        if !self.turn.active {
+        if !self.turn.is_open() {
             if let Some((last, said)) = &mut self.after_interrupt
                 && now.duration_since(*last) < INTERRUPT_REPEAT
             {
@@ -310,89 +310,64 @@ impl Runner {
             self.finish_turn();
             return;
         }
-        if let Some(first) = self.turn.interrupted_at {
-            let repeat = self
-                .turn
-                .last_press
-                .is_some_and(|last| now.duration_since(last) < INTERRUPT_REPEAT);
-            self.turn.last_press = Some(now);
-            if !self.turn.interrupted_run_open() {
-                if repeat {
-                    if !std::mem::replace(&mut self.turn.said_stopped, true) {
-                        self.notice(NoticeLevel::Info, ALREADY_STOPPED);
-                    }
-                    return;
-                }
-                // A pause, then Esc: a new interrupt of what the turn runs
-                // now (a follow-up run another client's message started).
-                self.turn.interrupted_at = None;
-                self.turn.interrupted_run = None;
-                self.turn.said_stopped = false;
-                self.turn.force_cancelled = false;
-                self.turn.escalated = false;
-            } else if self.turn.force_cancelled {
-                self.notice(
-                    NoticeLevel::Info,
-                    format!(
-                        "the interrupt was forced; waiting for the run to end (it is cancelled at once if it has not within {}s)",
-                        INTERRUPT_DEADLINE.as_secs()
-                    ),
-                );
-                return;
-            } else if now.duration_since(first) < STOP_GRACE {
-                let left = STOP_GRACE.saturating_sub(now.duration_since(first));
-                self.notice(
-                    NoticeLevel::Info,
-                    format!(
-                        "the interrupt was sent; waiting for the run to end (press again in {} ms to force it)",
-                        left.as_millis().max(1)
-                    ),
-                );
-                return;
-            } else {
-                self.turn.force_cancelled = true;
-                self.send_interrupt(self.interrupt_target(), true);
-                return;
-            }
-        }
-        let run = self.turn.current_run.clone().filter(|run| {
-            self.turn.open_runs.contains(run) || self.turn.noted.as_ref() == Some(run)
-        });
-        self.interrupts += 1;
-        self.turn.interrupt_epoch = self.interrupts;
-        self.turn.interrupted_at = Some(now);
-        self.turn.last_press = Some(now);
-        self.turn.give_up_at = Some(now + INTERRUPT_DEADLINE);
-        self.turn.interrupted_run.clone_from(&run);
-        let target = match run {
-            Some(run_id) => protocol::InterruptTarget::Run { run_id },
-            None => protocol::InterruptTarget::Current,
+        let Some(turn) = self.turn.open_mut() else {
+            return;
         };
-        self.send_interrupt(target, false);
-    }
-
-    /// The run the turn's interrupt is for, as `rkat/interrupt` names it.
-    fn interrupt_target(&self) -> protocol::InterruptTarget {
-        match &self.turn.interrupted_run {
-            Some(run_id) => protocol::InterruptTarget::Run {
-                run_id: run_id.clone(),
-            },
-            None => protocol::InterruptTarget::Current,
+        match turn.press(now, INTERRUPT_REPEAT, STOP_GRACE) {
+            Press::Stopped { say } => {
+                if say {
+                    self.notice(NoticeLevel::Info, ALREADY_STOPPED);
+                }
+            }
+            Press::Forced => self.notice(
+                NoticeLevel::Info,
+                format!(
+                    "the interrupt was forced; waiting for the run to end (it is cancelled at once if it has not within {}s)",
+                    INTERRUPT_DEADLINE.as_secs()
+                ),
+            ),
+            Press::Grace(left) => self.notice(
+                NoticeLevel::Info,
+                format!(
+                    "the interrupt was sent; waiting for the run to end (press again in {} ms to force it)",
+                    left.as_millis().max(1)
+                ),
+            ),
+            Press::Force => self.send_interrupt(None, true),
+            // The first press, or a pause, then Esc: a new interrupt of
+            // what the turn runs now (a follow-up run another client's
+            // message started).
+            Press::New => {
+                self.interrupts += 1;
+                let target = turn.begin_interrupt(self.interrupts, now, now + INTERRUPT_DEADLINE);
+                self.send_interrupt(Some(target), false);
+            }
         }
     }
 
     /// Send the turn's interrupt to the daemon (`rkat/interrupt`): for
-    /// `target`, with every steer of this client the agent has not read
-    /// yet, which the daemon takes back; the turn does not end until it
-    /// answers ([`Self::interrupt_answered`]).
-    fn send_interrupt(&mut self, target: protocol::InterruptTarget, hard: bool) {
+    /// `target` (`None`: the run the interrupt is for), with every steer
+    /// of this client the agent has not read yet, which the daemon takes
+    /// back; the turn does not end until it answers
+    /// ([`Self::interrupt_answered`]).
+    fn send_interrupt(&mut self, target: Option<protocol::InterruptTarget>, hard: bool) {
         let Some(connection) = self.connection() else {
             return;
         };
-        self.turn
-            .unanswered_interrupts
-            .push(self.turn.interrupt_epoch);
-        let epoch = Some(self.turn.interrupt_epoch);
+        let Some(turn) = self.turn.open_mut() else {
+            return;
+        };
+        let target = match target {
+            Some(target) => target,
+            None => match &turn.interrupt {
+                Some(interrupt) => interrupt.target(),
+                None => protocol::InterruptTarget::Current,
+            },
+        };
+        let Some(epoch) = turn.interrupt_sent() else {
+            return;
+        };
+        let epoch = Some(epoch);
         let params = protocol::InterruptParams {
             target,
             input_ids: self
@@ -425,28 +400,20 @@ impl Runner {
         epoch: Option<u64>,
         result: Result<protocol::Interrupted, String>,
     ) {
-        let current = epoch.is_some_and(|epoch| {
-            self.turn.active
-                && self.turn.interrupted_at.is_some()
-                && self.turn.interrupt_epoch == epoch
-        });
         // Any call of this turn's is answered now, of its current
         // interrupt or an earlier one (epochs are the runner's, so a call
         // of another turn's is never found here).
         if let Some(epoch) = epoch
-            && let Some(at) = self
-                .turn
-                .unanswered_interrupts
-                .iter()
-                .position(|sent| *sent == epoch)
+            && let Some(turn) = self.turn.open_mut()
         {
-            self.turn.unanswered_interrupts.remove(at);
+            let run = result
+                .as_ref()
+                .ok()
+                .and_then(|answer| answer.run_id.as_ref());
+            turn.interrupt_answered(epoch, run);
         }
         match result {
             Ok(answer) => {
-                if current && self.turn.interrupted_run.is_none() {
-                    self.turn.interrupted_run.clone_from(&answer.run_id);
-                }
                 let returned = self.steers.recalled(&answer.returned);
                 self.admitted.retain(|id| !returned.contains(id));
                 if !returned.is_empty() {
@@ -518,8 +485,13 @@ impl Runner {
     /// first time, cancel that run at once (and that run only) and wait
     /// once more.
     fn escalate_interrupt(&mut self) {
-        self.turn.escalated = true;
-        self.turn.give_up_at = Some(Instant::now() + INTERRUPT_DEADLINE);
+        if let Some(interrupt) = self
+            .turn
+            .open_mut()
+            .and_then(|turn| turn.interrupt.as_mut())
+        {
+            interrupt.deadline = state::Deadline::Escalated(Instant::now() + INTERRUPT_DEADLINE);
+        }
         self.notice(
             NoticeLevel::Warn,
             format!(
@@ -527,7 +499,7 @@ impl Runner {
                 INTERRUPT_DEADLINE.as_secs()
             ),
         );
-        self.send_interrupt(self.interrupt_target(), true);
+        self.send_interrupt(None, true);
     }
 
     /// One of the member's events (live, or replayed after the cursor; of
@@ -555,218 +527,262 @@ impl Runner {
             return;
         }
         self.followers.convening(&envelope.payload, None);
-        // Another client's `/compact` run: quiet here too.
-        if !self.turn.active
-            && let AgentEvent::RunStarted { input, .. } = &envelope.payload
-            && input.prompt_text().as_deref() == Some(COMPACT_PROMPT)
-        {
-            self.turn = Turn {
-                active: true,
-                quiet: true,
-                ..Turn::default()
-            };
-            self.send(Msg::CompactionRun(true));
+        if matches!(envelope.payload, AgentEvent::RunStarted { .. }) {
+            self.on_run_started(envelope);
+            return;
         }
-        // A run that is not the compaction's (a helper's note or a peer
-        // message queued behind it, or ahead of it) ends the quiet turn:
-        // it is the agent's work, shown and steerable as any run. Taken
-        // into the quiet turn, it drew nothing and the UI held every
-        // message typed meanwhile until the agent went idle.
-        let left_quiet = self.turn.quiet
-            && matches!(&envelope.payload, AgentEvent::RunStarted { input, .. }
-                if input.prompt_text().as_deref() != Some(COMPACT_PROMPT));
-        if left_quiet {
-            let quiet = std::mem::take(&mut self.turn);
-            // The compaction's run, when it ran, ended in it.
-            self.finished_runs.extend(quiet.ended);
-        }
-        if self.turn.quiet {
+        if self.turn.is_quiet() {
             self.on_quiet_event(envelope);
             return;
         }
-        // A run that failed because the realm's storage did is told in
-        // plain words (`crate::daemon::storage`; the daemon logs and
-        // audits the engine's).
-        if let AgentEvent::RunFailed { error_report, .. } = &mut envelope.payload
-            && crate::daemon::storage::is_storage_failure(&error_report.message)
-        {
-            error_report.message =
-                crate::daemon::storage::failed_line(&self.config.scope.realm_root());
-        }
-        let mut terminal = false;
-        // A run already going when this client attached (its start was shown
-        // before it detached): the UI is busy until its end.
-        // Not the end of a run the last turn saw end (on the idle notice,
-        // before its end event arrived).
-        if !self.turn.active
-            && joins_a_run(&envelope.payload)
-            && !run_of(&envelope.payload).is_some_and(|run| self.finished_runs.contains(run))
-        {
-            self.turn = Turn {
-                active: true,
-                saw_run: true,
-                ..Turn::default()
-            };
-            self.send(Msg::RemoteTurn { prompt: None });
-        }
+        self.plain_storage_failure(&mut envelope.payload);
+        self.join_running(&envelope.payload);
         match &envelope.payload {
-            // Another agent's message. Into a running turn it is
-            // delivered at the next boundary, and the events carry no text:
-            // the block names the sender. An idle agent wakes for it: the
-            // run's input carries the text (below).
             AgentEvent::PeerContentIngested {
                 kind: meerkat_core::CommsNoticeKind::Message,
                 peer: Some(peer),
                 ..
             } => {
-                if self.turn.active {
-                    let from = peer.display_name.as_deref().unwrap_or("another agent");
-                    self.send(Msg::Peer {
-                        from: crate::ui::peer::short_name(from).to_string(),
-                        text: String::new(),
-                    });
-                }
+                self.peer_arrived(peer.display_name.as_deref());
                 return;
-            }
-            AgentEvent::RunStarted {
-                identity, input, ..
-            } => {
-                // A run this client did not start: no turn is open, or the
-                // turn was joined on the daemon's note and shows its first
-                // run start now.
-                let joining = !self.turn.active || self.turn.joined_unseen();
-                // A run after the first (a follow-up run, or a run of a
-                // turn that starts now while steers of this client are
-                // still with the agent: a turn ended before the runtime
-                // ran them) may carry the steers that missed the boundary:
-                // those whose text its content holds (the start names no
-                // inputs). A run of a daemon's note or a peer's message
-                // carries none, and they stay followed. Not after the user
-                // interrupted the turn: a follow-up run that took one of
-                // them is stopped with it, and the interrupt's answer says
-                // which the agent read.
-                let own = if (self.turn.saw_run || joining) && self.turn.interrupted_at.is_none() {
-                    input
-                        .prompt_text()
-                        .map(|content| self.steers.carried(&content))
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
-                if joining {
-                    if !self.turn.active {
-                        self.turn = Turn {
-                            active: true,
-                            ..Turn::default()
-                        };
-                    }
-                    // Another client's `/compact` run, shown as the turn
-                    // joined on the note already: its prompt is not.
-                    let prompt = input
-                        .prompt_text()
-                        .filter(|_| own.is_empty())
-                        .filter(|prompt| prompt != COMPACT_PROMPT);
-                    match prompt.as_deref().and_then(crate::ui::peer::of_inputs) {
-                        Some(messages) => {
-                            self.peer_messages(messages);
-                            self.send(Msg::RemoteTurn { prompt: None });
-                        }
-                        None => self.send(Msg::RemoteTurn { prompt }),
-                    }
-                } else if self.turn.saw_run && own.is_empty() {
-                    // What reached the agent during the turn joins it:
-                    // other agents' messages, each as its labelled block
-                    // (the block that named its sender when it arrived
-                    // gets its text), or another client's steer.
-                    if let Some(prompt) = input.prompt_text() {
-                        match crate::ui::peer::of_inputs(&prompt) {
-                            Some(messages) => self.peer_messages(messages),
-                            None => self.send(Msg::RemoteTurn {
-                                prompt: Some(prompt),
-                            }),
-                        }
-                    }
-                }
-                for id in own {
-                    self.send(Msg::SteerDelivered(id));
-                }
-                self.turn.saw_run = true;
-                if let Some(run) = &identity.run_id {
-                    self.turn.run_seen(run);
-                }
             }
             // A run the engine resumed at a daemon's start, in place of its
             // `run_started`: the same run goes on under its id, so the
             // interrupt stops it by that id (a force-cancel waits for its
             // next boundary, which a resumed run's long call holds off).
             AgentEvent::RunResumed { run_id, .. } => {
-                self.turn.saw_run = true;
-                self.turn.run_seen(run_id);
+                if let Some(turn) = self.turn.open_mut() {
+                    turn.run_seen(Some(run_id));
+                }
             }
             AgentEvent::ToolExecutionCompleted { name, .. }
                 if crate::daemon::tasks::changes_tasks(name) =>
             {
                 self.refresh_tasks();
             }
+            // This client's steer only: another client's input marks
+            // nothing here.
             AgentEvent::BoundaryAppendApplied { input_id, .. } => {
-                // This client's steer only: another client's input marks
-                // nothing here.
                 if let Some(id) = self.steers.applied(input_id) {
                     self.send(Msg::SteerDelivered(id));
                 }
             }
+            _ => {}
+        }
+        let terminal = self.on_run_end(&envelope.payload);
+        self.send(Msg::Agent(envelope));
+        if terminal {
+            self.save_cursor();
+            self.settle_turn();
+        }
+    }
+
+    /// A run that failed because the realm's storage did is told in plain
+    /// words (`crate::daemon::storage`; the daemon logs and audits the
+    /// engine's).
+    fn plain_storage_failure(&self, payload: &mut AgentEvent) {
+        if let AgentEvent::RunFailed { error_report, .. } = payload
+            && crate::daemon::storage::is_storage_failure(&error_report.message)
+        {
+            error_report.message =
+                crate::daemon::storage::failed_line(&self.config.scope.realm_root());
+        }
+    }
+
+    /// With no turn open, an event only a running run publishes joins its
+    /// turn: a run already going when this client attached (its start was
+    /// shown before it detached), and the UI is busy until its end. Not
+    /// the end of a run the last turn saw end (on the idle notice, before
+    /// its end event arrived).
+    fn join_running(&mut self, payload: &AgentEvent) {
+        if !self.turn.is_open()
+            && joins_a_run(payload)
+            && !run_of(payload).is_some_and(|run| self.finished_runs.contains(run))
+        {
+            self.turn = Turn::open(Kind::Joined);
+            self.send(Msg::RemoteTurn { prompt: None });
+        }
+    }
+
+    /// A run's end, recorded in the turn; whether `payload` was one.
+    fn on_run_end(&mut self, payload: &AgentEvent) -> bool {
+        match payload {
             AgentEvent::RunCompleted {
                 identity,
                 result,
                 usage,
                 ..
             } => {
-                if let Some(run) = &identity.run_id {
-                    self.turn.run_over(run);
-                }
                 let usage = usage.as_usage();
-                self.turn.record(Ok(TurnSummary {
+                let summary = TurnSummary {
                     text: result.clone(),
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
-                }));
-                terminal = true;
+                };
+                self.run_ended(identity.run_id.as_ref(), Ok(summary));
+                true
             }
             AgentEvent::RunFailed {
                 identity,
                 error_report,
                 ..
             } => {
-                if let Some(run) = &identity.run_id {
-                    self.turn.run_over(run);
-                }
-                let interrupted = self.turn.interrupted_at.is_some()
-                    || error_report.class == AgentErrorClass::Cancelled;
-                if interrupted {
-                    self.turn.record(Err(TurnFailure::Interrupted));
-                } else if error_report.class == AgentErrorClass::MaxTurns {
-                    // Its checkpoint, no failure: the daemon asks for the
-                    // agent's status and says what follows
-                    // (`crate::daemon::checkpoint`).
-                    self.turn.record(Ok(TurnSummary::default()));
-                } else {
-                    self.turn
-                        .record(Err(TurnFailure::Failed(error_report.message.clone())));
-                }
-                terminal = true;
+                let end = self.failure_of(error_report);
+                self.run_ended(identity.run_id.as_ref(), end);
+                true
             }
-            _ => {}
+            _ => false,
+        }
+    }
+
+    /// A run's start: what it means for the turn is [`Turn::run_start`]'s.
+    fn on_run_started(&mut self, envelope: EventEnvelope<AgentEvent>) {
+        let AgentEvent::RunStarted {
+            identity, input, ..
+        } = &envelope.payload
+        else {
+            return;
+        };
+        let run = identity.run_id.clone();
+        let prompt = input.prompt_text();
+        let start = self
+            .turn
+            .run_start(prompt.as_deref() == Some(COMPACT_PROMPT));
+        match start {
+            // Another client's `/compact` run: quiet here too.
+            RunStart::OpenQuiet => {
+                self.turn = Turn::open(Kind::Compaction { id: 0 });
+                self.send(Msg::CompactionRun(true));
+            }
+            RunStart::LeaveQuiet => {
+                if let Turn::Open(quiet) = std::mem::take(&mut self.turn) {
+                    // The compaction's run, when it ran, ended in it.
+                    self.finished_runs.extend(quiet.runs.ended);
+                }
+            }
+            RunStart::Quiet | RunStart::Join | RunStart::First | RunStart::Later => {}
+        }
+        if matches!(start, RunStart::OpenQuiet | RunStart::Quiet) {
+            // Its prompt and reply are not shown.
+            if let Some(turn) = self.turn.open_mut() {
+                turn.run_seen(run.as_ref());
+            }
+            return;
+        }
+        if !self.turn.is_open() {
+            self.turn = Turn::open(Kind::Joined);
+        }
+        self.show_run_input(start, prompt);
+        if let Some(turn) = self.turn.open_mut() {
+            turn.run_seen(run.as_ref());
         }
         self.send(Msg::Agent(envelope));
         // Told after the run's turn opened, so what the UI held for the
         // compaction is steered into the run rather than starting a turn
         // of its own.
-        if left_quiet {
+        if start == RunStart::LeaveQuiet {
             self.send(Msg::CompactionRun(false));
         }
-        if terminal {
-            self.save_cursor();
-            self.settle_turn();
+    }
+
+    /// What a starting run's input (`prompt`) shows: this client's steers
+    /// it carries, delivered; else, for a run this client did not start or
+    /// a later run of the turn, the input as another client's.
+    fn show_run_input(&mut self, start: RunStart, prompt: Option<String>) {
+        // A run after the first (a follow-up run, or a run of a turn that
+        // starts now while steers of this client are still with the agent:
+        // a turn ended before the runtime ran them) may carry the steers
+        // that missed the boundary: those whose text its content holds (the
+        // start names no inputs). A run of a daemon's note or a peer's
+        // message carries none, and they stay followed. Not after the user
+        // interrupted the turn: a follow-up run that took one of them is
+        // stopped with it, and the interrupt's answer says which the agent
+        // read.
+        let own = if start == RunStart::First || self.turn.interrupted() {
+            Vec::new()
+        } else {
+            prompt
+                .as_deref()
+                .map(|content| self.steers.carried(content))
+                .unwrap_or_default()
+        };
+        match start {
+            // A run this client did not start: no turn is open, or the turn
+            // was joined on the daemon's note and shows its first run start
+            // now.
+            RunStart::Join | RunStart::LeaveQuiet => {
+                // Another client's `/compact` run, shown as the turn joined
+                // on the note already: its prompt is not.
+                let prompt = prompt
+                    .filter(|_| own.is_empty())
+                    .filter(|prompt| prompt != COMPACT_PROMPT);
+                match prompt.as_deref().and_then(crate::ui::peer::of_inputs) {
+                    Some(messages) => {
+                        self.peer_messages(messages);
+                        self.send(Msg::RemoteTurn { prompt: None });
+                    }
+                    None => self.send(Msg::RemoteTurn { prompt }),
+                }
+            }
+            // What reached the agent during the turn joins it: other
+            // agents' messages, each as its labelled block (the block that
+            // named its sender when it arrived gets its text), or another
+            // client's steer.
+            RunStart::Later if own.is_empty() => {
+                if let Some(prompt) = prompt {
+                    match crate::ui::peer::of_inputs(&prompt) {
+                        Some(messages) => self.peer_messages(messages),
+                        None => self.send(Msg::RemoteTurn {
+                            prompt: Some(prompt),
+                        }),
+                    }
+                }
+            }
+            _ => {}
+        }
+        for id in own {
+            self.send(Msg::SteerDelivered(id));
+        }
+    }
+
+    /// Another agent's message. Into a running turn it is delivered at the
+    /// next boundary, and the events carry no text: the block names the
+    /// sender (`from`). An idle agent wakes for it: the run's input
+    /// carries the text ([`Self::on_run_started`]).
+    fn peer_arrived(&self, from: Option<&str>) {
+        if self.turn.is_open() {
+            let from = from.unwrap_or("another agent");
+            self.send(Msg::Peer {
+                from: crate::ui::peer::short_name(from).to_string(),
+                text: String::new(),
+            });
+        }
+    }
+
+    /// How a failed run ends its turn: interrupted (by the user, or
+    /// cancelled), at its checkpoint (no failure: the daemon asks for the
+    /// agent's status and says what follows, `crate::daemon::checkpoint`),
+    /// or failed.
+    fn failure_of(
+        &self,
+        error_report: &meerkat_core::AgentErrorReport,
+    ) -> Result<TurnSummary, TurnFailure> {
+        if self.turn.interrupted() || error_report.class == AgentErrorClass::Cancelled {
+            Err(TurnFailure::Interrupted)
+        } else if error_report.class == AgentErrorClass::MaxTurns {
+            Ok(TurnSummary::default())
+        } else {
+            Err(TurnFailure::Failed(error_report.message.clone()))
+        }
+    }
+
+    /// The turn's run `run` (when named) ended as `end`.
+    fn run_ended(&mut self, run: Option<&RunId>, end: Result<TurnSummary, TurnFailure>) {
+        if let Some(turn) = self.turn.open_mut() {
+            if let Some(run) = run {
+                turn.runs.over(run);
+            }
+            turn.record(end);
         }
     }
 
@@ -774,41 +790,29 @@ impl Runner {
     /// compaction events reach the UI, its prompt and reply do not; it
     /// ends like any turn ([`Self::settle_turn`]), quietly.
     fn on_quiet_event(&mut self, envelope: EventEnvelope<AgentEvent>) {
-        let mut terminal = false;
-        match &envelope.payload {
-            AgentEvent::RunStarted { identity, .. } => {
-                self.turn.saw_run = true;
-                if let Some(run) = &identity.run_id {
-                    self.turn.run_seen(run);
-                }
-            }
+        let terminal = match &envelope.payload {
             AgentEvent::RunCompleted { identity, .. } => {
-                if let Some(run) = &identity.run_id {
-                    self.turn.run_over(run);
-                }
-                self.turn.record(Ok(TurnSummary::default()));
-                terminal = true;
+                self.run_ended(identity.run_id.as_ref(), Ok(TurnSummary::default()));
+                true
             }
             AgentEvent::RunFailed {
                 identity,
                 error_report,
                 ..
             } => {
-                if let Some(run) = &identity.run_id {
-                    self.turn.run_over(run);
-                }
-                self.turn
-                    .record(Err(TurnFailure::Failed(error_report.message.clone())));
-                terminal = true;
+                let end = Err(TurnFailure::Failed(error_report.message.clone()));
+                self.run_ended(identity.run_id.as_ref(), end);
+                true
             }
             AgentEvent::CompactionStarted { .. }
             | AgentEvent::CompactionCompleted { .. }
             | AgentEvent::CompactionFailed { .. }
             | AgentEvent::RequestedCompactionSkipped { .. } => {
                 self.send(Msg::Agent(envelope));
+                false
             }
-            _ => {}
-        }
+            _ => false,
+        };
         if terminal {
             self.save_cursor();
             self.settle_turn();
@@ -824,26 +828,16 @@ impl Runner {
     /// turn or the last), changes nothing; one it did not is the run to
     /// stop from now on.
     pub(super) fn run_noted(&mut self, run: RunId) {
-        if self.finished_runs.contains(&run)
-            || self.turn.ended.contains(&run)
-            || self.turn.open_runs.contains(&run)
-        {
+        if self.finished_runs.contains(&run) || self.turn.knows(&run) {
             return;
         }
-        if !self.turn.active {
-            self.turn = Turn {
-                active: true,
-                from_note: true,
-                ..Turn::default()
-            };
+        if !self.turn.is_open() {
+            self.turn = Turn::open(Kind::Noted);
             self.send(Msg::RemoteTurn { prompt: None });
         }
-        if let Some(earlier) = self.turn.noted.replace(run.clone())
-            && earlier != run
-        {
-            self.turn.ended.insert(earlier);
+        if let Some(turn) = self.turn.open_mut() {
+            turn.runs.note(run);
         }
-        self.turn.current_run = Some(run);
     }
 
     /// The daemon says the agent is idle (`rkat/idle`): no run open and
@@ -869,7 +863,7 @@ impl Runner {
         // too would race it, and a message the stopped run dropped would
         // be told as not delivered instead of coming back
         // ([`Self::interrupt_answered`] asks after it).
-        if outstanding.is_empty() || !self.turn.unanswered_interrupts.is_empty() {
+        if outstanding.is_empty() || self.turn.awaits_interrupt() {
             return;
         }
         if let Some(again) = &mut self.asking_fates {
@@ -935,37 +929,31 @@ impl Runner {
         let Some(idle) = &self.idle else {
             return;
         };
+        let Some(turn) = self.turn.open_mut() else {
+            return;
+        };
+        let (last_run, held) = (idle.last_run.as_ref(), idle.held);
         // The noted run's end, which may have fallen before this client's
         // stream opened (or before the render's last event) and so never
         // shows here: the idle notice after that run says it ended.
-        if self.turn.noted.is_some() && self.turn.noted == idle.last_run {
-            if let Some(run) = self.turn.noted.take() {
-                self.turn.ended.insert(run);
-            }
-            if self.turn.interrupted_at.is_some() && self.turn.result.is_none() {
-                self.notice(
-                    NoticeLevel::Info,
-                    "the agent's run had already ended when the interrupt reached it",
-                );
-            }
+        let mut late = false;
+        if let Some(run) = turn.runs.noted.take_if(|noted| Some(&*noted) == last_run) {
+            turn.runs.ended.insert(run);
+            late = turn.interrupt.is_some() && turn.result.is_none();
         }
-        let Some(idle) = &self.idle else {
-            return;
-        };
-        if !self.turn.active
-            || !self.turn.open_runs.is_empty()
-            || self.turn.noted.is_some()
-            || self.steers.sending_any()
-            || !self.turn.unanswered_interrupts.is_empty()
-            || !idle
-                .last_run
-                .as_ref()
-                .is_some_and(|run| self.turn.ended.contains(run))
-        {
+        let over = turn.is_over(last_run);
+        let interrupted = turn.interrupt.is_some();
+        if late {
+            self.notice(
+                NoticeLevel::Info,
+                "the agent's run had already ended when the interrupt reached it",
+            );
+        }
+        if !over || self.steers.sending_any() {
             return;
         }
         // After an interrupt the messages it took back are not held.
-        if idle.held > 0 && self.turn.interrupted_at.is_none() {
+        if held > 0 && !interrupted {
             self.notice(
                 NoticeLevel::Warn,
                 "the agent still holds a message for this turn; it runs when the agent takes it",
@@ -979,17 +967,17 @@ impl Runner {
     /// after that the turn ends as unconfirmed (not as interrupted: the
     /// run may still be going, and it shows here again when it reports).
     pub(super) fn on_deadline(&mut self) {
-        if self.turn.give_up_at.is_none_or(|at| at > Instant::now()) {
+        // Nothing is due, or the interrupted run ended: nothing is
+        // cancelled (a run that started since is not the interrupt's); the
+        // turn ends as its runs do.
+        let Some(overdue) = self
+            .turn
+            .open_mut()
+            .and_then(|turn| turn.overdue(Instant::now()))
+        else {
             return;
-        }
-        // The interrupted run ended: nothing is cancelled (a run that
-        // started since is not the interrupt's); the turn ends as its runs
-        // do.
-        if !self.turn.interrupted_run_open() {
-            self.turn.give_up_at = None;
-            return;
-        }
-        if !self.turn.escalated && self.connection().is_some() {
+        };
+        if overdue == Overdue::First && self.connection().is_some() {
             self.escalate_interrupt();
             return;
         }
@@ -998,38 +986,41 @@ impl Runner {
     }
 
     pub(super) fn finish_turn(&mut self) {
-        let turn = std::mem::take(&mut self.turn);
-        if !turn.active {
+        let Turn::Open(turn) = std::mem::take(&mut self.turn) else {
             return;
-        }
+        };
         // Not the runs still open: an unconfirmed turn's run shows again
         // when it reports.
-        self.finished_runs.clone_from(&turn.ended);
+        self.finished_runs = turn.runs.ended;
         // A press right after an interrupted turn's end acts on nothing.
         self.after_interrupt = turn
-            .interrupted_at
-            .map(|first| (turn.last_press.unwrap_or(first), turn.said_stopped));
-        if turn.quiet {
-            match &turn.result {
-                Some(Err(TurnFailure::Failed(why))) => self.notice(
-                    NoticeLevel::Warn,
-                    format!("the run that lets the agent compact failed: {why}"),
-                ),
-                Some(Err(_)) => self.notice(
-                    NoticeLevel::Warn,
-                    "the run that lets the agent compact was interrupted",
-                ),
-                _ => {}
+            .interrupt
+            .map(|interrupt| (interrupt.last_press, interrupt.said_stopped));
+        let prompt = match turn.kind {
+            Kind::Prompt { text, steered, .. } => Some((text, steered)),
+            Kind::Noted | Kind::Joined => None,
+            Kind::Compaction { .. } => {
+                match &turn.result {
+                    Some(Err(TurnFailure::Failed(why))) => self.notice(
+                        NoticeLevel::Warn,
+                        format!("the run that lets the agent compact failed: {why}"),
+                    ),
+                    Some(Err(_)) => self.notice(
+                        NoticeLevel::Warn,
+                        "the run that lets the agent compact was interrupted",
+                    ),
+                    _ => {}
+                }
+                self.send(Msg::CompactionRun(false));
+                self.save_cursor();
+                return;
             }
-            self.send(Msg::CompactionRun(false));
-            self.save_cursor();
-            return;
-        }
+        };
         // A failed turn's prompt stays committed: the same text typed again
         // is a retry, not a second copy ([`Runner::retry_input`]).
-        self.failed_prompt = match (&turn.result, &turn.prompt, self.conn.link()) {
-            (Some(Err(TurnFailure::Failed(_))), Some(prompt), Some(link)) if !turn.steered => {
-                Some((link.session.clone(), prompt.clone()))
+        self.failed_prompt = match (&turn.result, prompt, self.conn.link()) {
+            (Some(Err(TurnFailure::Failed(_))), Some((prompt, false)), Some(link)) => {
+                Some((link.session.clone(), prompt))
             }
             _ => None,
         };
@@ -1124,7 +1115,7 @@ impl Runner {
     /// (`rkat/set_model`): refused while a
     /// turn runs; the next prompt is an ordinary send.
     pub(super) fn switch_model(&mut self, switch: ModelSwitch) {
-        if self.turn.active {
+        if self.turn.is_open() {
             self.notice(
                 NoticeLevel::Warn,
                 "a turn is running; switch models once it ends (or interrupt it)",
@@ -1249,16 +1240,11 @@ impl Runner {
     /// running compacts at its own next check.
     pub(super) fn compact_asked(&mut self, asked: Result<(), String>) {
         if asked.is_ok()
-            && !self.turn.active
+            && !self.turn.is_open()
             && let Some(connection) = self.connection()
         {
             self.turns += 1;
-            self.turn = Turn {
-                active: true,
-                quiet: true,
-                id: self.turns,
-                ..Turn::default()
-            };
+            self.turn = Turn::open(Kind::Compaction { id: self.turns });
             self.send(Msg::CompactionRun(true));
             self.outbound(Outbound {
                 connection,

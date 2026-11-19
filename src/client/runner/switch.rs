@@ -28,7 +28,7 @@ impl Runner {
 
     /// Whether a conversation switch may start now (else says why).
     pub(super) fn may_switch(&self) -> bool {
-        if self.turn.active {
+        if self.turn.is_open() {
             self.notice(
                 NoticeLevel::Warn,
                 "a turn is running; interrupt it first (Esc)",
@@ -98,7 +98,7 @@ impl Runner {
         // The old conversation's turn and dialogs are over (the same
         // conversation, seated again, keeps them).
         if !matches!(why, Shown::Reseated | Shown::Reloaded) {
-            if self.turn.active {
+            if self.turn.is_open() {
                 self.turn.record(Err(TurnFailure::Interrupted));
                 self.finish_turn();
             }
@@ -243,7 +243,7 @@ impl Runner {
             );
             return;
         }
-        if self.turn.active || self.switching {
+        if self.turn.is_open() || self.switching {
             self.notice(
                 NoticeLevel::Warn,
                 "a turn is running or a switch is under way; switch agents once it ends (or interrupt it)",
@@ -264,7 +264,7 @@ impl Runner {
     /// bound to an agent seated for it, as a plain `rkat-tui` start is; the
     /// agent left keeps running (detached when this was its last client).
     pub(super) fn new_agent(&mut self) {
-        if self.turn.active || self.switching {
+        if self.turn.is_open() || self.switching {
             self.notice(
                 NoticeLevel::Warn,
                 "a turn is running or a switch is under way; start a new agent once it ends (or interrupt it)",
@@ -302,7 +302,7 @@ impl Runner {
             );
             return;
         }
-        if self.turn.active || self.switching || self.agent.as_deref() == Some(name.as_str()) {
+        if self.turn.is_open() || self.switching || self.agent.as_deref() == Some(name.as_str()) {
             // Something started meanwhile; the user asks again.
             return;
         }
@@ -338,7 +338,7 @@ impl Runner {
             Some("/rehome works on this machine's workspace only; run it there")
         } else if self.config.reroot.is_none() {
             Some("this client cannot be re-rooted; use rkat-tui --rehome from the shell")
-        } else if self.turn.active || self.switching {
+        } else if self.turn.is_open() || self.switching {
             Some(
                 "a turn is running or a switch is under way; re-home once it ends (or interrupt it)",
             )
