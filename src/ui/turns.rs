@@ -603,7 +603,7 @@ impl App {
         if self.shell.running.is_none() && !self.running {
             self.run_next_shell(now, fx);
         }
-        self.offer_plan(answered);
+        self.offer_plan(answered, now);
         self.check_context();
     }
 

@@ -62,6 +62,17 @@
 - Two `assign` calls of one step for one name could both pass the name
   check, and the second then got the engine's wording; it now gets "the
   name … is in use".
+- A keystroke meant for your message could answer an approval dialog
+  that appeared while you typed: a `y` in the next word allowed the call,
+  an `a` added a rule for good, an `s` stopped the turn, and the Enter that
+  should have sent the message approved row 1. A dialog that opens by
+  itself (an approval, the next one queued, "Plan ready", a picker an
+  approval had displaced) now takes keys only once you have been quiet
+  for 0.6 s since it appeared; keys before that are dropped, say so on
+  the dialog, and start the wait again (Ctrl+O and scrolling act at once).
+  Your draft stays as it was under the dialog. Enter in the approval and
+  "Plan ready" dialogs picks a row only after ↑/↓ moved to it; the numbers
+  and letters are unchanged.
 - A turn could stay "running" for good after two interrupts: Esc while
   the daemon was slow to answer, the run ending by itself, then Esc again
   after a pause. The first interrupt's late answer (or its timeout) was

@@ -454,12 +454,26 @@ numbered choices with a cursor on the first:
   3. Yes, allow and add a rule (shell rm -rf build)
   4. No, and tell the agent what to do instead (Esc)
 
-Enter select · s stop the turn · Ctrl+C stop all
+↑/↓ then Enter · s stop the turn · Ctrl+C stop all
 ```
 
-↑/↓ (or `j`/`k`) move the cursor and Enter picks the highlighted row; `1`
-to `4` pick a row directly, and the letters `y`, `t` (this session), `a`
-and `n` (or Esc) do the same. Row 2 makes a session grant (see
+↑/↓ (or `j`/`k`) move the cursor; `1` to `4` pick a row directly, and the
+letters `y`, `t` (this session), `a` and `n` (or Esc) do the same. Enter
+picks the highlighted row only once ↑ or ↓ moved the cursor in this
+dialog: an Enter before that answers nothing and says so, so an Enter
+meant to send your message never allows a call.
+
+The dialog opens by itself, often while you are typing your next
+message, so it does not take the rest of your sentence as an answer:
+until you have been quiet for 0.6 s since it appeared, every key is
+dropped (neither answered nor typed into the input) and starts that wait
+again, and the dialog says `keys are ignored for a moment: you were
+typing`. Ctrl+O and the scrolling keys act at once. What you had typed
+stays in the input under the dialog, cursor and all; the keys dropped
+are not added to it afterwards (they would be part of a word), so after
+answering you go on from where the dialog interrupted you. Each dialog is
+waited for on its own: the next queued one, a picker an approval had
+displaced, and "Plan ready" (whose Enter likewise needs ↑/↓ first) too. Row 2 makes a session grant (see
 [Approving a blocked call](#approving-a-blocked-call)): the directory of a
 file tool's target outside the project (`writes under /data/x`), else the
 call's literal rule, for this conversation and its helpers until the

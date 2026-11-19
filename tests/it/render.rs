@@ -265,12 +265,14 @@ fn escalation_modal_is_drawn_over_the_transcript() {
             "│  3. Yes, allow and add a rule (shell rm -rf build)   │",
             "│  4. No, and tell the agent what to do instead (Esc)  │",
             "│                                                      │",
-            "│Enter select · s stop this helper · Ctrl+C stop all   │",
+            "│↑/↓ then Enter · s stop this helper · Ctrl+C stop all │",
             "└──────────────────────────────────────────────────────┘",
         ]
     );
     assert_eq!(buf[(3, 6)].fg, Color::Cyan, "the highlighted row");
-    // ↓ moves the cursor to the session choice.
+    // ↓ moves the cursor to the session choice (once the user has been
+    // quiet: the dialog opened by itself).
+    app.quiet_past_arming();
     app.update(Msg::Key(ratatui::crossterm::event::KeyEvent::from(
         ratatui::crossterm::event::KeyCode::Down,
     )));
@@ -297,6 +299,8 @@ fn escalation_deny_comment_field_snapshot() {
         },
         EscalationId(1),
     ));
+    // Answered once the user has been quiet (it opened by itself).
+    app.quiet_past_arming();
     app.update(Msg::Key(KeyEvent::from(KeyCode::Char('n'))));
     for c in "use .env.example".chars() {
         app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));

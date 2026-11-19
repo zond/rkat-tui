@@ -128,7 +128,17 @@ pub struct EscalationDialog {
     /// The last useful [`Self::scroll`]: argument lines past the room the
     /// terminal has, recorded by the renderer (it knows the width).
     pub scroll_max: usize,
+    /// The cursor was moved with ↑/↓: Enter answers the row it is on.
+    /// Until then Enter answers nothing (an Enter meant to send a message
+    /// must not allow a call), and says so ([`Self::enter_unmoved`]).
+    pub moved: bool,
+    /// Enter was pressed before the cursor was moved.
+    pub enter_unmoved: bool,
 }
+
+/// What a dialog says when Enter was pressed before ↑/↓ chose a row.
+pub const ENTER_NEEDS_A_ROW: &str =
+    "Enter answers the row you move to with ↑/↓; or press a row's number or letter";
 
 impl EscalationDialog {
     /// A key: Ctrl-C closes (the caller stops every escalation); a held
@@ -188,7 +198,8 @@ impl EscalationDialog {
     }
 
     /// Apply a key: arrows (and `j`/`k`) move the cursor, Enter picks the
-    /// highlighted choice, `1`-`4` pick directly, and the accelerators
+    /// highlighted choice once the arrows moved it ([`Self::moved`]: `j`/`k`
+    /// are letters of a sentence too), `1`-`4` pick directly, and the accelerators
     /// `y`, `t` (this session), `a`, `n`/Esc and `s` answer at once. The deny choice opens the
     /// comment field; there Enter denies with the comment (none when
     /// empty) and Esc denies without one. `None`: no answer yet.
@@ -213,13 +224,20 @@ impl EscalationDialog {
                 _ => None,
             };
         }
+        self.enter_unmoved = false;
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
+                self.moved |= code == KeyCode::Up;
                 self.cursor = self.cursor.saturating_sub(1);
                 None
             }
             KeyCode::Down | KeyCode::Char('j') => {
+                self.moved |= code == KeyCode::Down;
                 self.cursor = (self.cursor + 1).min(ESCALATION_CHOICES - 1);
+                None
+            }
+            KeyCode::Enter if !self.moved => {
+                self.enter_unmoved = true;
                 None
             }
             KeyCode::Enter => self.pick(self.cursor),
@@ -297,6 +315,11 @@ pub const PLAN_CHOICES: [(PlanChoice, &str); 3] = [
 pub struct PlanDialog {
     /// Index into [`PLAN_CHOICES`].
     pub cursor: usize,
+    /// The cursor was moved with ↑/↓: Enter answers the row it is on
+    /// (until then Enter answers nothing, as in the approval dialog).
+    pub moved: bool,
+    /// Enter was pressed before the cursor was moved.
+    pub enter_unmoved: bool,
 }
 
 impl PlanDialog {
@@ -319,13 +342,20 @@ impl PlanDialog {
     }
 
     fn choice(&mut self, code: KeyCode) -> Option<PlanChoice> {
+        self.enter_unmoved = false;
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
+                self.moved |= code == KeyCode::Up;
                 self.cursor = self.cursor.saturating_sub(1);
                 None
             }
             KeyCode::Down | KeyCode::Char('j') => {
+                self.moved |= code == KeyCode::Down;
                 self.cursor = (self.cursor + 1).min(PLAN_CHOICES.len() - 1);
+                None
+            }
+            KeyCode::Enter if !self.moved => {
+                self.enter_unmoved = true;
                 None
             }
             KeyCode::Enter => PLAN_CHOICES.get(self.cursor).map(|(choice, _)| *choice),
@@ -646,8 +676,10 @@ pub fn centered(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 /// Draw `modal` centered over `area` (an expanded escalation dialog
-/// records how far its arguments can scroll at this size).
-pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &mut Modal) {
+/// records how far its arguments can scroll at this size); `ignoring`: a
+/// dialog that opened by itself dropped the keys typed into it
+/// ([`super::Arming`]) and says so on its last line.
+pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &mut Modal, ignoring: bool) {
     let width = area.width.saturating_sub(4).clamp(20, 80);
     let inner_w = usize::from(width.saturating_sub(2));
     let (title, lines) = match modal {
@@ -693,6 +725,13 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &mut Modal) {
             return draw_box(frame, area, width, " Keys (any key closes) ", lines);
         }
     };
+    let mut lines = lines;
+    if ignoring {
+        lines.push(Line::styled(
+            truncate_to_width(super::KEYS_IGNORED, inner_w),
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+    }
     draw_box(frame, area, width, &title, lines);
 }
 
@@ -873,15 +912,24 @@ fn escalation_lines(
     }
     lines.push(Line::default());
     let Some(comment) = &dialog.comment else {
-        lines.push(Line::styled(
-            match (prompt.args_full.is_some(), prompt.agent.is_some()) {
-                (true, _) => "Enter select · s stop · Ctrl+O all arguments · Ctrl+C stop all",
-                // A helper's call: Stop stops that helper, not the turn.
-                (false, true) => "Enter select · s stop this helper · Ctrl+C stop all",
-                (false, false) => "Enter select · s stop the turn · Ctrl+C stop all",
-            },
-            dim,
-        ));
+        if dialog.enter_unmoved {
+            lines.extend(
+                wrap_text(ENTER_NEEDS_A_ROW, width)
+                    .into_iter()
+                    .map(|l| Line::styled(l, Style::default().fg(Color::Yellow))),
+            );
+        }
+        let hint = match (prompt.args_full.is_some(), prompt.agent.is_some()) {
+            (true, _) => "↑/↓ then Enter · s stop · Ctrl+O all arguments · Ctrl+C stop all",
+            // A helper's call: Stop stops that helper, not the turn.
+            (false, true) => "↑/↓ then Enter · s stop this helper · Ctrl+C stop all",
+            (false, false) => "↑/↓ then Enter · s stop the turn · Ctrl+C stop all",
+        };
+        lines.extend(
+            wrap_text(hint, width)
+                .into_iter()
+                .map(|l| Line::styled(l, dim)),
+        );
         return lines;
     };
     lines.push(Line::from("Tell the agent what to do instead:"));
@@ -965,8 +1013,15 @@ fn plan_lines(dialog: PlanDialog, width: usize) -> Vec<Line<'static>> {
         ));
     }
     lines.push(Line::default());
+    if dialog.enter_unmoved {
+        lines.extend(
+            wrap_text(ENTER_NEEDS_A_ROW, width)
+                .into_iter()
+                .map(|l| Line::styled(l, Style::default().fg(Color::Yellow))),
+        );
+    }
     lines.push(Line::styled(
-        "Enter select · 1-3 pick · Esc keep planning",
+        "↑/↓ then Enter · 1-3 pick · Esc keep planning",
         dim,
     ));
     lines
@@ -1391,6 +1446,7 @@ mod tests {
         }
         let mut d = EscalationDialog {
             cursor: 3,
+            moved: true,
             ..EscalationDialog::default()
         };
         assert_eq!(d.answer(KeyCode::Enter), None);

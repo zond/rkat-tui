@@ -851,6 +851,8 @@ fn the_helper_picker_folds_and_opens_a_helper() {
     app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
     app.update(Msg::EscalationResolved(EscalationId(1)));
     assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Helpers));
+    // Back by itself, it takes keys once the user has been quiet.
+    app.quiet_past_arming();
     // Enter on fork-1: its full view, the picker closed.
     let at = texts(&app)
         .iter()

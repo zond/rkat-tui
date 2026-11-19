@@ -1174,7 +1174,10 @@ Approval prompt:
   3, a                           yes, allow and add the rule the row shows
   4, n, Esc                      no: type what the agent should do instead and Enter sends it
                                  with the denial (empty Enter or Esc denies without a comment)
-  Up/Down, j/k, Enter            move between the rows and pick one
+  Up/Down, j/k, Enter            move between the rows; Enter picks the row Up/Down moved to
+                                 (before that Enter answers nothing)
+  (as it opens)                  keys typed while you were writing are dropped, not answered
+                                 or typed: it takes keys once you have been quiet for 0.6 s
   Ctrl+O                         show the whole arguments when the prompt abbreviates them
   PgUp/PgDn, Home/End            while they are shown whole: scroll them, start, end
   s                              stop the turn; on a helper's prompt it stops that helper only

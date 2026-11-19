@@ -21,6 +21,7 @@ fn ctrl_c_with_modal_stops_every_pending_escalation() {
             ..
         })
     ));
+    app.quiet_past_arming();
     let fx = app.update(ctrl('c'));
     assert_eq!(
         fx,
@@ -49,6 +50,7 @@ fn ctrl_c_on_a_dialog_stops_its_caller_s_dialogs_only() {
     app.update(Msg::Escalation(prompt(Some("scout")), EscalationId(2)));
     app.update(Msg::Escalation(prompt(None), EscalationId(3)));
     app.update(Msg::Escalation(prompt(Some("other")), EscalationId(4)));
+    app.quiet_past_arming();
     assert_eq!(
         app.update(ctrl('c')),
         vec![
@@ -64,6 +66,7 @@ fn ctrl_c_on_a_dialog_stops_its_caller_s_dialogs_only() {
             ..
         })
     ));
+    app.quiet_past_arming();
     assert_eq!(
         app.update(ctrl('c')),
         vec![Effect::RespondEscalation(
@@ -93,6 +96,7 @@ fn escalation_keys_answer_and_advance() {
     app.update(Msg::Escalation(p.clone(), EscalationId(7)));
     app.update(Msg::Escalation(p.clone(), EscalationId(8)));
     app.update(Msg::Escalation(p, EscalationId(9)));
+    app.quiet_past_arming();
     // Typing goes to the modal, not the input.
     assert!(app.update(key(KeyCode::Char('x'))).is_empty());
     assert!(app.input.is_empty());
@@ -111,6 +115,7 @@ fn escalation_keys_answer_and_advance() {
             ..
         })
     ));
+    app.quiet_past_arming();
     assert_eq!(
         app.update(key(KeyCode::Char('a'))),
         vec![Effect::RespondEscalation(
@@ -127,6 +132,7 @@ fn escalation_choices_by_number_arrows_and_enter() {
     for n in 1..=4 {
         app.update(Msg::Escalation(shell_prompt(), EscalationId(n)));
     }
+    app.quiet_past_arming();
     // `3` picks the rule choice directly.
     assert_eq!(
         app.update(key(KeyCode::Char('3'))),
@@ -136,6 +142,7 @@ fn escalation_choices_by_number_arrows_and_enter() {
         )]
     );
     // Each new dialog starts on row 1; ↓ ↓ ↑ lands on row 2.
+    app.quiet_past_arming();
     app.update(key(KeyCode::Down));
     app.update(key(KeyCode::Down));
     app.update(key(KeyCode::Up));
@@ -159,6 +166,7 @@ fn escalation_choices_by_number_arrows_and_enter() {
         )]
     );
     // j/k move too, and the cursor stops at the last row; a held j moves.
+    app.quiet_past_arming();
     let mut held = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
     held.kind = KeyEventKind::Repeat;
     app.update(Msg::Key(held));
@@ -188,6 +196,7 @@ fn escalation_choices_by_number_arrows_and_enter() {
         )]
     );
     // A Ctrl or Alt chord does not answer.
+    app.quiet_past_arming();
     assert!(app.update(ctrl('y')).is_empty());
     assert_eq!(
         app.update(key(KeyCode::Char('s'))),
@@ -205,6 +214,7 @@ fn deny_with_a_comment_then_the_queue_and_the_parked_picker() {
     for n in 1..=3 {
         app.update(Msg::Escalation(shell_prompt(), EscalationId(n)));
     }
+    app.quiet_past_arming();
     // `n` opens the field; typed and pasted text goes into it, not the
     // input, and `s` is a letter there.
     assert!(app.update(key(KeyCode::Char('n'))).is_empty());
@@ -236,6 +246,7 @@ fn deny_with_a_comment_then_the_queue_and_the_parked_picker() {
         })
     ));
     // Enter on row 4 opens it too; an empty Enter denies without a comment.
+    app.quiet_past_arming();
     app.update(key(KeyCode::Down));
     app.update(key(KeyCode::Down));
     app.update(key(KeyCode::Down));
@@ -249,6 +260,7 @@ fn deny_with_a_comment_then_the_queue_and_the_parked_picker() {
     );
     // Ctrl+C in an open field still stops every prompt, and the parked
     // picker comes back.
+    app.quiet_past_arming();
     app.update(key(KeyCode::Char('4')));
     type_str(&mut app, "half a thought");
     assert_eq!(
@@ -268,6 +280,7 @@ fn escalation_parks_the_model_picker_and_restores_it() {
     assert!(matches!(app.modal, Some(Modal::Escalation { .. })));
     // A parked picker counts as open: a second list only warns.
     app.update(Msg::ShowModelPicker(picker_models()));
+    app.quiet_past_arming();
     assert_eq!(
         app.update(key(KeyCode::Char('y'))),
         vec![Effect::RespondEscalation(
@@ -282,6 +295,7 @@ fn escalation_parks_the_model_picker_and_restores_it() {
     // Esc in an escalation opens the comment field, a second Esc
     // denies it, and the picker comes back.
     app.update(Msg::Escalation(shell_prompt(), EscalationId(2)));
+    app.quiet_past_arming();
     assert!(app.update(key(KeyCode::Esc)).is_empty());
     assert_eq!(
         app.update(key(KeyCode::Esc)),
@@ -298,6 +312,7 @@ fn parked_picker_returns_after_the_last_queued_escalation() {
     let (mut app, picker) = app_with_moved_model_picker();
     app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
     app.update(Msg::Escalation(shell_prompt(), EscalationId(2)));
+    app.quiet_past_arming();
     app.update(key(KeyCode::Char('y')));
     assert!(matches!(
         app.modal,
@@ -315,6 +330,7 @@ fn stopping_all_escalations_restores_the_parked_picker() {
     let (mut app, picker) = app_with_moved_model_picker();
     app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
     app.update(Msg::Escalation(shell_prompt(), EscalationId(2)));
+    app.quiet_past_arming();
     assert_eq!(
         app.update(ctrl('c')),
         vec![
@@ -335,12 +351,14 @@ fn escalation_parks_the_resume_picker_and_restores_it() {
     ]));
     app.update(key(KeyCode::Down));
     app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
+    app.quiet_past_arming();
     app.update(key(KeyCode::Char('n')));
     app.update(key(KeyCode::Enter));
     assert!(matches!(
         app.modal,
         Some(Modal::Resume(ResumePicker { cursor, .. })) if cursor.index() == 1
     ));
+    app.quiet_past_arming();
     assert_eq!(
         app.update(key(KeyCode::Enter)),
         vec![Effect::ResumeSession("bbb".into())]
@@ -372,6 +390,7 @@ fn plan_ready_dialog() {
     submit(&mut app, "plan the refactor");
     app.update(answered("1. Split the module\n2. Move the tests"));
     assert_eq!(app.modal, Some(Modal::PlanReady(PlanDialog::default())));
+    app.quiet_past_arming();
     // A held key does not choose.
     let mut held = KeyEvent::from(KeyCode::Char('1'));
     held.kind = KeyEventKind::Repeat;
@@ -390,6 +409,7 @@ fn plan_ready_dialog() {
     // Esc keeps planning: no effect, the mode stays.
     app.update(answered("revised plan"));
     assert!(matches!(app.modal, Some(Modal::PlanReady(_))));
+    app.quiet_past_arming();
     assert!(app.update(key(KeyCode::Esc)).is_empty());
     assert_eq!(app.modal, None);
     assert!(!app.is_running());
@@ -397,9 +417,17 @@ fn plan_ready_dialog() {
     // Down to row 3, Enter: proceed in manual mode.
     submit(&mut app, "again");
     app.update(answered("plan"));
+    app.quiet_past_arming();
     app.update(key(KeyCode::Down));
     app.update(key(KeyCode::Down));
-    assert_eq!(app.modal, Some(Modal::PlanReady(PlanDialog { cursor: 2 })));
+    assert_eq!(
+        app.modal,
+        Some(Modal::PlanReady(PlanDialog {
+            cursor: 2,
+            moved: true,
+            enter_unmoved: false
+        }))
+    );
     assert_eq!(
         app.update(key(KeyCode::Enter)),
         vec![
@@ -410,6 +438,7 @@ fn plan_ready_dialog() {
 
     // Row 2 keeps planning too.
     app.update(answered("plan"));
+    app.quiet_past_arming();
     assert!(app.update(key(KeyCode::Char('2'))).is_empty());
     assert_eq!(app.modal, None);
 
@@ -497,6 +526,164 @@ fn ctrl_o_shows_the_whole_arguments_the_preview_cut() {
     assert!(
         matches!(app.modal, Some(Modal::Escalation { .. })),
         "still open"
+    );
+}
+
+/// Review H45: an approval that opens while the user types answers
+/// nothing with the rest of the sentence. Typing `yes please` with the
+/// dialog appearing after `ye`: every later key is dropped (not answered,
+/// not typed), each restarts the wait, the input keeps `ye`, and the
+/// dialog says keys are ignored. Once the user has been quiet for
+/// [`ARM_AFTER`], `y` answers.
+#[test]
+fn typing_into_an_approval_that_opened_by_itself_answers_nothing() {
+    let mut app = App::new(StatusInfo::default());
+    let t0 = Instant::now();
+    let step = Duration::from_millis(90);
+    let mut at = t0;
+    for c in "ye".chars() {
+        app.update_at(key(KeyCode::Char(c)), at);
+        at += step;
+    }
+    app.update_at(Msg::Escalation(shell_prompt(), EscalationId(1)), at);
+    for c in "s please".chars() {
+        at += step;
+        assert!(app.update_at(key(KeyCode::Char(c)), at).is_empty(), "{c}");
+    }
+    // An Enter meant to send the message answers nothing either.
+    at += step;
+    assert!(app.update_at(key(KeyCode::Enter), at).is_empty());
+    assert!(matches!(app.modal, Some(Modal::Escalation { .. })));
+    assert_eq!(app.input.text(), "ye", "the draft is kept, nothing added");
+    assert!(app.arming.is_some_and(|arming| arming.says_ignored(at)));
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 40)).unwrap();
+    terminal.draw(|f| render::draw_at(f, &mut app, at)).unwrap();
+    let shown: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert!(shown.contains(KEYS_IGNORED), "{shown}");
+    // Just short of the quiet window since the last key: still dropped.
+    let early = at + ARM_AFTER.saturating_sub(Duration::from_millis(1));
+    assert!(app.update_at(key(KeyCode::Char('y')), early).is_empty());
+    // Quiet for the window: `y` answers, and the draft is still there.
+    let quiet = early + ARM_AFTER;
+    assert_eq!(
+        app.update_at(key(KeyCode::Char('y')), quiet),
+        vec![Effect::RespondEscalation(
+            EscalationId(1),
+            EscalationAnswer::AllowOnce
+        )]
+    );
+    assert!(app.modal.is_none());
+    assert_eq!(app.input.text(), "ye");
+    // The user goes on where he was.
+    app.update_at(key(KeyCode::Char('s')), quiet + step);
+    assert_eq!(app.input.text(), "yes");
+}
+
+/// A dialog that replaces another (the next one queued) is armed on its
+/// own: a double tap of `y` answers only the first. Enter at once does
+/// nothing, and Enter after the window still answers nothing until ↑/↓
+/// chose a row; Ctrl+O shows the whole arguments at once.
+#[test]
+fn each_dialog_is_armed_on_its_own_and_enter_needs_a_chosen_row() {
+    let mut app = App::new(StatusInfo::default());
+    let t0 = Instant::now();
+    let long = RecordedPrompt {
+        args_full: Some("cargo build ".repeat(40)),
+        ..shell_prompt()
+    };
+    app.update_at(Msg::Escalation(long, EscalationId(1)), t0);
+    app.update_at(Msg::Escalation(shell_prompt(), EscalationId(2)), t0);
+    // Ctrl+O acts at once and does not restart the wait.
+    app.update_at(ctrl('o'), t0 + Duration::from_millis(10));
+    assert!(matches!(
+        &app.modal,
+        Some(Modal::Escalation { dialog, .. }) if dialog.expanded
+    ));
+    assert!(
+        app.update_at(key(KeyCode::Enter), t0 + Duration::from_millis(20))
+            .is_empty()
+    );
+    let armed = t0 + Duration::from_millis(20) + ARM_AFTER;
+    // Armed, Enter on the row nobody chose answers nothing, and says why.
+    assert!(app.update_at(key(KeyCode::Enter), armed).is_empty());
+    assert!(matches!(
+        &app.modal,
+        Some(Modal::Escalation { id: EscalationId(1), dialog, .. }) if dialog.enter_unmoved
+    ));
+    let rows = screen(&mut app, 40);
+    assert!(
+        rows.iter().any(|row| row.contains("Enter answers the row")),
+        "{rows:#?}"
+    );
+    let tap = armed + Duration::from_millis(5);
+    assert_eq!(
+        app.update_at(key(KeyCode::Char('y')), tap),
+        vec![Effect::RespondEscalation(
+            EscalationId(1),
+            EscalationAnswer::AllowOnce
+        )]
+    );
+    // The second tap falls on the next dialog: dropped.
+    let second = tap + Duration::from_millis(80);
+    assert!(app.update_at(key(KeyCode::Char('y')), second).is_empty());
+    assert!(matches!(
+        app.modal,
+        Some(Modal::Escalation {
+            id: EscalationId(2),
+            ..
+        })
+    ));
+    // Chosen with ↓ then ↑ after the window, Enter answers that row.
+    let later = second + ARM_AFTER;
+    app.update_at(key(KeyCode::Down), later);
+    app.update_at(key(KeyCode::Up), later);
+    assert_eq!(
+        app.update_at(key(KeyCode::Enter), later),
+        vec![Effect::RespondEscalation(
+            EscalationId(2),
+            EscalationAnswer::AllowOnce
+        )]
+    );
+}
+
+/// "Plan ready" opens by itself at a turn's end: the same arming, and
+/// Enter needs a chosen row.
+#[test]
+fn plan_ready_is_armed_and_enter_needs_a_chosen_row() {
+    let mut app = App::new(StatusInfo::default());
+    app.status.apply(StatusUpdate::Mode {
+        mode: PermissionMode::Plan,
+        paused: false,
+        denials: crate::approval::desk::Denials {
+            consecutive: 0,
+            consecutive_limit: 3,
+            total: 0,
+            total_limit: 20,
+        },
+    });
+    submit(&mut app, "plan it");
+    let t0 = Instant::now();
+    app.update_at(answered("1. do it"), t0);
+    assert!(matches!(app.modal, Some(Modal::PlanReady(_))));
+    assert!(
+        app.update_at(key(KeyCode::Char('1')), t0 + Duration::from_millis(50))
+            .is_empty()
+    );
+    let armed = t0 + Duration::from_millis(50) + ARM_AFTER;
+    assert!(app.update_at(key(KeyCode::Enter), armed).is_empty());
+    assert!(matches!(app.modal, Some(Modal::PlanReady(d)) if d.enter_unmoved));
+    assert_eq!(
+        app.update_at(key(KeyCode::Char('1')), armed),
+        vec![
+            Effect::SetMode(PermissionMode::AcceptEdits),
+            Effect::StartTurn(PROCEED_PROMPT.into())
+        ]
     );
 }
 

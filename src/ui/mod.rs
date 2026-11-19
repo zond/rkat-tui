@@ -118,6 +118,48 @@ pub const DOUBLE_ESC_WINDOW: Duration = Duration::from_millis(1500);
 /// the editor, and the runner says once that the turn is already stopped.
 pub const INTERRUPT_REPEAT: Duration = Duration::from_secs(2);
 
+/// How long the user must have been quiet, with a dialog the application
+/// opened by itself on screen, before a key answers it ([`Arming`]).
+pub const ARM_AFTER: Duration = Duration::from_millis(600);
+
+/// What a dialog the application opened by itself says once it dropped a
+/// key ([`Arming`]).
+pub const KEYS_IGNORED: &str = "keys are ignored for a moment: you were typing";
+
+/// A dialog that opened by itself while the user may be typing (an
+/// approval, the next one queued, "Plan ready"): the next characters of
+/// the sentence must not answer it. It is armed once [`ARM_AFTER`] has
+/// passed since it opened with no key pressed; each key pressed before
+/// that is dropped (not answered, not typed into the input) and starts
+/// the wait again. Scrolling and Ctrl+O act at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Arming {
+    /// When it opened, or the last key it dropped.
+    quiet_since: Instant,
+    /// A key was dropped: the dialog says so ([`KEYS_IGNORED`]).
+    dropped: bool,
+}
+
+impl Arming {
+    /// A dialog opened at `now`.
+    pub(crate) fn opened(now: Instant) -> Self {
+        Self {
+            quiet_since: now,
+            dropped: false,
+        }
+    }
+
+    /// Whether it is armed at `now`.
+    pub(crate) fn armed(self, now: Instant) -> bool {
+        now.saturating_duration_since(self.quiet_since) >= ARM_AFTER
+    }
+
+    /// Whether the dialog says that keys are ignored, at `now`.
+    pub(crate) fn says_ignored(self, now: Instant) -> bool {
+        self.dropped && !self.armed(now)
+    }
+}
+
 /// Window after Ctrl-X in which the second key of a chord is accepted.
 pub const CHORD_WINDOW: Duration = Duration::from_millis(1500);
 
@@ -1495,6 +1537,10 @@ pub struct App {
     /// A picker ([`Modal::Model`], [`Modal::Resume`] or [`Modal::List`]) an escalation
     /// displaced; restored once no escalation remains.
     parked: Option<Modal>,
+    /// The dialog the application opened by itself (an approval, the
+    /// next one queued, "Plan ready", a picker an approval had displaced)
+    /// takes no answer yet ([`Arming`]).
+    arming: Option<Arming>,
     submitted: Vec<String>,
     running: bool,
     run_first_block: BlockId,
@@ -1603,6 +1649,7 @@ impl App {
             search_corpus: Vec::new(),
             pending_escalations: VecDeque::new(),
             parked: None,
+            arming: None,
             submitted: Vec::new(),
             running: false,
             run_first_block: BlockId(0),
@@ -1885,6 +1932,8 @@ impl App {
                 if self.modal.is_some() {
                     self.modal_key(&key, now, &mut fx);
                 } else {
+                    // A dialog the user opens with this key is armed.
+                    self.arming = None;
                     self.main_key(&key, now, &mut fx);
                 }
             }
@@ -2017,14 +2066,14 @@ impl App {
                 }
             }
             Msg::Escalation(prompt, id) => {
-                self.escalation(prompt, id);
+                self.escalation(prompt, id, now);
                 self.notify();
             }
             Msg::Focus(focused) => {
                 self.focused = focused;
                 dirty = false;
             }
-            Msg::EscalationResolved(id) => self.escalation_resolved(id),
+            Msg::EscalationResolved(id) => self.escalation_resolved(id, now),
             Msg::Approval(n) => {
                 self.transcript.push(Block::Approval {
                     tool: n.tool,

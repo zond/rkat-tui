@@ -446,6 +446,7 @@ fn the_keys_panel_gives_way_to_escalations_and_pickers() {
     app.update(key(KeyCode::Char('?')));
     app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
     assert!(matches!(app.modal, Some(Modal::Escalation { .. })));
+    app.quiet_past_arming();
     app.update(key(KeyCode::Char('y')));
     assert!(app.modal.is_none(), "the panel is not parked");
     app.update(key(KeyCode::Char('?')));

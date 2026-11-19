@@ -467,16 +467,51 @@ impl App {
         }
     }
 
+    /// Whether a dialog the application opened by itself and has not
+    /// armed yet ([`super::Arming`]) drops `key` at `now`: it does, unless
+    /// the key only shows more of it (Ctrl+O, and PgUp/PgDn/Home/End over
+    /// the whole arguments), and the wait starts again.
+    fn unarmed_drops(&mut self, key: &KeyEvent, now: Instant) -> bool {
+        let Some(arming) = &mut self.arming else {
+            return false;
+        };
+        if arming.armed(now) {
+            self.arming = None;
+            return false;
+        }
+        let shows_more = match &self.modal {
+            Some(Modal::Escalation { dialog, .. }) => {
+                (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o'))
+                    || (dialog.expanded
+                        && key.modifiers.is_empty()
+                        && matches!(
+                            key.code,
+                            KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
+                        ))
+            }
+            _ => false,
+        };
+        if shows_more {
+            return false;
+        }
+        arming.quiet_since = now;
+        arming.dropped = true;
+        true
+    }
+
     pub(super) fn modal_key(&mut self, key: &KeyEvent, now: Instant, fx: &mut Vec<Effect>) {
+        if self.unarmed_drops(key, now) {
+            return;
+        }
         match &mut self.modal {
             Some(Modal::Escalation { id, dialog, .. }) => {
                 let id = *id;
                 match dialog.key(key) {
                     ModalKey::Stay => {}
-                    ModalKey::Close => self.stop_escalations_of_shown(fx),
+                    ModalKey::Close => self.stop_escalations_of_shown(now, fx),
                     ModalKey::Choose(answer) => {
                         fx.push(Effect::RespondEscalation(id, answer));
-                        self.advance_escalation();
+                        self.advance_escalation(now);
                     }
                 }
             }

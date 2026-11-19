@@ -212,8 +212,9 @@ pub fn draw_at(frame: &mut Frame<'_>, app: &mut App, now: Instant) {
         .style(Style::default().add_modifier(Modifier::REVERSED)),
         status_area,
     );
+    let ignoring = app.arming.is_some_and(|arming| arming.says_ignored(now));
     if let Some(modal) = &mut app.modal {
-        draw_modal(frame, area, modal);
+        draw_modal(frame, area, modal, ignoring);
     }
 }
 

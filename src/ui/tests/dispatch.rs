@@ -408,6 +408,8 @@ fn schedule_picker_acts_and_refreshes_in_place() {
     assert!(
         matches!(&app.modal, Some(Modal::List(p)) if p.rows.len() == 1 && p.cursor.index() == 0)
     );
+    // Back by itself, it takes keys once the user has been quiet.
+    app.quiet_past_arming();
     // Closed (q), a late refresh does not reopen it.
     app.update(key(KeyCode::Char('q')));
     assert!(app.modal.is_none());
