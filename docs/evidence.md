@@ -13584,6 +13584,33 @@ What changed: the pending line says *goes in at the agent's next step*
 (d) pins the engine's one-per-request rule and fails the day a release
 lets all waiting steers join the next request.
 
+## A recalled steer's slot (owner, 2026-11-19)
+
+The owner asked whether a withdrawn steer can be replaced in the same
+boundary slot, which "recall the waiting message and resend it combined
+with the new one" would need. Measured on 0.9.16 through the daemon
+(`rkat/recall` by input id, each probe on a daemon of its own, every
+step waiting on the send's or the recall's answer, no sleep; six rounds
+of each gave the same outcome, the kept test runs one;
+`client_turns::a_recalled_steer_s_slot_is_not_reused`), requests
+numbered from 0:
+
+1. While the tools of request 0 run (a held review): m1 admitted, m1
+   recalled (reported `recalled`), "m1 + m2" admitted: request 1 carries
+   no steer, the combined one rides request 2 (N+2).
+2. The same while request 1 is held in flight: request 2 carries none,
+   the combined one rides request 3 (N+2).
+3. Control: m1 and m2 left alone ride requests 1 and 2.
+4. m1 and m2 admitted, m2 (not the front) recalled, m3 admitted: m1
+   rides 1, m2 nowhere, m3 rides 2.
+
+So a steer recalled from the front of the queue burns its request (the
+entry above saw the same with three steers); one recalled behind another
+costs nothing. Recalling and resending combined would deliver a request
+later than leaving the waiting message alone: not built. It waits on the
+same engine change as the one-per-request rule
+(`.handover/upstream-steer-batching.md`).
+
 ## The helpers' bindings on a full disk (review 7, M19)
 
 Every write of `tui_helpers.json` that failed was a `tracing::warn!` and

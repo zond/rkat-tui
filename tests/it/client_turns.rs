@@ -369,6 +369,179 @@ async fn a_typed_message_rides_the_first_request_after_it() {
     rig.quit().await;
 }
 
+/// Where a steer goes after another was withdrawn (`rkat/recall`) from
+/// the boundary it waited for; see [`a_recalled_steer_s_slot_is_not_reused`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Probe {
+    /// While the tools of request 0 are held: m1, recall m1, then m1+m2.
+    RecallThenCombine,
+    /// The same while request 1 is held in flight.
+    RecallThenCombineInFlight,
+    /// While the tools of request 0 are held: m1, then m2, both left.
+    TwoLeftAlone,
+    /// While the tools of request 0 are held: m1, m2, recall m2, then m3.
+    RecallSecondThenThird,
+}
+
+/// One run of `probe` on a daemon of its own: each steer's marker and the
+/// first model request whose messages hold it (`None`: none did).
+async fn probe_slots(probe: Probe) -> Vec<(&'static str, Option<usize>)> {
+    use rkat_tui::client::remote;
+    use rkat_tui::daemon::protocol::{RecallParams, method};
+    let ws = Workspace::new();
+    let review = Arc::new(Notify::new());
+    let in_flight = Arc::new(Notify::new());
+    let unknown = meerkat_comms::Keypair::generate()
+        .public_key()
+        .to_peer_id()
+        .to_string();
+    let contacts = |id: &'static str| Step::Tool {
+        id,
+        name: "contacts",
+        args: json!({}),
+    };
+    let first = if probe == Probe::RecallThenCombineInFlight {
+        contacts("c0")
+    } else {
+        // Its review is held: its tools run while the steers come.
+        Step::Tool {
+            id: "s0",
+            name: "send_message",
+            args: json!({"peer_id": unknown, "body": "x", "handling_mode": "queue"}),
+        }
+    };
+    let llm = ScriptedLlmClient::new(vec![
+        first,
+        Step::Gated(Arc::clone(&in_flight), Box::new(contacts("c1"))),
+        contacts("c2"),
+        contacts("c3"),
+        contacts("c4"),
+        Step::Text("done"),
+    ]);
+    let classifier = ScriptedClassifier::holding(Arc::clone(&review));
+    let setup = Setup::default().classifier(Arc::clone(&classifier) as _);
+    let daemon =
+        rig::Running::start_with(&setup.command_line(&ws.root), setup.options(&ws.root, &llm))
+            .await;
+    let agent = daemon.connect_bound().await;
+    let steer = |text: &'static str, key: &'static str| {
+        let agent = &agent;
+        async move {
+            remote::send(agent, text, true, key)
+                .await
+                .unwrap()
+                .expect("the daemon names the steer's input")
+        }
+    };
+    let recall = |input| {
+        let agent = &agent;
+        async move {
+            let params = RecallParams {
+                input_ids: vec![input],
+            };
+            let answer = remote::call::<method::Recall>(agent, &params)
+                .await
+                .unwrap();
+            assert_eq!(answer.recalled.len(), 1, "{probe:?}: recalled: {answer:?}");
+        }
+    };
+    remote::send(&agent, "go", false, "k0").await.unwrap();
+    if probe == Probe::RecallThenCombineInFlight {
+        llm.wait_call(1).await;
+    } else {
+        common::until(|| !classifier.seen().is_empty()).await;
+    }
+    let markers: &[&'static str] = match probe {
+        Probe::RecallThenCombine | Probe::RecallThenCombineInFlight => {
+            let m1 = steer("SLOT-M1", "k1").await;
+            recall(m1).await;
+            steer("SLOT-M1 SLOT-M2-COMBINED", "k2").await;
+            &["SLOT-M1", "SLOT-M2-COMBINED"]
+        }
+        Probe::TwoLeftAlone => {
+            steer("SLOT-M1", "k1").await;
+            steer("SLOT-M2", "k2").await;
+            &["SLOT-M1", "SLOT-M2"]
+        }
+        Probe::RecallSecondThenThird => {
+            steer("SLOT-M1", "k1").await;
+            let m2 = steer("SLOT-M2", "k2").await;
+            recall(m2).await;
+            steer("SLOT-M3", "k3").await;
+            &["SLOT-M1", "SLOT-M2", "SLOT-M3"]
+        }
+    };
+    if probe == Probe::RecallThenCombineInFlight {
+        in_flight.notify_one();
+    } else {
+        review.notify_one();
+        llm.wait_call(1).await;
+        in_flight.notify_one();
+    }
+    llm.wait_call(5).await;
+    let requests = llm.requests();
+    let found = markers
+        .iter()
+        .map(|marker| {
+            let at = requests
+                .iter()
+                .position(|messages| format!("{messages:?}").contains(marker));
+            (*marker, at)
+        })
+        .collect();
+    daemon.stop().await;
+    found
+}
+
+/// The owner's question (2026-11-19): can a withdrawn steer be replaced
+/// in the boundary slot it held? Measured on the engine (0.9.16), each
+/// probe on a daemon of its own (every step waits on the send's or the
+/// recall's answer, no sleep; six rounds of each gave the same outcome
+/// when it was measured): (1) a steer recalled while
+/// the tools of request 0 run, and a combined one admitted after it; (2)
+/// the same while request 1 is in flight; (3) the control, two steers left
+/// alone, one per request; (4) of two waiting steers the second recalled
+/// and a third admitted. A steer recalled from the front of the queue
+/// leaves its request empty: what is admitted after it rides the request
+/// after (N+2), so recalling a waiting message to resend it combined with
+/// a new one costs a request. One recalled behind another loses nothing.
+/// The outcomes are `docs/evidence.md`'s ("A recalled steer's slot").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recalled_steer_s_slot_is_not_reused() {
+    // The recalled m1 rides nowhere: its marker shows first inside the
+    // combined steer.
+    let expected: [(Probe, &[(&str, Option<usize>)]); 4] = [
+        // Request 1 carries no steer: the combined one rides request 2.
+        (
+            Probe::RecallThenCombine,
+            &[("SLOT-M1", Some(2)), ("SLOT-M2-COMBINED", Some(2))],
+        ),
+        // Request 2 carries none: it rides request 3.
+        (
+            Probe::RecallThenCombineInFlight,
+            &[("SLOT-M1", Some(3)), ("SLOT-M2-COMBINED", Some(3))],
+        ),
+        (
+            Probe::TwoLeftAlone,
+            &[("SLOT-M1", Some(1)), ("SLOT-M2", Some(2))],
+        ),
+        // Behind a waiting steer nothing is lost: m3 rides the request
+        // after m1's.
+        (
+            Probe::RecallSecondThenThird,
+            &[
+                ("SLOT-M1", Some(1)),
+                ("SLOT-M2", None),
+                ("SLOT-M3", Some(2)),
+            ],
+        ),
+    ];
+    for (probe, want) in expected {
+        let outcome = probe_slots(probe).await;
+        assert_eq!(outcome.as_slice(), want, "{probe:?}");
+    }
+}
+
 /// The prepare instruction of [`a_typed_message_rides_the_first_request_after_it`].
 const PREPARE: &str = "PREPARE-NOW";
 
