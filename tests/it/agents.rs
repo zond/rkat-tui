@@ -1388,12 +1388,12 @@ async fn an_agent_cannot_recall_another_agents_input() {
     .unwrap();
     b.call("initialize", json!({})).await.unwrap();
     assert_ne!(b.agent(), a.agent());
-    remote::send(&a, "do something for a while", false)
+    remote::send(&a, "do something for a while", false, "k1")
         .await
         .unwrap();
     llm.wait_call(0).await;
     // Queued behind the slow shell call (it joins at the next boundary).
-    let steer = remote::send(&a, "steer of agent a", true)
+    let steer = remote::send(&a, "steer of agent a", true, "k2")
         .await
         .unwrap()
         .expect("the daemon names the steer's input");

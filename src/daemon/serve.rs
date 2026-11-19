@@ -521,6 +521,10 @@ pub struct Observed {
     /// What the request waits for before it is forwarded (a prompt: the
     /// mode changes the client sent before it).
     pub wait: Option<Wait>,
+    /// The client's key of its send ([`protocol::SEND_KEY`]), taken out of
+    /// the request: the engine's answer is recorded under it
+    /// ([`LocalMethods::sent_answered`]).
+    pub send_key: Option<String>,
 }
 
 /// What a forwarded request waits for before it goes ([`Observed::wait`]).
@@ -540,6 +544,7 @@ impl Observed {
             request,
             input: None,
             wait: None,
+            send_key: None,
         }
     }
 }
@@ -583,6 +588,9 @@ pub trait LocalMethods: Send + Sync {
     async fn reload_agent(&self, _caller: &Caller, _reason: &str) -> Result<(), String> {
         Err(self.storage_failed_text())
     }
+    /// The engine answered the send the client keyed `key` with `answer`
+    /// ([`Observed::send_key`]).
+    fn sent_answered(&self, _key: &str, _answer: &Value) {}
     /// What the client is told when its agent still refuses input for a
     /// storage failure.
     fn storage_failed_text(&self) -> String {
@@ -594,6 +602,10 @@ pub trait LocalMethods: Send + Sync {
 impl LocalMethods for Local {
     async fn call(&self, caller: Caller, method: &str, params: Value) -> Result<Value, Refusal> {
         Local::call(self, caller, method, params).await
+    }
+
+    fn sent_answered(&self, key: &str, answer: &Value) {
+        Local::sent_answered(self, key, answer);
     }
 
     fn observe(&self, caller: &Caller, request: Value) -> Result<Observed, Refusal> {
@@ -808,6 +820,12 @@ async fn proxy_with<R, W, E, L>(
                         // on its way to the client, so an idle push cannot
                         // overtake it.
                         let mut held = None;
+                        // What the engine did with a keyed send is kept
+                        // for the client's `rkat/sent` (its answer may yet
+                        // be lost on the way).
+                        if let Some((Awaiting::Input { key: Some(key), .. }, answer)) = &answered {
+                            local.sent_answered(key, answer);
+                        }
                         match answered {
                             // The answer to a close of the daemon's own.
                             Some((Awaiting::OwnClose, _)) => continue,
@@ -825,6 +843,7 @@ async fn proxy_with<R, W, E, L>(
                                 Awaiting::Input {
                                     sending,
                                     send: true,
+                                    ..
                                 },
                                 mut answer,
                             )) if reload_required(&answer) => {
@@ -1047,6 +1066,8 @@ pub enum Awaiting {
         sending: super::activity::Sending,
         /// Whether it is a `mob/member_send`.
         send: bool,
+        /// The client's key of the send, when it gave one.
+        key: Option<String>,
     },
     /// A mob-wide stream open (`mob/stream_open` with a `mob_id` and no
     /// `agent_identity`) of this mob: its answer names the stream.
@@ -1124,6 +1145,7 @@ fn awaits(
     request: &Value,
     method: &str,
     input: Option<super::activity::Sending>,
+    key: Option<String>,
 ) -> Option<(String, Awaiting)> {
     let id = request.get("id")?.to_string();
     let params = request.get("params");
@@ -1131,6 +1153,7 @@ fn awaits(
         (Some(sending), method) => Awaiting::Input {
             sending,
             send: method == protocol::engine::MEMBER_SEND,
+            key,
         },
         (None, protocol::engine::INITIALIZE) => Awaiting::Initialize,
         (None, protocol::engine::STREAM_OPEN)
@@ -1302,9 +1325,10 @@ pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L, caller: &Caller) -
                     request,
                     input,
                     wait,
+                    send_key,
                 }) => Routed::Forward {
                     line: format!("{request}\n"),
-                    awaits: awaits(&request, &method, input),
+                    awaits: awaits(&request, &method, input, send_key),
                     wait,
                 },
                 Err(refusal) => Routed::Denied { id, refusal },
@@ -1360,7 +1384,9 @@ mod tests {
         let mut pending = Pending::default();
         let open = |pending: &mut Pending, line: &str| {
             let request: Value = serde_json::from_str(line).unwrap();
-            if let Some((id, awaiting)) = awaits(&request, protocol::engine::STREAM_OPEN, None) {
+            if let Some((id, awaiting)) =
+                awaits(&request, protocol::engine::STREAM_OPEN, None, None)
+            {
                 pending.by_id.insert(id, awaiting);
             }
         };
@@ -1416,7 +1442,7 @@ mod tests {
     #[test]
     fn an_initialize_answer_gets_the_decision_methods() {
         let request = json!({"jsonrpc": "2.0", "id": 7, "method": "initialize"});
-        let (id, awaiting) = awaits(&request, protocol::engine::INITIALIZE, None).unwrap();
+        let (id, awaiting) = awaits(&request, protocol::engine::INITIALIZE, None, None).unwrap();
         assert!(matches!(awaiting, Awaiting::Initialize));
         let (answered, mut answer) = response(
             &json!({"jsonrpc": "2.0", "id": 7, "result": {"methods": ["a", protocol::DECISION_DECIDE]}}).to_string(),
@@ -1433,6 +1459,7 @@ mod tests {
             awaits(
                 &json!({"jsonrpc": "2.0", "method": "initialize"}),
                 protocol::engine::INITIALIZE,
+                None,
                 None
             )
             .is_none()

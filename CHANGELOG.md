@@ -73,6 +73,15 @@
   Your draft stays as it was under the dialog. Enter in the approval and
   "Plan ready" dialogs picks a row only after ↑/↓ moved to it; the numbers
   and letters are unchanged.
+- A message whose send timed out, or whose connection broke on the way,
+  was told as refused ("couldn't send …; it is back in the editor")
+  although the daemon may have taken it, so sending it again made the
+  agent read it twice. Each send now carries a key of the client's own,
+  and the client asks the daemon what became of it before saying
+  anything: taken, it goes on as sent; not received or refused, it is
+  back in the editor as before; when nobody can say, the notice says it
+  may have reached the agent and to check the transcript before sending
+  it again, and the text is not put back.
 - A turn could stay "running" for good after two interrupts: Esc while
   the daemon was slow to answer, the run ending by itself, then Esc again
   after a pause. The first interrupt's late answer (or its timeout) was

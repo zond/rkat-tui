@@ -337,6 +337,18 @@ impl App {
                     ),
                 );
             }
+            // Not back in the editor: sent again it could reach the agent
+            // twice. The notice keeps its words.
+            Err(SteerFailure::Unknown(why)) => {
+                self.withdraw(&[id]);
+                self.transcript.push_notice(
+                    NoticeLevel::Warn,
+                    format!(
+                        "{} may have reached the agent: the daemon did not confirm it ({why}); check the transcript before sending it again",
+                        quote_short(&text)
+                    ),
+                );
+            }
         }
     }
 

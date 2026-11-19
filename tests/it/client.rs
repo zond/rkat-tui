@@ -994,16 +994,33 @@ async fn member_send_names_the_admitted_input() {
     ]);
     let daemon = Running::start(&ws.root, &llm).await;
     let connection = daemon.connect_bound().await;
-    let prompt = rkat_tui::client::remote::send(&connection, "hello", false)
+    let prompt = rkat_tui::client::remote::send(&connection, "hello", false, "k-prompt")
         .await
         .unwrap();
     assert!(prompt.is_some(), "a prompt into an idle agent is named");
     llm.wait_call(0).await;
-    let steer = rkat_tui::client::remote::send(&connection, "and this", true)
+    let steer = rkat_tui::client::remote::send(&connection, "and this", true, "k-steer")
         .await
         .unwrap();
     assert!(steer.is_some(), "a steer into a running turn is named");
     assert_ne!(prompt, steer);
+    // Review 7, M26: the daemon kept what the engine did with each keyed
+    // send (a client whose answer was lost asks), and knows no other key.
+    use rkat_tui::daemon::protocol::{SentFate, SentParams, method};
+    for (key, fate) in [
+        ("k-prompt", SentFate::Admitted { input_id: prompt }),
+        ("k-steer", SentFate::Admitted { input_id: steer }),
+        ("k-other", SentFate::NotReceived),
+    ] {
+        let params = SentParams { key: key.into() };
+        assert_eq!(
+            rkat_tui::client::remote::call::<method::Sent>(&connection, &params)
+                .await
+                .unwrap(),
+            fate,
+            "{key}"
+        );
+    }
     gate.notify_one();
     llm.wait_call(1).await;
     drop(connection);

@@ -433,6 +433,27 @@ fn rejected_steer_returns_to_the_editor_with_a_notice() {
     ));
 }
 
+/// Review 7, M26: a steer nobody can say reached the agent is not put back
+/// in the editor (sent again it could reach the agent twice); the notice
+/// says it may have reached it.
+#[test]
+fn a_steer_of_unknown_fate_stays_out_of_the_editor() {
+    let mut app = running_app();
+    submit(&mut app, "two");
+    type_str(&mut app, "draft");
+    assert!(
+        app.update(ack(1, Err(SteerFailure::Unknown("timed out".into()))))
+            .is_empty()
+    );
+    assert_eq!(app.input.text(), "draft");
+    assert!(app.pending.is_empty());
+    assert!(matches!(
+        last_notice(&app),
+        Some((NoticeLevel::Warn, text))
+            if text.contains("may have reached the agent") && text.contains("“two”")
+    ));
+}
+
 // Esc used to recall queued messages before interrupting; it now
 // always interrupts a running turn (Claude Code), and ↑ takes them back.
 #[test]

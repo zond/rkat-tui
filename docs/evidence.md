@@ -13270,3 +13270,42 @@ Tests: `client::runner::tests::a_run_after_the_compaction_s_ends_the_quiet_turn`
 (failed before: the turn stayed quiet), `ui::tests::turns::a_message_held_for_the_compaction_is_drawn_and_steered_into_the_next_run`,
 `ui::tests::turns::send_now_sends_a_message_the_ui_holds` (failed before:
 the message went back to the editor).
+
+## A send whose answer was lost is asked about, not called refused (review 7, M26)
+
+A prompt or steer whose `mob/member_send` timed out on the client
+(`CALL_TIMEOUT`), or whose connection broke on the way, was told as
+refused and the steer's text went back to the editor; the daemon may have
+admitted it and only the answer was lost, so a resend reached the agent
+twice. The engine's own idempotent send was read first: 0.9.16's
+`MobMemberSendParams::idempotency_key` exists, but a keyed send "is
+committed as a member continuation … admitted with system origin, … ordered
+only among keyed sends, it refuses `render_metadata`" and answers a
+continuation receipt rather than the input's admission. A user's prompt
+admitted with system origin would no longer be the human's words to the
+classifier's transcript and would order apart from unkeyed inputs, so it
+is not used.
+
+Instead each send carries a key of the client's (`protocol::SEND_KEY`,
+`rkat_send_key`), which the daemon takes out of the params (the engine's
+params `deny_unknown_fields`) and follows (`local::inputs::SentLog`, the
+last 256): on its way when forwarded, then admitted with the input the
+engine's answer names, or refused with its words, as the proxy passes the
+answer. A client whose send failed in a way that may have reached the
+daemon (anything but an answered refusal or a connection never made) asks
+`rkat/sent`, which waits up to 5 s for an answer still due: admitted, the
+send goes on as answered (a steer is followed by its input, a prompt's turn
+goes on); not received or refused, it is refused as before; when the daemon
+cannot say (on its way still, or the question fails too) the user is told
+it may have reached the agent (`turn::UNKNOWN_FATE`; a steer's
+`SteerFailure::Unknown`), and the text is not put back in the editor.
+
+Tests: `client::runner::tests::a_send_whose_answer_was_lost_asks_the_daemon_before_it_is_told`,
+`client::runner::tests::a_prompt_whose_answer_was_lost_is_not_told_as_unsent`
+(a fake daemon that takes the send and never answers it: the send reaches
+it once; before, the steer was refused and back in the editor),
+`daemon::local::inputs::tests::a_send_s_fate_follows_the_engine_s_answer`,
+`ui::tests::turns::a_steer_of_unknown_fate_stays_out_of_the_editor`, and in
+the rig `client::member_send_names_the_admitted_input` asks `rkat/sent`
+for both keys (admitted, as the inputs the sends named) and an unknown one
+(not received).

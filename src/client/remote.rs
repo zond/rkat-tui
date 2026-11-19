@@ -185,7 +185,9 @@ pub async fn replay(
 /// the input its runtime admitted (`admission.input_id`), which the
 /// agent's `boundary_append_applied` names when a steer joins the run.
 /// `None` when the daemon named none (a member not served by a local
-/// runtime: the agent always is).
+/// runtime: the agent always is). `key` is the client's own name for this
+/// send: a client whose call brought no answer asks the daemon what it did
+/// with the send by it ([`crate::daemon::protocol::method::Sent`]).
 ///
 /// # Errors
 ///
@@ -196,6 +198,7 @@ pub async fn send(
     connection: &Connection,
     text: &str,
     steer: bool,
+    key: &str,
 ) -> Result<Option<InputId>, ClientError> {
     let answer = connection
         .call(
@@ -205,6 +208,7 @@ pub async fn send(
                 json!({
                     "content": text,
                     "handling_mode": if steer { "steer" } else { "queue" },
+                    crate::daemon::protocol::SEND_KEY: key,
                 }),
             ),
         )

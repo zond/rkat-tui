@@ -386,7 +386,7 @@ enum Report {
     Sent {
         turn: u64,
         steer: Option<PendingId>,
-        result: Result<Option<InputId>, String>,
+        result: Result<Option<InputId>, SendFailure>,
         /// The text to send once more: the daemon reloaded the agent
         /// after a storage failure and the input was not taken
         /// ([`protocol::AGENT_RELOADED`]).
@@ -436,6 +436,18 @@ enum Rehomed {
     Stranded,
     /// Nothing moved: the workspace's daemon starts again.
     Failed,
+}
+
+/// Why a prompt or a steer is not shown sent ([`Report::Sent`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SendFailure {
+    /// The agent does not have it: the daemon or the engine refused it,
+    /// or it never reached the daemon (why, in words).
+    NotSent(String),
+    /// Nobody can say: the answer was lost and the daemon could not be
+    /// asked, or had no answer of the engine's yet. It may have reached
+    /// the agent.
+    Unknown(String),
 }
 
 /// A prompt or a steer for the agent, sent by [`Runner::outbound`]'s task
@@ -3003,6 +3015,193 @@ mod tests {
         assert_eq!(hard.len(), 1, "{hard:?}");
         assert_eq!(hard[0]["run_id"], serde_json::to_value(&run).unwrap());
         assert_eq!(hard[0]["hard"], true);
+    }
+
+    /// A link whose daemon side takes every `mob/member_send` and never
+    /// answers it (the answer is lost on the way: the daemon admitted the
+    /// input), counting them and checking each carries the client's key,
+    /// and answers `rkat/sent` with `fate` (`None`: no answer either).
+    async fn link_losing_answers(
+        fate: Option<protocol::SentFate>,
+    ) -> (Link, Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let (server_read, mut server_write) = tokio::io::split(server);
+        let sends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&sends);
+        tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(server_read);
+            let timeout = crate::daemon::handshake::TIMEOUT;
+            let pending =
+                crate::daemon::handshake::read_attach(&mut lines, &mut server_write, "t", timeout)
+                    .await
+                    .unwrap();
+            crate::daemon::handshake::acknowledge(
+                &mut server_write,
+                &pending,
+                None,
+                None,
+                None,
+                timeout,
+            )
+            .await
+            .unwrap();
+            let mut line = String::new();
+            while lines.read_line(&mut line).await.is_ok_and(|n| n > 0) {
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                line.clear();
+                if request["method"] == "mob/member_send" {
+                    assert!(
+                        request["params"][protocol::SEND_KEY].is_string(),
+                        "{request}"
+                    );
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                } else if request["method"] == "rkat/sent"
+                    && let Some(fate) = &fate
+                {
+                    let answer = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "result": fate,
+                    });
+                    server_write
+                        .write_all(format!("{answer}\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        let (read, write) = tokio::io::split(client);
+        let address: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let (connection, notifications) = Connection::attach_io(
+            read,
+            write,
+            "t",
+            protocol::AttachParams::default(),
+            address,
+            ATTACH_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let link = Link {
+            connection: Arc::new(connection),
+            notifications,
+            stream: "live".to_string(),
+            session: SessionId::new(),
+            endpoint: Endpoint {
+                address,
+                token: "t".into(),
+                pid: 1,
+                workspace: None,
+                started_at: None,
+            },
+        };
+        (link, sends)
+    }
+
+    /// Review 7, M26: a steer whose answer is lost after the daemon
+    /// admitted it is not told as refused. The client asks the daemon by
+    /// the send's key: admitted, it is acknowledged and followed as any
+    /// steer (nothing returns to the editor, so nothing is sent twice);
+    /// not received, it is refused (back in the editor: the agent does not
+    /// have it); with no word from the daemon its fate is unknown (not
+    /// back in the editor either). Each case reached the daemon once.
+    #[tokio::test(start_paused = true)]
+    async fn a_send_whose_answer_was_lost_asks_the_daemon_before_it_is_told() {
+        let input = InputId::new();
+        for (fate, expect) in [
+            (
+                Some(protocol::SentFate::Admitted {
+                    input_id: Some(input.clone()),
+                }),
+                "admitted",
+            ),
+            (Some(protocol::SentFate::NotReceived), "refused"),
+            (None, "unknown"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut runner, mut ui_rx) = runner(dir.path());
+            let (link, sends) = link_losing_answers(fate).await;
+            runner.conn = up(link);
+            runner.turn = Turn {
+                active: true,
+                id: 1,
+                ..Turn::default()
+            };
+            runner.steer(PendingId(1), "and this");
+            let report = loop {
+                let (_, report) = runner.reports_rx.recv().await.unwrap();
+                if let Report::Sent { result, .. } = report {
+                    break result;
+                }
+            };
+            assert_eq!(
+                sends.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "{expect}"
+            );
+            match expect {
+                "admitted" => assert_eq!(report, Ok(Some(input.clone()))),
+                "refused" => assert!(matches!(report, Err(SendFailure::NotSent(_))), "{report:?}"),
+                _ => assert!(matches!(report, Err(SendFailure::Unknown(_))), "{report:?}"),
+            }
+            runner.sent(1, Some(PendingId(1)), report);
+            let acks: Vec<Result<(), SteerFailure>> = drain(&mut ui_rx)
+                .into_iter()
+                .filter_map(|m| match m {
+                    Msg::SteerAck { result, .. } => Some(result),
+                    _ => None,
+                })
+                .collect();
+            match expect {
+                "admitted" => {
+                    assert_eq!(acks, [Ok(())]);
+                    assert!(runner.steers.holds(PendingId(1)), "followed by its input");
+                }
+                "refused" => assert!(matches!(acks.as_slice(), [Err(SteerFailure::Rejected(_))])),
+                _ => assert!(matches!(acks.as_slice(), [Err(SteerFailure::Unknown(_))])),
+            }
+        }
+    }
+
+    /// The same for a prompt: admitted, its turn goes on; unknown, the
+    /// turn ends saying it may have reached the agent.
+    #[tokio::test(start_paused = true)]
+    async fn a_prompt_whose_answer_was_lost_is_not_told_as_unsent() {
+        for fate in [
+            Some(protocol::SentFate::Admitted { input_id: None }),
+            Some(protocol::SentFate::OnItsWay),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut runner, mut ui_rx) = runner(dir.path());
+            let admitted = matches!(fate, Some(protocol::SentFate::Admitted { .. }));
+            let (link, sends) = link_losing_answers(fate).await;
+            runner.conn = up(link);
+            runner.start_turn("hello");
+            let report = loop {
+                let (_, report) = runner.reports_rx.recv().await.unwrap();
+                if let Report::Sent { result, .. } = report {
+                    break result;
+                }
+            };
+            assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 1);
+            let turn = runner.turn.id;
+            runner.sent(turn, None, report);
+            let msgs = drain(&mut ui_rx);
+            if admitted {
+                assert!(runner.turn.active, "its run shows when it reports");
+                assert_eq!(turn_ends(&msgs), 0);
+            } else {
+                assert!(!runner.turn.active);
+                assert!(
+                    msgs.iter().any(|m| matches!(
+                        m,
+                        Msg::TurnFinished(Err(TurnFailure::Failed(why))) if why.starts_with(turn::UNKNOWN_FATE)
+                    )),
+                    "{msgs:?}"
+                );
+            }
+        }
     }
 
     /// Review 7, M29: Esc while the daemon is slow to answer; the run ends

@@ -430,6 +430,11 @@ methods! {
     /// (read only; a client asks when the agent is idle and holds nothing
     /// while it still waits for one of its steers).
     Inputs = "rkat/inputs" (RecallParams) -> InputFates;
+    /// What the daemon did with the prompt or steer a client sent under
+    /// its own key ([`SEND_KEY`]): a client whose send brought no answer
+    /// (a timeout, a lost connection) asks before telling the user it was
+    /// not sent. Waits a little while the engine has not answered it yet.
+    Sent = "rkat/sent" (SentParams) -> SentFate;
     /// Esc: interrupt the caller's agent's run the parameters name (and
     /// only that run: one that has ended is never exchanged for a newer
     /// one), and take back each named message the agent has not read
@@ -1216,6 +1221,42 @@ pub struct InputRow {
     /// What became of it.
     #[serde(flatten)]
     pub fate: InputFate,
+}
+
+/// The field of a client's `mob/member_send` params that names the send
+/// with a key of the client's own ([`method::Sent`]). The daemon takes it
+/// out before the request goes to the engine (whose params refuse unknown
+/// fields).
+pub const SEND_KEY: &str = "rkat_send_key";
+
+/// [`method::Sent`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SentParams {
+    /// The client's key of the send ([`SEND_KEY`]).
+    pub key: String,
+}
+
+/// What the daemon did with a send ([`method::Sent`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "fate", rename_all = "snake_case")]
+pub enum SentFate {
+    /// No send under the key reached the daemon (or one so long ago it is
+    /// forgotten): the agent does not have it.
+    NotReceived,
+    /// Forwarded to the engine, which has not answered it yet.
+    OnItsWay,
+    /// The engine admitted it, as the input it names (when it named one).
+    Admitted {
+        /// The input it became.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_id: Option<meerkat_core::lifecycle::InputId>,
+    },
+    /// The engine refused it, in its words: the agent does not have it.
+    Refused {
+        /// Why.
+        why: String,
+    },
 }
 
 /// [`method::Inputs`]'s result, in the order asked.

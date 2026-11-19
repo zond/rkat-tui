@@ -134,7 +134,7 @@ impl Runner {
         &mut self,
         turn: u64,
         steer: Option<PendingId>,
-        result: Result<Option<InputId>, String>,
+        result: Result<Option<InputId>, SendFailure>,
     ) {
         let current = self.turn.active && self.turn.id == turn;
         match (steer, result) {
@@ -160,22 +160,38 @@ impl Runner {
                     self.send_interrupt(protocol::InterruptTarget::Inputs, false);
                 }
             }
-            (Some(id), Err(why)) => {
+            (Some(id), Err(SendFailure::NotSent(why))) => {
                 self.steers.forget(id);
                 self.send(Msg::SteerAck {
                     id,
                     result: Err(SteerFailure::Rejected(why)),
                 });
             }
+            // Not followed any more (no input id to follow it by), and not
+            // back in the editor: sent again it could reach the agent twice.
+            (Some(id), Err(SendFailure::Unknown(why))) => {
+                self.steers.forget(id);
+                self.send(Msg::SteerAck {
+                    id,
+                    result: Err(SteerFailure::Unknown(why)),
+                });
+            }
             (None, Ok(_)) => {}
-            (None, Err(why)) if current => {
+            (None, Err(SendFailure::NotSent(why))) if current => {
                 self.turn.record(Err(TurnFailure::Failed(format!(
                     "the prompt was not sent: {why}"
                 ))));
                 self.finish_turn();
             }
+            // A run it started shows here when it reports, as another
+            // client's would.
+            (None, Err(SendFailure::Unknown(why))) if current => {
+                self.turn
+                    .record(Err(TurnFailure::Failed(format!("{UNKNOWN_FATE} ({why})"))));
+                self.finish_turn();
+            }
             (None, Err(why)) => {
-                tracing::info!(%why, "a prompt of an earlier turn was not sent");
+                tracing::info!(?why, "a prompt of an earlier turn was not sent");
             }
         }
         // A steer no longer on its way may have been all the turn waited
@@ -250,7 +266,9 @@ impl Runner {
             outbound.reports.send(Report::Sent {
                 turn: outbound.turn,
                 steer: outbound.steer,
-                result: Err("the client could not send it".to_string()),
+                result: Err(SendFailure::NotSent(
+                    "the client could not send it".to_string(),
+                )),
                 again: None,
             });
         }
@@ -1282,11 +1300,74 @@ pub const INTERRUPTED_UNSEEN: &str =
 /// input: its delivery cannot be told from another client's.
 pub const UNNAMED_INPUT: &str = "the daemon did not name the input your message became, so this client cannot tell when the agent reads it; the agent has it and gets it at its next step";
 
+/// What a prompt's turn says when nobody can tell whether the agent got
+/// it ([`SendFailure::Unknown`]).
+pub const UNKNOWN_FATE: &str = "the daemon did not confirm your message: it may have reached the agent; check the transcript before sending it again";
+
+/// A key no other send of this client's shares ([`protocol::SEND_KEY`]).
+fn send_key() -> String {
+    static SENDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SENDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let random = crate::hex::random::<8>().unwrap_or_default();
+    format!("{}-{n}-{random}", std::process::id())
+}
+
+/// Whether a call that failed with `err` may have reached the daemon all
+/// the same (its answer was lost): a timeout, a connection that broke, an
+/// answer that could not be read. A refusal the daemon answered, or a
+/// connection never made, did not.
+fn may_have_arrived(err: &CallFailure) -> bool {
+    !matches!(
+        err,
+        CallFailure::Failed(
+            crate::client::ClientError::Rpc { .. } | crate::client::ClientError::Connect { .. }
+        )
+    )
+}
+
+/// The daemon's word on the send `key` whose call failed with `err`
+/// ([`protocol::method::Sent`]): admitted (the agent has it, as the input
+/// named), refused or never received (the agent does not), or unknown.
+async fn ask_fate(
+    connection: &Connection,
+    key: &str,
+    err: &CallFailure,
+) -> Result<Option<InputId>, SendFailure> {
+    let asked = bounded(
+        CALL_TIMEOUT,
+        remote::call::<protocol::method::Sent>(
+            connection,
+            &protocol::SentParams {
+                key: key.to_string(),
+            },
+        ),
+    )
+    .await;
+    match asked {
+        Ok(protocol::SentFate::Admitted { input_id }) => {
+            tracing::info!(%err, "a send's answer was lost; the daemon says the agent has it");
+            Ok(input_id)
+        }
+        Ok(protocol::SentFate::Refused { why }) => Err(SendFailure::NotSent(why)),
+        Ok(protocol::SentFate::NotReceived) => Err(SendFailure::NotSent(format!(
+            "{err}, and the daemon did not receive it"
+        ))),
+        Ok(protocol::SentFate::OnItsWay) => Err(SendFailure::Unknown(format!(
+            "{err}; the daemon has not had the agent's answer yet"
+        ))),
+        Err(asked) => Err(SendFailure::Unknown(format!(
+            "{err}; asking the daemon what became of it failed too: {asked}"
+        ))),
+    }
+}
+
 /// Send one prompt or steer ([`Outbound`]) and report how it went. A
 /// prompt that repeats the failed turn's is sent as [`RETRY_INPUT`] when
 /// that prompt is still its conversation's last message (a failed run
 /// keeps it committed, so the text again would be in the transcript
-/// twice).
+/// twice). A send whose answer may have been lost (a timeout, a broken
+/// connection) is not told as refused: the daemon is asked what it did
+/// with it, by the key the send carried ([`ask_fate`]).
 pub(super) async fn send_outbound(outbound: Outbound) {
     let Outbound {
         connection,
@@ -1308,9 +1389,10 @@ pub(super) async fn send_outbound(outbound: Outbound) {
         });
         sent = RETRY_INPUT;
     }
+    let key = send_key();
     let result = bounded(
         CALL_TIMEOUT,
-        remote::send(&connection, sent, steer.is_some()),
+        remote::send(&connection, sent, steer.is_some(), &key),
     )
     .await;
     // The daemon reloaded the agent after a storage failure; the input was
@@ -1321,21 +1403,23 @@ pub(super) async fn send_outbound(outbound: Outbound) {
         reports.send(Report::Sent {
             turn,
             steer,
-            result: Err(String::new()),
+            result: Err(SendFailure::NotSent(String::new())),
             again: Some(sent.to_string()),
         });
         return;
     }
-    let result = result.map_err(|err| match err {
+    let result = match result {
+        Ok(input) => Ok(input),
+        Err(err) if may_have_arrived(&err) => ask_fate(&connection, &key, &err).await,
         // The daemon's plain words for an agent its storage failure left
         // unable to take input (`crate::daemon::storage`).
-        CallFailure::Failed(crate::client::ClientError::Rpc { code, message, .. })
+        Err(CallFailure::Failed(crate::client::ClientError::Rpc { code, message, .. }))
             if code == crate::daemon::storage::reload_required_code() =>
         {
-            message
+            Err(SendFailure::NotSent(message))
         }
-        other => other.to_string(),
-    });
+        Err(other) => Err(SendFailure::NotSent(other.to_string())),
+    };
     reports.send(Report::Sent {
         turn,
         steer,

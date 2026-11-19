@@ -155,10 +155,150 @@ fn abandon_words(reason: &meerkat_runtime::input_state::InputAbandonReason) -> O
     })
 }
 
+/// How many sends [`SentLog`] remembers (the oldest is forgotten first).
+const SENT_KEPT: usize = 256;
+
+/// How long `rkat/sent` waits for the engine's answer to a send it has
+/// forwarded and not had answered yet.
+const SENT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What the daemon did with the clients' recent sends, by the key each
+/// client gave its send ([`protocol::SEND_KEY`]): forwarded, then the
+/// engine's answer. A client whose send brought no answer asks
+/// ([`protocol::method::Sent`]) rather than guess: a send the engine
+/// admitted is not "not sent", and sending it again would make the agent
+/// read it twice.
+#[derive(Debug, Default)]
+pub struct SentLog {
+    sends: parking_lot::Mutex<std::collections::VecDeque<(String, protocol::SentFate)>>,
+    changed: tokio::sync::Notify,
+}
+
+impl SentLog {
+    /// The send `key` goes to the engine now.
+    pub fn forwarded(&self, key: &str) {
+        let mut sends = self.sends.lock();
+        sends.retain(|(sent, _)| sent != key);
+        if sends.len() >= SENT_KEPT {
+            sends.pop_front();
+        }
+        sends.push_back((key.to_string(), protocol::SentFate::OnItsWay));
+    }
+
+    /// The engine answered the send `key` with `answer` (a JSON-RPC
+    /// response): admitted, as the input its result names, or refused.
+    pub fn answered(&self, key: &str, answer: &Value) {
+        let fate = match answer.get("error") {
+            Some(error) => protocol::SentFate::Refused {
+                why: error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("the engine refused it")
+                    .to_string(),
+            },
+            None => protocol::SentFate::Admitted {
+                input_id: answer
+                    .pointer("/result/admission/input_id")
+                    .and_then(Value::as_str)
+                    .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                    .map(meerkat_core::lifecycle::InputId::from_uuid),
+            },
+        };
+        if let Some((_, known)) = self.sends.lock().iter_mut().find(|(sent, _)| sent == key) {
+            *known = fate;
+        }
+        self.changed.notify_waiters();
+    }
+
+    /// What became of the send `key` now.
+    #[must_use]
+    pub fn fate(&self, key: &str) -> protocol::SentFate {
+        self.sends
+            .lock()
+            .iter()
+            .find(|(sent, _)| sent == key)
+            .map_or(protocol::SentFate::NotReceived, |(_, fate)| fate.clone())
+    }
+
+    /// What became of the send `key`, once the engine answered it or
+    /// `limit` passed.
+    pub async fn settled(&self, key: &str, limit: std::time::Duration) -> protocol::SentFate {
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            let changed = self.changed.notified();
+            let fate = self.fate(key);
+            if fate != protocol::SentFate::OnItsWay {
+                return fate;
+            }
+            // Re-checked after every wake (and at the deadline).
+            if tokio::time::timeout_at(deadline, changed).await.is_err() {
+                return self.fate(key);
+            }
+        }
+    }
+}
+
+impl Local {
+    /// `rkat/sent`: what became of the send `key` (waiting a little for
+    /// the engine's answer to one it has not answered yet).
+    pub(super) async fn sent_fate(&self, key: &str) -> protocol::SentFate {
+        self.sent.settled(key, SENT_WAIT).await
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A send is not received until forwarded, on its way until the
+    /// engine answers, then admitted (with the input it names) or refused;
+    /// a wait for one on its way ends with the answer, or at its bound.
+    #[tokio::test(start_paused = true)]
+    async fn a_send_s_fate_follows_the_engine_s_answer() {
+        let log = std::sync::Arc::new(SentLog::default());
+        assert_eq!(log.fate("k1"), protocol::SentFate::NotReceived);
+        log.forwarded("k1");
+        assert_eq!(log.fate("k1"), protocol::SentFate::OnItsWay);
+        let input = meerkat_core::lifecycle::InputId::new();
+        let waiting = tokio::spawn({
+            let log = std::sync::Arc::clone(&log);
+            async move { log.settled("k1", SENT_WAIT).await }
+        });
+        tokio::task::yield_now().await;
+        log.answered(
+            "k1",
+            &serde_json::json!({"id": 1, "result": {"admission": {"input_id": input.to_string()}}}),
+        );
+        assert_eq!(
+            waiting.await.unwrap(),
+            protocol::SentFate::Admitted {
+                input_id: Some(input)
+            }
+        );
+        log.forwarded("k2");
+        log.answered(
+            "k2",
+            &serde_json::json!({"id": 2, "error": {"code": -32000, "message": "no such member"}}),
+        );
+        assert_eq!(
+            log.fate("k2"),
+            protocol::SentFate::Refused {
+                why: "no such member".into()
+            }
+        );
+        // Unanswered: the wait gives up at its bound.
+        log.forwarded("k3");
+        assert_eq!(
+            log.settled("k3", SENT_WAIT).await,
+            protocol::SentFate::OnItsWay
+        );
+        // The oldest are forgotten past the bound.
+        for n in 0..SENT_KEPT {
+            log.forwarded(&format!("x{n}"));
+        }
+        assert_eq!(log.fate("k1"), protocol::SentFate::NotReceived);
+    }
 
     /// An input's fate is read from its record: held, written into a run,
     /// or ended without one, with why in words.

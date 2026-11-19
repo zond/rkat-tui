@@ -50,6 +50,9 @@ pub enum SteerFailure {
     NotRunning,
     /// The runtime refused the input; the text never reached the session.
     Rejected(String),
+    /// Nobody can tell whether the agent has it: the send's answer was
+    /// lost and the daemon could not say (why, in words).
+    Unknown(String),
 }
 
 impl fmt::Display for SteerFailure {
@@ -57,6 +60,7 @@ impl fmt::Display for SteerFailure {
         match self {
             Self::NotRunning => f.write_str("no turn is running"),
             Self::Rejected(reason) => write!(f, "the runtime refused it: {reason}"),
+            Self::Unknown(reason) => write!(f, "its delivery is not confirmed: {reason}"),
         }
     }
 }

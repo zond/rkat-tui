@@ -99,6 +99,9 @@ pub struct Local {
     /// cannot interleave their check and their note.
     plan_noted: tokio::sync::Mutex<std::collections::HashMap<String, bool>>,
     inputs: AtomicU64,
+    /// The clients' recent sends by their keys, and the engine's answers
+    /// (`rkat/sent`).
+    sent: inputs::SentLog,
     /// The `/btw` side questions running, by the client's number
     /// (`rkat/btw_cancel` aborts one).
     btws: parking_lot::Mutex<std::collections::HashMap<u64, tokio::task::AbortHandle>>,
@@ -208,6 +211,7 @@ impl Local {
             parts,
             plan_noted: tokio::sync::Mutex::new(noted),
             inputs: AtomicU64::new(0),
+            sent: inputs::SentLog::default(),
             btws: parking_lot::Mutex::default(),
             modes_routed: AtomicU64::new(0),
             modes_done: tokio::sync::watch::Sender::new(0),
@@ -461,6 +465,7 @@ impl Local {
             method::Seated, protocol::SessionParams { session_id } => Ok(self.seated(&session_id).await);
             method::Recall, protocol::RecallParams { input_ids } => self.recall(&caller, &input_ids).await;
             method::Inputs, protocol::RecallParams { input_ids } => self.input_fates(&caller, &input_ids).await;
+            method::Sent, protocol::SentParams { key } => Ok(self.sent_fate(&key).await);
             method::Interrupt, params => self.interrupt(&caller, params).await;
             method::Btw, params => self.btw(&caller, params).await;
             method::BtwCancel, protocol::BtwCancelParams { id } => Ok(self.btw_cancel(id));
@@ -530,6 +535,12 @@ impl Local {
         let Some(params) = request.get_mut("params") else {
             return Ok(Observed::plain(request));
         };
+        // The client's key of its send is the daemon's to read: the
+        // engine's params refuse a field they do not know.
+        let send_key = (method == engine::MEMBER_SEND)
+            .then(|| params.as_object_mut()?.remove(protocol::SEND_KEY))
+            .flatten()
+            .and_then(|key| key.as_str().map(str::to_string));
         let agent = match (
             params.get("mob_id").and_then(Value::as_str),
             params.get("agent_identity").and_then(Value::as_str),
@@ -555,6 +566,11 @@ impl Local {
                 // On its way until the engine answers: the agent is not
                 // idle meanwhile.
                 input = Some(self.core.activity.sending(&agent));
+                // Followed by its key until the engine answers it
+                // (`rkat/sent`).
+                if let Some(key) = &send_key {
+                    self.sent.forwarded(key);
+                }
                 // The user's input: the run that takes it is attended, and
                 // its conversation is the one used last (`-c` after a
                 // restart continues it).
@@ -602,11 +618,19 @@ impl Local {
             }
             _ => {}
         }
+        let send_key = send_key.filter(|_| input.is_some());
         Ok(Observed {
             request,
             input,
             wait,
+            send_key,
         })
+    }
+
+    /// The engine answered the send the client keyed `key` with `answer`
+    /// (`rkat/sent` tells it from now on).
+    pub fn sent_answered(&self, key: &str, answer: &Value) {
+        self.sent.answered(key, answer);
     }
 
     /// Whether `caller` may send the engine request `method` with
