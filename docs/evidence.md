@@ -13619,3 +13619,23 @@ registry kept the helper "running". Verified by reading; harmless for a
 helper that is gone in most paths, but the two loops disagreed. Now one
 `Follower::on_event` reads every event, in the live loop and in the
 drain. Test: `mobs::follow::tests::every_event_a_follower_reads_is_handled_alike`.
+
+## One retire of a seated helper (review 7, L8)
+
+A stopped helper's retire, a finished one's and `retire_helper`'s were
+three bodies (`HelperEndings::retire`, `retire_done`, `Connect::retire`)
+that each retired the helpers below, looked up the mob and stopped the
+member. They are one function now, `mobs::endings::retire_seated`
+(`remember`: a finished helper's peer id is remembered first, so a
+message to it is refused saying it finished); the two detached paths
+spawn it and log its refusal, `retire_helper` awaits it
+(`HelperEndings::retire_now`) and answers with it. A retire's order
+changed in one place only: `retire_helper` marks the helper owed before
+its own helpers are retired (it was after), so a stop in between leaves
+it owed as well. No behaviour test changes: the helper-ending, connect
+and fork suites cover each path.
+
+Review 7, L25 is not a defect: `helpers.max_depth` applies at the next
+start (`config::registry`, `Applies::NextStart`; the customizer's depth
+is fixed at start too), so `Contacts` holding the value of the start
+agrees with every other reader of it.

@@ -578,6 +578,35 @@ async fn retire_all(
     }
 }
 
+/// Retire the seated helper `key` with the helpers `below` it (deepest
+/// first, each remembered as retired with its parent, [`retire_all`]);
+/// `remember` first remembers `key`'s own peer id (a finished `assign`
+/// helper: a message to it from now on is refused saying it finished).
+/// Every retire of a seated helper goes through here: a stop, a finish and
+/// `retire_helper` (review 7, L8).
+///
+/// # Errors
+///
+/// Its mob cannot be reached, or the engine refused the retire.
+async fn retire_seated(
+    state: &MobMcpState,
+    retirements: &Arc<Retirements>,
+    retired: &RetiredPeers,
+    key: &HelperKey,
+    below: &[(HelperKey, HelperTag)],
+    remember: bool,
+) -> Result<(), String> {
+    retire_all(state, retirements, retired, below).await;
+    let handle = state
+        .handle_for(&key.mob)
+        .await
+        .map_err(|err| format!("its mob cannot be reached: {err}"))?;
+    if remember {
+        remember_peer(&handle, key, None, retired).await;
+    }
+    retirements.stop_helper(&handle, key).await
+}
+
 /// [`InputsProbe`], held.
 struct Probe(InputsProbe);
 
@@ -710,15 +739,6 @@ impl HelperEndings {
         below
     }
 
-    /// Retire `below` ([`Self::take_below`]), in its order, through the
-    /// guarded retire path; a message to one of them from now on is
-    /// refused saying it was retired.
-    pub async fn retire_below(&self, below: &[(HelperKey, HelperTag)]) {
-        let Some(state) = self.state.get().and_then(Weak::upgrade) else {
-            return;
-        };
-        retire_all(&state, &self.retirements, &self.retired_peers, below).await;
-    }
     /// Whether `key`'s ending was settled already.
     fn is_settled(&self, key: &HelperKey) -> bool {
         self.settled.lock().contains(key)
@@ -1252,19 +1272,14 @@ impl HelperEndings {
         let retirements = Arc::clone(&self.retirements);
         let retired = Arc::clone(&self.retired_peers);
         runtime.spawn(async move {
-            retire_all(&state, &retirements, &retired, &below).await;
             if any {
-                match state.handle_for(&key.mob).await {
-                    Ok(handle) => {
-                        if let Err(err) = retirements.stop_helper(&handle, &key).await {
-                            tracing::warn!(helper = %key, error = %err, "a stopped helper stays seated: it is retired at the next start");
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!(helper = %key, error = %err, "cannot reach the stopped helper's mob");
-                    }
+                if let Err(err) =
+                    retire_seated(&state, &retirements, &retired, &key, &below, false).await
+                {
+                    tracing::warn!(helper = %key, error = %err, "a stopped helper stays seated: it is retired at the next start");
                 }
             } else {
+                retire_all(&state, &retirements, &retired, &below).await;
                 super::delegates::retire_left_helper(&state, &retirements, &key).await;
             }
         });
@@ -1297,19 +1312,40 @@ impl HelperEndings {
             if let Some(hook) = hook {
                 hook(key.clone()).await;
             }
-            retire_all(&state, &retirements, &retired, &below).await;
-            match state.handle_for(&key.mob).await {
-                Ok(handle) => {
-                    remember_peer(&handle, &key, None, &retired).await;
-                    if let Err(err) = retirements.stop_helper(&handle, &key).await {
-                        tracing::warn!(helper = %key, error = %err, "a finished helper stays seated: it is retired at the next start");
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(helper = %key, error = %err, "cannot reach the finished helper's mob");
-                }
+            if let Err(err) = retire_seated(&state, &retirements, &retired, &key, &below, true).await
+            {
+                tracing::warn!(helper = %key, error = %err, "a finished helper stays seated: it is retired at the next start");
             }
         });
+    }
+
+    /// Retire the seated helper `key` with the helpers `below` it
+    /// ([`retire_seated`], `retire_helper`'s, awaited): the engine's
+    /// refusal, in words.
+    ///
+    /// # Errors
+    ///
+    /// The daemon stops, the helper's mob cannot be reached, or the engine
+    /// refused the retire.
+    pub async fn retire_now(
+        &self,
+        key: &HelperKey,
+        below: &[(HelperKey, HelperTag)],
+    ) -> Result<(), String> {
+        let state = self
+            .state
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or("the daemon is stopping")?;
+        retire_seated(
+            &state,
+            &self.retirements,
+            &self.retired_peers,
+            key,
+            below,
+            false,
+        )
+        .await
     }
 
     /// The retirements under way, closed when the daemon stops.

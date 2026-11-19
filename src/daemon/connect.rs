@@ -275,7 +275,7 @@ impl Connector {
                 ));
             }
         };
-        let handle = state.handle_for(&helper.key.mob).await.map_err(|err| {
+        state.handle_for(&helper.key.mob).await.map_err(|err| {
             format!("the mob of `{name}` cannot be reached, so it was not retired: {err}")
         })?;
         let Some(retiring) = self.registry.endings().retirements().begin() else {
@@ -292,10 +292,9 @@ impl Connector {
             let _retiring = retiring;
             let endings = registry.endings();
             let below = endings.take_below(&key);
-            endings.retire_below(&below).await;
             endings.left(&key);
             registry.owe_retire(&key);
-            let outcome = endings.retirements().stop_helper(&handle, &key).await;
+            let outcome = endings.retire_now(&key, &below).await;
             let labels: Vec<String> = below
                 .iter()
                 .map(|(_, tag)| tag.label().to_string())
