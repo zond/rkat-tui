@@ -2639,6 +2639,8 @@ mod tests {
             };
             runner.on_event(feed.started(&run), None);
             runner.steers.sending(PendingId(7));
+            // Its own run's content is its text (`started` runs "x").
+            runner.steers.sent_text(PendingId(7), "x");
             runner.on_event(feed.completed(&run), None);
             runner.idle_reported(feed.idle(&run, 0));
             assert!(runner.turn.active, "its send is unanswered");
@@ -2680,6 +2682,55 @@ mod tests {
             runner.finish_turn();
             drain(&mut rx);
         }
+    }
+
+    /// Review 7, M30: a later run of the turn started by a daemon's note,
+    /// while this client's steer is still queued behind it, does not mark
+    /// the steer delivered (before, every steer was taken as carried by
+    /// whatever run came next); the steer is marked when its own run
+    /// starts.
+    #[tokio::test]
+    async fn a_run_of_a_note_does_not_deliver_a_queued_steer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut rx) = runner(dir.path());
+        let mut feed = Feed {
+            session: SessionId::new(),
+            seq: 0,
+        };
+        let (first, note, own) = (RunId::new(), RunId::new(), RunId::new());
+        runner.turn = Turn {
+            active: true,
+            ..Turn::default()
+        };
+        runner.on_event(feed.started(&first), None);
+        runner.steers.sending(PendingId(7));
+        runner
+            .steers
+            .sent_text(PendingId(7), "also update the docs");
+        runner.sent(0, Some(PendingId(7)), Ok(Some(InputId::new())));
+        runner.on_event(feed.completed(&first), None);
+        drain(&mut rx);
+        runner.on_event(
+            feed.started_with(&note, "rkat-tui note: helper `scout` finished"),
+            None,
+        );
+        let msgs = drain(&mut rx);
+        assert!(
+            !msgs.iter().any(|m| matches!(m, Msg::SteerDelivered(_))),
+            "{msgs:?}"
+        );
+        assert!(runner.steers.holds(PendingId(7)));
+        runner.on_event(feed.completed(&note), None);
+        runner.on_event(feed.started_with(&own, "also update the docs"), None);
+        let msgs = drain(&mut rx);
+        assert_eq!(
+            msgs.iter()
+                .filter(|m| matches!(m, Msg::SteerDelivered(PendingId(7))))
+                .count(),
+            1,
+            "{msgs:?}"
+        );
+        assert!(!runner.steers.holds(PendingId(7)));
     }
 
     /// An idle notice with nothing held while this client still follows

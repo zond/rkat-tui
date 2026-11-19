@@ -13309,3 +13309,26 @@ it once; before, the steer was refused and back in the editor),
 the rig `client::member_send_names_the_admitted_input` asks `rkat/sent`
 for both keys (admitted, as the inputs the sends named) and an unknown one
 (not received).
+
+## A run marks delivered only the steers it carries (review 7, M30)
+
+When a later run of the turn started, the client marked every steer it
+still followed delivered, on the assumption that the next run carries all
+that is queued. A run of a daemon's note or of a peer's message, with the
+user's steer queued behind it, marked the steer delivered by inference.
+The engine does not name a run's inputs at its start: 0.9.16's
+`AgentEvent::RunStarted` carries the run's `identity` (run, interaction,
+objective, turn input author, requester) and `input: RunInput` (the
+content), no input ids; only `BoundaryAppendApplied` names its
+`input_id`. So the client keeps each steer's text as sent
+(`Steers::sent_text`) and a run takes a steer only when its content holds
+that text (`Steers::carried`: a follow-up run's content is the queued
+inputs merged, with a held note possibly in front); the rest stay
+followed until their boundary event, their own run, or the daemon's word
+on them at the next idle (`rkat/inputs`). The text is a weaker key than an
+id: a peer's message with the very same words in a run would be taken for
+the steer; nothing better is on the wire.
+
+Tests: `client::runner::tests::a_run_of_a_note_does_not_deliver_a_queued_steer`
+(failed before: the note's run marked the steer delivered),
+`client::runner::steers::tests::a_run_takes_only_the_steers_it_carries`.

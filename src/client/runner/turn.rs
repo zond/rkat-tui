@@ -60,6 +60,7 @@ impl Runner {
         // deliver it before the send's answer); taken back if the send
         // fails.
         self.steers.sending(id);
+        self.steers.sent_text(id, &text);
         self.outbound(Outbound {
             connection,
             text,
@@ -637,12 +638,18 @@ impl Runner {
                 // A run after the first (a follow-up run, or a run of a
                 // turn that starts now while steers of this client are
                 // still with the agent: a turn ended before the runtime
-                // ran them) carries the steers that missed the boundary.
-                // Not after the user interrupted the turn: a follow-up run
-                // that took one of them is stopped with it, and the
-                // interrupt's answer says which the agent read.
+                // ran them) may carry the steers that missed the boundary:
+                // those whose text its content holds (the start names no
+                // inputs). A run of a daemon's note or a peer's message
+                // carries none, and they stay followed. Not after the user
+                // interrupted the turn: a follow-up run that took one of
+                // them is stopped with it, and the interrupt's answer says
+                // which the agent read.
                 let own = if (self.turn.saw_run || joining) && self.turn.interrupted_at.is_none() {
-                    self.steers.take_all()
+                    input
+                        .prompt_text()
+                        .map(|content| self.steers.carried(&content))
+                        .unwrap_or_default()
                 } else {
                     Vec::new()
                 };

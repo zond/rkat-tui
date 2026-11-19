@@ -32,6 +32,11 @@ pub(super) struct Steers {
     /// was known for when the event came: this client's, answered later,
     /// or another client's (forgotten once no send is unanswered).
     applied: HashSet<InputId>,
+    /// Each followed steer's text as sent: a run's start names no inputs
+    /// (`RunStarted` carries the run's content only), so a run is taken to
+    /// carry a steer only when its content holds that text
+    /// ([`Self::carried`]).
+    texts: Vec<(PendingId, String)>,
 }
 
 impl Steers {
@@ -42,7 +47,7 @@ impl Steers {
 
     /// The send of `id` was answered with the input the runtime admitted:
     /// `true` when that input was already applied (deliver it now). A
-    /// steer a sweep took meanwhile ([`Self::take_all`]) is not filed
+    /// steer a run took meanwhile ([`Self::carried`]) is not filed
     /// again.
     pub(super) fn admitted(&mut self, id: PendingId, input: InputId) -> bool {
         let Some(at) = self.sending.iter().position(|sent| *sent == id) else {
@@ -125,14 +130,40 @@ impl Steers {
         taken
     }
 
-    /// Every steer still followed, oldest first, taken: the run after a
-    /// turn's first carries the ones that missed the boundary.
-    pub(super) fn take_all(&mut self) -> Vec<PendingId> {
-        let mut all: Vec<PendingId> = self.admitted.drain(..).map(|(_, id)| id).collect();
-        all.append(&mut self.sending);
-        all.sort();
-        self.applied.clear();
-        all
+    /// The text `id` was sent with (a steer of this client's whose run is
+    /// told by its content, [`Self::carried`]).
+    pub(super) fn sent_text(&mut self, id: PendingId, text: &str) {
+        self.texts.retain(|(steer, _)| *steer != id);
+        self.texts.push((id, text.trim().to_string()));
+    }
+
+    /// The steers still followed that a run whose content is `content`
+    /// carries, oldest first, taken: each whose text the content holds
+    /// (a run carries the inputs that missed the turn's boundary, merged).
+    /// A run of anything else (a daemon's note, a peer's message) carries
+    /// none of them: they stay followed until their own boundary event,
+    /// run, or the daemon's word on them (`rkat/inputs`).
+    pub(super) fn carried(&mut self, content: &str) -> Vec<PendingId> {
+        let followed = |id: &PendingId, steers: &Self| {
+            steers.sending.contains(id) || steers.admitted.iter().any(|(_, steer)| steer == id)
+        };
+        let texts = std::mem::take(&mut self.texts);
+        let mut taken = Vec::new();
+        for (id, text) in texts {
+            if !followed(&id, self) {
+                continue;
+            }
+            if !text.is_empty() && content.contains(&text) {
+                taken.push(id);
+            } else {
+                self.texts.push((id, text));
+            }
+        }
+        self.sending.retain(|id| !taken.contains(id));
+        self.admitted.retain(|(_, id)| !taken.contains(id));
+        self.forget_applied();
+        taken.sort();
+        taken
     }
 
     /// Whether a steer's send is still unanswered (it may start a run of
@@ -179,7 +210,7 @@ mod tests {
         assert_eq!(steers.applied(&early), None);
         assert!(steers.admitted(PendingId(1), early));
         assert!(!steers.holds(PendingId(1)));
-        assert!(steers.take_all().is_empty());
+        assert!(steers.outstanding().is_empty());
     }
 
     #[test]
@@ -195,20 +226,36 @@ mod tests {
         assert_eq!(steers.applied(&first), Some(PendingId(1)));
     }
 
+    /// Review 7, M30: a run takes only the steers its content holds; a run
+    /// of something else (a daemon's note) takes none, and they stay
+    /// followed. A failed send is forgotten.
     #[test]
-    fn a_failed_send_is_forgotten_and_a_sweep_takes_the_rest() {
+    fn a_run_takes_only_the_steers_it_carries() {
         let mut steers = Steers::default();
-        steers.sending(PendingId(1));
-        steers.sending(PendingId(2));
-        steers.sending(PendingId(3));
+        for (n, text) in [(1, "use nextest"), (2, "never mind"), (3, "and the docs")] {
+            steers.sending(PendingId(n));
+            steers.sent_text(PendingId(n), text);
+        }
         steers.admitted(PendingId(1), input());
         steers.forget(PendingId(2));
-        // The turn ends (or a follow-up run starts) with 1 admitted and 3
-        // still unanswered: both are taken, oldest first.
-        assert_eq!(steers.take_all(), vec![PendingId(1), PendingId(3)]);
-        // 3's answer after the sweep files nothing.
+        // A run of a helper's note carries none of them.
+        assert!(
+            steers
+                .carried("rkat-tui note: helper `scout` finished")
+                .is_empty()
+        );
+        assert!(steers.holds(PendingId(1)) && steers.holds(PendingId(3)));
+        // A follow-up run with both, merged (and a note before them).
+        assert_eq!(
+            steers.carried("a note\n\nuse nextest\n\nand the docs"),
+            vec![PendingId(1), PendingId(3)]
+        );
+        assert!(!steers.holds(PendingId(1)) && !steers.holds(PendingId(3)));
+        // 3's answer after the run took it files nothing.
         assert!(!steers.admitted(PendingId(3), input()));
-        assert!(steers.take_all().is_empty());
+        assert!(steers.carried("use nextest").is_empty());
+        // The forgotten one is never taken.
+        assert!(steers.carried("never mind").is_empty());
     }
 
     /// Other clients' inputs are kept only while a send is unanswered.

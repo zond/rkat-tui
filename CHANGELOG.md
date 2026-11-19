@@ -73,6 +73,11 @@
   Your draft stays as it was under the dialog. Enter in the approval and
   "Plan ready" dialogs picks a row only after ↑/↓ moved to it; the numbers
   and letters are unchanged.
+- A message you steered was marked delivered as soon as any later run of
+  the turn started, even a run of a helper's note or another agent's
+  message while yours still waited behind it. Now it is marked by its
+  own boundary, by a run whose input holds it, or by what the daemon says
+  of it once the agent is idle.
 - A message whose send timed out, or whose connection broke on the way,
   was told as refused ("couldn't send …; it is back in the editor")
   although the daemon may have taken it, so sending it again made the
