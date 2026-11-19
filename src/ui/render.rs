@@ -235,8 +235,33 @@ fn draw_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         if let Some(bottom) = bottom {
             app.scroll.anchor_bottom(total, bottom);
         }
+    } else if let Some((block, offset)) = app.scroll.anchor()
+        && let Some(first) = app.transcript.start_line(block)
+    {
+        // Scrolled up: the view stays on the line it is held by, wherever
+        // the transcript grew or folded since; a selection stays on its
+        // text.
+        let top = usize::try_from(signed(first).saturating_add(offset).max(0)).unwrap_or(0);
+        if let Some(was) = app.scroll.held_top()
+            && was != top
+        {
+            app.shift_selection(signed(top) - signed(was));
+        }
+        app.scroll.hold_top(top);
     }
     let mut start = app.scroll.window(total, height);
+    // What holds the view from the next frame on: the block its first
+    // line belongs to.
+    let anchor = app
+        .transcript
+        .visible_blocks(start, 1)
+        .first()
+        .copied()
+        .and_then(|block| {
+            let first = app.transcript.start_line(block)?;
+            Some((block, signed(start) - signed(first)))
+        });
+    app.scroll.set_anchor(anchor);
     // The user's last message above the view stays pinned on the top row
     // ([`pinned_prompt`]); the transcript scrolls in the rows under it.
     let mut area = area;
@@ -256,7 +281,9 @@ fn draw_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         };
         height -= 1;
         app.set_viewport_height(height);
-        start = app.scroll.window(total, height);
+        // The bar covers the first row: the lines under it stay on their
+        // rows.
+        start += 1;
     }
     let mut lines = app.transcript.visible_lines(start, height);
     let rows = app.transcript.visible_blocks(start, height);
@@ -269,6 +296,11 @@ fn draw_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
     app.set_transcript_rows(area, start, rows);
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// A line index as a signed distance.
+fn signed(line: usize) -> isize {
+    isize::try_from(line).unwrap_or(isize::MAX)
 }
 
 /// What the pinned row starts with: it is not a line of the transcript.
@@ -675,10 +707,30 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
         InputHint::PickHelper => " Ctrl+↑/↓ pick a helper · Enter opens it ".into(),
         InputHint::Nothing => String::new(),
     };
-    let block = BorderBlock::default()
+    let mut block = BorderBlock::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(title);
+    // Scrolled up while output arrives: how much is below, and the way
+    // back to following it.
+    let unread = app.unread_below();
+    if unread > 0 {
+        block = block.title(
+            Line::from(Span::styled(
+                format!(
+                    " ↓ {} · {} to follow ",
+                    crate::text::count(unread, "new line"),
+                    if app.input.is_empty() {
+                        "End"
+                    } else {
+                        "Ctrl+End"
+                    }
+                ),
+                Style::default().fg(Color::Yellow),
+            ))
+            .right_aligned(),
+        );
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

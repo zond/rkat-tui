@@ -136,16 +136,16 @@ impl App {
             Some(outcome) => (None, Some(outcome)),
             None => (prompt, None),
         };
+        // Output that arrives, not the user's own move: a view scrolled up
+        // stays where it is (`ScrollState`).
         if let Some(outcome) = &outcome {
             self.transcript.push_outcome(outcome);
-            self.scroll.bottom();
         }
         if self.running {
             if let Some(text) = prompt {
                 // A follow-up run of the turn: a helper's ending note is
                 // its folded line, shown once with its announcement.
                 self.transcript.remote_input(text);
-                self.scroll.bottom();
             }
             return;
         }
@@ -160,7 +160,6 @@ impl App {
         self.running = true;
         self.status.running_since = Some(now);
         self.status.heard_at = Some(now);
-        self.scroll.bottom();
     }
 
     /// Hold a message until the running `!` commands end.

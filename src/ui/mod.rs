@@ -1213,6 +1213,16 @@ struct OpenHelperView {
 }
 
 /// Transcript scroll position.
+///
+/// At the bottom the view follows new output. Scrolled up, it is held by
+/// its top line: the first visible line of the last frame ([`Self::top`]),
+/// and for the transcript the block and the line within it that line
+/// belongs to ([`Self::anchor`], resolved again each frame by the
+/// renderer), so output arriving below, a block above that grows or
+/// folds, a change of the viewport's height and lines appended to the
+/// block the view is inside leave the text on screen where it is. Only
+/// the user's own moves (the scroll keys, the wheel, a jump, a fold kept
+/// at the bottom) move it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrollState {
     /// Lines between the bottom of the viewport and the end of the transcript.
@@ -1220,6 +1230,17 @@ pub struct ScrollState {
     /// Whether the view sticks to the bottom as output arrives.
     pub follow: bool,
     last_total: usize,
+    /// The view's first line as of the last frame, while scrolled up.
+    top: Option<usize>,
+    /// The block the view's first line belongs to, and that line's
+    /// distance from the block's first line (negative: the block starts
+    /// that far below the view's top), while scrolled up.
+    anchor: Option<(BlockId, isize)>,
+    /// Lines that arrived since the view stopped following.
+    unread: usize,
+    /// The next frame's change of length is the user's (a fold), not new
+    /// output.
+    refolded: bool,
 }
 
 impl Default for ScrollState {
@@ -1228,65 +1249,128 @@ impl Default for ScrollState {
             offset_from_bottom: 0,
             follow: true,
             last_total: 0,
+            top: None,
+            anchor: None,
+            unread: 0,
+            refolded: false,
         }
     }
 }
 
 impl ScrollState {
+    /// The user moved the view: what held it lets go.
+    fn moved(&mut self) {
+        self.top = None;
+        self.anchor = None;
+    }
+
     /// Scroll towards older output.
     pub fn up(&mut self, lines: usize) {
+        self.moved();
         self.offset_from_bottom = self.offset_from_bottom.saturating_add(lines);
         self.follow = false;
     }
 
     /// Scroll towards newer output; reaching the bottom re-enables follow.
     pub fn down(&mut self, lines: usize) {
+        self.moved();
         self.offset_from_bottom = self.offset_from_bottom.saturating_sub(lines);
         if self.offset_from_bottom == 0 {
-            self.follow = true;
+            self.bottom();
         }
     }
 
     /// Jump to the oldest output.
     pub fn top(&mut self) {
+        self.moved();
         self.offset_from_bottom = usize::MAX;
         self.follow = false;
     }
 
     /// Jump to the newest output and follow.
     pub fn bottom(&mut self) {
+        self.moved();
         self.offset_from_bottom = 0;
         self.follow = true;
+        self.unread = 0;
     }
 
     /// Show laid-out line `bottom` at the bottom of the window over
     /// `total` lines (as far as the transcript's start allows:
-    /// [`Self::window`] bounds it).
+    /// [`Self::window`] bounds it): a fold the user made.
     pub fn anchor_bottom(&mut self, total: usize, bottom: usize) {
+        self.moved();
         self.offset_from_bottom = total.saturating_sub(bottom.saturating_add(1));
         self.last_total = total;
+        self.refolded = true;
         self.follow = self.offset_from_bottom == 0;
+    }
+
+    /// The view's first line as of the last frame (`None`: following, or
+    /// moved by the user since).
+    #[must_use]
+    pub fn held_top(&self) -> Option<usize> {
+        self.top
+    }
+
+    /// The block (and the line within it) the view is held by.
+    #[must_use]
+    pub fn anchor(&self) -> Option<(BlockId, isize)> {
+        self.anchor
+    }
+
+    /// The view's first line is `top` now (its anchor resolved again over
+    /// the transcript as laid out for this frame).
+    pub fn hold_top(&mut self, top: usize) {
+        if !self.follow {
+            self.top = Some(top);
+        }
+    }
+
+    /// After a frame: hold the view by `anchor` (the block of its first
+    /// line, and that line's distance from the block's first line).
+    pub fn set_anchor(&mut self, anchor: Option<(BlockId, isize)>) {
+        self.anchor = if self.follow { None } else { anchor };
+    }
+
+    /// How many lines arrived below the view since it stopped following
+    /// (0 while following).
+    #[must_use]
+    pub fn unread(&self) -> usize {
+        if self.follow { 0 } else { self.unread }
     }
 
     /// Reconcile with the laid-out transcript and return the first visible line.
     ///
-    /// When not following, growth at the bottom shifts the offset so the visible
-    /// window stays put.
+    /// Following, the last `height` lines; scrolled up, the line it is
+    /// held by stays the first ([`Self::held_top`]); moved by the user
+    /// since the last frame, as far from the bottom as the move put it.
     pub fn window(&mut self, total: usize, height: usize) -> usize {
+        let max_top = total.saturating_sub(height);
+        let grown = total.saturating_sub(self.last_total);
         if self.follow {
             self.offset_from_bottom = 0;
-        } else if total > self.last_total && self.last_total > 0 {
-            self.offset_from_bottom = self
-                .offset_from_bottom
-                .saturating_add(total - self.last_total);
+        } else if let Some(top) = self.top {
+            self.offset_from_bottom = max_top.saturating_sub(top);
+        } else if grown > 0 && self.last_total > 0 && !self.refolded {
+            self.offset_from_bottom = self.offset_from_bottom.saturating_add(grown);
         }
+        if !self.follow && self.last_total > 0 && !self.refolded {
+            self.unread = self.unread.saturating_add(grown);
+        }
+        self.refolded = false;
         self.last_total = total;
-        let max_offset = total.saturating_sub(height);
-        self.offset_from_bottom = self.offset_from_bottom.min(max_offset);
+        self.offset_from_bottom = self.offset_from_bottom.min(max_top);
         if self.offset_from_bottom == 0 {
             self.follow = true;
+            self.unread = 0;
+            self.moved();
         }
-        total.saturating_sub(height) - self.offset_from_bottom
+        let start = max_top - self.offset_from_bottom;
+        if !self.follow {
+            self.top = Some(start);
+        }
+        start
     }
 }
 
@@ -1856,7 +1940,6 @@ impl App {
                         let (level, text) = self.failures.empty_answer_line();
                         self.failures.said = true;
                         self.transcript.push_notice(level, text);
-                        self.scroll.bottom();
                         false
                     }
                     AgentEvent::RunFailed { error_report, .. } => {
@@ -2014,7 +2097,6 @@ impl App {
                 }
                 self.transcript
                     .peer_message(self.run_first_block, from, text);
-                self.scroll.bottom();
             }
             Msg::Triggered {
                 label,
@@ -2024,12 +2106,10 @@ impl App {
                 self.failures.origin = Some(format!(" ({label})"));
                 self.transcript
                     .label_triggered(self.run_first_block, label, prompt, summary);
-                self.scroll.bottom();
             }
             Msg::SeatedHelpers(members) => self.transcript.seated_helpers(members),
             Msg::HelperEnded { path, how, told } => {
                 self.transcript.helper_ended(&path, &how, told.as_deref());
-                self.scroll.bottom();
             }
             Msg::ResetTranscript(blocks) => {
                 self.clear_selection();

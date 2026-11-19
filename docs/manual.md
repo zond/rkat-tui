@@ -249,6 +249,18 @@ written, other arguments pretty-printed, after `┊`), the output (after
 `│`) or the diff, and a denial's whole reason (with how to `/approve`
 it). `/export` writes the same lines.
 
+**Scrolling.** At the bottom the transcript follows new output. Scrolled
+up (PgUp, Shift+↑, the wheel), what you are reading stays where it is
+on screen while output arrives: an answer streaming below, new blocks, a
+block above that grows, a helper panel or a taller input; the view is
+held by its first line, which a resize keeps on top too, and a selection
+stays on its text. The input's top line says `↓ 12 new lines · End to
+follow` while there is new output below; End (Ctrl+End with text in the
+input), or scrolling back to the bottom, follows again. Sending a
+message goes to the bottom. A click or Ctrl-O that opens or folds
+something keeps the bottom line of the screen where it is, scrolled up
+or not. A helper's full view behaves the same.
+
 ### Checkpoints of long runs
 
 One run of an agent may make `agent.checkpoint_steps` model calls (100

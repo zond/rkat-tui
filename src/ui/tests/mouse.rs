@@ -160,6 +160,113 @@ fn ctrl_o_keeps_the_bottom_line_in_place() {
     }
 }
 
+/// The screen of `app` at `width` columns and 30 rows.
+fn screen_at(app: &mut App, width: u16) -> Vec<String> {
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 30)).unwrap();
+    terminal
+        .draw(|f| render::draw_at(f, app, Instant::now()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..30)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Scrolled up, the rows on screen stay exactly as they are while output
+/// arrives: (a) text streamed into the last block, (b) new blocks, (c) a
+/// block above the view growing; a selection stays on its text; the
+/// input's top line counts the new lines below, and End follows again and
+/// clears it. (d) A resize keeps the same first line.
+#[test]
+fn a_scrolled_up_view_stays_on_its_text_while_output_arrives() {
+    let mut app = thirty_reads();
+    let _ = transcript_rows(&mut app);
+    app.update(key(KeyCode::PageUp));
+    let before = transcript_rows(&mut app);
+    assert!(!before[0].contains("f0.rs"), "{before:#?}");
+    // (a)
+    for _ in 0..5 {
+        app.update(agent(AgentEvent::TextDelta {
+            delta: "streamed line\n".into(),
+            assistant_message_id: None,
+        }));
+    }
+    assert_eq!(transcript_rows(&mut app), before, "streamed");
+    // (b)
+    for i in 0..3 {
+        app.transcript.push(Block::Assistant {
+            md: format!("new block {i}"),
+        });
+    }
+    assert_eq!(transcript_rows(&mut app), before, "new blocks");
+    // A peer's message and a run another client started arrive: they
+    // used to jump the view to the bottom.
+    app.update(Msg::Peer {
+        from: "main-cd34".into(),
+        text: "I am changing src/lib.rs".into(),
+    });
+    app.update(Msg::RemoteTurn {
+        prompt: Some("from another client".into()),
+    });
+    assert_eq!(transcript_rows(&mut app), before, "arrivals");
+    let rows = screen(&mut app, 30);
+    assert!(
+        rows[27].contains(" new lines · End to follow"),
+        "{:?}",
+        rows[27]
+    );
+    // A selection on screen, then (c): the first call, above the view,
+    // opens.
+    app.update(down(5, 2));
+    app.update(drag(5, 12));
+    let selected = app.selection().unwrap().range();
+    let lines = app.transcript.line_count();
+    let first = app.transcript.tool_block("t0").unwrap();
+    assert_eq!(app.transcript.toggle_tool(first), Some(false));
+    assert_eq!(transcript_rows(&mut app), before, "a block above grew");
+    let grew = app.transcript.line_count() - lines;
+    assert!(grew > 0);
+    let moved = app.selection().unwrap().range();
+    assert_eq!(
+        (moved.0.line, moved.1.line),
+        (selected.0.line + grew, selected.1.line + grew)
+    );
+    // (d) A narrower terminal: the same first line.
+    let top = screen_at(&mut app, 80)[0].clone();
+    assert_eq!(screen_at(&mut app, 60)[0], top);
+    // End follows: the newest output at the bottom, no count.
+    app.update(key(KeyCode::End));
+    let rows = screen(&mut app, 30);
+    assert!(!rows[27].contains("new line"), "{:?}", rows[27]);
+    assert!(
+        rows[..27].iter().any(|r| r.contains("new block 2")),
+        "{rows:#?}"
+    );
+}
+
+/// At the bottom the view follows new output, and nothing is counted.
+#[test]
+fn at_the_bottom_the_view_follows_new_output() {
+    let mut app = thirty_reads();
+    let _ = transcript_rows(&mut app);
+    app.transcript.push(Block::Assistant {
+        md: "the newest".into(),
+    });
+    let rows = screen(&mut app, 30);
+    assert!(
+        rows[..27].iter().any(|r| r.contains("the newest")),
+        "{rows:#?}"
+    );
+    assert!(!rows[27].contains("new line"), "{:?}", rows[27]);
+}
+
 /// A click that expands a call keeps the bottom line of the screen where
 /// it is (the call opens upwards), and the click that folds it again
 /// brings the screen back exactly.

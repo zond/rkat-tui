@@ -1148,7 +1148,7 @@ Keys:
                                  restore the stash (Ctrl-X Ctrl-S still sends now)
   Ctrl-_                         undo the last input edit (a word, a kill, a paste, a clear;
                                  Ctrl-7 or Ctrl-Shift-- in some terminals)
-  PgUp/PgDn, Shift+Up/Down       scroll the transcript
+  PgUp/PgDn, Shift+Up/Down       scroll the transcript (scrolled up, it stays put as output arrives)
   Ctrl-L                         clear the screen and redraw it
   Ctrl-Z                         suspend to the shell (fg resumes; Unix)
   Shift+Tab                      cycle the permission mode: manual → accept edits → plan → auto

@@ -14,6 +14,13 @@
 
 ### Changed
 
+- Scrolled up in the transcript (or a helper's full view), what you read
+  no longer moves while output arrives: a peer's message, a helper's
+  ending, a run another client or the daemon started, and a failure line
+  no longer jump the view to the bottom, and a block above that grows, a
+  change of the space the transcript has, or a resize no longer shift
+  it. The input's top line counts the new lines below (`↓ 12 new lines ·
+  End to follow`); End follows again.
 - A compaction is one folded line, `✓ compacted: 379 → 68 messages (3.2k
   summary tokens) ▸`; a click or Ctrl-O shows the summary the agent goes
   on from, which nothing showed before, live or in a conversation opened

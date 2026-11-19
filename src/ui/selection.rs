@@ -188,6 +188,19 @@ impl Selection {
         self.head_end = hi;
     }
 
+    /// Move it `lines` laid-out lines down (negative: up): the text it
+    /// covered moved there (something above it grew or folded).
+    pub fn shift(&mut self, lines: isize) {
+        for pos in [
+            &mut self.anchor,
+            &mut self.head,
+            &mut self.anchor_end,
+            &mut self.head_end,
+        ] {
+            pos.line = pos.line.saturating_add_signed(lines);
+        }
+    }
+
     /// First and last selected cell (inclusive), in order.
     pub fn range(&self) -> (CellPos, CellPos) {
         (

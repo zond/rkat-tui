@@ -303,6 +303,15 @@ impl App {
         });
     }
 
+    /// The text under the selection moved `lines` laid-out lines (the
+    /// renderer keeps a scrolled-up view on its text): the selection goes
+    /// with it.
+    pub(crate) fn shift_selection(&mut self, lines: isize) {
+        if let Some(selection) = self.mouse.selection.as_mut() {
+            selection.shift(lines);
+        }
+    }
+
     /// Clear the selection and any press in progress.
     pub(super) fn clear_selection(&mut self) {
         self.mouse.selection = None;

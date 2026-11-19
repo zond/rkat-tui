@@ -112,6 +112,17 @@ impl App {
         &mut self.scroll
     }
 
+    /// How many lines arrived below the view the scroll keys move (the
+    /// open helper view's, else the transcript's) since it stopped
+    /// following (0 while it follows).
+    #[must_use]
+    pub fn unread_below(&self) -> usize {
+        match (self.helper_view(), self.helper_view.as_ref()) {
+            (Some(_), Some(view)) => view.scroll.unread(),
+            _ => self.scroll.unread(),
+        }
+    }
+
     /// Expand or fold the helper header `id`; the line at the bottom of
     /// the screen stays there ([`Self::keep_bottom`]).
     pub(super) fn toggle_helper(&mut self, id: BlockId) -> bool {
