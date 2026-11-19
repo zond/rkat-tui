@@ -54,6 +54,9 @@ pub enum PeerKind {
     Workspace,
     /// One of the sender's own helpers.
     OwnHelper,
+    /// The sending helper's parent: the agent that started it (`None`), or
+    /// the helper that did, by its name.
+    Parent(Option<String>),
     /// Another helper working for the same agent as the sending helper
     /// (by its name): a sibling their parent connected it with
     /// (`connect_helpers`), or a relative in that agent's tree.
@@ -72,6 +75,10 @@ impl PeerKind {
         match self {
             Self::Workspace => "a message to another agent of this workspace".to_string(),
             Self::OwnHelper => "a message to your own helper".to_string(),
+            Self::Parent(None) => "a message to your parent agent".to_string(),
+            Self::Parent(Some(name)) => {
+                format!("a message to `{name}`, the helper that started you")
+            }
             Self::SameTree(name) => format!(
                 "a message to `{name}`, another helper of the same agent (connected by their parent)"
             ),
@@ -90,8 +97,15 @@ pub trait AgentPeers: Send + Sync {
     /// Which kind of agent peer `peer_id` (as the comms tools name a peer)
     /// is to the agent running `session`: another live agent of this
     /// workspace, one of its own helpers, or an agent of another workspace
-    /// it is wired to; `None`: none of them.
-    async fn agent_peer(&self, session: &SessionId, peer_id: &str) -> Option<PeerKind>;
+    /// it is wired to; `None`: none of them. A helper's call names the
+    /// helper (`helper`, its member name) beside the session it works for:
+    /// its peers are its own (its parent, its helpers, its relatives).
+    async fn agent_peer(
+        &self,
+        session: &SessionId,
+        helper: Option<&str>,
+        peer_id: &str,
+    ) -> Option<PeerKind>;
 
     /// Why a message from `session` to `peer_id` cannot arrive now, in
     /// words for the agent (an agent of another workspace whose daemon is
@@ -155,5 +169,24 @@ impl Runs {
             // Its start is not seen yet: the user's when their input waits.
             _ => self.human_pending,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A helper's parent is named as its parent: the agent, or the helper
+    /// that started it by its name.
+    #[test]
+    fn a_parent_is_named_as_the_parent() {
+        assert_eq!(
+            PeerKind::Parent(None).words(),
+            "a message to your parent agent"
+        );
+        assert_eq!(
+            PeerKind::Parent(Some("scout".into())).words(),
+            "a message to `scout`, the helper that started you"
+        );
     }
 }

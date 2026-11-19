@@ -66,6 +66,15 @@
   agent is now also told plainly that the message was not delivered and to
   ask you to run `/wire <workspace>/<agent>` again. The daemon's log
   records each envelope a wire socket admits at info level.
+- A helper's `send_message` to its own parent agent was put to the
+  classifier ("allowed by classifier" under its line), although a message
+  to an agent peer is allowed without review. The gate judged a helper's
+  send by the peers of the agent it works for, among which that agent
+  itself is not. A helper's message to its parent (the agent, or the
+  helper that started it), to the workspace's agents, to its own helpers
+  and to the other helpers of the same agent is now allowed by the policy,
+  for fresh, kept and forked helpers alike. `reply_to_peer` stays
+  reviewed: the gate cannot tell whom it answers.
 - A cancelled `assign` call (an interrupt while its helper was being
   started) left the kind it asked for behind, which a member later seated
   under that name took; it now goes with the call.

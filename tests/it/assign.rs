@@ -907,6 +907,108 @@ async fn a_lowered_limit_refuses_new_helpers_and_retires_none() {
     daemon.stop().await;
 }
 
+/// The owner's report of 2026-11-19: a helper's `send_message` to its own
+/// parent agent went to the classifier, although a message to an agent
+/// peer is tier 1. Each kind of helper sends its parent a message with
+/// the peer id `contacts` gives it: a fresh single-use one, a second one
+/// under the same name once the first was retired, a kept one (twice: its
+/// task, then a new task its parent sends it), and a fork. None is
+/// reviewed; each is allowed by the policy as a message to the parent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_helper_s_message_to_its_parent_is_not_reviewed() {
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        let user = common::user_texts(messages).concat();
+        if user.contains("HTASK") {
+            if common::answers(messages, Some("p1")) {
+                return send(peer_id(messages, "main-"), "TO-PARENT");
+            }
+            if common::answers(messages, Some("m1")) {
+                return Step::Text("HELPER-DONE");
+            }
+            return peers();
+        }
+        if common::answers(messages, Some("p9")) {
+            return Step::Tool {
+                id: "m9",
+                name: "send_message",
+                args: json!({"peer_id": peer_id(messages, "keeper").unwrap_or_default(), "body": "HTASK more", "handling_mode": "queue"}),
+            };
+        }
+        if common::answers(messages, None) {
+            return Step::Text("PARENT-OK");
+        }
+        let inputs = common::run_inputs(messages);
+        if inputs.contains("go fresh") {
+            return common::assign("a1", "scout", "HTASK fresh");
+        }
+        if inputs.contains("go kept") {
+            return common::keep("k1", "keeper", "HTASK kept");
+        }
+        if inputs.contains("go more") {
+            return Step::Tool {
+                id: "p9",
+                name: "contacts",
+                args: json!({}),
+            };
+        }
+        if inputs.contains("go fork") {
+            return common::fork("f1", "kid", "HTASK fork", false);
+        }
+        Step::Text("NOTED")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 80]);
+    let classifier = rig::ScriptedClassifier::allowing(vec![]);
+    let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
+    let daemon =
+        Running::start_with(&common::args_for(&ws.root), setup.options(&ws.root, &llm)).await;
+    let connection = daemon.connect_bound().await;
+    let audit = common::realm_of(&ws.root).join("audit.jsonl");
+    // The helpers' sends the policy allowed, as the audit log has them.
+    let allowed = || {
+        std::fs::read_to_string(&audit)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|line| {
+                line["tool"] == "send_message"
+                    && line["helper"].is_string()
+                    && line["decider"] == "policy"
+                    && line["verdict"] == "allow"
+                    && line["argument"].to_string().contains("TO-PARENT")
+            })
+            .count()
+    };
+    let reviewed = || {
+        classifier
+            .tools()
+            .iter()
+            .filter(|tool| *tool == "send_message")
+            .count()
+    };
+    let gone = async |name: &str| {
+        common::until_async(async || !members(&connection).await.contains(&name.to_string())).await;
+    };
+    for (prompt, sent, wait_gone) in [
+        ("go fresh", 1, Some("scout")),
+        ("go fresh again", 2, Some("scout")),
+        ("go kept", 3, None),
+        ("go more", 4, None),
+        ("go fork", 5, Some("kid")),
+    ] {
+        daemon.prompt(&connection, prompt).await;
+        common::until(|| allowed() >= sent || reviewed() > 0).await;
+        assert_eq!(reviewed(), 0, "{prompt}: {:?}", classifier.tools());
+        assert_eq!(allowed(), sent, "{prompt}");
+        if let Some(name) = wait_gone {
+            gone(name).await;
+        }
+        daemon.idle(&daemon.agent).await;
+    }
+    drop(connection);
+    daemon.stop().await;
+}
+
 /// The name rules: a malformed name, an agent's name and a name in use are
 /// each refused with what to do; nothing is seated for them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

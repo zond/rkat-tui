@@ -47,6 +47,7 @@ use super::conversations::{RunState, SwitchError, Target};
 use super::core::Core;
 use super::protocol::{AgentChoice, AgentRow};
 use super::{AGENT_PROFILE, MOB_ID};
+use crate::mobs::{HelperKey, HelperTag};
 
 /// Why a connection could not be bound to an agent.
 #[derive(Debug, thiserror::Error)]
@@ -235,13 +236,23 @@ impl Agents {
     /// Which kind of agent peer `peer_id` is to the agent running
     /// `session` (the mob's record of each agent's endpoint names it):
     /// an agent of another workspace it is wired to, another live agent,
-    /// or one of its own helpers.
+    /// or one of its own helpers. A helper's call (`helper`: its member
+    /// name; `session`: the session it works for) is judged by the
+    /// helper's own peers ([`Self::helper_peer`]).
     pub async fn agent_peer(
         &self,
         session: &SessionId,
+        helper: Option<&str>,
         peer_id: &str,
     ) -> Option<crate::approval::PeerKind> {
         use crate::approval::PeerKind;
+        if let Some(helper) = helper {
+            let sender = self.helper_key(session, helper)?;
+            return match self.helper_peer(&sender, peer_id).await {
+                Some(kind) => Some(kind),
+                None => self.retired_peer(peer_id),
+            };
+        }
         let caller = self.core.conversations.agent_of(session);
         if let Some(label) = caller
             .as_deref()
@@ -280,41 +291,129 @@ impl Agents {
                 return Some(PeerKind::OwnHelper);
             }
         }
-        // From a helper, another helper working for the same agent: a
-        // sibling its parent connected it with (`connect_helpers`; only
-        // the host wires the workspace's mob), or a relative in that
-        // agent's tree. Its calls pass the same gate as the sender's.
+        // A session no agent runs as: a helper's own (a gate that knew no
+        // helper name), judged as that helper's.
         if caller.is_none()
             && let Some(sender) = self.core.registry.member_key_of_session(session)
+            && let Some(kind) = self.helper_peer(&sender, peer_id).await
         {
-            let bound = self.core.registry.bound_members();
-            if let Some(owner) = bound
-                .iter()
-                .find(|(key, _)| key == &sender)
-                .map(|(_, tag)| tag.owner.clone())
-            {
-                for (key, tag) in bound
-                    .iter()
-                    .filter(|(key, tag)| tag.owner == owner && key != &sender)
-                {
-                    let Ok(handle) = self.core.state.handle_for(&key.mob).await else {
-                        continue;
-                    };
-                    if let Ok(Some(endpoint)) = handle.member_peer_endpoint(&key.member).await
-                        && endpoint.descriptor.peer_id.to_string() == peer_id
-                    {
-                        return Some(PeerKind::SameTree(tag.label().to_string()));
-                    }
-                }
-            }
+            return Some(kind);
         }
         // An `assign` helper that finished and was retired: its own still,
         // and unreachable (`AgentAttendance::unreachable` says why).
+        self.retired_peer(peer_id)
+    }
+
+    /// A retired `assign` helper with the peer id `peer_id`: its parent's
+    /// own still ([`crate::approval::PeerKind::OwnHelper`]).
+    fn retired_peer(&self, peer_id: &str) -> Option<crate::approval::PeerKind> {
         self.core
             .registry
             .endings()
             .retired_peer(peer_id)
-            .map(|_| PeerKind::OwnHelper)
+            .map(|_| crate::approval::PeerKind::OwnHelper)
+    }
+
+    /// The helper `helper` that works for `session` (a gate names a
+    /// helper's calls so: the session it works for and its member name).
+    fn helper_key(&self, session: &SessionId, helper: &str) -> Option<HelperKey> {
+        let registry = &self.core.registry;
+        registry
+            .live_for(session)
+            .into_iter()
+            .find(|key| key.member.as_str() == helper)
+            .or_else(|| {
+                registry
+                    .bound_members()
+                    .into_iter()
+                    .find(|(key, tag)| &tag.owner == session && key.member.as_str() == helper)
+                    .map(|(key, _)| key)
+            })
+    }
+
+    /// Which kind of peer `peer_id` is to the helper `sender`: its parent
+    /// (the agent that started it, or the helper that did), one of the
+    /// workspace's agents, one of its own helpers, or another helper of
+    /// the same agent's tree (a sibling its parent connected it with, or a
+    /// relative). Its calls pass the same gate as the sender's, and the
+    /// agents' calls pass their own.
+    async fn helper_peer(
+        &self,
+        sender: &HelperKey,
+        peer_id: &str,
+    ) -> Option<crate::approval::PeerKind> {
+        use crate::approval::PeerKind;
+        let registry = &self.core.registry;
+        let tag = registry.live_tag(sender).or_else(|| {
+            registry
+                .bound_members()
+                .into_iter()
+                .find_map(|(key, tag)| (&key == sender).then_some(tag))
+        })?;
+        // Every helper of the same agent's tree, with its tag.
+        let mut tree: Vec<(HelperKey, HelperTag)> = registry
+            .bound_members()
+            .into_iter()
+            .filter(|(key, other)| other.owner == tag.owner && key != sender)
+            .collect();
+        for key in registry.live_for(&tag.owner) {
+            if &key != sender
+                && !tree.iter().any(|(bound, _)| bound == &key)
+                && let Some(other) = registry.live_tag(&key)
+            {
+                tree.push((key, other));
+            }
+        }
+        let is = async |key: &HelperKey| self.peer_id_of(&key.mob, &key.member).await;
+        // Its parent: the agent at the top, else the helper above it.
+        if tag.parent_path().is_empty() {
+            if let Some(agent) = self.core.conversations.agent_of(&tag.owner)
+                && self
+                    .peer_id_of(&MobId::from(MOB_ID), &AgentIdentity::from(agent.as_str()))
+                    .await
+                    .as_deref()
+                    == Some(peer_id)
+            {
+                return Some(PeerKind::Parent(None));
+            }
+        } else if let Some((key, parent)) = tree
+            .iter()
+            .find(|(_, other)| other.path.as_slice() == tag.parent_path())
+            && is(key).await.as_deref() == Some(peer_id)
+        {
+            return Some(PeerKind::Parent(Some(parent.label().to_string())));
+        }
+        // The workspace's agents.
+        let names: Vec<String> = self.table.lock().keys().cloned().collect();
+        for name in names {
+            if self
+                .peer_id_of(&MobId::from(MOB_ID), &AgentIdentity::from(name.as_str()))
+                .await
+                .as_deref()
+                == Some(peer_id)
+            {
+                return Some(PeerKind::Workspace);
+            }
+        }
+        // Its own helpers, then the rest of the tree.
+        for (key, other) in &tree {
+            if is(key).await.as_deref() == Some(peer_id) {
+                return Some(if other.parent_path() == tag.path.as_slice() {
+                    PeerKind::OwnHelper
+                } else {
+                    PeerKind::SameTree(other.label().to_string())
+                });
+            }
+        }
+        None
+    }
+
+    /// The peer id of `member` of `mob`, as the engine's record of its
+    /// comms endpoint gives it.
+    async fn peer_id_of(&self, mob: &MobId, member: &AgentIdentity) -> Option<String> {
+        let handle = self.core.state.handle_for(mob).await.ok()?;
+        let endpoint = handle.member_peer_endpoint(member).await.ok()??;
+        Some(endpoint.descriptor.peer_id.to_string())
     }
 
     /// `name`'s run ended: its watches that live for a turn go.
@@ -1163,9 +1262,10 @@ impl crate::approval::AgentPeers for AgentAttendance {
     async fn agent_peer(
         &self,
         session: &SessionId,
+        helper: Option<&str>,
         peer_id: &str,
     ) -> Option<crate::approval::PeerKind> {
-        self.0.upgrade()?.agent_peer(session, peer_id).await
+        self.0.upgrade()?.agent_peer(session, helper, peer_id).await
     }
 
     async fn unreachable(&self, session: &SessionId, peer_id: &str) -> Option<String> {

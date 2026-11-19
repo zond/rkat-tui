@@ -670,7 +670,8 @@ impl ApprovalEngine {
 
     /// Whether `facts` is a comms send ([`super::policy::AGENT_SEND_TOOLS`]:
     /// `send_message`) to another agent of the workspace.
-    async fn to_agent_peer(&self, session_id: &SessionId, facts: &Facts<'_>) -> AgentSend {
+    async fn to_agent_peer(&self, caller: Caller<'_>, facts: &Facts<'_>) -> AgentSend {
+        let session_id = caller.session_id;
         let Some(peers) = self.agent_peers.get() else {
             return AgentSend::No;
         };
@@ -689,7 +690,7 @@ impl ApprovalEngine {
         else {
             return AgentSend::No;
         };
-        let Some(kind) = peers.agent_peer(session_id, &peer).await else {
+        let Some(kind) = peers.agent_peer(session_id, caller.agent, &peer).await else {
             return AgentSend::No;
         };
         match peers.unreachable(session_id, &peer).await {
@@ -1444,7 +1445,7 @@ impl ApprovalEngine {
         // workspace is put to the user: that workspace has its own mode,
         // and plan mode covers what this agent sets in motion there too.
         if decision.tier == Tier::Classifier {
-            match self.to_agent_peer(session_id, facts).await {
+            match self.to_agent_peer(caller, facts).await {
                 AgentSend::Yes(super::attendance::PeerKind::Wired(label))
                     if self.mode() == PermissionMode::Plan =>
                 {
@@ -3018,7 +3019,12 @@ mod tests {
         struct Peers;
         #[async_trait::async_trait]
         impl AgentPeers for Peers {
-            async fn agent_peer(&self, _session: &SessionId, peer: &str) -> Option<PeerKind> {
+            async fn agent_peer(
+                &self,
+                _session: &SessionId,
+                _helper: Option<&str>,
+                peer: &str,
+            ) -> Option<PeerKind> {
                 match peer {
                     "wired" => Some(PeerKind::Wired("api/main-ab12".into())),
                     "local" => Some(PeerKind::Workspace),

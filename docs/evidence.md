@@ -13447,3 +13447,30 @@ the user to run `/wire <label>` again). Tests:
 `daemon::wires::tests::an_unacknowledged_send_is_recognized_and_its_note_says_to_wire_again`.
 `serve` now logs each admitted envelope at info (agent and mob; the
 sender is not known there, the engine's handler does not return it).
+
+## A helper's message to its parent is tier 1 (owner, 0.0.17)
+
+The owner saw a helper's `message → main-…` line with "allowed by
+classifier". The cause, read and then shown by a failing test: a helper's
+gate is built for the session it works for (`ApprovalGate::for_helper(…,
+owner.session, member)`), so `AgentPeers::agent_peer` got the owner's
+session; `agent_of` named the parent agent, which the loop over the
+workspace's agents leaves out as the caller, and the owner's helpers are
+not the parent either, so nothing matched and the classifier decided.
+The same-tree branch, which needed a session no agent runs as, never ran
+from a gate for the same reason.
+
+Now `agent_peer` takes the helper's member name from the `Caller`; a
+helper's peers are its own (`Agents::helper_peer`): its parent (the agent
+when its path has one label, else the helper whose path is its parent
+path: `PeerKind::Parent`, "a message to your parent agent" or "… `x`, the
+helper that started you"), the workspace's agents, its own helpers, and
+the rest of its agent's tree (`SameTree`), from the bound and the live
+helpers both. `reply_to_peer` stays reviewed: the gate sees only its
+arguments, and the turn's sender (or the delivery its `reply_to` names) is
+the engine's to resolve.
+
+Tests: `assign::a_helper_s_message_to_its_parent_is_not_reviewed` (a
+fresh single-use helper, a second one under the same name, a kept one
+for its task and for a task its parent sends it, a fork; failed before:
+the first send was reviewed), `approval::attendance::tests::a_parent_is_named_as_the_parent`.
