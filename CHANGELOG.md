@@ -62,6 +62,11 @@
 - Two `assign` calls of one step for one name could both pass the name
   check, and the second then got the engine's wording; it now gets "the
   name … is in use".
+- A turn could stay "running" for good after two interrupts: Esc while
+  the daemon was slow to answer, the run ending by itself, then Esc again
+  after a pause. The first interrupt's late answer (or its timeout) was
+  no longer counted as the turn's, so the turn waited for it forever. Every
+  interrupt call of a turn now counts until it is answered.
 
 ## [0.0.17] - 2026-11-19
 

@@ -370,7 +370,9 @@ impl Runner {
         let Some(connection) = self.connection() else {
             return;
         };
-        self.turn.interrupt_calls += 1;
+        self.turn
+            .unanswered_interrupts
+            .push(self.turn.interrupt_epoch);
         let epoch = Some(self.turn.interrupt_epoch);
         let params = protocol::InterruptParams {
             target,
@@ -409,8 +411,17 @@ impl Runner {
                 && self.turn.interrupted_at.is_some()
                 && self.turn.interrupt_epoch == epoch
         });
-        if current {
-            self.turn.interrupt_calls = self.turn.interrupt_calls.saturating_sub(1);
+        // Any call of this turn's is answered now, of its current
+        // interrupt or an earlier one (epochs are the runner's, so a call
+        // of another turn's is never found here).
+        if let Some(epoch) = epoch
+            && let Some(at) = self
+                .turn
+                .unanswered_interrupts
+                .iter()
+                .position(|sent| *sent == epoch)
+        {
+            self.turn.unanswered_interrupts.remove(at);
         }
         match result {
             Ok(answer) => {
@@ -833,7 +844,7 @@ impl Runner {
         // too would race it, and a message the stopped run dropped would
         // be told as not delivered instead of coming back
         // ([`Self::interrupt_answered`] asks after it).
-        if outstanding.is_empty() || self.turn.interrupt_calls > 0 {
+        if outstanding.is_empty() || !self.turn.unanswered_interrupts.is_empty() {
             return;
         }
         if let Some(again) = &mut self.asking_fates {
@@ -920,7 +931,7 @@ impl Runner {
             || !self.turn.open_runs.is_empty()
             || self.turn.noted.is_some()
             || self.steers.sending_any()
-            || self.turn.interrupt_calls > 0
+            || !self.turn.unanswered_interrupts.is_empty()
             || !idle
                 .last_run
                 .as_ref()

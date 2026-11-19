@@ -531,9 +531,13 @@ struct Turn {
     last_press: Option<Instant>,
     /// "Already stopped" was said for this interrupt.
     said_stopped: bool,
-    /// `rkat/interrupt` calls not answered yet: the turn does not end
-    /// before they are (their answer returns the messages).
-    interrupt_calls: usize,
+    /// The `rkat/interrupt` calls of this turn not answered yet, each by
+    /// the interrupt it was sent for (its epoch): the turn does not end
+    /// before they are (their answer returns the messages). Counted for
+    /// the turn, not for its current interrupt: a call of an earlier
+    /// interrupt of the turn ("a pause, then Esc") is still awaited, and
+    /// its late answer or timeout takes it off.
+    unanswered_interrupts: Vec<u64>,
     /// Which interrupt of the runner this turn's is
     /// ([`Runner`]'s `interrupts`); an answer of another is not its.
     interrupt_epoch: u64,
@@ -3001,6 +3005,74 @@ mod tests {
         assert_eq!(hard[0]["hard"], true);
     }
 
+    /// Review 7, M29: Esc while the daemon is slow to answer; the run ends
+    /// by itself; after a pause Esc again opens a new interrupt of the
+    /// turn. The first call's late answer (or its timeout) still counts as
+    /// this turn's: once both are answered, in either order, the turn ends
+    /// on the idle notice. Before, the first answer was "not current" and
+    /// the turn stayed running for good.
+    #[tokio::test]
+    async fn a_turn_ends_after_two_interrupts_answered_in_either_order() {
+        let dir = tempfile::tempdir().unwrap();
+        for first_answered_first in [true, false] {
+            let (mut runner, mut ui_rx) = runner(dir.path());
+            let (link, mut requests) = link_recording("live", SessionId::new()).await;
+            runner.conn = up(link);
+            let mut feed = Feed {
+                session: SessionId::new(),
+                seq: 0,
+            };
+            let run = RunId::new();
+            runner.turn = Turn {
+                active: true,
+                id: 1,
+                ..Turn::default()
+            };
+            runner.on_event(feed.started(&run), None);
+            runner.interrupt();
+            let first = runner.turn.interrupt_epoch;
+            runner.on_event(feed.completed(&run), None);
+            runner.idle_reported(feed.idle(&run, 0));
+            assert!(runner.turn.active, "the first interrupt is unanswered");
+            // A pause, then Esc: a new interrupt of the turn.
+            runner.turn.last_press = Instant::now().checked_sub(INTERRUPT_REPEAT * 2);
+            runner.interrupt();
+            let second = runner.turn.interrupt_epoch;
+            assert_ne!(first, second, "{first_answered_first}");
+            assert_eq!(interrupts_sent(&mut requests).await.len(), 2);
+            let answer = || {
+                Ok(protocol::Interrupted {
+                    run_id: Some(run.clone()),
+                    run: protocol::RunInterrupt::Ended,
+                    follow_ups: 0,
+                    returned: Vec::new(),
+                    read: Vec::new(),
+                })
+            };
+            let order = if first_answered_first {
+                [first, second]
+            } else {
+                [second, first]
+            };
+            runner.interrupt_answered(Some(order[0]), answer());
+            assert!(runner.turn.active, "{first_answered_first}: one is left");
+            // The first call timed out, the second was answered: either
+            // way it is no longer awaited.
+            let last = if order[1] == first {
+                Err("the daemon did not answer in time".to_string())
+            } else {
+                answer()
+            };
+            runner.interrupt_answered(Some(order[1]), last);
+            assert!(
+                !runner.turn.active,
+                "{first_answered_first}: the turn ended"
+            );
+            let msgs = drain(&mut ui_rx);
+            assert_eq!(turn_ends(&msgs), 1, "{first_answered_first}: {msgs:?}");
+        }
+    }
+
     /// The daemon's answer returns the messages it took back (to the
     /// editor), marks the read ones delivered, and only then lets the turn
     /// end.
@@ -3014,7 +3086,7 @@ mod tests {
             saw_run: true,
             interrupted_at: Some(Instant::now()),
             interrupted_run: Some(run.clone()),
-            interrupt_calls: 1,
+            unanswered_interrupts: vec![4],
             interrupt_epoch: 4,
             result: Some(Err(TurnFailure::Interrupted)),
             ..Turn::default()
