@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.17] - 2026-11-19
+
 ### Fixed
 
 - The folded line of a helper's note (`✓ helper review-x finished: …`)
