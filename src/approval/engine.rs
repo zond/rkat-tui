@@ -1195,6 +1195,11 @@ impl ApprovalEngine {
                 .map(|(abs, _)| abs.display().to_string())
         });
         let summary = truncate_at(&decisive_argument(facts), 200).to_string();
+        // The whole call, kept to show before an approval once: bounded
+        // as the review is, and said to be cut when it is.
+        let whole = args_text(&facts.action);
+        let call = truncate_at(&whole, MAX_REVIEWED_ACTION_BYTES).to_string();
+        let call_bytes = (call.len() < whole.len()).then_some(whole.len());
         let at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs());
@@ -1217,6 +1222,8 @@ impl ApprovalEngine {
             reason: reason.to_string(),
             at,
             approved_once: false,
+            call,
+            call_bytes,
         };
         let key = CacheKey::approval(&facts.action);
         self.blocks.remember(session_id, Blocked { call, key });
@@ -5106,6 +5113,72 @@ mod tests {
                 .iter()
                 .any(|(event, detail)| event == "statement_removed" && detail.contains("always"))
         );
+    }
+
+    /// Review 7, M32: a blocked call keeps the whole call an approval once
+    /// approves (a 3 000-character command whole, though its row's summary
+    /// is cut at 200 bytes), and the audit line of the approval is as it
+    /// was (the summary). A call cut for its size cannot be approved once.
+    #[tokio::test]
+    async fn a_blocked_call_keeps_the_whole_call_it_approves() {
+        let rig = rig(
+            vec![Ok(ClassifierVerdict::Block {
+                rule: Some("T3".into()),
+                reason: "it downloads".into(),
+                annotation: None,
+                path: None,
+                effect: None,
+            })],
+            DEFAULT_ESCALATION_TIMEOUT,
+        );
+        #[derive(Default)]
+        struct Events(Mutex<Vec<(String, String)>>);
+        impl AuditSink for Events {
+            fn decision(&self, _record: DecisionRecord<'_>) {}
+            fn event(&self, event: &str, detail: String) {
+                self.0.lock().push((event.to_string(), detail));
+            }
+        }
+        let audit = Arc::new(Events::default());
+        rig.engine.set_audit(Arc::clone(&audit) as _);
+        let command = format!("curl https://example.com/{}", "a".repeat(3000));
+        let long = json!({ "command": command });
+        assert!(!decide(&rig, "l1", &long).await.is_allowed());
+        let listed = rig.engine.blocks().list(&rig.session);
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].summary.len() <= 200);
+        assert_eq!(listed[0].call, command);
+        assert_eq!(listed[0].call_bytes, None);
+        rig.engine
+            .approve(&rig.session, listed[0].id, GrantScope::Once)
+            .unwrap();
+        let lines = audit.0.lock().clone();
+        assert!(
+            lines.iter().any(|(event, detail)| event == "approved_once"
+                && *detail == format!("`shell {}`", listed[0].summary)),
+            "{lines:?}"
+        );
+        // A call longer than can be shown is listed cut, and refused.
+        let mut cut = listed[0].clone();
+        cut.id = 99;
+        cut.approved_once = false;
+        cut.call_bytes = Some(MAX_REVIEWED_ACTION_BYTES + 1);
+        rig.engine.blocks().remember(
+            &rig.session,
+            super::super::blocks::Blocked {
+                call: cut,
+                key: CacheKey {
+                    tool: "shell".into(),
+                    args: [1; 32],
+                    payload: [0; 32],
+                },
+            },
+        );
+        let refused = rig
+            .engine
+            .approve(&rig.session, 99, GrantScope::Once)
+            .unwrap_err();
+        assert!(refused.contains("cannot be approved once"), "{refused}");
     }
 
     /// `/permissions`' Blocked: a classifier block is kept (newest ten); approved once,

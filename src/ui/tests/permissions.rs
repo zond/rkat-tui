@@ -373,6 +373,8 @@ fn blocked_offers_once_session_and_always() {
         effect: (id == 2).then(|| "pushing to the default branch".to_string()),
         grant,
         approved_once: false,
+        call: format!("cmd {id}"),
+        call_bytes: None,
     };
     let mut picker = blocked(
         &[
@@ -470,6 +472,8 @@ fn blocked_allows_an_edited_kind_of_effect() {
         effect: effect.map(str::to_string),
         grant: None,
         approved_once: false,
+        call: "git push origin main".into(),
+        call_bytes: None,
     };
     let mut picker = blocked(
         &[
@@ -768,4 +772,81 @@ fn an_approval_shows_in_in_force_and_the_dialog_stays_open() {
         refresh: true,
     });
     assert_eq!(open(&app).section(), Some(Section::InForce.index()));
+}
+
+/// Review 7, M32: a 3 000-character shell command, its row cut at 200
+/// bytes and marked so, is viewable in full (Ctrl+O, scrolled to its end)
+/// before `o` approves it once; before that `o` and Enter say to read it.
+/// A call cut for its size is refused even after reading.
+#[test]
+fn a_long_blocked_call_is_read_in_full_before_it_is_approved_once() {
+    let command = format!("curl https://example.com/{}TAIL", "a".repeat(3000));
+    let long = BlockedCall {
+        summary: command.chars().take(200).collect(),
+        call: command.clone(),
+        ..blocked_call(5, false)
+    };
+    let mut p = blocked(std::slice::from_ref(&long), 160);
+    assert!(
+        p.rows[0].text.contains("… (Ctrl+O: the whole call)"),
+        "{}",
+        p.rows[0].text
+    );
+    for code in [KeyCode::Char('o'), KeyCode::Enter] {
+        assert_eq!(p.key(&press(code)), ModalKey::Stay);
+        assert!(
+            matches!(&p.line, Some(PickerLine::Refused(why)) if why == crate::ui::picker::VIEW_FIRST),
+            "{:?}",
+            p.line
+        );
+    }
+    // Ctrl+O shows it whole; End scrolls to its end.
+    let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    p.key(&ctrl_o);
+    let shown = |p: &ListPicker| -> String {
+        crate::ui::picker::list_picker_lines(p, 60, 20)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let first = shown(&p);
+    assert!(first.contains("in full: lines 1-"), "{first}");
+    assert!(first.contains("https://example.com/aaa"), "{first}");
+    p.key(&press(KeyCode::End));
+    let last = shown(&p);
+    assert!(last.contains("TAIL"), "{last}");
+    // Every line of it was reachable: the whole text, line by line.
+    let lines = crate::ui::markdown::wrap_text(&command, 60).len();
+    assert!(last.contains(&format!("of {lines}")), "{last}");
+    // Back to the list: `o` approves it once now.
+    p.key(&press(KeyCode::Esc));
+    assert!(p.detail.is_none());
+    assert_eq!(
+        p.key(&press(KeyCode::Char('o'))),
+        ModalKey::Choose(PickAct::Approve(5, GrantScope::Once))
+    );
+    // Cut for its size: shown with what was kept, never approved once.
+    let cut = BlockedCall {
+        call_bytes: Some(60_000),
+        ..long
+    };
+    let mut p = blocked(&[cut], 160);
+    p.key(&ctrl_o);
+    // Drawn once (the draw records how far it scrolls), then End.
+    shown(&p);
+    p.key(&press(KeyCode::End));
+    assert!(shown(&p).contains("cut: the call is 60000 bytes"));
+    p.key(&press(KeyCode::Esc));
+    assert_eq!(p.key(&press(KeyCode::Char('o'))), ModalKey::Stay);
+    assert!(
+        matches!(&p.line, Some(PickerLine::Refused(why)) if why.contains("cannot be approved once")),
+        "{:?}",
+        p.line
+    );
 }

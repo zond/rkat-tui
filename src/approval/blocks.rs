@@ -102,6 +102,11 @@ impl Blocks {
         }
         if scope == GrantScope::Once {
             let entry = &mut state.recent[at];
+            // Nobody could have read all of it: an approval once approves
+            // the whole call.
+            if let Some(bytes) = entry.call.call_bytes {
+                return Err(too_long_to_approve(id, bytes));
+            }
             entry.call.approved_once = true;
             return Ok(entry.clone());
         }
@@ -186,6 +191,15 @@ impl Blocks {
 }
 
 /// Why call `id`, approved once already, is not approved again.
+/// Why blocked call `id`, `bytes` long, is not approved once: more of it
+/// than can be shown.
+pub(crate) fn too_long_to_approve(id: u64, bytes: usize) -> String {
+    format!(
+        "call #{id} is {bytes} bytes, more than /permissions can show ({} at most), so nobody could have read all of it: it cannot be approved once; ask the agent for a smaller call, or allow a kind of effect (e) or a grant (s/a) you can judge",
+        super::prompts::MAX_REVIEWED_ACTION_BYTES
+    )
+}
+
 fn waiting(id: u64) -> String {
     format!(
         "call #{id} is approved once already and waits for the agent to run it again; withdraw the approval (w) to approve it otherwise"

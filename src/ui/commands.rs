@@ -1198,7 +1198,9 @@ Lists (/schedules, /permissions, /helpers, /mode, /memory, /wire, /unwire, /sett
   Enter, then y (/unwire)        unwire the agent of the other workspace
   Tab, Shift+Tab (/permissions)  switch between Blocked and In force (inside a field Tab switches
                                  what the field does instead)
-  Enter, o (Blocked)             approve the blocked call once (exact)
+  Enter, o (Blocked)             approve the blocked call once (exact); a row that shows only part
+                                 of the call asks you to read it whole first
+  Ctrl+O (Blocked)               the whole call in place of the list (scroll it; Esc back)
   s, then y (Blocked)            grant its directory or call for this session (exact)
   a, then y (Blocked)            grant it always for this workspace (the realm's tui.toml; exact)
   A, then y (Blocked)            grant it always in every workspace (your own tui.toml; exact)

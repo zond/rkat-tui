@@ -37,6 +37,9 @@ impl Section {
 /// The footer of the Blocked section, before its Tab and Esc.
 const BLOCKED_FOOTER: &str = "Enter approve once · s grant this session · a grant always here · A always in every workspace · e allow this kind of effect";
 
+/// What the Blocked footer adds when a row shows only part of its call.
+const WHOLE_CALL_FOOTER: &str = " · Ctrl+O the whole call";
+
 /// What the Blocked footer adds when a call waits for the agent.
 const WITHDRAW_FOOTER: &str = " · w withdraw a waiting approval";
 
@@ -108,9 +111,17 @@ fn blocked_page(calls: &[BlockedCall], now: u64) -> Page {
                 return waiting_row(call, &who, &rule, &ago);
             }
             let once = PickAct::Approve(call.id, GrantScope::Once);
+            let approve_once = |code| match call.call_bytes {
+                // Nobody could read all of it: the daemon refuses too.
+                Some(bytes) => PickKey::refused(
+                    code,
+                    crate::approval::blocks::too_long_to_approve(call.id, bytes),
+                ),
+                None => PickKey::now(code, once.clone()),
+            };
             let mut keys = vec![
-                PickKey::now(KeyCode::Enter, once.clone()),
-                PickKey::now(KeyCode::Char('o'), once),
+                approve_once(KeyCode::Enter),
+                approve_once(KeyCode::Char('o')),
                 PickKey::refused(
                     KeyCode::Char('w'),
                     "this call is not approved once; there is nothing to withdraw",
@@ -163,15 +174,19 @@ fn blocked_page(calls: &[BlockedCall], now: u64) -> Page {
                 || " · e judged: a kind of effect you type".to_string(),
                 |effect| format!(" · e judged: \"{effect}\""),
             );
-            PickRow::new(
+            let row = PickRow::new(
                 format!(
-                    "#{} {}{who}: {}{rule} · {ago} ago",
-                    call.id, call.tool, call.summary
+                    "#{} {}{who}: {}{}{rule} · {ago} ago",
+                    call.id,
+                    call.tool,
+                    call.summary,
+                    more_marker(call)
                 ),
                 keys,
             )
             .noted(format!("{}{grant}{effect}", call.reason))
-            .keyed(call.id.to_string())
+            .keyed(call.id.to_string());
+            with_whole_call(row, call, vec![KeyCode::Enter, KeyCode::Char('o')])
         })
         .collect();
     let withdraw = if calls.iter().any(|call| call.approved_once) {
@@ -179,10 +194,15 @@ fn blocked_page(calls: &[BlockedCall], now: u64) -> Page {
     } else {
         ""
     };
+    let whole = if calls.iter().any(row_cuts) {
+        WHOLE_CALL_FOOTER
+    } else {
+        ""
+    };
     Page::new(
         rows,
         "nothing was blocked recently",
-        format!("{BLOCKED_FOOTER}{withdraw} · Tab In force · Esc close"),
+        format!("{BLOCKED_FOOTER}{whole}{withdraw} · Tab In force · Esc close"),
         ['d', 'n', 'r']
             .into_iter()
             .map(|code| PickKey::refused(KeyCode::Char(code), IN_FORCE_KEY))
@@ -207,10 +227,13 @@ fn waiting_row(call: &BlockedCall, who: &str, rule: &str, ago: &str) -> PickRow 
         .into_iter()
         .map(|code| PickKey::refused(code, WAITING_REFUSAL)),
     );
-    PickRow::new(
+    let row = PickRow::new(
         format!(
-            "#{} {}{who}: {}{rule} · approved once · waiting for the agent to run it again",
-            call.id, call.tool, call.summary
+            "#{} {}{who}: {}{}{rule} · approved once · waiting for the agent to run it again",
+            call.id,
+            call.tool,
+            call.summary,
+            more_marker(call)
         ),
         keys,
     )
@@ -218,7 +241,43 @@ fn waiting_row(call: &BlockedCall, who: &str, rule: &str, ago: &str) -> PickRow 
         "blocked {ago} ago: {} · w withdraws the approval (the call is blocked again)",
         call.reason
     ))
-    .keyed(call.id.to_string())
+    .keyed(call.id.to_string());
+    with_whole_call(row, call, Vec::new())
+}
+
+/// Whether `call`'s row shows less than the whole call an approval once
+/// approves.
+fn row_cuts(call: &BlockedCall) -> bool {
+    !call.call.is_empty() && call.call.trim() != call.summary.trim()
+}
+
+/// What `call`'s row says after its summary when it shows less than the
+/// whole call.
+fn more_marker(call: &BlockedCall) -> &'static str {
+    if row_cuts(call) {
+        " … (Ctrl+O: the whole call)"
+    } else {
+        ""
+    }
+}
+
+/// `row` with `call`'s whole call behind Ctrl+O when the row shows less
+/// of it; `view_first` act only once it was shown (an approval once
+/// approves what nobody read otherwise). A call cut for its size says so
+/// at its end.
+fn with_whole_call(row: PickRow, call: &BlockedCall, view_first: Vec<KeyCode>) -> PickRow {
+    if !row_cuts(call) {
+        return row;
+    }
+    let detail = match call.call_bytes {
+        Some(bytes) => format!(
+            "{}\n… (cut: the call is {bytes} bytes, {} shown)",
+            call.call,
+            call.call.len()
+        ),
+        None => call.call.clone(),
+    };
+    row.detailed(detail, view_first)
 }
 
 /// The In force section: a row per rule (number, allow or deny, tool,

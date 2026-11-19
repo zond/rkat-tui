@@ -655,7 +655,14 @@ approval would make. On a row:
   (approve it another way, or leave it), and the agent's next try is
   reviewed as before. The keys that approve say it is approved already.
   With only a waiting approval the dialog opens on Blocked and shows that
-  row.
+  row. An approval once approves the whole call, so a row that shows only
+  part of it (its line keeps the first 200 bytes of the command or path,
+  and a write's content is not on it) ends in `… (Ctrl+O: the whole
+  call)`: Ctrl+O shows all of it in place of the list, as the approval
+  dialog shows it (↑/↓, PgUp/PgDn, Home/End scroll; Ctrl+O or Esc go
+  back), and Enter and `o` on that row first say to read it. A call
+  larger than 48 KiB is kept cut, shows where it was cut, and cannot be
+  approved once at all: nobody could have read it whole.
 - `s`, then `y`, grants it **for this session**: when a path outside the
   project and your allowed directories was why (the file tool's target or
   the classifier's `PATH:`), the path's own directory, or its parent when

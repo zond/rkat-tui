@@ -73,6 +73,14 @@
   Your draft stays as it was under the dialog. Enter in the approval and
   "Plan ready" dialogs picks a row only after ↑/↓ moved to it; the numbers
   and letters are unchanged.
+- In `/permissions`' Blocked section, `o` (or Enter) approved a call once
+  as a whole while its row showed at most the first 200 bytes of it: a
+  long command was approved unread. The row now says when it shows only
+  part of the call (`… (Ctrl+O: the whole call)`), Ctrl+O shows all of
+  it in place of the list (↑/↓, PgUp/PgDn, Home/End scroll; Esc back),
+  and `o` and Enter on such a row first say to read it. A call larger
+  than 48 KiB, more than the list keeps, cannot be approved once, and
+  says so. The approval dialog already showed long arguments whole.
 - A message you steered was marked delivered as soon as any later run of
   the turn started, even a run of a helper's note or another agent's
   message while yours still waited behind it. Now it is marked by its

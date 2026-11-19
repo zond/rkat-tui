@@ -155,6 +155,17 @@ pub struct BlockedCall {
     /// call again).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approved_once: bool,
+    /// The whole call as the approval dialog shows it (a shell call's
+    /// command, else its arguments), which an approval once approves:
+    /// `/permissions` shows it before `o` does. At most
+    /// [`super::prompts::MAX_REVIEWED_ACTION_BYTES`]; a longer one is cut
+    /// here and [`Self::call_bytes`] says so.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub call: String,
+    /// The whole call's size when [`Self::call`] holds only its start:
+    /// nobody could read all of it here, so it cannot be approved once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_bytes: Option<usize>,
 }
 
 /// A grant in force, as `/permissions` lists it.

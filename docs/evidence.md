@@ -13332,3 +13332,28 @@ the steer; nothing better is on the wire.
 Tests: `client::runner::tests::a_run_of_a_note_does_not_deliver_a_queued_steer`
 (failed before: the note's run marked the steer delivered),
 `client::runner::steers::tests::a_run_takes_only_the_steers_it_carries`.
+
+## An approval once is read whole first (review 7, M32)
+
+An approval once from `/permissions` is keyed by the exact action
+(`CacheKey::approval`: tool and canonical arguments), but `BlockedCall`
+held only `summary = truncate_at(decisive_argument, 200)`: a 3 000-byte
+command was approved whole with 200 bytes of it on the row, and a write's
+content was never shown. The escalation dialog was checked: its preview is
+abbreviated (`ARGS_PREVIEW_BYTES`) but `args_full` holds the whole
+arguments uncut and Ctrl+O scrolls all of them, so it needed no change.
+
+`BlockedCall` now carries `call` (the same text the dialog shows,
+`args_text`), bounded by the review's own limit
+(`MAX_REVIEWED_ACTION_BYTES`, 48 KiB) and, when cut, `call_bytes` (its
+size). The Blocked row marks a call it does not show whole; Ctrl+O shows
+the whole call in place of the list (`ListPicker::detail`, `PickRow::detail`),
+and Enter and `o` act on such a row only once its detail was shown
+(`PickRow::view_first`, remembered by row across refreshes). A cut call
+cannot be approved once (`blocks::too_long_to_approve`, in the daemon and
+on the row). The audit line of an approval is unchanged (`approved_once`
+with the summary).
+
+Tests: `approval::engine::tests::a_blocked_call_keeps_the_whole_call_it_approves`,
+`ui::tests::permissions::a_long_blocked_call_is_read_in_full_before_it_is_approved_once`
+(failed before: `o` approved the call at once).

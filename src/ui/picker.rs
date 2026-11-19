@@ -11,7 +11,7 @@
 //! in place, until Esc, `q` or Ctrl-C closes it; only an act that goes
 //! somewhere else (a mode, a helper's view, another agent) closes it.
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 
@@ -490,6 +490,29 @@ pub struct PickRow {
     /// name): a refreshed list keeps the highlight on the row of the same
     /// item ([`ListPicker::refreshed`]).
     pub id: Option<String>,
+    /// More than the row shows (a blocked call's whole command): Ctrl+O
+    /// shows it in place of the rows ([`ListPicker::detail`]).
+    pub detail: Option<String>,
+    /// Keys that act only once the detail was shown for this row (an
+    /// approval once of a call longer than its row): before, they say
+    /// to read it first ([`VIEW_FIRST`]).
+    pub view_first: Vec<KeyCode>,
+}
+
+/// What a key that acts on the whole of a row says before Ctrl+O showed
+/// it ([`PickRow::view_first`]).
+pub const VIEW_FIRST: &str =
+    "the row shows only part of the call: Ctrl+O shows all of it; approve it once after reading it";
+
+/// The detail of the highlighted row, shown in place of the rows
+/// ([`PickRow::detail`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DetailView {
+    /// The first line shown.
+    pub scroll: usize,
+    /// The last useful [`Self::scroll`], recorded by the renderer (it
+    /// knows the width).
+    pub scroll_max: std::cell::Cell<usize>,
 }
 
 impl PickRow {
@@ -502,7 +525,18 @@ impl PickRow {
             keys,
             dim: false,
             id: None,
+            detail: None,
+            view_first: Vec::new(),
         }
+    }
+
+    /// The row with `detail` behind Ctrl+O, and `view_first` keys that act
+    /// only once it was shown.
+    #[must_use]
+    pub fn detailed(mut self, detail: impl Into<String>, view_first: Vec<KeyCode>) -> Self {
+        self.detail = Some(detail.into());
+        self.view_first = view_first;
+        self
     }
 
     /// The row as that of item `id` ([`Self::id`]).
@@ -531,6 +565,15 @@ impl PickRow {
         self.keys.iter().find(|key| key.code == code)
     }
 }
+
+/// How a row's showing of its detail is remembered: by its item, else by
+/// its text.
+fn viewed_key(row: &PickRow) -> String {
+    row.id.clone().unwrap_or_else(|| row.text.clone())
+}
+
+/// How many lines PgUp/PgDn move a row's detail.
+const DETAIL_PAGE: usize = 10;
 
 /// The line under a picker's rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -578,6 +621,11 @@ pub struct ListPicker {
     /// The picker's sections, when it has them (`/permissions`): the
     /// fields above are the one shown, Tab and Shift+Tab switch.
     pub sections: Option<Sections>,
+    /// The highlighted row's detail, shown in place of the rows (Ctrl+O).
+    pub detail: Option<DetailView>,
+    /// The rows (by [`PickRow::id`]) whose detail was shown: their
+    /// [`PickRow::view_first`] keys act.
+    pub viewed: std::collections::BTreeSet<String>,
 }
 
 /// One section of a picker with sections: its rows and what goes with
@@ -705,6 +753,7 @@ impl ListPicker {
             self.load(page);
         }
         self.line = None;
+        self.detail = None;
     }
 
     /// Tab (`back`: Shift+Tab): the next section, or the one before,
@@ -790,6 +839,8 @@ impl ListPicker {
             actions: 0,
             keys: Vec::new(),
             sections: None,
+            detail: None,
+            viewed: std::collections::BTreeSet::new(),
         }
     }
 
@@ -829,6 +880,9 @@ impl ListPicker {
             } else {
                 ModalKey::Close
             };
+        }
+        if self.detail_key(key) {
+            return ModalKey::Stay;
         }
         if let Some(PickerLine::Confirm { act, nudged, .. }) = &mut self.line {
             if held || has_ctrl_or_alt(key) {
@@ -906,6 +960,14 @@ impl ListPicker {
             // Between sections only here: no question or field is open.
             KeyCode::Tab if self.sections.is_some() => self.switch_section(false),
             KeyCode::BackTab if self.sections.is_some() => self.switch_section(true),
+            code if self.selected().is_some_and(|row| {
+                row.detail.is_some()
+                    && row.view_first.contains(&code)
+                    && !self.viewed.contains(&viewed_key(row))
+            }) =>
+            {
+                self.line = Some(PickerLine::Refused(VIEW_FIRST.to_string()));
+            }
             code => match self
                 .selected()
                 .and_then(|row| row.key(code))
@@ -926,6 +988,49 @@ impl ListPicker {
             },
         }
         ModalKey::Stay
+    }
+
+    /// Ctrl+O on a row with more than it shows ([`PickRow::detail`]) shows
+    /// all of it in place of the rows (and records that it was shown);
+    /// while it is shown ↑/↓, PgUp/PgDn, Home/End scroll it, Ctrl+O, Esc or
+    /// `q` go back to the rows, and any other key goes back and acts on
+    /// the row. Whether the key was taken.
+    fn detail_key(&mut self, key: &KeyEvent) -> bool {
+        let ctrl_o =
+            key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o');
+        let Some(view) = &mut self.detail else {
+            if !ctrl_o || is_held(key) || matches!(self.line, Some(PickerLine::Field(_))) {
+                return false;
+            }
+            if let Some(row) = self.selected().filter(|row| row.detail.is_some()) {
+                let shown = viewed_key(row);
+                self.viewed.insert(shown);
+                self.detail = Some(DetailView::default());
+                self.line = None;
+            }
+            return true;
+        };
+        let max = view.scroll_max.get();
+        let scroll = match key.code {
+            _ if ctrl_o => None,
+            KeyCode::Esc | KeyCode::Char('q') => None,
+            KeyCode::Up | KeyCode::Char('k') => Some(view.scroll.saturating_sub(1)),
+            KeyCode::Down | KeyCode::Char('j') => Some(view.scroll.saturating_add(1)),
+            KeyCode::PageUp => Some(view.scroll.saturating_sub(DETAIL_PAGE)),
+            KeyCode::PageDown => Some(view.scroll.saturating_add(DETAIL_PAGE)),
+            KeyCode::Home => Some(0),
+            KeyCode::End => Some(max),
+            // Back to the rows, and the key acts there.
+            _ => {
+                self.detail = None;
+                return false;
+            }
+        };
+        match scroll {
+            Some(scroll) => view.scroll = scroll.min(max),
+            None => self.detail = None,
+        }
+        true
     }
 
     /// Whether a one-line field is open (a paste goes into it).
@@ -996,6 +1101,9 @@ impl ListPicker {
         };
         let mut fresh = fresh.at(at);
         fresh.line = line;
+        // What was read stays read; the detail shown stays on its item.
+        fresh.viewed.clone_from(&self.viewed);
+        fresh.detail = same.and(self.detail.clone());
         fresh
     }
 }
@@ -1053,6 +1161,11 @@ pub(super) fn list_picker_lines(
         }
         None => {}
     }
+    if let (Some(view), Some(row)) = (&picker.detail, picker.selected())
+        && let Some(detail) = &row.detail
+    {
+        return detail_lines(row, detail, view, width, max_lines, tail);
+    }
     tail.extend(
         wrap_text(&picker.footer, width)
             .into_iter()
@@ -1096,6 +1209,49 @@ pub(super) fn list_picker_lines(
     let room = max_lines.saturating_sub(tail.len());
     let mut lines = window_lines(rows, selected, room);
     lines.extend(tail);
+    lines
+}
+
+/// The highlighted `row`'s whole `detail` in place of the rows: the row's
+/// first line, a window of the detail at the view's scroll (it records how
+/// far the detail scrolls at this width), where the window is, then `tail`
+/// and the keys of the view.
+fn detail_lines(
+    row: &PickRow,
+    detail: &str,
+    view: &DetailView,
+    width: usize,
+    max_lines: usize,
+    tail: Vec<Line<'static>>,
+) -> Vec<Line<'static>> {
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let text = wrap_text(detail, width);
+    let keys = wrap_text(
+        "↑/↓ PgUp/PgDn Home/End scroll · Ctrl+O, Esc back to the list · another key acts on the row",
+        width,
+    );
+    let head = wrap_text(&row.text, width)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    // The row's line, the place line, the tail and the keys.
+    let room = max_lines.saturating_sub(2 + tail.len() + keys.len()).max(1);
+    let total = text.len();
+    let max = total.saturating_sub(room);
+    view.scroll_max.set(max);
+    let start = view.scroll.min(max);
+    let end = (start + room).min(total);
+    let mut lines = vec![Line::styled(
+        head,
+        Style::default().add_modifier(Modifier::REVERSED),
+    )];
+    lines.push(Line::styled(
+        format!("in full: lines {}-{end} of {total}", start + 1),
+        dim,
+    ));
+    lines.extend(text.into_iter().skip(start).take(room).map(Line::from));
+    lines.extend(tail);
+    lines.extend(keys.into_iter().map(|line| Line::styled(line, dim)));
     lines
 }
 

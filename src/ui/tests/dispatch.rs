@@ -1632,6 +1632,8 @@ pub(super) fn blocked_call(id: u64, approved_once: bool) -> crate::approval::gra
         at: 100,
         grant: None,
         approved_once,
+        call: format!("cmd {id}"),
+        call_bytes: None,
     }
 }
 
