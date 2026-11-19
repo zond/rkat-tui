@@ -139,3 +139,46 @@ async fn a_daemon_note_reloads_the_agent_and_reaches_it() {
     no_engine_words(&rig.seen);
     rig.quit().await;
 }
+
+/// Review 7, M19: a write of the helpers' bindings that fails (a full
+/// disk, injected) is told to the agent's client once, in plain words
+/// naming the file and what a restart would get wrong, and the audit log
+/// records it; the retry that saves it is told too. The change itself is
+/// kept and written (`mobs::bindings` unit tests).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bindings_write_on_a_full_disk_is_told_and_its_recovery_too() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    rig.agent().await;
+    let registry = rig.daemon.registry();
+    let bindings = registry.bindings();
+    bindings.fail_writes(1);
+    assert!(
+        bindings
+            .remove_mob(&meerkat_mob::MobId::from("gone"))
+            .is_err()
+    );
+    let told = |text: &'static str| move |msg: &Msg| matches!(msg, Msg::Notice { text: t, .. } if t.contains(text));
+    let failed = rig.wait_for(told("could not be saved")).await;
+    let Msg::Notice { text, .. } = failed else {
+        unreachable!()
+    };
+    assert!(
+        text.contains("the helpers' bookkeeping could not be saved to")
+            && text.contains(rkat_tui::mobs::bindings::BINDINGS_FILE)
+            && text.contains("No space left on device")
+            && text.contains("a finished helper may be seated again")
+            && text.contains("free space on that filesystem"),
+        "{text}"
+    );
+    bindings.flush().unwrap();
+    rig.wait_for(told("the helpers' bookkeeping is saved again"))
+        .await;
+    let audit = std::fs::read_to_string(common::realm_of(&ws.root).join("audit.jsonl")).unwrap();
+    assert!(
+        audit.contains("storage_write_failed") && audit.contains("storage_write_saved"),
+        "{audit}"
+    );
+    rig.quit().await;
+}

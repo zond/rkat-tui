@@ -94,6 +94,16 @@
   highlighted, copied on release, scrolling the view at its edges) and a
   double or triple click as the transcript's do, also while the view is
   scrolled back; a middle-click pastes what was copied there.
+- On a full or failing disk a change of the helpers' bookkeeping
+  (`tui_helpers.json`: a finished helper's retire, its task, its session,
+  a retired helper or a destroyed mob) was logged and lost, so after a
+  restart a finished helper could be seated again or a retired one's
+  binding come back. Such a change is now kept and written again at the
+  next change, every few minutes and at the daemon's stop; the agents'
+  clients are told once when the write fails (naming the file and what a
+  restart would get wrong) and once when it is saved again, and the audit
+  log records both. A helper's binding or a mob's owner that cannot be
+  written refuses its start, as before.
 - A cancelled `assign` call (an interrupt while its helper was being
   started) left the kind it asked for behind, which a member later seated
   under that name took; it now goes with the call.

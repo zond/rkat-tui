@@ -133,9 +133,90 @@ pub fn crossed_low(was_low: bool, free: Option<u64>) -> (bool, bool) {
     (low, low && !was_low)
 }
 
+/// What the agents' clients are told when the helpers' bindings file
+/// `file` (under the realm `realm`) could not be written (`why`), or is
+/// saved again.
+#[must_use]
+pub fn bindings_line(realm: &Path, file: &Path, saving: &crate::mobs::bindings::Saving) -> String {
+    match saving {
+        crate::mobs::bindings::Saving::Unsaved(why) => format!(
+            "the disk that holds rkat-tui's state ({}) is full or failing: the helpers' bookkeeping could not be saved to {} ({why}), so after a restart a finished helper may be seated again or a retired one's binding come back; rkat-tui saves it again at the next change and every few minutes: free space on that filesystem",
+            realm.display(),
+            file.display()
+        ),
+        crate::mobs::bindings::Saving::SavedAgain => format!(
+            "the helpers' bookkeeping is saved again ({})",
+            file.display()
+        ),
+    }
+}
+
+/// Tell every live agent's clients and the audit log what the helpers'
+/// bindings said of their file ([`bindings_line`]). Off the caller: the
+/// bindings tell it under their own lock, which the agents' table must
+/// not wait on.
+pub fn bindings_saving(
+    agents: std::sync::Weak<super::agents::Agents>,
+    saving: crate::mobs::bindings::Saving,
+) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        tracing::warn!(
+            ?saving,
+            "the helper bindings' state is told to no one: no runtime"
+        );
+        return;
+    };
+    runtime.spawn(async move {
+        let Some(live) = agents.upgrade() else {
+            return;
+        };
+        let core = live.core();
+        let realm = core.realm.clone();
+        let file = core
+            .registry
+            .bindings()
+            .path()
+            .map_or_else(|| realm.clone(), Path::to_path_buf);
+        let text = bindings_line(&realm, &file, &saving);
+        let (event, warn) = match &saving {
+            crate::mobs::bindings::Saving::Unsaved(_) => ("storage_write_failed", true),
+            crate::mobs::bindings::Saving::SavedAgain => ("storage_write_saved", false),
+        };
+        if warn {
+            tracing::warn!(file = %file.display(), "{text}");
+        } else {
+            tracing::info!(file = %file.display(), "{text}");
+        }
+        if let Some(audit) = &core.audit {
+            audit.write(&super::audit::Line::event(event, text.clone()));
+        }
+        for agent in live.names() {
+            core.decisions.broadcast(
+                super::protocol::AGENT_NOTICE,
+                &super::protocol::AgentNotice {
+                    agent,
+                    warn,
+                    text: text.clone(),
+                },
+            );
+        }
+    });
+}
+
+/// Write what the helpers' bindings file misses, off the loop (a retry
+/// after a failed write; nothing when it is up to date).
+async fn flush_bindings(live: &super::agents::Agents) {
+    let registry = std::sync::Arc::clone(&live.core().registry);
+    let flushed = tokio::task::spawn_blocking(move || registry.bindings().flush()).await;
+    if let Ok(Err(err)) = flushed {
+        tracing::warn!(error = %err, "the helper bindings are still not saved");
+    }
+}
+
 /// Read the realm's free space at once and every [`SPACE_EVERY`]; each
 /// time it falls below [`LOW_SPACE`] every live agent's clients are told
-/// once ([`low_space_line`]).
+/// once ([`low_space_line`]). Each pass also writes what the helpers'
+/// bindings file misses after a failed write.
 pub fn watch_free_space(
     agents: std::sync::Weak<super::agents::Agents>,
 ) -> tokio::task::JoinHandle<()> {
@@ -153,6 +234,7 @@ pub fn watch_free_space(
             .await
             .ok()
             .flatten();
+            flush_bindings(&live).await;
             let (now_low, crossed) = crossed_low(low, free);
             low = now_low;
             if crossed && let Some(free) = free {

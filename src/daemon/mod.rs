@@ -651,6 +651,12 @@ impl Daemon {
             let roster: Arc<dyn contacts::Roster> = agents.clone();
             Arc::downgrade(&roster)
         });
+        // A helpers' bindings write that fails, and the one that saves it
+        // again, reach every agent's clients and the audit log.
+        core.registry.bindings().on_saving({
+            let agents = Arc::downgrade(&agents);
+            Arc::new(move |saving| storage::bindings_saving(agents.clone(), saving))
+        });
         attach_engine(&core, &agents, &workspace)?;
         composed.desk.report_to(&composed.engine);
         let (endings_task, endings_stop) = deliver_endings(&agents);
@@ -860,6 +866,12 @@ impl Daemon {
         // The usage counted since the last run end, off the loop.
         let ledger = Arc::clone(&self.local.core().ledger);
         let _ = tokio::task::spawn_blocking(move || ledger.flush()).await;
+        // What the helpers' bindings file misses after a failed write.
+        let registry = Arc::clone(&self.local.core().registry);
+        if let Ok(Err(err)) = tokio::task::spawn_blocking(move || registry.bindings().flush()).await
+        {
+            tracing::warn!(error = %err, "the helper bindings were not saved at the stop");
+        }
         // No helper's retire meets its mob's stop: none starts from now on,
         // and the ones under way end first (`mobs::endings::Retirements`).
         // A helper left seated so is retired at the next start.

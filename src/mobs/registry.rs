@@ -776,9 +776,9 @@ impl HelperRegistry {
         self.scratch.remove(member);
     }
 
-    /// The persisted bindings (tests and diagnostics).
+    /// The persisted bindings (their retry and their outlet, the daemon's;
+    /// tests).
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn bindings(&self) -> &HelperBindings {
         &self.bindings
     }

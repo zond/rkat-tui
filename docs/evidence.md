@@ -13575,3 +13575,35 @@ What changed: the pending line says *goes in at the agent's next step*
 (was *delivering…*), and the manual says when that is. The test's case
 (d) pins the engine's one-per-request rule and fails the day a release
 lets all waiting steers join the next request.
+
+## The helpers' bindings on a full disk (review 7, M19)
+
+Every write of `tui_helpers.json` that failed was a `tracing::warn!` and
+nothing else: memory had the change, the file did not, and a restart
+read the file (a done helper seated again, a retired one's binding
+back). Following the usage records' precedent (`daemon::usage`: a record
+is dirty until a write of it succeeds, retried at the next write), the
+bindings now keep the changes the file misses (`owed`, closures over
+owned values) and apply them to the file again at the next change, at
+`HelperBindings::flush` (each pass of `storage::watch_free_space`, every
+5 minutes, and the daemon's stop). They are kept as changes, not as
+memory's state, because memory does not hold all the file does
+(`forget_owner` drops a session's entries from memory only); a lookup
+that falls back to the file applies them too. `bind` and `set_mob_owner`
+are refused instead (file first, memory after; neither changes on a
+failure), as their callers already refused the spawn. The first failure
+of a period and the success after it are told
+(`HelperBindings::on_saving`, `storage::bindings_saving`: off the
+caller's lock in a task, an `AGENT_NOTICE` to every live agent and an
+audit line `storage_write_failed` / `storage_write_saved`).
+
+Not covered here: `held-notes.json` and `helper-links.json` keep their
+own handling (a failed save of held notes warns; a link that cannot be
+recorded is refused and rolled back).
+
+Tests: `mobs::bindings::tests::changes_a_full_disk_refused_are_written_once_it_has_room`
+(an injected ENOSPC on two writes: kept, seen by a lookup from the file,
+one notice, written by a flush, one "saved again", in the file reopened;
+a bind during it refused and left nowhere),
+`storage::a_bindings_write_on_a_full_disk_is_told_and_its_recovery_too`
+(the client's notices and the audit lines).
