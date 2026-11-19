@@ -485,6 +485,7 @@ impl Local {
             method::New, Empty {} => self.switch(&self.agent_of(&caller)?, Target::Fresh).await;
             method::Resume, protocol::SessionParams { session_id } => self.switch(&self.agent_of(&caller)?, Target::Resume(session_id)).await;
             method::Transcript, protocol::SessionParams { session_id } => self.transcript(&session_id).await;
+            method::LastMessage, protocol::SessionParams { session_id } => self.last_message(&session_id).await;
             method::Context, Empty {} => self.context(&caller).await;
             method::Endpoint, protocol::SessionParams { session_id } => Ok(self.endpoint_of(&session_id).await);
             method::Usage, protocol::SessionParams { session_id } => self.usage(session_id).await;

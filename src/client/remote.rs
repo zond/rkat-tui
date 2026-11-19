@@ -452,6 +452,21 @@ pub async fn transcript(
         .map(|transcript| transcript.messages)
 }
 
+/// A conversation's last message that is no system row or notice
+/// (`rkat/last_message`).
+///
+/// # Errors
+///
+/// The call's error, or [`ClientError::Decode`].
+pub async fn last_message(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<Option<meerkat_core::Message>, ClientError> {
+    call::<method::LastMessage>(connection, &session_params(session))
+        .await
+        .map(|last| last.messages.into_iter().next())
+}
+
 /// A conversation's total token usage and its totals by model
 /// (`rkat/usage`).
 ///

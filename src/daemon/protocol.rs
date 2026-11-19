@@ -337,6 +337,10 @@ methods! {
     /// A conversation's committed messages (a client renders a resumed
     /// conversation from them).
     Transcript = "rkat/transcript" (SessionParams) -> MessageList;
+    /// A conversation's last message, its system rows and notices skipped
+    /// (none when it has none): what a retried prompt is compared with,
+    /// without sending the whole transcript.
+    LastMessage = "rkat/last_message" (SessionParams) -> MessageList;
     /// A conversation's total usage as the engine keeps it with the session
     /// (a client seeds its token counter from it on attach and after a
     /// switch; the engine's wire reports usage only per turn), and its

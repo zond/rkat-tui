@@ -13650,3 +13650,15 @@ start. The work past the check is `Links::make` now, and `link` closes
 the unused sockets on any failure of it. Test:
 `connect::a_connection_not_made_leaves_no_socket_open` (ends in mobs that
 do not exist; it failed with the old path restored).
+
+## A retry reads the last message only (review 7, L27)
+
+A prompt re-sent after a failed turn is compared with the conversation's
+last message (when it is that prompt, the retry sends a placeholder
+instead of a second copy). The client fetched the whole transcript for
+it (`rkat/transcript`), megabytes on a long conversation. The daemon
+answers `rkat/last_message` now: at most one message, the last that is no
+system row or notice; it still reads the conversation itself, the wire
+carries one message. Test: the retry case
+`client_turns::the_same_prompt_after_a_failed_turn_is_not_added_twice`
+also reads the method directly.

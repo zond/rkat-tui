@@ -97,6 +97,29 @@ impl Local {
         Ok(protocol::Transcript { messages })
     }
 
+    /// `rkat/last_message`: a conversation's last message that is no
+    /// system row or notice (none, or that one).
+    pub(super) async fn last_message(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<protocol::Transcript, Refusal> {
+        let messages = self
+            .core
+            .conversations
+            .messages(session_id)
+            .await
+            .map_err(Refusal::switch_failed)?;
+        let last = messages.into_iter().rev().find(|message| {
+            !matches!(
+                message,
+                meerkat_core::Message::System(_) | meerkat_core::Message::SystemNotice(_)
+            )
+        });
+        Ok(protocol::Transcript {
+            messages: last.into_iter().collect(),
+        })
+    }
+
     /// `rkat/context`: what the caller's agent's conversation holds (its
     /// messages, tools, hidden tools and skills).
     pub(super) async fn context(

@@ -593,6 +593,19 @@ async fn the_same_prompt_after_a_failed_turn_is_not_added_twice() {
     // The failed run committed the prompt.
     let session = rig.messages().await;
     assert_eq!(user_texts(&session), vec!["fix the build".to_string()]);
+    // What the retry is compared with travels alone (review 7, L27): the
+    // last message, the prompt, not the transcript.
+    let id = rig.current_session().await;
+    let last = rig
+        .daemon
+        .connect()
+        .await
+        .call("rkat/last_message", json!({"session_id": id.to_string()}))
+        .await
+        .unwrap();
+    let last: Vec<Message> = serde_json::from_value(last["messages"].clone()).unwrap();
+    assert_eq!(user_texts(&last), vec!["fix the build".to_string()]);
+    assert_eq!(last.len(), 1, "{last:?}");
 
     // Re-typed (with stray whitespace): a retry, not a second copy.
     rig.send(Effect::StartTurn("  fix the build\n".into()));
