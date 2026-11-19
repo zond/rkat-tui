@@ -201,6 +201,13 @@ repository). Open upstream issues this code waits on:
   #2180 (`approval::policy::SHELL_JOB_TOOLS`, `BACKGROUND_SHELL_UNAVAILABLE`
   go when a mob member's shell keeps its `Detached` contract).
 
+- #2431 (filed 2026-11-19): every steer waiting at a model boundary
+  joining that request (the engine takes one per request, oldest first).
+  The daemon's hold of its own notes for a running agent
+  (`src/daemon/activity.rs` `HeldNote`, `agents::hold_or_steer`) can
+  become a plain steer when it ships; two typed messages one request
+  apart are the engine's until then.
+
 - #2300: `blob_save_file` and `view_image` taking additional allowed
   directories from the host. The scratch-directory instruction's sentence
   about them (`src/bootstrap/persona.rs`) goes when it ships.
