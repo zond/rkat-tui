@@ -740,7 +740,7 @@ impl Agents {
             let whose = whose.clone();
             self.core
                 .conversations
-                .while_idle(name, |session| async move {
+                .apply_if_idle(name, |session| async move {
                     revisions.bring_up(&session, &whose).await
                 })
                 .await

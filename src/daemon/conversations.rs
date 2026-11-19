@@ -910,10 +910,15 @@ impl Conversations {
             .register_root(Self::key(agent), session, &model, binding.as_ref());
     }
 
-    /// Run `apply` on `agent`'s current session while it is idle and
-    /// live: no conversation switch runs meanwhile (the switch lock is
-    /// held), no run is open when it starts, and the member's session is
-    /// materialized in the runtime (a model switch, `rkat/set_model`).
+    /// Run `apply` on `agent`'s current session if it is idle and live
+    /// when checked: no conversation switch runs meanwhile (the switch lock
+    /// is held), no run is open when `apply` starts, and the member's
+    /// session is materialized in the runtime (a model switch,
+    /// `rkat/set_model`). Idle when checked, not kept idle: a run that
+    /// starts after the check (a peer's message, another client's prompt,
+    /// a daemon note) is not held off, and the engine then refuses a
+    /// reconfigure of the running session itself; each caller says so in
+    /// plain words (review 7, L38).
     ///
     /// A member the daemon restored at start is seated but dormant until
     /// something reaches it: the runtime has no state for its session, and
@@ -926,7 +931,7 @@ impl Conversations {
     /// [`SwitchError::Running`] when a turn runs, [`SwitchError::NoSession`]
     /// when the agent has none, [`SwitchError::Mob`] when its status
     /// cannot be read or the engine refuses to wake it.
-    pub async fn while_idle<T, F>(
+    pub async fn apply_if_idle<T, F>(
         &self,
         agent: &str,
         apply: impl FnOnce(SessionId) -> F,
@@ -945,7 +950,7 @@ impl Conversations {
     }
 
     /// Wake `identity` of `mob` when its session is not materialized in
-    /// the runtime ([`Self::while_idle`]).
+    /// the runtime ([`Self::apply_if_idle`]).
     async fn ensure_live(&self, mob: &MobId, identity: &AgentIdentity) -> Result<(), SwitchError> {
         let handles = self
             .state

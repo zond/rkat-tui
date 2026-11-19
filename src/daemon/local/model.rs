@@ -75,7 +75,7 @@ impl Local {
         let (session, report) = self
             .core
             .conversations
-            .while_idle(agent, |session| async move {
+            .apply_if_idle(agent, |session| async move {
                 let report = machine
                     .reconfigure_session_llm_identity(&session, request)
                     .await?;
@@ -83,13 +83,12 @@ impl Local {
             })
             .await
             .map_err(|err| match err {
-                crate::daemon::conversations::SwitchError::Running => Refusal::new(
-                    SWITCH_BUSY,
-                    "a turn is running; switch models once it ends (or interrupt it)",
-                ),
+                crate::daemon::conversations::SwitchError::Running => {
+                    Refusal::new(SWITCH_BUSY, MODEL_SWITCH_BUSY)
+                }
                 other => other.into(),
             })?
-            .map_err(Refusal::switch_failed)?;
+            .map_err(|err| reconfigure_refusal(self.core.activity.running(agent), &err))?;
         tracing::debug!(?report, "switched the agent's model");
         // Its helpers from now on run on the new model, through its
         // endpoint (a spawn names its owner's model, `crate::mobs::customizer`).
@@ -376,5 +375,37 @@ impl Local {
         {
             tracing::warn!(%agent, %warning, "plan mode");
         }
+    }
+}
+
+/// Why a model switch is refused while the agent's turn runs.
+const MODEL_SWITCH_BUSY: &str = "a turn is running; switch models once it ends (or interrupt it)";
+
+/// The engine refused the model switch's reconfigure (`err`): a run that
+/// started after the idle check (`running` now) is said as the busy
+/// refusal, in the same words, anything else as the switch's failure.
+fn reconfigure_refusal(running: bool, err: &impl std::fmt::Display) -> Refusal {
+    if running {
+        Refusal::new(SWITCH_BUSY, MODEL_SWITCH_BUSY)
+    } else {
+        Refusal::switch_failed(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review 7, L38: the engine's refusal of a reconfigure because a run
+    /// started after the idle check reads as the busy refusal, not as the
+    /// engine's words; any other refusal says what failed.
+    #[test]
+    fn a_run_started_after_the_check_is_the_busy_refusal() {
+        let busy = reconfigure_refusal(true, &"runtime is busy: session running");
+        assert_eq!(busy.code, SWITCH_BUSY);
+        assert_eq!(busy.message, MODEL_SWITCH_BUSY);
+        let failed = reconfigure_refusal(false, &"model not found");
+        assert_eq!(failed.code, protocol::SWITCH_FAILED);
+        assert!(failed.message.contains("model not found"), "{failed:?}");
     }
 }

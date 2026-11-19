@@ -13662,3 +13662,17 @@ system row or notice; it still reads the conversation itself, the wire
 carries one message. Test: the retry case
 `client_turns::the_same_prompt_after_a_failed_turn_is_not_added_twice`
 also reads the method directly.
+
+## "While idle" is a check (review 7, L38)
+
+`Conversations::while_idle` held the agent's switch lock, checked that no
+run was open and woke the member, then applied; a run that started after
+the check (a peer's message, another client's prompt, a daemon note) was
+not held off. The engine refuses a reconfigure of a running session
+itself, so nothing is corrupted. It is `apply_if_idle` now, its doc says
+idle when checked. Its callers: the instructions' bring-up already turns
+the engine's busy answer into a wait for the run's end (`Outcome::Waiting`);
+the model switch said the engine's words, and now says the same busy
+refusal as before the check when the agent runs at the time of the
+engine's refusal (`local::model::reconfigure_refusal`). Test:
+`daemon::local::model::tests::a_run_started_after_the_check_is_the_busy_refusal`.
