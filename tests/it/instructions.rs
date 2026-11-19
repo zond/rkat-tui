@@ -123,6 +123,157 @@ async fn remember_reaches_this_session_and_the_next() {
     rig.quit().await;
 }
 
+/// What the engine's comms section, its `mob-communication` skill and its
+/// `send_message` description teach about the comms tools rkat-tui does
+/// not offer, none of it in a request.
+const ABSENT: [&str; 8] = [
+    "skill_name=\"multi-agent-comms\"",
+    "reply_to_peer",
+    "send_request",
+    "send_response",
+    "`peers`",
+    "**peers**",
+    "# Inter-agent Communication",
+    "skill_name=\"mob-communication\"",
+];
+
+/// A request of `kind` names none of [`ABSENT`], in its system prompt or
+/// in `send_message`'s description, and still names `send_message` and
+/// `contacts` (its instructions and its tools).
+fn no_absent_comms_tools(kind: &str, request: &common::Recorded) {
+    let system = request.system();
+    for absent in ABSENT {
+        assert!(!system.contains(absent), "{kind}: {absent} in\n{system}");
+    }
+    let send = request
+        .defs
+        .iter()
+        .find(|def| def.name.as_str() == "send_message")
+        .unwrap_or_else(|| panic!("{kind}: no send_message in {:?}", request.tools));
+    for absent in ["reply_to_peer", "send_request", "send_response", "peers"] {
+        assert!(
+            !send.description.contains(absent),
+            "{kind}: {absent} in {}",
+            send.description
+        );
+    }
+    assert!(
+        request.tools.iter().any(|tool| tool == "contacts"),
+        "{kind}: {:?}",
+        request.tools
+    );
+    for named in ["`send_message`", "`contacts`"] {
+        assert!(system.contains(named), "{kind}: no {named} in\n{system}");
+    }
+}
+
+/// The engine's instructions about `reply_to_peer`, `send_request`,
+/// `send_response` and `peers` (lukacf/meerkat#2432) reach no model: not
+/// the agent's, a fresh helper's, a fork's (whose conversation is a copy of
+/// its parent's, system prompt and all) or a member's of a mob the agent
+/// created (`rkat_tui::daemon::comms_text`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_request_teaches_the_comms_tools_we_do_not_offer() {
+    use meerkat_core::Message;
+    use serde_json::json;
+    let ws = Workspace::new();
+    let step = Step::Dynamic(std::sync::Arc::new(|messages: &[Message]| {
+        let user = common::user_texts(messages).concat();
+        if user.contains("FORK-TASK") {
+            return Step::Text("fork done");
+        }
+        if common::is_helper(messages, "FRESH-TASK") {
+            return Step::Text("fresh done");
+        }
+        if common::is_helper(messages, "MOB-TASK") {
+            return Step::Text("member done");
+        }
+        let all = format!("{messages:?}");
+        let call = |id: &'static str, name: &'static str, args: serde_json::Value| Step::Tool {
+            id,
+            name,
+            args,
+        };
+        if !all.contains("\"a1\"") {
+            return common::assign("a1", "fresh", "FRESH-TASK");
+        }
+        if !all.contains("\"a2\"") {
+            return common::fork("a2", "kid", "FORK-TASK", false);
+        }
+        if !all.contains("\"m1\"") {
+            return call(
+                "m1",
+                "mob_create",
+                json!({"definition": {"id": "team", "profiles": {"worker": {"model": common::MODEL, "tools": {"comms": true}}}}}),
+            );
+        }
+        if !all.contains("\"s1\"") {
+            return call(
+                "s1",
+                "mob_spawn_member",
+                json!({"mob_id": "team", "profile": "worker", "member_id": "w1", "initial_message": "MOB-TASK"}),
+            );
+        }
+        Step::Text("ok")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 30]);
+    let setup = rig::Setup::default();
+    let args = setup.command_line(&ws.root);
+    let daemon = rig::Running::start_with(&args, setup.options(&ws.root, &llm)).await;
+    daemon
+        .reveal(&daemon.session, &["mob_create", "mob_spawn_member"])
+        .await;
+    let connection = daemon.connect_bound().await;
+    daemon.prompt(&connection, "go").await;
+    // Every helper's run ends before the daemon stops (a fork's result
+    // run: lukacf/meerkat#2374, #2384; the team's member: its mob's
+    // shutdown).
+    common::until(|| common::parent_told(&llm, "FRESH-TASK", "fresh")).await;
+    common::until(|| {
+        llm.recorded().iter().any(|r| {
+            let user = common::user_texts(&r.messages).concat();
+            !user.contains("FORK-TASK") && format!("{:?}", r.messages).contains("fork done")
+        })
+    })
+    .await;
+    let registry = daemon.registry();
+    let member = rkat_tui::mobs::HelperKey::new(
+        meerkat_mob::MobId::from("team"),
+        meerkat_mob::AgentIdentity::from("w1"),
+    );
+    common::until(|| {
+        llm.recorded()
+            .iter()
+            .any(|r| common::is_helper(&r.messages, "MOB-TASK"))
+            && registry
+                .activity(&member)
+                .is_some_and(|(running, _)| !running)
+    })
+    .await;
+    daemon.idle(&daemon.agent).await;
+
+    let recorded = llm.recorded();
+    let of = |kind: &str, pick: &dyn Fn(&[Message]) -> bool| {
+        let requests: Vec<&common::Recorded> =
+            recorded.iter().filter(|r| pick(&r.messages)).collect();
+        assert!(!requests.is_empty(), "no request of the {kind}");
+        for request in requests {
+            no_absent_comms_tools(kind, request);
+        }
+    };
+    let fork = |m: &[Message]| common::user_texts(m).concat().contains("FORK-TASK");
+    of("agent", &|m| {
+        common::user_texts(m).first().is_some_and(|u| u == "go") && !fork(m)
+    });
+    of("fresh helper", &|m| common::is_helper(m, "FRESH-TASK"));
+    of("fork", &fork);
+    of("member of the agent's mob", &|m| {
+        common::is_helper(m, "MOB-TASK")
+    });
+    drop(connection);
+    daemon.stop().await;
+}
+
 /// The daemon restores its agent on the conversation it had: the
 /// instructions it was created with stay (the edited file is not pushed
 /// into it, the persona appears once); a new conversation reads the file.

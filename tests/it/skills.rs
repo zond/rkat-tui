@@ -425,10 +425,12 @@ async fn context_names_the_skills_directories() {
         )),
         "{text}"
     );
-    // Meerkat's 12 embedded skills, the user's two and the project's one.
+    // Meerkat's 12 embedded skills less the two about comms tools the
+    // agents do not have (`rkat_tui::daemon::comms_text::SKILLS`), the
+    // user's two and the project's one.
     assert!(
         text.contains(&format!(
-            "  the agent's inventory names all 15 skills with their descriptions (up to {INVENTORY_BOUND}); it opens one with skill_read"
+            "  the agent's inventory names all 13 skills with their descriptions (up to {INVENTORY_BOUND}); it opens one with skill_read"
         )),
         "{text}"
     );

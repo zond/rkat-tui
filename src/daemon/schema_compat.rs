@@ -28,7 +28,10 @@
 //! The same decorator sends each request's messages without blank text
 //! (`super::blank_text`: an assistant's empty or whitespace-only text
 //! part, a tool result with no text), which a proxy would otherwise
-//! replace with a placeholder sentence the model takes for its own words.
+//! replace with a placeholder sentence the model takes for its own words,
+//! and without the engine's instructions about the comms tools rkat-tui
+//! does not offer (`super::comms_text`: in the system prompt and in
+//! `send_message`'s description).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,7 +44,7 @@ use meerkat_core::{
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
 
-use super::blank_text;
+use super::{blank_text, comms_text};
 
 /// How deep `$ref`s are inlined into each other (a recursive type stops
 /// there and keeps its `$ref`).
@@ -343,10 +346,21 @@ pub fn unconstrained(obj: &Map<String, Value>) -> bool {
     })
 }
 
-/// A request's `messages` with no blank text ([`blank_text::for_the_wire`]);
-/// the same `Arc` when nothing changes.
+/// A request's `messages` as sent: no blank text
+/// ([`blank_text::for_the_wire`]) and no instructions about comms tools
+/// the members do not have ([`comms_text::for_the_wire`]); `None` when
+/// nothing changes.
+fn as_sent(messages: &[Message]) -> Option<Vec<Message>> {
+    match blank_text::for_the_wire(messages) {
+        Some(cleaned) => Some(comms_text::for_the_wire(&cleaned).unwrap_or(cleaned)),
+        None => comms_text::for_the_wire(messages),
+    }
+}
+
+/// [`as_sent`] of a request's `messages`; the same `Arc` when nothing
+/// changes.
 fn wire_messages(messages: Arc<Vec<Message>>) -> Arc<Vec<Message>> {
-    match blank_text::for_the_wire(&messages) {
+    match as_sent(&messages) {
         Some(sent) => Arc::new(sent),
         None => messages,
     }
@@ -361,7 +375,8 @@ pub fn decorator() -> AgentLlmClientDecorator {
 
 /// An agent-facing LLM client whose requests carry their tools with
 /// [`normalize`]d schemas and their messages without blank text
-/// ([`blank_text::for_the_wire`]). Every method of the trait is forwarded to
+/// ([`blank_text::for_the_wire`]) and without the engine's instructions
+/// about comms tools the members do not have ([`comms_text`]). Every method of the trait is forwarded to
 /// `inner` (a method left to its default would answer for `inner`, which
 /// the engine documents as a decorator's duty); `tests/it/layout.rs` fails
 /// when the trait declares a method this impl does not.
@@ -401,6 +416,9 @@ impl SchemaCompat {
                 }
                 let mut made = ToolDef::clone(def);
                 made.input_schema = normalize(&def.input_schema);
+                if let Some(description) = comms_text::description(def) {
+                    made.description = description;
+                }
                 let made = Arc::new(made);
                 cache.insert(def.name.to_string(), (Arc::clone(def), Arc::clone(&made)));
                 made
@@ -490,7 +508,7 @@ impl AgentLlmClient for SchemaCompat {
         provider_params: Option<&ProviderParamsOverride>,
     ) -> Result<LlmStreamResult, AgentError> {
         let tools = self.tools(tools);
-        let sent = blank_text::for_the_wire(messages);
+        let sent = as_sent(messages);
         let messages = sent.as_deref().unwrap_or(messages);
         self.inner
             .stream_response(messages, &tools, max_tokens, temperature, provider_params)
@@ -507,7 +525,7 @@ impl AgentLlmClient for SchemaCompat {
         authorization: Option<meerkat_core::LlmRequestAuthorization>,
     ) -> Result<LlmStreamResult, AgentError> {
         let tools = self.tools(tools);
-        let sent = blank_text::for_the_wire(messages);
+        let sent = as_sent(messages);
         let messages = sent.as_deref().unwrap_or(messages);
         self.inner
             .stream_response_authorized(
@@ -530,7 +548,7 @@ impl AgentLlmClient for SchemaCompat {
         provider_params: Option<&ProviderParamsOverride>,
     ) -> Result<Option<meerkat_core::ProviderRequestPressure>, AgentError> {
         let tools = self.tools(tools);
-        let sent = blank_text::for_the_wire(messages);
+        let sent = as_sent(messages);
         let messages = sent.as_deref().unwrap_or(messages);
         self.inner
             .request_pressure(messages, &tools, max_tokens, temperature, provider_params)
@@ -546,7 +564,7 @@ impl AgentLlmClient for SchemaCompat {
         provider_params: Option<&ProviderParamsOverride>,
     ) -> Result<Vec<meerkat_core::TargetCacheLoweringCapability>, AgentError> {
         let tools = self.tools(tools);
-        let sent = blank_text::for_the_wire(messages);
+        let sent = as_sent(messages);
         let messages = sent.as_deref().unwrap_or(messages);
         self.inner.target_cache_lowering_capabilities(
             issuer,

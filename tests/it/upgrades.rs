@@ -101,7 +101,7 @@ async fn an_agent_s_older_instructions_are_replaced_once() {
     current_once(&request.system(), &agent_sections(&agent, true));
     // The rest of the prompt stayed: the base prompt and the earlier
     // turn are there.
-    assert!(request.system().contains("# Inter-agent Communication"));
+    assert!(request.system().contains("# Core Behavior"));
     assert!(request.user().contains("first"), "{}", request.user());
     drop(connection);
     daemon.stop().await;

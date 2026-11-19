@@ -188,6 +188,11 @@ repository). Open upstream issues this code waits on:
 - #2388 (filed 2026-11-17): the dialect clients replaying an assistant's
   empty or whitespace-only text (a proxy turns it into a placeholder
   sentence). Our filter `src/daemon/blank_text.rs` goes when it ships.
+- #2432 (filed 2026-11-19): a host switch for the comms tools' usage
+  section and the preloaded `mob-communication` skill, which teach
+  `reply_to_peer`, `send_request`, `send_response` and `peers` to
+  members that do not have them. Our filter `src/daemon/comms_text.rs`
+  goes when it ships.
 - #2411 (filed 2026-11-18): an empty completion fails a run nobody waits
   on (a peer's message, a daemon-started input), after three retries.
   Our recognition of it by the engine's wording and its quiet line

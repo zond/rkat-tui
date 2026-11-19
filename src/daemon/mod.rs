@@ -34,6 +34,7 @@ pub mod audit;
 pub mod blank_text;
 pub mod btw;
 pub mod checkpoint;
+pub mod comms_text;
 pub mod connect;
 pub mod contacts;
 pub mod context;

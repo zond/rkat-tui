@@ -89,7 +89,10 @@ where
 }
 
 /// The skills a session's inventory lists, in its order (active, as the
-/// engine's `inventory_section` filters them).
+/// engine's `inventory_section` filters them), as requests carry it: the
+/// engine's skills about comms tools the members do not have are left
+/// out ([`crate::daemon::comms_text::SKILLS`]), so they are not opened
+/// either.
 ///
 /// # Errors
 ///
@@ -99,10 +102,15 @@ pub async fn listed(runtime: &SkillRuntime) -> Result<Vec<SkillDescriptor>, Stri
         .list_all_with_provenance(&SkillFilter::default())
         .await
         .map_err(|err| err.to_string())?;
+    let builtin = meerkat_core::skills::SourceUuid::builtin();
     Ok(entries
         .into_iter()
         .filter(|entry| entry.is_active)
         .map(|entry| entry.descriptor)
+        .filter(|skill| {
+            skill.key.source_uuid != builtin
+                || !crate::daemon::comms_text::SKILLS.contains(&skill.key.skill_name.as_str())
+        })
         .collect())
 }
 

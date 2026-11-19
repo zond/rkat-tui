@@ -13783,7 +13783,56 @@ The engine's own "Inter-agent Communication" section
 `mob-communication` skill (preloaded unconditionally by `meerkat-mob`
 `build.rs`) still name `reply_to_peer`, `send_request`, `send_response`
 and `peers`; neither `SpawnMemberSpec` nor the profile can drop them. The
-agents' coding persona and the helpers' persona now say those four do not
-exist here and what replaces them
-(`bootstrap::persona::tests::the_engines_comms_tools_we_do_not_offer_are_said_to_be_absent`). Ask: a host switch for the comms usage
-section and the preloaded skill.
+agents' coding persona and the helpers' persona said for a while that
+those four do not exist here; the daemon now sends no request with
+either text (next entry), and that sentence is gone. Ask: a host switch
+for the comms usage section and the preloaded skill (lukacf/meerkat#2432).
+
+## The engine's comms instructions are not sent (2026-11-20)
+
+Where the texts land, read in the 0.9.16 sources: the facade's
+`compose_tools_with_comms` (`meerkat` `lib.rs`) appends
+`CommsToolSurface::usage_instructions()` to the tool usage
+instructions, and `meerkat-mob` `build.rs` sets `preload_skills` to
+`mob-communication` (and a task or workgraph skill) for every member;
+the factory renders each preloaded skill with
+`meerkat_skills::renderer::render_injection` (`<skill source_uuid=…
+skill_name="mob-communication">` + body + `</skill>`) and
+`prompt_policy::append_sections` joins base prompt, skills, additional
+instructions (our personas), config tool sections and tool instructions
+with a blank line each. Both end up in the session's System message,
+stored, and copied into a fork's conversation. Nothing of the section is
+needed (it says to pass `handling_mode`, which `send_message`'s schema
+requires and its description explains); of the skill, what applies here
+is already in our personas (`send_message` for every ask and answer, the
+peer_id from `contacts`, a message names its sender) except "do not
+reply to peer-added or peer-removed notices", now a clause of both
+personas. `sender_taint` and WorkGraph lines do not apply (no workgraph
+tools; the approval policy owns trust).
+
+`daemon::comms_text`, applied by the client decorator beside
+`blank_text`, removes both texts (each with its blank line) from every
+System message of every agent and helper request, matched on the
+engine's own strings: the section from `usage_instructions()`, the
+block rendered by `render_injection` from the registered skill's body
+(`meerkat_skills::collect_registered_skills`), so a reworded text is
+still found. The first rig run showed a third place: the engine's
+`<available_skills>` inventory lists `mob-communication` and
+`multi-agent-comms` (both teach `send_request`), which `skill_read`
+would open; their two entries are cut too, each rendered by the
+engine's `render_inventory` for that skill alone, and `skill_read`
+neither lists nor opens them (`tools::skill::listed`; the rig's
+`skills::the_agent_reads_the_users_skill` holds the tool's list equal to
+the inventory as sent). `send_message`'s description (`meerkat-comms`
+`tools_list`) also named `send_request` and `peers`; three copied
+phrases are edited (`SEND_MESSAGE_EDITS`) and
+`daemon::comms_text::tests::send_message_s_description_loses_the_tools_we_do_not_offer`
+fails when the engine's description no longer holds one.
+`/context` counts the system prompt and `send_message` as sent. The
+stored session keeps the engine's text: only what is sent changes.
+
+Tests: `daemon::comms_text::tests::*`;
+`instructions::no_request_teaches_the_comms_tools_we_do_not_offer` (the
+agent, a fresh helper, a fork and a member of a mob the agent created:
+no request names the four, every one still names `send_message` and
+`contacts` and carries the `contacts` tool).

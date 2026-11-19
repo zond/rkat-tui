@@ -31,10 +31,16 @@
   calls, or start its next run when the turn ends. A note can reach the
   agent one model call later than before; what an idle agent gets is
   unchanged.
-- The agents' instructions say that `reply_to_peer`, `send_request`,
-  `send_response` and `peers`, which the engine's own sections of the
-  prompt still describe, do not exist here (`send_message` and `contacts`
-  replace them); the engine offers no way to drop those sections.
+- The agents and helpers no longer read the engine's instructions about
+  `reply_to_peer`, `send_request`, `send_response` and `peers`, tools
+  rkat-tui does not offer: the daemon sends every model request without
+  the engine's "Inter-agent Communication" section and its
+  `mob-communication` skill (and the skill list's entries for it and
+  `multi-agent-comms`, which `skill_read` no longer opens), and with
+  `send_message`'s description
+  pointing at `contacts` (rkat-tui's own instructions already say to ask
+  and answer with `send_message`). A request is smaller by about 3 KB,
+  and `/context` counts the system prompt as sent.
 - `/approve` is now the Blocked section of `/permissions`: one dialog
   with two sections, Blocked (the calls the gate recently blocked and the
   approvals waiting, with the same keys as before) and In force (the

@@ -139,10 +139,12 @@ impl ToolFamily {
 #[must_use]
 pub fn def_bytes(def: &ToolDef) -> usize {
     // As requested: every request carries the schema normalized
-    // (`super::schema_compat`; normalizing it again changes nothing).
+    // (`super::schema_compat`; normalizing it again changes nothing), and
+    // `send_message`'s description as sent (`super::comms_text`).
+    let description = super::comms_text::description(def);
     serde_json::json!({
         "name": def.name.as_str(),
-        "description": def.description,
+        "description": description.as_deref().unwrap_or(&def.description),
         "input_schema": super::schema_compat::normalize(&def.input_schema),
     })
     .to_string()
@@ -185,7 +187,7 @@ pub fn family_sizes<'a>(defs: impl IntoIterator<Item = &'a ToolDef>) -> Vec<Fami
 pub struct MessageCounts {
     /// System messages.
     pub system: usize,
-    /// Their text's bytes (the system prompt).
+    /// Their text's bytes as sent (the system prompt).
     pub system_bytes: usize,
     /// User messages.
     pub user: usize,
@@ -206,7 +208,8 @@ impl MessageCounts {
             match message {
                 Message::System(system) => {
                     counts.system += 1;
-                    counts.system_bytes += system.content.len();
+                    // As sent (`super::comms_text`).
+                    counts.system_bytes += super::comms_text::system_text(&system.content).len();
                 }
                 Message::SystemNotice(_) => counts.notices += 1,
                 Message::User(_) => counts.user += 1,

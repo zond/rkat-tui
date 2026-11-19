@@ -21,9 +21,6 @@ You are an interactive coding agent operating in the user's project directory.
 - Shell commands run in the foreground only: the shell's `background` option and \
 the shell job tools are not available here (the call is refused); give a long \
 command a `timeout_secs` instead.
-- The engine's own sections of these instructions also name reply_to_peer, \
-send_request, send_response and peers: those four tools do not exist here; \
-`send_message` does what the first three would, `contacts` what peers would.
 - Some tool calls are reviewed by an approval policy. If a call is blocked \
 (`policy_denied`), do not try to achieve the same effect another way. Tell the user \
 what was blocked and why, and choose a safer approach or ask how to proceed.
@@ -77,10 +74,8 @@ a new task after it finishes; retire a kept one with `retire_helper` as soon as 
 its work is done.
 - Ask and answer peers with `send_message`; if a peer's request reaches you, \
 answer it with `send_message` too. A message names its sender, not its peer_id: \
-answer to the peer_id `contacts` gives for that name. \
-The engine's own sections of these instructions also name reply_to_peer, \
-send_request, send_response and peers: those four tools do not exist here; \
-`send_message` does what the first three would, `contacts` what peers would.
+answer to the peer_id `contacts` gives for that name. A note that a peer was \
+added or removed needs no answer.
 - Do not send a message that only acknowledges or thanks: a message that needs no \
 answer gets none.
 ";
@@ -141,7 +136,7 @@ same time, each for its own user. Every agent of the workspace is wired to every
 other one as a peer: you can message them and they can message you. `contacts` \
 shows who works here now and what each is doing (working, idle with a client \
 attached, or idle with no client attached); a system note tells you when an agent \
-joins the workspace or leaves it. A peer's message reaches you as input naming its \
+joins or leaves (it needs no answer). A peer's message reaches you as input naming its \
 sender, and your user sees it too.
 
 - `contacts` lists everyone you can message and what each is (your helpers, the \
@@ -231,7 +226,7 @@ mod tests {
             "Keep messages to other agents short",
             "Do not send a message that only acknowledges or thanks: a message that needs no \
              answer gets none.",
-            "a system note tells you when an agent joins the workspace or leaves it",
+            "a system note tells you when an agent joins or leaves",
         ] {
             assert!(section.contains(norm), "{norm}: {section}");
         }
@@ -268,21 +263,22 @@ mod tests {
         }
     }
 
-    /// The engine's own comms section and skill still describe these
-    /// (`docs/evidence.md`, "Our notes never go ahead of the user's
-    /// message"): agents and helpers are told they do not exist.
+    /// What the engine's comms section and skill said that the members
+    /// still need, now that the daemon sends neither
+    /// (`crate::daemon::comms_text`): a join or leave note needs no
+    /// answer. (`send_message` for every ask and answer and the peer_id
+    /// from `contacts` are pinned by [`children_are_told_who_they_can_reach`].)
     #[test]
-    fn the_engines_comms_tools_we_do_not_offer_are_said_to_be_absent() {
-        let line = "those four tools do not exist here; `send_message` does what the first \
-                    three would, `contacts` what peers would.";
-        assert!(CODING_PERSONA.contains(line));
-        assert!(HELPER_PERSONA.contains(line));
-        for gone in ["reply_to_peer", "send_request", "send_response", "peers"] {
-            assert!(
-                crate::approval::policy::NOT_OFFERED.contains(&gone),
-                "{gone}"
-            );
-            assert!(CODING_PERSONA.contains(gone), "{gone}");
+    fn a_join_or_leave_note_needs_no_answer() {
+        assert!(agents_persona("main-ab12").contains(
+            "a system note tells you when an agent joins or leaves (it needs no answer)"
+        ));
+        assert!(
+            HELPER_PERSONA.contains("A note that a peer was added or removed needs no answer.")
+        );
+        for gone in ["reply_to_peer", "send_request", "send_response", "`peers`"] {
+            assert!(!CODING_PERSONA.contains(gone), "{gone}");
+            assert!(!HELPER_PERSONA.contains(gone), "{gone}");
         }
     }
 
@@ -405,8 +401,6 @@ mod tests {
              gives for that name.",
             "Do not send a message that only acknowledges or thanks: a message that needs no \
              answer gets none.",
-            "those four tools do not exist here; `send_message` does what the first three \
-             would, `contacts` what peers would.",
         ] {
             assert!(HELPER_PERSONA.contains(line), "{line}");
         }
