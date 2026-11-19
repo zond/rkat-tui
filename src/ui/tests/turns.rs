@@ -1446,6 +1446,78 @@ fn a_compaction_run_holds_what_is_typed_and_the_bar_says_compacting() {
     assert!(!bar.contains("compacting"), "{bar}");
 }
 
+/// The owner's report on 0.0.17 (the runner's side is
+/// `client::runner::tests::a_run_after_the_compaction_s_ends_the_quiet_turn`):
+/// a message typed while the compaction's run holds the UI is drawn at
+/// once (its placeholder, "will send after this turn"), ↑ takes it back,
+/// Ctrl-X Ctrl-S says what it does and stops the run; when the agent goes
+/// on with a run of its own (the turn opens, then the compaction's run is
+/// over) the held message is steered into it, and what is typed after is
+/// steered too, never held.
+#[test]
+fn a_message_held_for_the_compaction_is_drawn_and_steered_into_the_next_run() {
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::CompactionRun(true));
+    assert!(submit(&mut app, "held one").is_empty());
+    let rows = screen(&mut app, 20).join("\n");
+    assert!(
+        rows.contains("› held one  · will send after this turn"),
+        "drawn at once: {rows}"
+    );
+    // ↑ takes it back; Enter holds it again.
+    app.update(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "held one");
+    assert!(app.pending.items().is_empty());
+    assert!(app.update(key(KeyCode::Enter)).is_empty());
+    // Ctrl-X Ctrl-S: the run that lets the agent compact is stopped, and
+    // it says so.
+    let t0 = Instant::now();
+    app.update_at(ctrl('x'), t0);
+    assert_eq!(app.update_at(ctrl('s'), t0), vec![Effect::Interrupt]);
+    assert!(
+        last_notice(&app)
+            .is_some_and(|(_, text)| text.contains("stopping the run that lets the agent compact"))
+    );
+    // The agent goes on with a helper's note: the turn opens, then the
+    // compaction's run is over; the held message is steered into it.
+    app.update(Msg::RemoteTurn { prompt: None });
+    let fx = app.update(Msg::CompactionRun(false));
+    let Some(Effect::Steer { id, text }) = fx.first().cloned() else {
+        panic!("not steered: {fx:?}")
+    };
+    assert_eq!(text, "held one");
+    assert_eq!(fx.len(), 1, "{fx:?}");
+    let rows = screen(&mut app, 20).join("\n");
+    assert!(rows.contains("› held one  · queued"), "{rows}");
+    app.update(ack(id.0, Ok(())));
+    // Typed now: steered, not held.
+    let fx = submit(&mut app, "and this");
+    assert!(
+        matches!(fx.as_slice(), [Effect::Steer { text, .. }] if text == "and this"),
+        "{fx:?}"
+    );
+}
+
+/// Ctrl-X Ctrl-S counts a message the UI holds (one the runner could not
+/// steer into the turn) as waiting: the turn is stopped and the message
+/// is sent as the next run, not returned to the editor.
+#[test]
+fn send_now_sends_a_message_the_ui_holds() {
+    let mut app = running_app();
+    let fx = submit(&mut app, "two");
+    let Some(Effect::Steer { id, .. }) = fx.first().cloned() else {
+        panic!("{fx:?}")
+    };
+    app.update(ack(id.0, Err(SteerFailure::NotRunning)));
+    assert!(app.holds_messages());
+    let t0 = Instant::now();
+    app.update_at(ctrl('x'), t0);
+    assert_eq!(app.update_at(ctrl('s'), t0), vec![Effect::Interrupt]);
+    let fx = app.update(finished(Err(TurnFailure::Interrupted)));
+    assert_eq!(fx, vec![Effect::StartTurn("two".into())]);
+    assert!(app.input.is_empty());
+}
+
 /// The engine's retry of an empty answer, attempt `n` of 3.
 fn empty_retry(n: u32) -> Msg {
     agent(AgentEvent::Retrying {

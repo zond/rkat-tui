@@ -46,6 +46,16 @@
 
 ### Fixed
 
+- After a `/compact`, a run of the agent that came straight after the
+  compaction's (a helper's note or another agent's message queued behind
+  it, or ahead of it) was taken as part of the compaction's quiet run: its
+  work drew nothing and every message you typed meanwhile was held ("will
+  send after this turn": ↑ took it back, Esc sent it) instead of reaching
+  the agent, until the agent went idle. Such a run now opens its turn as
+  any run does, what was held is steered into it, and what you type is
+  steered too. Ctrl-X Ctrl-S counts a message the UI holds as waiting
+  (it sends it as the next run instead of returning it to the editor), and
+  while the compaction's run holds messages it stops that run and says so.
 - A cancelled `assign` call (an interrupt while its helper was being
   started) left the kind it asked for behind, which a member later seated
   under that name took; it now goes with the call.

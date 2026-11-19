@@ -537,6 +537,19 @@ impl Runner {
             };
             self.send(Msg::CompactionRun(true));
         }
+        // A run that is not the compaction's (a helper's note or a peer
+        // message queued behind it, or ahead of it) ends the quiet turn:
+        // it is the agent's work, shown and steerable as any run. Taken
+        // into the quiet turn, it drew nothing and the UI held every
+        // message typed meanwhile until the agent went idle.
+        let left_quiet = self.turn.quiet
+            && matches!(&envelope.payload, AgentEvent::RunStarted { input, .. }
+                if input.prompt_text().as_deref() != Some(COMPACT_PROMPT));
+        if left_quiet {
+            let quiet = std::mem::take(&mut self.turn);
+            // The compaction's run, when it ran, ended in it.
+            self.finished_runs.extend(quiet.ended);
+        }
         if self.turn.quiet {
             self.on_quiet_event(envelope);
             return;
@@ -709,6 +722,12 @@ impl Runner {
             _ => {}
         }
         self.send(Msg::Agent(envelope));
+        // Told after the run's turn opened, so what the UI held for the
+        // compaction is steered into the run rather than starting a turn
+        // of its own.
+        if left_quiet {
+            self.send(Msg::CompactionRun(false));
+        }
         if terminal {
             self.save_cursor();
             self.settle_turn();

@@ -217,6 +217,13 @@ impl App {
         }
         self.compacting = false;
         self.status.compacting_since = None;
+        // The agent went on with a run of its own (a helper's note queued
+        // behind the compaction): what was held for the compaction is
+        // steered into it, as a message typed now would be.
+        if self.running && !self.has_held_command() && !self.shell_busy() {
+            self.steer_held(fx);
+            return;
+        }
         if self.agent_busy() {
             return;
         }
@@ -229,6 +236,23 @@ impl App {
             .take_where(|p| p.state == PendingState::Deferred);
         if !held.is_empty() || self.send_next.is_some() {
             self.next_after_turn(held, false, true, now, fx);
+        }
+    }
+
+    /// Steer every message the UI holds into the running turn, oldest
+    /// first, each on its placeholder (queued, then delivering).
+    pub(super) fn steer_held(&mut self, fx: &mut Vec<Effect>) {
+        let held: Vec<(PendingId, String)> = self
+            .pending
+            .items()
+            .iter()
+            .filter(|p| p.state == PendingState::Deferred)
+            .map(|p| (p.id, p.text.clone()))
+            .collect();
+        for (id, text) in held {
+            self.pending
+                .set_state(&mut self.transcript, id, PendingState::Queued);
+            fx.push(Effect::Steer { id, text });
         }
     }
 

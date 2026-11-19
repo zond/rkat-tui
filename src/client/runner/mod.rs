@@ -2269,6 +2269,23 @@ mod tests {
             })
         }
 
+        /// The start of run `run` whose input is `text`.
+        fn started_with(&mut self, run: &RunId, text: &str) -> EventEnvelope<AgentEvent> {
+            use meerkat_core::types::{ContentInput, RunInput, TranscriptMessageIdentity};
+            self.envelope(AgentEvent::RunStarted {
+                session_id: self.session.clone(),
+                identity: TranscriptMessageIdentity {
+                    run_id: Some(run.clone()),
+                    ..TranscriptMessageIdentity::default()
+                },
+                input: RunInput::Content {
+                    content: ContentInput::Text(text.into()),
+                },
+                request_reasoning: None,
+                reasoning_effort: None,
+            })
+        }
+
         fn completed(&mut self, run: &RunId) -> EventEnvelope<AgentEvent> {
             use meerkat_core::types::TranscriptMessageIdentity;
             self.envelope(AgentEvent::RunCompleted {
@@ -2358,6 +2375,87 @@ mod tests {
         runner.on_event(feed.completed(&follow_up), None);
         assert!(!runner.turn.active);
         assert_eq!(turn_ends(&drain(&mut rx)), 1);
+    }
+
+    /// The owner's report on 0.0.17 (2026-11-19): while the agent worked,
+    /// his messages were held by the UI (↑ took them back, Esc sent them),
+    /// never steered. The cause: the quiet turn of `/compact`'s run took
+    /// every run that followed it before the agent went idle (a helper's
+    /// note or peer message queued behind the compaction, or ahead of it),
+    /// so the agent's work drew nothing and the UI held what was typed as
+    /// "the compaction runs". A run that is not the compaction's ends the
+    /// quiet turn: it opens the UI's turn (`RemoteTurn`, so typed messages
+    /// are steered), its events reach the UI, and the UI is told the
+    /// compaction's run is over, after the turn opened.
+    #[tokio::test]
+    async fn a_run_after_the_compaction_s_ends_the_quiet_turn() {
+        use crate::ui::COMPACT_PROMPT;
+        let dir = tempfile::tempdir().unwrap();
+        // The helper's run after the compaction's, back to back (no idle
+        // between), and the helper's run before it (queued ahead of the
+        // compaction prompt).
+        for compaction_first in [true, false] {
+            let (mut runner, mut rx) = runner(dir.path());
+            let mut feed = Feed {
+                session: SessionId::new(),
+                seq: 0,
+            };
+            let (compact, helper) = (RunId::new(), RunId::new());
+            runner.turn = Turn {
+                active: true,
+                quiet: true,
+                ..Turn::default()
+            };
+            if compaction_first {
+                runner.on_event(feed.started_with(&compact, COMPACT_PROMPT), None);
+                runner.on_event(feed.completed(&compact), None);
+                assert!(runner.turn.quiet, "{compaction_first}");
+            }
+            runner.on_event(
+                feed.started_with(&helper, "Your helper `scout` finished its task."),
+                None,
+            );
+            assert!(
+                !runner.turn.quiet,
+                "{compaction_first}: the quiet turn ended"
+            );
+            assert!(
+                runner.turn.active,
+                "{compaction_first}: the helper's run is a turn"
+            );
+            let msgs = drain(&mut rx);
+            let opened = msgs
+                .iter()
+                .position(|m| matches!(m, Msg::RemoteTurn { .. }));
+            let over = msgs
+                .iter()
+                .position(|m| matches!(m, Msg::CompactionRun(false)));
+            assert!(
+                opened.is_some() && over.is_some() && opened < over,
+                "{compaction_first}: the turn opens, then the compaction's run is over: {msgs:?}"
+            );
+            assert!(
+                msgs.iter().any(|m| matches!(m, Msg::Agent(env) if matches!(env.payload, AgentEvent::RunStarted { .. }))),
+                "{compaction_first}: the run's events are shown: {msgs:?}"
+            );
+            // A message typed now is steered into the run, not refused.
+            runner.steer(PendingId(7), "and this");
+            let msgs = drain(&mut rx);
+            assert!(
+                !msgs.iter().any(|m| matches!(
+                    m,
+                    Msg::SteerAck {
+                        result: Err(SteerFailure::NotRunning),
+                        ..
+                    }
+                )),
+                "{compaction_first}: {msgs:?}"
+            );
+            runner.on_event(feed.completed(&helper), None);
+            runner.idle_reported(feed.idle(&helper, 0));
+            assert!(!runner.turn.active, "{compaction_first}");
+            assert_eq!(turn_ends(&drain(&mut rx)), 1, "{compaction_first}");
+        }
     }
 
     fn remote_turns(msgs: &[Msg]) -> Vec<Option<String>> {

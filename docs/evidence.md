@@ -13236,3 +13236,37 @@ the dialog open after each act), `permissions_dialog::a_statement_typed_with_n_r
 `permissions_dialog::a_rule_made_with_r_is_written_and_applies_at_once`,
 and the converted `approve::*`, `approvals::a_blocked_write_is_approved_for_the_session_through_the_daemon`,
 `approvals::the_rule_picker_removes_a_rule_from_the_daemon`, `render::rule_picker_snapshot`.
+
+## Messages held while the agent worked: the quiet `/compact` turn (owner, 0.0.17)
+
+The owner, on 0.0.17, with helpers messaging the agent: the messages he
+typed while the agent worked were not steered; ↑ took them back, Ctrl-X
+Ctrl-S did nothing, a few Esc presses sent them all. ↑ takes back only
+what the UI holds (`PendingState::Deferred`), so they were held. The
+cause, reproduced in the runner: `/compact` on an idle agent opens a quiet
+turn for its own run (`compact_asked`, `COMPACT_PROMPT`; the UI holds what
+is typed, `Msg::CompactionRun(true)`), and the quiet turn took every run
+until the agent went idle (`on_quiet_event` records any `RunStarted`). A
+helper's note or peer message queued behind the compaction's prompt (or
+ahead of it) starts a run back to back with no idle between, so that run,
+and every run after it while the helpers kept the agent busy, drew
+nothing and held every typed message; Esc stopped the run, the quiet turn
+ended (`CompactionRun(false)`) and the held messages went as one turn.
+Ctrl-X Ctrl-S on the empty editor only interrupted (the UI was not
+"running"), and its rule counted only steered messages as waiting.
+
+Now a `RunStarted` whose input is not `COMPACT_PROMPT` ends the quiet turn
+(the compaction's run, when it ran, joins `finished_runs`); the run opens
+the UI's turn as any run does (`RemoteTurn`), and the UI is told the
+compaction's run is over after that, so what it held is steered into the
+run (`App::steer_held`). Send-now counts a held message as waiting, and
+while the compaction's run holds messages it stops that run and says so.
+
+Not reproduced: the owner saw no placeholder. In this state the
+placeholder is drawn (`will send after this turn`, pinned by the UI test
+below); what drew nothing was the agent's own work.
+
+Tests: `client::runner::tests::a_run_after_the_compaction_s_ends_the_quiet_turn`
+(failed before: the turn stayed quiet), `ui::tests::turns::a_message_held_for_the_compaction_is_drawn_and_steered_into_the_next_run`,
+`ui::tests::turns::send_now_sends_a_message_the_ui_holds` (failed before:
+the message went back to the editor).

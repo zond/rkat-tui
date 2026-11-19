@@ -392,7 +392,18 @@ impl App {
     pub(super) fn interrupt_and_send(&mut self, now: Instant, fx: &mut Vec<Effect>) {
         let empty = self.input.text().trim().is_empty();
         let waiting = self.running && self.has_waiting_messages();
-        if empty && !waiting {
+        if !self.running && self.compaction_run && self.holds_messages() {
+            // The messages wait for the run that lets the agent compact:
+            // it is stopped, and they go as soon as it ended.
+            if !empty {
+                self.submit(now, fx);
+            }
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                "stopping the run that lets the agent compact; the messages it held go when it ends",
+            );
+            self.interrupt(now, fx);
+        } else if empty && !waiting {
             self.interrupt(now, fx);
         } else if !self.running {
             self.submit(now, fx);
@@ -414,7 +425,16 @@ impl App {
     /// still waits for the agent (queued or delivering, and no recall found
     /// it read already).
     pub(super) fn has_waiting_messages(&self) -> bool {
-        self.has_admitted_recallable()
+        self.has_admitted_recallable() || self.holds_messages()
+    }
+
+    /// Whether the UI holds a message of the user's (one that waits for
+    /// the turn's end, a `!` command or a compaction).
+    pub(super) fn holds_messages(&self) -> bool {
+        self.pending
+            .items()
+            .iter()
+            .any(|p| p.state == PendingState::Deferred)
     }
 
     pub(super) fn edit(&mut self, edit: EditAction) {
