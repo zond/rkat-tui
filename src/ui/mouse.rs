@@ -17,12 +17,63 @@ impl App {
     /// line of its first row and the block shown on each row (set by the
     /// renderer; row `i` shows logical line `first_line + i`).
     pub fn set_transcript_rows(&mut self, area: Rect, first_line: usize, rows: Vec<BlockId>) {
+        self.set_view_rows(area, first_line, rows, None);
+    }
+
+    /// [`Self::set_transcript_rows`] for the view the rows show: the
+    /// transcript (`None`) or the full view of the helper `view`, whose
+    /// line indices are its own ([`crate::ui::Transcript::helper_view_rows`]).
+    /// A selection or press made in another view goes.
+    pub fn set_view_rows(
+        &mut self,
+        area: Rect,
+        first_line: usize,
+        rows: Vec<BlockId>,
+        view: Option<BlockId>,
+    ) {
+        if self.mouse.view != view {
+            self.mouse.view = view;
+            self.clear_selection();
+        }
         self.mouse.transcript_area = area;
         self.mouse.transcript_rows = rows
             .into_iter()
             .enumerate()
             .map(|(i, id)| (id, first_line + i))
             .collect();
+    }
+
+    /// The laid-out lines `first..first + count` of the view the rows show
+    /// (at the last drawn width).
+    fn view_lines(&mut self, first: usize, count: usize) -> Vec<Line<'static>> {
+        let width = self.mouse.transcript_area.width;
+        match self.mouse.view {
+            Some(header) => self
+                .transcript
+                .helper_view_rows(header, width)
+                .0
+                .into_iter()
+                .skip(first)
+                .take(count)
+                .collect(),
+            None => {
+                if width > 0 {
+                    self.transcript.ensure_layout(width);
+                }
+                self.transcript.visible_lines(first, count)
+            }
+        }
+    }
+
+    /// How many laid-out lines the view the rows show has.
+    fn view_line_count(&mut self) -> usize {
+        match self.mouse.view {
+            Some(header) => {
+                let width = self.mouse.transcript_area.width;
+                self.transcript.helper_view_rows(header, width).0.len()
+            }
+            None => self.transcript.line_count(),
+        }
     }
 
     /// The transcript block drawn at screen row `row` in the last frame.
@@ -66,11 +117,7 @@ impl App {
     /// Bring the layout up to date at the last drawn width (so logical line
     /// indices match what is on screen) and return line `idx`.
     pub(super) fn layout_line(&mut self, idx: usize) -> Option<Line<'static>> {
-        if self.mouse.transcript_area.width > 0 {
-            self.transcript
-                .ensure_layout(self.mouse.transcript_area.width);
-        }
-        self.transcript.line(idx).cloned()
+        self.view_lines(idx, 1).pop()
     }
 
     pub(super) fn mouse(&mut self, m: MouseEvent, now: Instant) -> bool {
@@ -213,16 +260,16 @@ impl App {
         let col = usize::from(column.saturating_sub(area.x));
         if row < area.y {
             if first > 0 {
-                self.scroll.up(1);
+                self.active_scroll().up(1);
             }
             return Some(CellPos::new(first.saturating_sub(1), col));
         }
         if let Some((_, line)) = self.mouse.transcript_rows.get(usize::from(row - area.y)) {
             return Some(CellPos::new(*line, col));
         }
-        if row >= area.bottom() && self.scroll.offset_from_bottom > 0 {
-            self.scroll.down(1);
-            let max = self.transcript.line_count().saturating_sub(1);
+        if row >= area.bottom() && self.active_scroll().offset_from_bottom > 0 {
+            self.active_scroll().down(1);
+            let max = self.view_line_count().saturating_sub(1);
             return Some(CellPos::new((last + 1).min(max), col));
         }
         Some(CellPos::new(last, usize::MAX))
@@ -250,13 +297,7 @@ impl App {
             return;
         };
         let (start, end) = sel.range();
-        if self.mouse.transcript_area.width > 0 {
-            self.transcript
-                .ensure_layout(self.mouse.transcript_area.width);
-        }
-        let lines = self
-            .transcript
-            .visible_lines(start.line, end.line - start.line + 1);
+        let lines = self.view_lines(start.line, end.line - start.line + 1);
         let text = sel.extract_window(start.line, &lines);
         self.copy_text(&text);
     }
@@ -331,7 +372,11 @@ impl App {
         if matches!(self.transcript.block(id), Some(Block::Helper(_))) {
             return self.toggle_helper(id);
         }
-        self.keep_bottom(Some(id));
+        // The transcript keeps its bottom line; a helper's view keeps its
+        // own scroll (its first line stays).
+        if self.mouse.view.is_none() {
+            self.keep_bottom(Some(id));
+        }
         if self.transcript.toggle_tool(id).is_some() {
             true
         } else {
@@ -346,6 +391,9 @@ impl App {
 pub(super) struct MouseState {
     /// Screen area of the transcript as of the last draw.
     pub(super) transcript_area: Rect,
+    /// The view the rows show: the transcript (`None`) or a helper's full
+    /// view (its header), whose line indices are the view's own.
+    pub(super) view: Option<BlockId>,
     /// Per drawn row, the block and the transcript logical line shown
     /// there, as of the last draw (hit-testing and selection).
     pub(super) transcript_rows: Vec<(BlockId, usize)>,

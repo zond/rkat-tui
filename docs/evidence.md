@@ -13474,3 +13474,30 @@ Tests: `assign::a_helper_s_message_to_its_parent_is_not_reviewed` (a
 fresh single-use helper, a second one under the same name, a kept one
 for its task and for a task its parent sends it, a fork; failed before:
 the first send was reviewed), `approval::attendance::tests::a_parent_is_named_as_the_parent`.
+
+## The mouse in a helper's full view (owner, 0.0.17)
+
+The owner: in a helper's full view a click on a folded line and a drag
+did nothing; the wheel and PgUp/PgDn scrolled. The renderer drew the view
+from `helper_view_lines` and recorded no rows for it on purpose
+(`set_transcript_rows(area, 0, [])`), so every position-based action found
+no block and no cell; the wheel goes to `active_scroll`, which knew the
+view.
+
+Now there is one row map for both views: `Transcript::helper_view_rows`
+gives the view's lines with the block of each, the renderer records the
+rows under the title with `App::set_view_rows(area, first, rows,
+Some(header))` (the transcript passes `None`), and the mouse code reads
+the lines (`view_lines`, for a word or line click, a drag's extension and
+the copy), the line count and the scroll (`active_scroll`, for a drag past
+an edge) of the view the rows belong to. A selection made in one view is
+dropped when the rows change view. A click in the view folds or unfolds
+the block under it as in the transcript (the block's own state, both
+layouts invalidated by `block_mut`); only the transcript's bottom-line
+anchor is skipped, the view keeps its own scroll. The view draws the
+selection highlighted.
+
+Tests: `ui::tests::mouse::a_click_in_a_helper_s_view_unfolds_the_call_under_it`,
+`ui::tests::mouse::a_drag_in_a_helper_s_view_copies_the_view_s_text`
+(each with the view scrolled back too; both failed with the old empty
+rows restored in the renderer).

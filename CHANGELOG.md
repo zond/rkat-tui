@@ -75,6 +75,12 @@
   and to the other helpers of the same agent is now allowed by the policy,
   for fresh, kept and forked helpers alike. `reply_to_peer` stays
   reviewed: the gate cannot tell whom it answers.
+- In a helper's full view a click on a folded line (a tool call, a
+  message, reasoning, an outcome) did not unfold it, and a drag selected
+  and copied nothing. The view's rows now take a click, a drag (drawn
+  highlighted, copied on release, scrolling the view at its edges) and a
+  double or triple click as the transcript's do, also while the view is
+  scrolled back; a middle-click pastes what was copied there.
 - A cancelled `assign` call (an interrupt while its helper was being
   started) left the kind it asked for behind, which a member later seated
   under that name took; it now goes with the call.

@@ -347,8 +347,6 @@ fn pinned_line(text: &str, width: usize) -> Line<'static> {
 fn draw_helper_view(frame: &mut Frame<'_>, app: &mut App, header: BlockId, area: Rect) {
     let height = usize::from(area.height);
     app.set_viewport_height(height.saturating_sub(1));
-    // No transcript rows: clicks and selection do not reach the transcript.
-    app.set_transcript_rows(area, 0, Vec::new());
     let w = usize::from(area.width).max(4);
     let title = match app.transcript.block(header) {
         Some(Block::Helper(fold)) => {
@@ -377,14 +375,33 @@ fn draw_helper_view(frame: &mut Frame<'_>, app: &mut App, header: BlockId, area:
             lines
         })
         .unwrap_or_default();
-    let body = app.transcript.helper_view_lines(header, area.width);
+    let (body, blocks) = app.transcript.helper_view_rows(header, area.width);
     let body_height = height.saturating_sub(1 + question.len());
     let start = app
         .helper_view_scroll()
         .map_or(0, |scroll| scroll.window(body.len(), body_height));
+    // The rows under the title are the view's lines: a click, a drag and
+    // the selection reach them as they reach the transcript's.
+    let rows: Vec<BlockId> = blocks.into_iter().skip(start).take(body_height).collect();
+    let body_area = Rect {
+        y: area.y.saturating_add(1),
+        height: u16::try_from(rows.len()).unwrap_or(u16::MAX),
+        ..area
+    };
+    app.set_view_rows(body_area, start, rows, Some(header));
     let mut lines = Vec::with_capacity(height);
     lines.push(title.patch_style(Modifier::REVERSED));
-    lines.extend(body.into_iter().skip(start).take(body_height));
+    let selection = app.selection().copied();
+    lines.extend(
+        body.into_iter()
+            .skip(start)
+            .take(body_height)
+            .enumerate()
+            .map(|(i, line)| match &selection {
+                Some(sel) => sel.highlight(start + i, line),
+                None => line,
+            }),
+    );
     let shown = lines.len();
     lines.extend(std::iter::repeat_n(
         Line::default(),

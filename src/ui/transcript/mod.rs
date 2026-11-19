@@ -1651,6 +1651,7 @@ impl Transcript {
 
     /// Laid-out line `idx` of the whole transcript, as of the last
     /// [`Self::ensure_layout`] (`None` past the end or for stale blocks).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn line(&self, idx: usize) -> Option<&Line<'static>> {
         let (block, offset) = self.locate(idx)?;
         self.layout_at(block)?.lines.get(offset)

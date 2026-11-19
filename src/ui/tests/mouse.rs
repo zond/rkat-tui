@@ -701,6 +701,169 @@ fn a_middle_click_with_nothing_copied_says_so_and_folds_nothing() {
     assert_eq!(app.input.text(), "");
 }
 
+/// `fork-1`'s finished call `id` (a `read_file` of `id`, its output two
+/// lines), folded as every call comes.
+fn fork_call_done(app: &mut App, id: &str) {
+    app.update(fork_call(id));
+    app.update(helper_msg(
+        "fork-1",
+        AgentEvent::ToolExecutionCompleted {
+            id: id.into(),
+            name: "read_file".into(),
+            is_error: false,
+            duration_ms: 1,
+        },
+    ));
+    app.update(helper_msg(
+        "fork-1",
+        test_tool_result(id, &format!("body of {id}\nmore")),
+    ));
+}
+
+/// The tool block of `fork-1`'s call of `id` in its view.
+fn view_tool(app: &App, fork: BlockId, id: &str) -> BlockId {
+    app.transcript
+        .helper_view_blocks(fork)
+        .into_iter()
+        .find(|b| matches!(app.transcript.block(*b), Some(Block::Tool { args, .. }) if args["path"] == id))
+        .unwrap()
+}
+
+/// `fork-1`'s view open, with its calls `f0`..`f{n}` done.
+fn view_app(calls: usize) -> (App, BlockId) {
+    let (mut app, _, fork) = helper_app();
+    for i in 0..calls {
+        fork_call_done(&mut app, &format!("f{i}"));
+    }
+    app.update(ctrl_key(KeyCode::Down));
+    app.update(key(KeyCode::Enter));
+    assert_eq!(app.helper_view(), Some(fork));
+    (app, fork)
+}
+
+/// The screen row showing the call of `id` (`read <id>`, whole).
+fn row_of(rows: &[String], id: &str) -> u16 {
+    u16::try_from(
+        rows.iter()
+            .position(|r| shown_calls(std::slice::from_ref(r)).contains(&id.to_string()))
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// The ids of the calls whose lines `rows` show, top first.
+fn shown_calls(rows: &[String]) -> Vec<String> {
+    rows.iter()
+        .filter_map(|r| {
+            let at = r.find("read f")?;
+            r[at + 5..].split_whitespace().next().map(str::to_string)
+        })
+        .collect()
+}
+
+/// A click on `row` well after any earlier one (not a double click).
+fn click_later(app: &mut App, row: u16, at: &mut Instant) {
+    *at += Duration::from_secs(2);
+    app.update_at(down(row, 3), *at);
+    app.update_at(up(row, 3), *at);
+}
+
+/// The owner's report: in a helper's full view a click on a folded call
+/// did nothing. It unfolds that call and only it, and a second click folds
+/// it again; also with the view scrolled back.
+#[test]
+fn a_click_in_a_helper_s_view_unfolds_the_call_under_it() {
+    let mut at = Instant::now();
+    let (mut app, fork) = view_app(3);
+    let rows = screen(&mut app, 24);
+    let f1 = view_tool(&app, fork, "f1");
+    click_later(&mut app, row_of(&rows, "f1"), &mut at);
+    assert!(!tool_collapsed(&app, f1));
+    for other in ["f0", "f2"] {
+        assert!(
+            tool_collapsed(&app, view_tool(&app, fork, other)),
+            "{other}"
+        );
+    }
+    let rows = screen(&mut app, 24);
+    assert!(rows.iter().any(|r| r.contains("body of f1")), "{rows:#?}");
+    click_later(&mut app, row_of(&rows, "f1"), &mut at);
+    assert!(tool_collapsed(&app, f1));
+
+    // Scrolled back: the rows map to the lines the view shows.
+    let (mut app, fork) = view_app(12);
+    screen(&mut app, 14);
+    app.update(key(KeyCode::PageUp));
+    let rows = screen(&mut app, 14);
+    let shown = shown_calls(&rows);
+    assert!(
+        !shown.is_empty() && !shown.contains(&"f11".to_string()),
+        "scrolled: {rows:#?}"
+    );
+    let block = view_tool(&app, fork, &shown[0]);
+    click_later(&mut app, row_of(&rows, &shown[0]), &mut at);
+    assert!(!tool_collapsed(&app, block), "{shown:?}");
+    assert!(tool_collapsed(&app, view_tool(&app, fork, "f11")));
+}
+
+/// The owner's report: a drag in a helper's full view selected and copied
+/// nothing. It selects the view's own rows (drawn highlighted), copies
+/// their text, not the transcript's rows at the same places, and a
+/// middle-click pastes it; also with the view scrolled back.
+#[test]
+fn a_drag_in_a_helper_s_view_copies_the_view_s_text() {
+    let (mut app, _) = view_app(3);
+    let rows = screen(&mut app, 24);
+    let (from, to) = (row_of(&rows, "f0"), row_of(&rows, "f1"));
+    app.update(down(from, 0));
+    app.update(drag(to, 40));
+    app.update(up(to, 40));
+    let copied = app.take_clipboard_text().unwrap();
+    assert!(
+        copied.contains("read f0") && copied.contains("read f1"),
+        "{copied:?}"
+    );
+    assert!(
+        !copied.contains("read f2") && !copied.contains("go"),
+        "{copied:?}"
+    );
+    // Drawn highlighted in the view.
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|f| render::draw_at(f, &mut app, Instant::now()))
+        .unwrap();
+    let cell = &terminal.backend().buffer()[(4, from)];
+    assert!(
+        cell.style()
+            .add_modifier
+            .contains(ratatui::style::Modifier::REVERSED),
+        "{cell:?}"
+    );
+    app.update(middle(2, 2));
+    assert_eq!(app.input.text(), copied);
+
+    // Scrolled back.
+    let (mut app, _) = view_app(12);
+    screen(&mut app, 14);
+    app.update(key(KeyCode::PageUp));
+    let rows = screen(&mut app, 14);
+    let shown = shown_calls(&rows);
+    assert!(
+        shown.len() >= 2 && !shown.contains(&"f11".to_string()),
+        "scrolled: {rows:#?}"
+    );
+    let (from, to) = (row_of(&rows, &shown[0]), row_of(&rows, &shown[1]));
+    app.update(down(from, 0));
+    app.update(drag(to, 40));
+    app.update(up(to, 40));
+    let copied = app.take_clipboard_text().unwrap();
+    assert_eq!(
+        shown_calls(&copied.lines().map(str::to_string).collect::<Vec<_>>()),
+        shown[..2],
+        "{copied:?}"
+    );
+}
+
 /// With a picker open that has no text field the paste goes nowhere (the
 /// input stays as it was, the picker open); with Shift held the click is
 /// the terminal's and changes nothing.

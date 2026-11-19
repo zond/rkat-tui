@@ -479,9 +479,21 @@ impl Transcript {
 
     /// The laid-out lines of the full view of the helper `header` at
     /// `width` (without its title line).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn helper_view_lines(&mut self, header: BlockId, width: u16) -> Vec<Line<'static>> {
+        self.helper_view_rows(header, width).0
+    }
+
+    /// [`Self::helper_view_lines`], with the block each line belongs to
+    /// (what a click or a drag on a row of the view reaches).
+    pub fn helper_view_rows(
+        &mut self,
+        header: BlockId,
+        width: u16,
+    ) -> (Vec<Line<'static>>, Vec<BlockId>) {
         let ids = self.helper_view_blocks(header);
         let mut lines = Vec::new();
+        let mut blocks = Vec::new();
         for id in ids {
             let Some(entry) = self.entry_mut(id) else {
                 continue;
@@ -498,9 +510,10 @@ impl Transcript {
             }
             if let Some(cached) = &entry.view_layout {
                 lines.extend(cached.lines.iter().cloned());
+                blocks.extend(std::iter::repeat_n(id, cached.lines.len()));
             }
         }
-        lines
+        (lines, blocks)
     }
 
     /// Expand or fold the helper header `id`. Returns the new `expanded`
