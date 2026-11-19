@@ -680,6 +680,10 @@ impl Transcript {
                 from: crate::ui::peer::short_name(&from).to_string(),
                 text: body,
                 collapsed: true,
+                to: Some(super::PeerTo {
+                    tag: helper.tag.clone(),
+                    depth: helper.depth,
+                }),
             }));
         } else if let Some(task) = fork_task(input) {
             // A fork: its life as the call said, else (a stored `fork_off`

@@ -1374,9 +1374,20 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
             from,
             text,
             collapsed,
+            to,
         } => {
             let style = Style::default().fg(Color::Magenta);
-            let head = format!("✉ from agent {from}");
+            // A helper's: its indent and tag, as its tool lines have.
+            let (head, body_lead) = match to {
+                Some(to) => {
+                    let indent = "  ".repeat(to.depth);
+                    (
+                        format!("{indent}✉ {} from {from}", sanitize(&to.tag)),
+                        format!("{indent}  "),
+                    )
+                }
+                None => (format!("✉ from agent {from}"), "  ".to_string()),
+            };
             let bold = style.add_modifier(Modifier::BOLD);
             if text.is_empty() {
                 out.push(Line::from(Span::styled(head, bold)));
@@ -1398,7 +1409,7 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
                     Span::styled(head, bold),
                     Span::styled(" ▾", dim),
                 ]));
-                prefixed(text, w, "  ", "  ", style, &mut out);
+                prefixed(text, w, &body_lead, &body_lead, style, &mut out);
             }
         }
         Block::Btw { question, answer } => {
@@ -1912,6 +1923,7 @@ mod tests {
             text: "I am changing src/lib.rs\nand then src/main.rs, which will take a while longer"
                 .into(),
             collapsed: true,
+            to: None,
         };
         let lines: Vec<String> = block_lines(&folded, 60).iter().map(line_text).collect();
         assert_eq!(
@@ -1926,6 +1938,7 @@ mod tests {
             from: "main-ab12".into(),
             text: "I am changing src/lib.rs".into(),
             collapsed: false,
+            to: None,
         };
         let lines: Vec<String> = block_lines(&block, 60).iter().map(line_text).collect();
         assert_eq!(lines[0], "✉ from agent main-ab12 ▾");
@@ -1935,9 +1948,26 @@ mod tests {
             from: "main-ab12".into(),
             text: String::new(),
             collapsed: true,
+            to: None,
         };
         let lines: Vec<String> = block_lines(&bare, 60).iter().map(line_text).collect();
         assert_eq!(lines, ["✉ from agent main-ab12", ""]);
+        // A message a helper received is drawn as that helper's lines are:
+        // indented and tagged, never as this agent's own.
+        let to_helper = Block::Peer {
+            from: "main-kgem".into(),
+            text: "fix the six comments".into(),
+            collapsed: true,
+            to: Some(super::super::transcript::PeerTo {
+                tag: "[six · m]".into(),
+                depth: 1,
+            }),
+        };
+        let lines: Vec<String> = block_lines(&to_helper, 60).iter().map(line_text).collect();
+        assert_eq!(
+            lines[0],
+            "  ✉ [six · m] from main-kgem: fix the six comments ▸"
+        );
     }
 
     /// A `/btw` is a dim, labelled side note: its question, then its

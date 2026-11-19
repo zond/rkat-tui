@@ -13357,3 +13357,24 @@ with the summary).
 Tests: `approval::engine::tests::a_blocked_call_keeps_the_whole_call_it_approves`,
 `ui::tests::permissions::a_long_blocked_call_is_read_in_full_before_it_is_approved_once`
 (failed before: `o` approved the call at once).
+
+## A helper's received message is drawn as the helper's (owner, 0.0.17)
+
+The owner saw, in the main view, the agent's `✓ message → six-comment-fixes …`
+and right after it `✉ from agent main-kgem` with the whole text, at the
+left margin, as if the agent had received a message from itself. The
+helper was unfolded (he had clicked its header, which toggles the fold
+anywhere on the line; the header shows `▾` then, `▸` folded). The block is
+the helper's own: its run's input is the peer message, and
+`helper_input` pushes it scoped to the helper's header (hidden while the
+helper is folded, shown in its full view); a restored conversation's peer
+blocks are that conversation's own agent's (`restore.rs` keeps incoming
+notices only). So the scoping was right and the defect was the drawing: a
+helper-scoped `Block::Peer` was drawn as the agent's. It now carries the
+receiving helper (`PeerTo`: its tag and depth) and is drawn as the
+helper's tool lines are, `  ✉ [six-comment-fixes · model] from main-kgem: …`.
+
+Tests: `ui::tests::helpers::a_message_is_drawn_once_in_the_view_of_the_member_that_received_it`
+(each direction once per view, folded and unfolded),
+`ui::tests::helpers::no_block_of_a_folded_helper_is_in_the_main_view`
+(the invariant), `ui::render::tests::a_peer_message_is_labelled_with_its_sender`.

@@ -245,6 +245,15 @@ pub struct DiffView {
     pub removed: usize,
 }
 
+/// The helper a peer message was for ([`Block::Peer`]'s `to`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerTo {
+    /// The helper's tag, `[scout · model]`.
+    pub tag: String,
+    /// How deep it is nested (its lines' indent).
+    pub depth: usize,
+}
+
 /// One rendered unit of the transcript.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
@@ -343,6 +352,10 @@ pub enum Block {
         text: String,
         /// Whether only its first line is shown.
         collapsed: bool,
+        /// The helper that received it, when this agent did not: drawn as
+        /// that helper's other lines are (its tag, its indent), under its
+        /// header, so it never reads as this agent's own message.
+        to: Option<PeerTo>,
     },
     /// A detached job's outcome (a `fork_off` child, a council), compact
     /// ([`outcome::JobOutcome`]): a header with its counts and the result's
@@ -750,8 +763,15 @@ impl Transcript {
                         body(&mut out, output);
                     }
                 }
-                Block::Peer { from, text, .. } => {
-                    let _ = writeln!(out, "## message from agent {from}");
+                Block::Peer { from, text, to, .. } => {
+                    match to {
+                        Some(to) => {
+                            let _ = writeln!(out, "## message to helper {} from {from}", to.tag);
+                        }
+                        None => {
+                            let _ = writeln!(out, "## message from agent {from}");
+                        }
+                    }
                     body(&mut out, text);
                 }
                 Block::Task { label, text } => {
@@ -1205,6 +1225,7 @@ impl Transcript {
             from,
             text,
             collapsed: !self.detail,
+            to: None,
         };
         match waiting {
             Some(id) => {

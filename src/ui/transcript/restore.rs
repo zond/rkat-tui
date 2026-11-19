@@ -143,10 +143,12 @@ fn peer_blocks(notice: &meerkat_core::SystemNoticeMessage) -> Vec<Block> {
                 if body.trim().is_empty() {
                     return None;
                 }
+                // The conversation's own agent received it.
                 Some(Block::Peer {
                     from: crate::ui::peer::short_name(&from).to_string(),
                     text: body,
                     collapsed: true,
+                    to: None,
                 })
             }
             _ => None,
@@ -259,6 +261,7 @@ mod tests {
                 from: "main-gak7".into(),
                 text: "I am changing src/lib.rs".into(),
                 collapsed: true,
+                to: None,
             }]
         );
     }

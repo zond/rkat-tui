@@ -73,6 +73,12 @@
   Your draft stays as it was under the dialog. Enter in the approval and
   "Plan ready" dialogs picks a row only after ↑/↓ moved to it; the numbers
   and letters are unchanged.
+- With a helper unfolded in the main view, a message the agent sent it
+  was drawn there as `✉ from agent main-…` at the left margin, as if the
+  agent had received a message from itself. A message a helper receives
+  is now drawn as that helper's other lines are, indented and tagged
+  (`✉ [scout · model] from main-…: …`), and only while it is unfolded or
+  in its own view.
 - In `/permissions`' Blocked section, `o` (or Enter) approved a call once
   as a whole while its row showed at most the first 200 bytes of it: a
   long command was approved unread. The row now says when it shows only

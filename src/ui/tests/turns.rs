@@ -123,6 +123,7 @@ fn a_peer_message_is_shown_labelled() {
             from: "main-ab12".into(),
             text: "I am changing src/lib.rs".into(),
             collapsed: true,
+            to: None,
         }]
     );
     let id = app.transcript.iter().next().unwrap().0;

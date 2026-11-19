@@ -1750,6 +1750,167 @@ fn a_note_that_reaches_a_running_turn_is_one_folded_line() {
     assert!(!text.contains("let x = 1"), "{text}");
 }
 
+/// The run input of a message `from` sent, as the engine gives it.
+fn peer_input(from: &str, body: &str) -> String {
+    format!("Peer message\nPeer message from tui/main/{from}:\n{body}\nPeer message")
+}
+
+/// A helper's run started on `input`.
+fn run_on(input: &str) -> AgentEvent {
+    use meerkat_core::types::{ContentInput, RunInput, TranscriptMessageIdentity};
+    AgentEvent::RunStarted {
+        session_id: meerkat_core::SessionId::new(),
+        identity: TranscriptMessageIdentity::default(),
+        input: RunInput::Content {
+            content: ContentInput::Text(input.into()),
+        },
+        request_reasoning: None,
+        reasoning_effort: None,
+    }
+}
+
+/// The `✉` lines of `lines`.
+fn mail(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .filter(|line| line.contains('✉'))
+        .map(|line| line.trim_end().to_string())
+        .collect()
+}
+
+/// Item 7 (owner, 0.0.17): a message is drawn once, in the view of the
+/// member that received it. The agent's message to its helper is the
+/// helper's (its full view; in the main view only while the helper is
+/// unfolded, tagged and indented as the helper's lines are, never as a
+/// message the agent received); the helper's message to the agent is the
+/// agent's (the main view, once; not in the helper's view).
+#[test]
+fn a_message_is_drawn_once_in_the_view_of_the_member_that_received_it() {
+    let (mut app, scout, _) = helper_app();
+    app.update(helper_msg(
+        "scout",
+        run_on(&peer_input("main-kgem", "fix the six comments")),
+    ));
+    app.update(Msg::Peer {
+        from: "scout".into(),
+        text: "all six fixed".into(),
+    });
+    // Folded: the agent's received message only.
+    let folded = mail(&screen(&mut app, 40));
+    assert_eq!(
+        folded,
+        ["✉ from agent scout: all six fixed ▸"],
+        "{folded:?}"
+    );
+    // Unfolded: the helper's received message too, as the helper's line.
+    app.transcript.toggle_helper(scout);
+    let open = mail(&screen(&mut app, 40));
+    assert_eq!(
+        open.iter()
+            .filter(|l| l.contains("✉ [scout · m] from main-kgem: fix the six comments"))
+            .count(),
+        1,
+        "{open:?}"
+    );
+    assert_eq!(
+        open.iter()
+            .filter(|l| l.contains("✉ from agent scout"))
+            .count(),
+        1
+    );
+    assert!(
+        !open.iter().any(|l| l.contains("✉ from agent main-kgem")),
+        "never as the agent's own: {open:?}"
+    );
+    // The helper's full view: its received message once, not the agent's.
+    let view: Vec<String> = app
+        .transcript
+        .helper_view_lines(scout, 80)
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        })
+        .collect();
+    let view = mail(&view);
+    assert_eq!(view.len(), 1, "{view:?}");
+    assert!(
+        view[0].contains("from main-kgem: fix the six comments"),
+        "{view:?}"
+    );
+}
+
+/// Invariant: no block of a folded helper is among the main view's lines
+/// (only its header is), whatever it is: tool lines, its prose, a message
+/// it received, a nested helper's blocks.
+#[test]
+fn no_block_of_a_folded_helper_is_in_the_main_view() {
+    let (mut app, scout, fork) = helper_app();
+    app.update(helper_msg(
+        "scout",
+        run_on(&peer_input("main-kgem", "and the docs")),
+    ));
+    app.update(helper_msg(
+        "scout",
+        AgentEvent::TextComplete {
+            content: "looking".into(),
+            assistant_message_id: None,
+        },
+    ));
+    for header in [scout, fork] {
+        assert!(!expanded(&app, header));
+    }
+    for (id, _) in app.transcript.iter() {
+        let mut owner = app.transcript.owner_of(id);
+        let mut folded = false;
+        while let Some(up) = owner {
+            folded |= !expanded(&app, up);
+            owner = app.transcript.owner_of(up);
+        }
+        if folded {
+            assert!(
+                app.transcript.is_hidden(id),
+                "{:?}",
+                app.transcript.block(id)
+            );
+        }
+    }
+    // The main view's lines (the transcript's, without the helpers' panel).
+    let total = app.transcript.ensure_layout(80);
+    let rows: Vec<String> = app
+        .transcript
+        .visible_lines(0, total)
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        })
+        .collect();
+    for label in ["[scout", "[fork-1"] {
+        assert_eq!(
+            rows.iter().filter(|row| row.contains(label)).count(),
+            1,
+            "only its header: {rows:#?}"
+        );
+    }
+    // Its message is not drawn; its prose shows at most as the header's
+    // last activity.
+    assert!(
+        !rows.iter().any(|row| row.contains("and the docs")),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .filter(|row| row.contains("looking"))
+            .all(|row| row.contains("[scout")),
+        "{rows:#?}"
+    );
+}
+
 /// Another client's message that carries notes held after an interrupt
 /// shows them as their folded line and the message as its own words.
 #[test]
