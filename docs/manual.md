@@ -2250,13 +2250,23 @@ it to compact (`mob/compact_member`) and then starts that run itself with
 a short prompt of its own (`[rkat-tui /compact] …`). The run costs the
 summary and one short model call after it; the model sees the summary,
 that prompt and its one-word reply, which stay in the conversation, and
-rkat-tui shows neither (live or restored): only the compaction notices,
+rkat-tui shows neither (live or restored): only the compaction's lines,
 and `compacting… Ns` in the status bar while the compaction runs (any
 compaction, also the engine's own). When the check finds nothing to fold
 the transcript says "nothing was compacted" with the reason. A prompt
 typed while that run goes is held (*will send after this turn*) and sent
 when it ends; one typed while the request is still on its way starts
 an ordinary turn, which compacts first instead.
+
+Every compaction (the engine's own, `/compact`, or one the agent asked
+for with `compact_ready`) is one folded line in the transcript:
+`✓ compacted: 379 → 68 messages (3.2k summary tokens) ▸`. A click on it
+or Ctrl-O shows the summary the agent goes on from (read from the
+conversation's record once the compaction is committed); nothing else
+of the summary is drawn. A conversation opened again (`/resume`, `-c`,
+an attach) shows the same line, `✓ compacted: the earlier conversation,
+summarised ▸` (the figures are not stored), with the summary. `/export`
+writes it under its own heading.
 
 `/context` prints the gauge (tokens used of the window, the percentage,
 and whether either is an estimate), the policy `/compact status` prints, and
@@ -3207,7 +3217,7 @@ auth binding and `[thinking]` setting; not while a turn runs; the session
 keeps the model), the context gauge,
 token counts, `/status`, `/export`, `/cost` (helpers included, kept per
 conversation), `/copy`, `/context` (what the daemon reports of the conversation and its tools), `/compact` (compacts at once through a short run of its own; the
-✓ compacted notice and the gauge confirm it) and `/compact status` (the
+✓ compacted line and the gauge confirm it) and `/compact status` (the
 policy), `/remember` and `/memory` (the files are edited here; the agent
 reads the new content from its next model call), the Ctrl-T task checklist, approvals, the permission
 modes, `/permissions`, `/trust` and `!` commands. The token

@@ -13165,3 +13165,40 @@ Tests: `mobs::registry::tests::a_reservation_holds_a_name_and_a_slot_until_it_is
 `assign::two_calls_for_one_name_in_one_step_seat_one`,
 `assign::a_helper_s_limit_is_its_own`,
 `assign::a_lowered_limit_refuses_new_helpers_and_retires_none`.
+
+## A compaction is one folded line with its summary (owner, 2026-11-19)
+
+The owner asked for the compaction summary as one expandable line. What
+reached the transcript before, read from the code and the engine
+(meerkat-core 0.9.16):
+
+- Live, every kind (the engine's own threshold, `/compact`, the agent's
+  `compact_ready`): only the notices `⟳ compacting…` and `✓ compacted:
+  A → B messages (N summary tokens)`. The summary call streams nothing
+  (`agent/compact.rs` emits `CompactionStarted`, then `CompactionCompleted`
+  or `CompactionFailed`, and no text events), and `CompactionCompleted`
+  carries only the figures. `/compact`'s own prompt and reply are the quiet
+  run's and draw nothing. What the agent writes before `compact_ready` is
+  its own answer, drawn as any answer.
+- Restored: `blocks_from_messages` drew only `Conversational` user rows,
+  so the summary row (`TranscriptUserRole::CompactionSummary`, text
+  `COMPACTION_SUMMARY_PREFIX` + summary) drew nothing: a re-opened
+  conversation showed no sign of the compaction at all. It was never a
+  user band nor the pinned line, and `composed_input` never saw it (only
+  `Conversational` rows reach it), so it is unchanged.
+
+Now `Block::Compaction` is the one line live and restored. Its summary,
+live, is read from the conversation's committed messages
+(`Effect::ReadCompactionSummary` → `rkat/transcript`, the latest
+`CompactionSummary` row without the prefix): the engine publishes the
+completion once the rewrite is committed (the rig shows the read
+returning the summary for all three kinds). Restored, the figures are
+not stored, so the line says `compacted: the earlier conversation,
+summarised`.
+
+Tests: `ui::tests::turns::a_compaction_is_one_folded_line_that_opens_to_its_summary`,
+`ui::transcript::restore::tests::a_compaction_summary_restores_as_its_folded_line`,
+`compact::auto_mode_compacts_natively_at_the_threshold`,
+`compact::warn_mode_warns_and_compacts_only_on_compact`,
+`compact_prepare::a_crossing_steers_the_instruction_and_compact_ready_compacts`
+(the read, and the restore after `-c`).

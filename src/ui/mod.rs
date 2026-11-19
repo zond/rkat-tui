@@ -526,6 +526,9 @@ pub enum Msg {
     /// The run `/compact` starts on an idle agent began (`true`) or ended:
     /// while it runs, a message typed is held and sent after it.
     CompactionRun(bool),
+    /// The summary of the latest compaction, read from the conversation's
+    /// record ([`Effect::ReadCompactionSummary`]), or why it could not be.
+    CompactionSummary(Result<String, String>),
     /// The terminal gained (`true`) or lost (`false`) the focus.
     Focus(bool),
     /// The client runner resolved `/memory`'s file (and created a missing
@@ -645,7 +648,7 @@ pub const COMPACT_FOCUS_UNSUPPORTED: &str =
 /// Notice shown once the engine took a `/compact` request while a turn
 /// of the agent runs (another client's): that turn compacts at its next
 /// model request.
-pub const COMPACT_REQUESTED: &str = "the context will be compacted before the agent's next model request (the ✓ compacted notice confirms it)";
+pub const COMPACT_REQUESTED: &str = "the context will be compacted before the agent's next model request (the ✓ compacted line confirms it)";
 
 /// The prompt of the run `/compact` starts on an idle agent so that its
 /// compaction check runs (the client runner's `compact_asked`): it stays in
@@ -656,7 +659,7 @@ pub const COMPACT_PROMPT: &str = "[rkat-tui /compact] The user asked to compact 
 
 /// Notice shown once the engine took a `/compact` request on the idle
 /// agent: the client starts the short run whose check compacts.
-pub const COMPACT_RUNNING: &str = "compacting now: the agent makes one short request after the summary (the ✓ compacted notice confirms it; what you send meanwhile goes after it)";
+pub const COMPACT_RUNNING: &str = "compacting now: the agent makes one short request after the summary (the ✓ compacted line confirms it; what you send meanwhile goes after it)";
 
 /// Side effect requested by [`App::update`], executed by the client runner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -822,6 +825,10 @@ pub enum Effect {
     /// compaction policy); the client runner adds what the context holds and
     /// answers with one [`Msg::Notice`].
     ContextReport(String),
+    /// A compaction completed: read its summary from the conversation's
+    /// record (`rkat/transcript`; the event carries only its figures) and
+    /// answer with [`Msg::CompactionSummary`].
+    ReadCompactionSummary,
     /// `/btw`: ask the daemon the side question `question` (`rkat/btw`),
     /// with the tool the agent is running and for how long; answered with
     /// [`Msg::BtwAnswered`].
@@ -1805,7 +1812,11 @@ impl App {
                     }
                     // The gauge's reading is the daemon's (`rkat/cost`); a
                     // compaction re-arms its warning.
-                    AgentEvent::CompactionCompleted { .. } => self.gauge.compacted(),
+                    // Its folded line's summary is read from the record.
+                    AgentEvent::CompactionCompleted { .. } => {
+                        self.gauge.compacted();
+                        fx.push(Effect::ReadCompactionSummary);
+                    }
                     _ => {}
                 }
                 self.status.track_tools(&env.payload, now);
@@ -2041,6 +2052,7 @@ impl App {
             }
             Msg::CompactRequested(result) => self.compact_requested(result, now, &mut fx),
             Msg::CompactionRun(running) => self.compaction_run(running, now, &mut fx),
+            Msg::CompactionSummary(read) => dirty = self.transcript.fill_compaction(read),
             Msg::EditFile { target, path } => {
                 self.local
                     .push(LocalEffect::ExternalEditor(EditorTarget::Memory {

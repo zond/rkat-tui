@@ -2,6 +2,77 @@
 
 use super::*;
 
+/// A compaction is one folded line with its figures; its summary, read
+/// from the conversation's record (the event carries none), is drawn only
+/// when the line is opened (a click, or Ctrl-O), and `/export` writes it
+/// under a heading. A summary that could not be read says where it is.
+#[test]
+fn a_compaction_is_one_folded_line_that_opens_to_its_summary() {
+    let completed = || {
+        agent(AgentEvent::CompactionCompleted {
+            summary_tokens: 3_249,
+            messages_before: 379,
+            messages_after: 68,
+            summary_source: None,
+            estimated_history_tokens_after: None,
+        })
+    };
+    let mut app = App::new(StatusInfo::default());
+    let fx = app.update(completed());
+    assert!(fx.contains(&Effect::ReadCompactionSummary), "{fx:?}");
+    let summary = "The user is refactoring the parser.\nNext: the tests.";
+    app.update(Msg::CompactionSummary(Ok(summary.into())));
+    let rows = screen(&mut app, 20);
+    let text = rows.join("\n");
+    assert!(
+        rows.iter()
+            .any(|r| r == "✓ compacted: 379 → 68 messages (3.2k summary tokens) ▸"),
+        "{text}"
+    );
+    assert!(!text.contains("refactoring"), "{text}");
+    let row = rows
+        .iter()
+        .position(|r| r.starts_with("✓ compacted"))
+        .unwrap();
+    click_at(&mut app, u16::try_from(row).unwrap());
+    let open = screen(&mut app, 20).join("\n");
+    assert!(
+        open.contains("✓ compacted: 379 → 68 messages (3.2k summary tokens) ▾"),
+        "{open}"
+    );
+    assert!(
+        open.contains("  The user is refactoring the parser."),
+        "{open}"
+    );
+    assert!(open.contains("  Next: the tests."), "{open}");
+    let export = app.transcript.export_text();
+    assert!(
+        export.contains(
+            "## compacted: 379 → 68 messages (3.2k summary tokens) (the summary the agent goes on from)"
+        ) && export.contains("The user is refactoring the parser."),
+        "{export}"
+    );
+    // Ctrl-O opens every one, a second compaction's too; one whose summary
+    // could not be read says so and where it is.
+    let mut app = App::new(StatusInfo::default());
+    app.update(completed());
+    app.update(Msg::CompactionSummary(Err("the daemon is gone".into())));
+    app.update(ctrl('o'));
+    let open = screen(&mut app, 20).join("\n");
+    assert!(
+        open.contains("the summary could not be read: the daemon is gone"),
+        "{open}"
+    );
+    assert!(
+        !app.transcript
+            .blocks()
+            .iter()
+            .any(|b| matches!(b, Block::User { .. } | Block::Assistant { .. })),
+        "{:?}",
+        app.transcript.blocks()
+    );
+}
+
 #[test]
 fn a_remote_turn_shows_its_prompt_and_keeps_the_ui_busy_until_it_ends() {
     let mut app = App::new(StatusInfo::default());

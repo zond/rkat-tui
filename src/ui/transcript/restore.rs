@@ -6,8 +6,8 @@ use super::{Block, ToolState};
 
 /// Transcript blocks for a stored conversation's `messages` (read from the
 /// daemon): user text, assistant text and tool calls. Tool results are
-/// summarized as completed calls; runtime notices, injected context and
-/// compaction summaries are not shown.
+/// summarized as completed calls; runtime notices and injected context are
+/// not shown; a compaction's summary is its folded line.
 #[must_use]
 pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
     let mut blocks = Vec::new();
@@ -21,6 +21,17 @@ pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
                 if !text.is_empty() && !compact_reply {
                     blocks.extend(restored_user(text));
                 }
+            }
+            // The summary a compaction left in the earlier conversation's
+            // place: its folded line, as live (the figures are not stored).
+            Message::User(user) if user.transcript_role.is_compaction_summary() => {
+                blocks.push(Block::Compaction {
+                    line: "compacted: the earlier conversation, summarised".to_string(),
+                    summary: Some(Ok(
+                        super::compaction_summary_text(&user.text_content()).to_string()
+                    )),
+                    collapsed: true,
+                });
             }
             Message::BlockAssistant(_) if compact_reply => compact_reply = false,
             Message::BlockAssistant(assistant) => {
@@ -249,6 +260,34 @@ mod tests {
                 text: "I am changing src/lib.rs".into(),
                 collapsed: true,
             }]
+        );
+    }
+
+    /// The summary a compaction left restores as its folded line holding
+    /// the summary without the engine's lead-in; it is never the user's
+    /// band.
+    #[test]
+    fn a_compaction_summary_restores_as_its_folded_line() {
+        let summary = format!(
+            "{}The user is refactoring the parser.",
+            meerkat_core::COMPACTION_SUMMARY_PREFIX
+        );
+        let blocks = blocks_from_messages(&[
+            Message::User(UserMessage::compaction_summary(summary)),
+            Message::User(UserMessage::text("next")),
+        ]);
+        assert_eq!(
+            blocks,
+            vec![
+                Block::Compaction {
+                    line: "compacted: the earlier conversation, summarised".into(),
+                    summary: Some(Ok("The user is refactoring the parser.".into())),
+                    collapsed: true,
+                },
+                Block::User {
+                    text: "next".into()
+                },
+            ]
         );
     }
 

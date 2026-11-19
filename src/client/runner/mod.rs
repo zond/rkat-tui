@@ -1257,6 +1257,7 @@ impl Runner {
             Effect::CompactNow => self.compact_now(),
             Effect::StatusReport => self.status_report(),
             Effect::ContextReport(header) => self.context_report(header),
+            Effect::ReadCompactionSummary => self.read_compaction_summary(),
             Effect::Btw {
                 question,
                 running_tool,

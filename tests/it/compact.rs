@@ -76,6 +76,28 @@ async fn completed(rig: &mut Attached) {
     .await;
 }
 
+/// The compaction's folded line is given its summary, read from the
+/// conversation's record, and a restore of the conversation shows the same
+/// line with it, and nothing of it as the user's band.
+async fn summary_is_folded(rig: &mut Attached) {
+    // What the UI asks at the completion (`ui::tests::turns`).
+    rig.send(Effect::ReadCompactionSummary);
+    let read = within(rig.saw(|msg| matches!(msg, Msg::CompactionSummary(_)))).await;
+    assert!(
+        matches!(&read, Msg::CompactionSummary(Ok(text)) if text == "SUMMARY of the earlier turns"),
+        "{read:?}"
+    );
+    let restored = rkat_tui::ui::transcript::blocks_from_messages(&rig.messages().await);
+    assert!(
+        restored.iter().any(|b| matches!(b, rkat_tui::ui::Block::Compaction { summary: Some(Ok(text)), collapsed: true, .. } if text == "SUMMARY of the earlier turns")),
+        "{restored:#?}"
+    );
+    assert!(
+        !restored.iter().any(|b| matches!(b, rkat_tui::ui::Block::User { text } | rkat_tui::ui::Block::Assistant { md: text } if text.contains("SUMMARY"))),
+        "{restored:#?}"
+    );
+}
+
 fn started(rig: &Attached) -> usize {
     compactions(rig)
         .iter()
@@ -165,6 +187,7 @@ async fn auto_mode_compacts_natively_at_the_threshold() {
         .expect("a measured history");
     assert!(left < BIG, "{left}");
     assert_eq!(started(&rig), 1, "no second compaction");
+    summary_is_folded(&mut rig).await;
     rig.quit().await;
 }
 
@@ -281,6 +304,8 @@ async fn warn_mode_warns_and_compacts_only_on_compact() {
         last.user()
     );
     assert!(!last.user().contains("turn 0"), "{}", last.user());
+    completed(&mut rig).await;
+    summary_is_folded(&mut rig).await;
     rig.quit().await;
 }
 

@@ -795,6 +795,32 @@ impl Runner {
         });
     }
 
+    /// A compaction of the conversation completed: read the summary it left
+    /// from the conversation's committed messages (`rkat/transcript`; the
+    /// engine's event carries only the figures, and publishes it once the
+    /// rewrite is committed) for its folded line.
+    pub(super) fn read_compaction_summary(&self) {
+        let Some(link) = self.conn.link() else {
+            let _ = self
+                .ui_tx
+                .send(Msg::CompactionSummary(Err(self.unattached())));
+            return;
+        };
+        let connection = Arc::clone(&link.connection);
+        let session = link.session.clone();
+        let ui_tx = self.ui_tx.clone();
+        tokio::spawn(async move {
+            let read = bounded(CALL_TIMEOUT, remote::transcript(&connection, &session))
+                .await
+                .map_err(|err| err.to_string())
+                .and_then(|messages| {
+                    crate::ui::transcript::latest_compaction_summary(&messages)
+                        .ok_or_else(|| "the conversation holds no summary".to_string())
+                });
+            let _ = ui_tx.send(Msg::CompactionSummary(read));
+        });
+    }
+
     /// Read the conversation's tasks from the daemon (`rkat/tasks`) for the
     /// Ctrl+T checklist.
     pub(super) fn refresh_tasks(&self) {

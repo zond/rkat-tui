@@ -398,6 +398,19 @@ pub enum Block {
         /// helpers is another ending.
         paired: bool,
     },
+    /// A compaction of the conversation's context: one folded line with
+    /// its figures (`compacted: 379 → 68 messages (3.2k summary tokens)`),
+    /// the summary the engine wrote in its place when opened. Nothing of
+    /// the summary is drawn anywhere else.
+    Compaction {
+        /// The figures, without the icon.
+        line: String,
+        /// The summary's text (`None`: not read from the conversation's
+        /// record yet; `Err`: why it could not be).
+        summary: Option<Result<String, String>>,
+        /// Whether only the one line shows.
+        collapsed: bool,
+    },
     /// A command the user ran with `!`, and its output.
     Shell {
         /// The command line.
@@ -752,6 +765,10 @@ impl Transcript {
                 Block::HelperNote { title, text, .. } => {
                     let _ = writeln!(out, "## {title} (the note the agent was given)");
                     body(&mut out, text);
+                }
+                Block::Compaction { line, summary, .. } => {
+                    let _ = writeln!(out, "## {line} (the summary the agent goes on from)");
+                    body(&mut out, &compaction_body(summary.as_ref()));
                 }
                 Block::Btw { question, answer } => {
                     let _ = writeln!(
@@ -1282,6 +1299,7 @@ impl Transcript {
                 | Block::Shell { collapsed, .. }
                 | Block::Peer { collapsed, .. }
                 | Block::HelperNote { collapsed, .. }
+                | Block::Compaction { collapsed, .. }
                 | Block::Outcome { collapsed, .. } => {
                     let changed = *collapsed != collapse;
                     *collapsed = collapse;
@@ -1393,6 +1411,27 @@ impl Transcript {
         changed
     }
 
+    /// The summary of the latest compaction whose summary is not read yet,
+    /// as the conversation's record holds it (`Err`: why it could not be
+    /// read). Whether a block took it.
+    pub fn fill_compaction(&mut self, read: Result<String, String>) -> bool {
+        let Some(index) = self
+            .entries
+            .iter()
+            .rposition(|entry| matches!(entry.block, Block::Compaction { summary: None, .. }))
+        else {
+            return false;
+        };
+        self.touch(index);
+        let entry = &mut self.entries[index];
+        if let Block::Compaction { summary, .. } = &mut entry.block {
+            *summary = Some(read);
+        }
+        entry.layout = None;
+        entry.view_layout = None;
+        true
+    }
+
     /// Expand or collapse the output of the tool block `id`. Returns the new
     /// `collapsed` state, or `None` when `id` is not a tool block with output.
     pub fn toggle_tool(&mut self, id: BlockId) -> Option<bool> {
@@ -1406,6 +1445,7 @@ impl Transcript {
                 | Block::Shell { collapsed, .. }
                 | Block::Peer { collapsed, .. }
                 | Block::HelperNote { collapsed, .. }
+                | Block::Compaction { collapsed, .. }
                 | Block::Outcome { collapsed, .. },
             ) => {
                 *collapsed = !*collapsed;
@@ -1854,12 +1894,17 @@ impl Transcript {
                 messages_after,
                 ..
             } => {
-                self.push_notice(
-                    NoticeLevel::Info,
-                    format!(
-                        "✓ compacted: {messages_before} → {messages_after} messages ({summary_tokens} summary tokens)"
+                // The summary's text is not in the event: the client reads
+                // it from the conversation's record (`fill_compaction`).
+                let collapsed = !self.detail;
+                self.push(Block::Compaction {
+                    line: format!(
+                        "compacted: {messages_before} → {messages_after} messages ({} summary tokens)",
+                        crate::text::tokens(*summary_tokens)
                     ),
-                );
+                    summary: None,
+                    collapsed,
+                });
             }
             AgentEvent::CompactionFailed { reason } => {
                 self.push_notice(NoticeLevel::Warn, format!("✗ compaction failed: {reason}"));
@@ -2401,7 +2446,41 @@ fn tool_has_output(block: &Block) -> bool {
         )
         || matches!(block, Block::Outcome { md, .. } if !md.is_empty())
         || matches!(block, Block::Peer { text, .. } if !text.is_empty())
-        || matches!(block, Block::HelperNote { .. })
+        || matches!(block, Block::HelperNote { .. } | Block::Compaction { .. })
+}
+
+/// What an opened [`Block::Compaction`] shows below its line, and the
+/// export writes under its heading: the summary, or where it is.
+#[must_use]
+pub fn compaction_body(summary: Option<&Result<String, String>>) -> String {
+    match summary {
+        Some(Ok(text)) => text.clone(),
+        Some(Err(why)) => format!(
+            "(the summary could not be read: {why}. It is the first message of the conversation's record, and this line shows it when the conversation is opened again, with /resume)"
+        ),
+        None => "(reading the summary from the conversation's record…)".to_string(),
+    }
+}
+
+/// The text of a stored compaction summary (`[Context compacted] …`)
+/// without the engine's lead-in.
+#[must_use]
+pub fn compaction_summary_text(text: &str) -> &str {
+    text.strip_prefix(meerkat_core::COMPACTION_SUMMARY_PREFIX)
+        .unwrap_or(text)
+        .trim()
+}
+
+/// The text of the latest compaction summary in a conversation's
+/// committed `messages`, without its lead-in (`None`: none there).
+#[must_use]
+pub fn latest_compaction_summary(messages: &[meerkat_core::Message]) -> Option<String> {
+    messages.iter().rev().find_map(|message| match message {
+        meerkat_core::Message::User(user) if user.transcript_role.is_compaction_summary() => {
+            Some(compaction_summary_text(&user.text_content()).to_string())
+        }
+        _ => None,
+    })
 }
 
 /// A `!` command's state as the export and the header say it.

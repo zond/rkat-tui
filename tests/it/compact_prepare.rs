@@ -182,6 +182,14 @@ async fn a_crossing_steers_the_instruction_and_compact_ready_compacts() {
     }))
     .await;
     common::until_async(async || status(&rig).await.contains(": armed")).await;
+    // The compaction is its folded line, its summary read from the record
+    // (the UI asks at the completion, `ui::tests::turns`).
+    rig.send(Effect::ReadCompactionSummary);
+    let read = within(rig.saw(|msg| matches!(msg, Msg::CompactionSummary(_)))).await;
+    assert!(
+        matches!(&read, Msg::CompactionSummary(Ok(text)) if text == "SUMMARY of the earlier turns"),
+        "{read:?}"
+    );
     rig.quit().await;
     // The conversation the next daemon reads holds no note of the
     // compaction: its instructions say what to do after one.
@@ -189,6 +197,14 @@ async fn a_crossing_steers_the_instruction_and_compact_ready_compacts() {
     let mut setup = Setup::args(&[]);
     setup.client_args = vec!["-c".to_string()];
     let mut again = Attached::start_with(&ws.root, &llm, setup).await;
+    // The conversation opened again shows the compaction as its folded
+    // line, with the summary.
+    within(again.saw(|msg| {
+        matches!(msg, Msg::ResetTranscript(blocks) if blocks.iter().any(|b| matches!(b,
+            rkat_tui::ui::Block::Compaction { summary: Some(Ok(text)), .. }
+                if text == "SUMMARY of the earlier turns")))
+    }))
+    .await;
     again.send(Effect::StartTurn("next".into()));
     again.turn_finished().await.unwrap();
     let first = &llm.recorded()[0];

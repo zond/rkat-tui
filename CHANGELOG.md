@@ -12,6 +12,14 @@
   the limit is refused naming the helpers held and what to do; `contacts`
   shows `7 of 8 helpers` near it; a lowered limit retires nobody.
 
+### Changed
+
+- A compaction is one folded line, `✓ compacted: 379 → 68 messages (3.2k
+  summary tokens) ▸`; a click or Ctrl-O shows the summary the agent goes
+  on from, which nothing showed before, live or in a conversation opened
+  again (where the compaction left no line at all). `/export` writes the
+  summary under its own heading.
+
 ### Fixed
 
 - A cancelled `assign` call (an interrupt while its helper was being

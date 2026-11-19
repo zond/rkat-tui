@@ -1407,6 +1407,28 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
                 prefixed(text, w, "  ", "  ", style, &mut out);
             }
         }
+        Block::Compaction {
+            line,
+            summary,
+            collapsed,
+        } => {
+            // One dim line with the figures; a click or Ctrl-O shows the
+            // summary the agent goes on from.
+            let head = truncate_to_width(&format!("✓ {}", sanitize(line)), w.saturating_sub(2));
+            if *collapsed {
+                out.push(Line::from(vec![
+                    Span::styled(head, dim),
+                    Span::styled(" ▸", dim),
+                ]));
+            } else {
+                out.push(Line::from(vec![
+                    Span::styled(head, dim),
+                    Span::styled(" ▾", dim),
+                ]));
+                let text = crate::ui::transcript::compaction_body(summary.as_ref());
+                prefixed(&text, w, "  ", "  ", dim, &mut out);
+            }
+        }
         Block::Triggered { label, text } => {
             let style = Style::default().fg(Color::Cyan);
             let icon = if label.starts_with("files changed") {
