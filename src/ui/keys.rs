@@ -216,14 +216,17 @@ impl App {
     }
 
     pub(super) fn main_key(&mut self, key: &KeyEvent, now: Instant, fx: &mut Vec<Effect>) {
+        // Any key disarms Esc-Esc and Ctrl-C-Ctrl-C. Whether Esc was armed
+        // is read first, for the Esc that clears; the Ctrl-C press that
+        // reaches the quit ladder gets its arm back ([`Self::ctrl_c`]).
+        let esc_armed = self.esc_clear_armed(now);
+        self.last_esc = None;
+        let ctrl_c_armed = self.quit.last_ctrl_c.take();
         if self.stop_confirmation().is_some() {
-            self.quit.last_ctrl_c = None;
-            self.last_esc = None;
             self.stop_confirm_key(key, fx);
             return;
         }
         if let InputMode::Search(search) = &mut self.mode {
-            self.quit.last_ctrl_c = None;
             match search.key(key, &self.search_corpus) {
                 SearchOutcome::Continue => {}
                 SearchOutcome::Accept(text) | SearchOutcome::Cancel(text) => {
@@ -236,17 +239,12 @@ impl App {
             && now.saturating_duration_since(started) < CHORD_WINDOW
         {
             match key.code {
-                KeyCode::Esc => {
-                    self.quit.last_ctrl_c = None;
-                    return;
-                }
+                KeyCode::Esc => return,
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.quit.last_ctrl_c = None;
                     self.interrupt_and_send(now, fx);
                     return;
                 }
                 KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.quit.last_ctrl_c = None;
                     self.edit_draft_externally();
                     return;
                 }
@@ -255,8 +253,6 @@ impl App {
             }
         }
         if self.menu_key(key) {
-            self.quit.last_ctrl_c = None;
-            self.last_esc = None;
             return;
         }
         if key.code == KeyCode::Char('?')
@@ -267,17 +263,10 @@ impl App {
         {
             // `?` on an empty input opens the shortcut panel; with text it
             // is just typed.
-            self.quit.last_ctrl_c = None;
-            self.last_esc = None;
             self.modal = Some(Modal::Keys);
             return;
         }
         let action = keymap::map_key(key, self.input.is_empty());
-        if action != Action::CtrlC {
-            self.quit.last_ctrl_c = None;
-        }
-        let esc_armed = self.esc_clear_armed(now);
-        self.last_esc = None;
         let page = self.viewport_height.saturating_sub(2).max(1);
         let view = self.helper_view();
         match action {
@@ -303,15 +292,15 @@ impl App {
             // Ctrl-C in a helper's view asks whether to stop a running one
             // (or says it is not running); it never reaches the agent's
             // interrupt or the quit ladder.
-            Action::CtrlC if view.is_some() => {
-                self.quit.last_ctrl_c = None;
-                self.ask_stop_in_view();
-            }
+            Action::CtrlC if view.is_some() => self.ask_stop_in_view(),
             Action::Escape if self.panel_selection().is_some() => self.panel_selected = None,
             Action::HelperPrev => self.move_panel_selection(false),
             Action::HelperNext => self.move_panel_selection(true),
             Action::Newline => self.input.newline(),
-            Action::CtrlC => self.ctrl_c(now, fx),
+            Action::CtrlC => {
+                self.quit.last_ctrl_c = ctrl_c_armed;
+                self.ctrl_c(now, fx);
+            }
             Action::CtrlD if !self.input.is_empty() => self.input.delete(),
             Action::CtrlD => self.ctrl_d(now, fx),
             Action::Escape => self.escape(esc_armed, now, fx),
