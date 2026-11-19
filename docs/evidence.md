@@ -13399,3 +13399,51 @@ after that every allowlisted git read runs it unreviewed. A cheap
 hardening, not done yet (`.handover/review7-left.md`): once a session's
 shell has run any `git config` or written under `.git/`, the git reads
 stop being tier 1 for that session.
+
+## A wire message during a compaction did reach the agent (owner, 0.0.17)
+
+The owner, two workspaces wired: B messaged A while A compacted, twice;
+A seemed not to react; a later run of A showed both messages together.
+B's sends were both acknowledged.
+
+What the engine does (`meerkat-comms` 0.9.16 `io_task.rs`
+`handle_connection_inner`): a `Message` envelope is acknowledged only
+after `send_connection_ingress_for_delivery` resolves durably, that is
+once the receiver's comms drain (`meerkat-runtime` `comms_drain.rs`) has
+admitted it into the session's runtime (`accept_peer_ingress_with_completion`).
+An acknowledged message is in A's runtime, admitted with the peer-input
+wake policy; no inbox of ours holds it.
+
+Probed in the rig with hand-signed envelopes on A's socket from a wired
+stranger key (`cross_workspace::a_wire_message_wakes_the_agent_whenever_it_arrives`):
+each of these starts a run that carries the message with no user input,
+in full: to an idle agent (queue and steer mode), during a run's last
+model call (a run of its own after it), during the quiet `/compact` run's
+summary call (a run after it, the message after the summary), two in a
+row, and one just before a user's prompt (that run or the one before it
+carries it). So the daemon and the engine deliver and wake.
+
+The cause was the client, already fixed after 0.0.17 (4658a12, "Messages
+held while the agent worked"): the quiet `/compact` turn took every run
+until the agent went idle and drew none of it, so the message and the
+run it woke were invisible, and the next turn's catch-up drew them.
+`cross_workspace::a_wire_message_during_the_compact_run_is_drawn_with_the_run_it_wakes`
+pins it through a client; with the 0.0.17 rule restored (`left_quiet`
+forced false) it fails waiting for the sender's `Msg::Peer`. Not
+reproduced: the owner's "A answered no" to "did you see this message"; in
+every probe the user's run held the message in its context.
+
+Also from this: a send to a wired agent whose daemon runs but whose agent
+has another key (a `/new` there that this daemon was not told of) is
+closed by the engine's handler with no ack (`Misaddressed`), and the
+sender's `send_message` fails with "peer delivery outcome is ambiguous …
+acknowledgement was not observed", which names no cause. The tool's
+result is the engine's (the comms tools reach no dispatcher of ours), so
+the daemon's event watcher pairs each `send_message` request with its
+result (`Following::sends`) and, for such a failure to a wired peer whose
+socket exists, appends `wires::unacknowledged_note` (not delivered; ask
+the user to run `/wire <label>` again). Tests:
+`cross_workspace::a_send_to_a_wired_agent_whose_key_changed_says_to_wire_again`,
+`daemon::wires::tests::an_unacknowledged_send_is_recognized_and_its_note_says_to_wire_again`.
+`serve` now logs each admitted envelope at info (agent and mob; the
+sender is not known there, the engine's handler does not return it).

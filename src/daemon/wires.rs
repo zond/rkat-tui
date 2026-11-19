@@ -189,6 +189,33 @@ pub fn unreachable_words(card: &WireCard) -> String {
     )
 }
 
+/// The engine's words for a send whose envelope the receiving socket took
+/// and never acknowledged (`meerkat_comms`: an ambiguous delivery, or no
+/// ack received).
+const UNACKNOWLEDGED: [&str; 2] = [
+    "acknowledgement was not observed",
+    "Peer offline (no ack received)",
+];
+
+/// Whether `result`, a failed `send_message`'s, says the envelope was not
+/// acknowledged.
+#[must_use]
+pub fn unacknowledged(result: &str) -> bool {
+    UNACKNOWLEDGED.iter().any(|words| result.contains(words))
+}
+
+/// What an agent is told when its message to the wired agent `label` was
+/// not acknowledged although that agent's daemon runs (its socket is
+/// there): the agent there most likely has another key now (it started a
+/// new conversation while this workspace's daemon could not be told), so
+/// the wire must be made again.
+#[must_use]
+pub fn unacknowledged_note(label: &str) -> String {
+    format!(
+        "Your message to `{label}` was not delivered: the rkat-tui daemon of its workspace runs, but its agent did not acknowledge the message. Most likely that agent started a new conversation, which gives it a new key this wire does not know. Ask your user to run `/wire {label}` again, then send the message again (it is not kept)."
+    )
+}
+
 /// The note an agent gets when its wire to `label` is removed.
 #[must_use]
 pub fn unwired_note(label: &str, workspace: &Path) -> String {
@@ -531,6 +558,21 @@ impl Wires {
         Some(unreachable_words(&card))
     }
 
+    /// `agent`'s message to the peer `peer_id` was not acknowledged: when
+    /// that is a wired agent whose daemon runs, `agent` is told to have the
+    /// wire made again ([`unacknowledged_note`]); off the call.
+    pub fn send_unacknowledged(&self, agent: &str, peer_id: &str) {
+        let Some(card) = self.wired_card(agent, peer_id) else {
+            return;
+        };
+        if self.unreachable(agent, peer_id).is_some() {
+            return;
+        }
+        let label = card.label();
+        tracing::info!(%agent, peer = %label, "a message over a wire was not acknowledged: the other agent's key may have changed");
+        self.note(agent, unacknowledged_note(&label));
+    }
+
     /// The card of `agent`'s wire to the peer `peer_id`. A card's peer id
     /// matched its key when it was accepted ([`Self::descriptor`]), so the
     /// stored string is compared, never derived again.
@@ -785,7 +827,12 @@ async fn serve(
     })
     .await;
     match served {
-        Ok(Ok(())) => tracing::debug!(%mob, %agent, "an envelope over a wire socket was delivered"),
+        // At info, so a log answers "did it arrive". The sender is not
+        // known here: the engine's handler reads and verifies the envelope
+        // and returns only whether its runtime admitted it.
+        Ok(Ok(())) => {
+            tracing::info!(%mob, %agent, "an envelope over a wire socket was admitted to the agent's runtime");
+        }
         Ok(Err(why)) => {
             tracing::info!(%mob, %agent, %why, "a wire socket's connection was refused");
         }
@@ -867,6 +914,30 @@ mod tests {
         assert!(
             gone.contains("`other/main-ab12`") && gone.contains("removed"),
             "{gone}"
+        );
+    }
+
+    /// The engine's two wordings of a send nobody acknowledged are
+    /// recognized, nothing else; the note names the wire and the command.
+    #[test]
+    fn an_unacknowledged_send_is_recognized_and_its_note_says_to_wire_again() {
+        assert!(unacknowledged(
+            "Tool execution failed: peer delivery outcome is ambiguous for envelope 0e3b: peer delivery acknowledgement was not observed"
+        ));
+        assert!(unacknowledged("Peer offline (no ack received)"));
+        assert!(!unacknowledged("{\"status\":\"acked\"}"));
+        assert!(!unacknowledged(&unreachable_words(&WireCard {
+            workspace: "/w/other".into(),
+            agent: "main-cd34".into(),
+            peer_id: "p".into(),
+            pubkey: "ed25519:x".into(),
+            address: "uds:///r/wire/main-cd34.sock".into(),
+        })));
+        let note = unacknowledged_note("other/main-cd34");
+        assert!(
+            note.contains("`other/main-cd34` was not delivered")
+                && note.contains("run `/wire other/main-cd34` again"),
+            "{note}"
         );
     }
 

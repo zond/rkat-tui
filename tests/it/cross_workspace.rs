@@ -958,6 +958,410 @@ async fn forged_envelopes_on_the_socket_are_not_delivered() {
     );
 }
 
+/// Send `body` as `from` to the agent whose card is `to` over its socket,
+/// as the other workspace's engine does: one signed message envelope on
+/// one connection. Whether it was acknowledged (the engine acknowledges a
+/// message once its runtime admitted it).
+async fn wire_send(to: &WireCard, from: &meerkat_comms::Keypair, body: &str) -> bool {
+    wire_send_as(to, from, body, meerkat_core::types::HandlingMode::Queue).await
+}
+
+/// [`wire_send`] with the handling mode `mode`.
+async fn wire_send_as(
+    to: &WireCard,
+    from: &meerkat_comms::Keypair,
+    body: &str,
+    mode: meerkat_core::types::HandlingMode,
+) -> bool {
+    use futures::{SinkExt, StreamExt};
+    let socket = PathBuf::from(to.address.trim_start_matches("uds://"));
+    let mut envelope = meerkat_comms::Envelope {
+        id: uuid::Uuid::new_v4(),
+        from: from.public_key(),
+        to: meerkat_comms::PubKey::from_pubkey_string(&to.pubkey).unwrap(),
+        kind: meerkat_comms::MessageKind::Message {
+            body: body.to_string(),
+            blocks: None,
+            content_taint: None,
+            handling_mode: Some(mode),
+            objective_id: None,
+            in_reply_to: None,
+        },
+        sig: meerkat_comms::Signature::new([0u8; 64]),
+    };
+    envelope.sign(from);
+    let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let mut framed =
+        tokio_util::codec::Framed::new(stream, meerkat_comms::TransportCodec::new(1 << 20));
+    framed
+        .send(meerkat_comms::EnvelopeFrame::from_envelope(envelope))
+        .await
+        .unwrap();
+    matches!(
+        tokio::time::timeout(Duration::from_secs(40), framed.next()).await,
+        Ok(Some(Ok(frame))) if matches!(frame.envelope.kind, meerkat_comms::MessageKind::Ack { .. })
+    )
+}
+
+/// The indexes of the requests of `llm` that showed a peer message
+/// holding `text`.
+fn showing(llm: &ScriptedLlmClient, text: &str) -> Vec<usize> {
+    llm.requests()
+        .iter()
+        .enumerate()
+        .filter(|(_, messages)| {
+            messages.iter().any(|m| {
+                matches!(m, meerkat_core::Message::SystemNotice(_))
+                    && format!("{m:?}").contains("Peer message from")
+                    && format!("{m:?}").contains(text)
+            })
+        })
+        .map(|(at, _)| at)
+        .collect()
+}
+
+/// Wait until a request of `llm` showed the peer message `text`; the
+/// first such request's index.
+async fn first_showing(llm: &ScriptedLlmClient, text: &str) -> usize {
+    within_secs(60, async {
+        loop {
+            if let Some(at) = showing(llm, text).first() {
+                return *at;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+}
+
+/// The owner's report of 2026-11-19 (0.0.17): a message over a wire to an
+/// agent that was compacting reached its runtime (the sender read it
+/// acknowledged), yet no run of the agent took it, and a run the user
+/// started after it did not carry it either; a later run carried both.
+/// Here every message wakes the agent by itself, with no input of the
+/// user's, and in full: (a) to an idle agent; (b) during a run's last
+/// model call, after which a run of its own takes it; (c) during the
+/// quiet run `/compact` starts, held in its summary call, after which a
+/// run takes it after the summary; (d) two in a row while idle; (e) a
+/// message, then a user prompt at once: that run or the one before it
+/// carries the message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wire_message_wakes_the_agent_whenever_it_arrives() {
+    let (ws, root) = workspace("alpha");
+    let (gamma, gamma_key) = stranger(&ws.sibling("gamma"), "main-gggg");
+    let hold = Arc::new(tokio::sync::Notify::new());
+    let summary = Arc::new(tokio::sync::Notify::new());
+    let step = {
+        let (hold, summary) = (Arc::clone(&hold), Arc::clone(&summary));
+        Step::Dynamic(Arc::new(move |messages: &[meerkat_core::Message]| {
+            let last_user = common::user_texts(messages).pop().unwrap_or_default();
+            if last_user.contains("CONTEXT COMPACTION") {
+                return Step::Gated(
+                    Arc::clone(&summary),
+                    Box::new(Step::Text("SUMMARY of the earlier turns")),
+                );
+            }
+            if common::run_inputs(messages).contains("HOLD") {
+                return Step::Gated(Arc::clone(&hold), Box::new(Step::Text("held")));
+            }
+            Step::Text("woke")
+        }))
+    };
+    let llm = ScriptedLlmClient::new(vec![step; 80]);
+    let a = Running::start(&root, &llm).await;
+    turn(&a, "hello").await;
+    turn(&a, "more history").await;
+    let bound = a.connect_bound().await;
+    remote::call::<method::Wire>(
+        &bound,
+        &WireParams {
+            agent: None,
+            card: gamma.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    let mine = remote::call::<method::Card>(&bound, &WireAgentParams::default())
+        .await
+        .unwrap();
+    let member = json!({"mob_id": "tui", "agent_identity": a.agent});
+    let send_input = |text: &str| {
+        let mut params = member.clone();
+        params["content"] = json!(text);
+        let bound = &bound;
+        async move { bound.call("mob/member_send", params).await.unwrap() }
+    };
+
+    // (a) Idle.
+    assert!(wire_send(&mine, &gamma_key, "msg-idle").await, "not acked");
+    first_showing(&llm, "msg-idle").await;
+    a.idle(&a.agent).await;
+
+    // (b) During a run's last model call.
+    let before = llm.requests().len();
+    send_input("HOLD please").await;
+    llm.wait_call(before).await;
+    let sent = tokio::spawn({
+        let (mine, key) = (mine.clone(), gamma_key.clone());
+        async move { wire_send(&mine, &key, "msg-during-run").await }
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    hold.notify_one();
+    assert!(sent.await.unwrap(), "not acked");
+    let at = first_showing(&llm, "msg-during-run").await;
+    assert!(
+        at > before,
+        "shown in request {at}, the held one is {before}"
+    );
+    a.idle(&a.agent).await;
+
+    // (c) During the quiet run `/compact` starts, held in its summary.
+    remote::compact_member(&bound).await.unwrap();
+    let before = llm.requests().len();
+    send_input(rkat_tui::ui::COMPACT_PROMPT).await;
+    llm.wait_call(before).await;
+    assert!(
+        common::user_texts(&llm.requests()[before])
+            .pop()
+            .unwrap_or_default()
+            .contains("CONTEXT COMPACTION"),
+        "the first call of the quiet run is the summary"
+    );
+    let sent = tokio::spawn({
+        let (mine, key) = (mine.clone(), gamma_key.clone());
+        async move { wire_send(&mine, &key, "msg-during-compaction").await }
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    summary.notify_one();
+    assert!(sent.await.unwrap(), "not acked");
+    let at = first_showing(&llm, "msg-during-compaction").await;
+    let shown = &llm.requests()[at];
+    assert!(
+        common::user_texts(shown)
+            .concat()
+            .contains("SUMMARY of the earlier turns"),
+        "the message is read after the summary: {shown:?}"
+    );
+    a.idle(&a.agent).await;
+
+    // (d) Two in a row while idle.
+    assert!(wire_send(&mine, &gamma_key, "msg-one").await, "not acked");
+    assert!(wire_send(&mine, &gamma_key, "msg-two").await, "not acked");
+    first_showing(&llm, "msg-one").await;
+    first_showing(&llm, "msg-two").await;
+    a.idle(&a.agent).await;
+
+    // A steer (the urgent mode) to the idle agent wakes it too.
+    assert!(
+        wire_send_as(
+            &mine,
+            &gamma_key,
+            "msg-steer-idle",
+            meerkat_core::types::HandlingMode::Steer
+        )
+        .await,
+        "not acked"
+    );
+    first_showing(&llm, "msg-steer-idle").await;
+    a.idle(&a.agent).await;
+
+    // (e) A message, then the user's prompt: one of them carries it.
+    // `turn` returns at the first run's end, which may be the message's.
+    assert!(wire_send(&mine, &gamma_key, "msg-before-prompt").await);
+    let connection = a.connect_bound().await;
+    let mut params = json!({"mob_id": "tui", "agent_identity": a.agent});
+    params["content"] = json!("did you see it");
+    connection.call("mob/member_send", params).await.unwrap();
+    let prompt_at = within_secs(60, async {
+        loop {
+            if let Some(at) = llm
+                .requests()
+                .iter()
+                .rposition(|m| common::run_inputs(m).contains("did you see it"))
+            {
+                return at;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    let at = first_showing(&llm, "msg-before-prompt").await;
+    assert!(
+        at <= prompt_at,
+        "shown in {at}, after the prompt's run {prompt_at}"
+    );
+    a.idle(&a.agent).await;
+    drop(connection);
+    drop(bound);
+    a.stop().await;
+}
+
+/// The owner's report of 2026-11-19 as the client sees it: a wire message
+/// that arrives during the quiet run `/compact` starts on an idle agent
+/// wakes a run of its own after it, and the client draws both, the
+/// message as the sender's block and the agent's answer, with no input of
+/// the user's; the user's next prompt runs as a turn of its own. On 0.0.17
+/// the quiet turn took that run (and every one after it until the agent
+/// went idle): neither the message nor the answer was drawn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wire_message_during_the_compact_run_is_drawn_with_the_run_it_wakes() {
+    let (ws, root) = workspace("alpha");
+    let (gamma, gamma_key) = stranger(&ws.sibling("gamma"), "main-gggg");
+    let summary = Arc::new(tokio::sync::Notify::new());
+    let step = {
+        let summary = Arc::clone(&summary);
+        Step::Dynamic(Arc::new(move |messages: &[meerkat_core::Message]| {
+            if common::user_texts(messages)
+                .pop()
+                .unwrap_or_default()
+                .contains("CONTEXT COMPACTION")
+            {
+                return Step::Gated(
+                    Arc::clone(&summary),
+                    Box::new(Step::Text("SUMMARY of the earlier turns")),
+                );
+            }
+            if common::run_inputs(messages).contains(rkat_tui::ui::COMPACT_PROMPT) {
+                return Step::Text("compacted");
+            }
+            if common::run_inputs(messages).contains("did you see it") {
+                return Step::Text("answered the user");
+            }
+            Step::Text("answered the peer")
+        }))
+    };
+    let llm = ScriptedLlmClient::new(vec![step; 40]);
+    let mut rig = rig::Attached::start(&root, &llm).await;
+    rig.send(Effect::StartTurn("hello".into()));
+    rig.turn_finished().await.unwrap();
+    let bound = rig.daemon.connect_bound().await;
+    remote::call::<method::Wire>(
+        &bound,
+        &WireParams {
+            agent: None,
+            card: gamma.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    let mine = remote::call::<method::Card>(&bound, &WireAgentParams::default())
+        .await
+        .unwrap();
+
+    let before = llm.requests().len();
+    rig.send(Effect::CompactNow);
+    llm.wait_call(before).await;
+    let sent = tokio::spawn({
+        let (mine, key) = (mine.clone(), gamma_key.clone());
+        async move { wire_send(&mine, &key, "msg-during-compaction").await }
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    summary.notify_one();
+    assert!(sent.await.unwrap(), "not acked");
+    rig.wait_for(|msg| {
+        matches!(msg, Msg::Peer { from, text } if from == "gamma/main-gggg" && text.contains("msg-during-compaction"))
+    })
+    .await;
+    rig.wait_for(|msg| {
+        matches!(msg, Msg::Agent(env) if matches!(&env.payload, meerkat_core::AgentEvent::TextDelta { delta, .. } if delta == "answered the peer"))
+    })
+    .await;
+    rig.daemon.idle(&rig.daemon.agent).await;
+
+    rig.send(Effect::StartTurn("did you see it".into()));
+    assert_eq!(rig.turn_finished().await.unwrap().text, "answered the user");
+    let asked = llm
+        .requests()
+        .into_iter()
+        .rfind(|m| common::run_inputs(m).contains("did you see it"))
+        .unwrap();
+    assert!(
+        format!("{asked:?}").contains("msg-during-compaction"),
+        "the user's run holds the message"
+    );
+    drop(bound);
+    rig.quit().await;
+}
+
+/// A send over a wire whose other agent no longer has the key the card
+/// names (it started a new conversation and this daemon could not be
+/// told): the other daemon's socket takes the connection and, as the
+/// engine's handler does for an envelope to a key it does not serve,
+/// closes it with no acknowledgement. The sending agent reads a plain
+/// error that names the wire and says to wire it again, never a success.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_send_to_a_wired_agent_whose_key_changed_says_to_wire_again() {
+    let (ws, root) = workspace("alpha");
+    let other = ws.sibling("gamma");
+    let (gamma, _) = stranger(&other, "main-gggg");
+    // The other daemon's socket: it reads the envelope and closes.
+    std::fs::create_dir_all(&other).unwrap();
+    let socket = other.join("nothing.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let served = tokio::spawn(async move {
+        use futures::StreamExt;
+        let mut taken = 0;
+        while let Ok((stream, _)) = listener.accept().await {
+            let mut framed =
+                tokio_util::codec::Framed::new(stream, meerkat_comms::TransportCodec::new(1 << 20));
+            let _ = framed.next().await;
+            taken += 1;
+            drop(framed);
+            if taken == 1 {
+                break;
+            }
+        }
+        taken
+    });
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Text("first"),
+        Step::Tool {
+            id: "s1",
+            name: "send_message",
+            args: json!({"peer_id": gamma.peer_id, "body": "hi", "handling_mode": "queue"}),
+        },
+        Step::Text("tried"),
+    ]);
+    let a = Running::start(&root, &llm).await;
+    turn(&a, "hello").await;
+    let bound = a.connect_bound().await;
+    remote::call::<method::Wire>(
+        &bound,
+        &WireParams {
+            agent: None,
+            card: gamma.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    turn(&a, "send it").await;
+    let result = last_result(&llm);
+    assert!(
+        !result.contains("\"acked\"") && result.contains("error"),
+        "{result}"
+    );
+    assert_eq!(served.await.unwrap(), 1, "the envelope reached the socket");
+    // The engine's error names no cause; the agent is told what to do, in
+    // its next model request.
+    let told = "Your message to `gamma/main-gggg` was not delivered";
+    let note = within_secs(30, async {
+        loop {
+            turn(&a, "next").await;
+            let context = context(&llm);
+            if context.contains(told) {
+                return context;
+            }
+        }
+    })
+    .await;
+    assert!(
+        note.contains("Ask your user to run `/wire gamma/main-gggg` again"),
+        "{note}"
+    );
+    drop(bound);
+    a.stop().await;
+}
+
 /// `/wire` with no other daemon running says how to get one; a target in
 /// this workspace is refused (its agents are wired already).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

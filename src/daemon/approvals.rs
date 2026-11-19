@@ -564,6 +564,9 @@ struct Following {
     steps: u64,
     /// The last run that ended at its limit (its checkpoint began).
     limited: Option<meerkat_core::RunId>,
+    /// The `send_message` calls under way: their call id and the peer id
+    /// they name, until their result.
+    sends: Vec<(String, String)>,
 }
 
 /// One agent's event watcher ([`watch`]).
@@ -764,10 +767,36 @@ impl Watcher {
                 self.run_started(session_id, Some(run_id), None).await;
             }
             AgentEvent::ToolCallRequested {
-                name: tool, args, ..
+                id,
+                name: tool,
+                args,
             } => {
+                if tool == "send_message"
+                    && let Some(peer) = args.as_value().get("peer_id").and_then(|p| p.as_str())
+                {
+                    following.sends.push((id.clone(), peer.to_string()));
+                }
                 if let Some(agents) = self.watched.agents.upgrade() {
                     agents.tool_requested(&self.name, tool, args.as_value());
+                }
+            }
+            AgentEvent::ToolResultReceived {
+                id,
+                is_error,
+                content,
+                ..
+            } if following.sends.iter().any(|(call, _)| call == id) => {
+                let peer = following
+                    .sends
+                    .iter()
+                    .position(|(call, _)| call == id)
+                    .map(|at| following.sends.swap_remove(at).1);
+                if *is_error
+                    && let Some(peer) = peer
+                    && super::wires::unacknowledged(&meerkat_core::types::text_content(content))
+                    && let Some(agents) = self.watched.agents.upgrade()
+                {
+                    agents.wire_send_unacknowledged(&self.name, &peer);
                 }
             }
             AgentEvent::ToolExecutionCompleted {

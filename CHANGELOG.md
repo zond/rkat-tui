@@ -56,6 +56,16 @@
   steered too. Ctrl-X Ctrl-S counts a message the UI holds as waiting
   (it sends it as the next run instead of returning it to the editor), and
   while the compaction's run holds messages it stops that run and says so.
+  This was also why a message over `/wire` that arrived during a
+  `/compact` seemed never to reach the agent: it did, and woke a run, but
+  neither the message nor the agent's answer was drawn.
+- A message to a wired agent of another workspace that the other daemon
+  took but never acknowledged (its agent started a new conversation, so
+  its key changed, and this workspace could not be told) failed with the
+  engine's "peer delivery acknowledgement was not observed". The sending
+  agent is now also told plainly that the message was not delivered and to
+  ask you to run `/wire <workspace>/<agent>` again. The daemon's log
+  records each envelope a wire socket admits at info level.
 - A cancelled `assign` call (an interrupt while its helper was being
   started) left the kind it asked for behind, which a member later seated
   under that name took; it now goes with the call.

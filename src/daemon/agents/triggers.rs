@@ -193,6 +193,13 @@ impl Agents {
         );
     }
 
+    /// `name`'s `send_message` to `peer_id` failed unacknowledged: a wired
+    /// agent's daemon that runs took the envelope and did not answer
+    /// ([`crate::daemon::wires::Wires::send_unacknowledged`]).
+    pub fn wire_send_unacknowledged(&self, name: &str, peer_id: &str) {
+        self.core.wires.send_unacknowledged(name, peer_id);
+    }
+
     /// `name` called `tool` with `args`: a profile made read-only with
     /// comms on (`mob_create`, `mob_profile_create`, `mob_profile_update`)
     /// gets the agent a note that its members cannot send messages (the
