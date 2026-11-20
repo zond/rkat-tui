@@ -14137,3 +14137,76 @@ holds the session's mutation gate until it registered the delivery; if
 the runner must take that gate before the next boundary, a tool
 admission of ours that waits for the send's answer would order it. The
 shipped rule stays: the first message goes at once.
+
+## A message in flight at a daemon stop (2026-11-20)
+
+The held messages came back at a stop ("One message of the user's in
+flight"), the one in flight did not: its client had it as admitted and
+said nothing. Measured through the rig (`tests/it/held_steers.rs`, one
+message typed while request 0 is held, the input id read from the
+daemon, `rkat/inputs` asked after the restart):
+
+- Not written yet (request 0 still held at the stop): after the restart
+  the engine records it `Abandoned { Stopped }` ("the agent's runtime
+  was stopped"); no request and no stored message holds it. Lost, not
+  doubled.
+- Written into request 1 (its `BoundaryAppendApplied` seen, the client
+  shown it delivered), the stop during request 1: the same, `Abandoned {
+  Stopped }`, and the stored conversation ends with the engine's notice
+  "A previous run was interrupted before its boundary committed …
+  did not requeue its input". The model read it in a request whose
+  answer never came; the conversation does not hold it. Before the stop
+  `rkat/inputs` said `pending` here.
+- Written into request 1, request 1 answered with a tool that ran, the
+  stop during request 2: after the restart `rkat/inputs` reads it as
+  `taken` (applied or consumed) and it is stored once. Before the stop `rkat/inputs` said `pending` here
+  too, so the record read live cannot tell the two cases apart.
+
+Why, from the engine's source (`meerkat-core` 0.9.16, `agent/runner.rs`
+`apply_durable_boundary_appends`, `agent/state.rs`
+`commit_round_tools_pending`): a boundary append binds the input to the
+run, and the run's next round commit lists it; the round's first commit
+is taken after the model's answer, before any of the round's tools runs.
+The event docs of `BoundaryAppendApplied` promise that an append whose
+image is discarded (an uncommitted persistent run) is redelivered in one
+follow-up turn; measured, it is dropped instead (the upstream note,
+not filed: `.handover/upstream-steer-lost-at-stop.md`).
+
+`recall_queued_input` abandons only a `Queued` input: it answers
+`NotQueued` for one staged at a boundary (both written cases above), so
+it cannot take those back.
+
+What the daemon does (`daemon::activity::steers`, `Steers::written`,
+`Local::save_unsent_at_stop`): the in-flight message, once the engine
+answered its send, is recalled at the stop; abandoned, its client gets
+it back (`HeldNow::Dropped`, "the daemon stopped before the agent read
+it; it is also saved in …") and it goes into `tui_unsent.txt`;
+answered as reached, it stays the agent's. A message of the user's
+written into a request is kept with its text until a tool of the run
+starts (`ToolExecutionStarted` or `ToolResultReceived`, both after the
+round's first commit) or the run ends; the stop gives those back as
+`HeldNow::Unkept { why, text }`, which the client that saw it delivered
+turns into `Msg::Unkept` (the text back in the editor, "the agent did
+not keep …"), and saves them too. The decision is the daemon's reading
+of the agent's events at the stop: a request answered in the same
+moment, its commit not read yet, leaves the message in the conversation
+and in the editor (never lost; at worst the user sees it twice). The
+client takes back an unkept text only for an input that delivered a
+steer of its own (`client::runner::steers::Steers::unkept`). A
+client's detach loses nothing: the daemon keeps running and delivers
+it (`held_messages_outlive_their_client_s_detach`).
+
+If the engine starts redelivering a discarded append, as its docs say,
+`a_message_written_into_a_request_the_stop_cut_off_comes_back_once`
+fails (the stored conversation would hold it) and the `Unkept` path
+goes.
+
+Tests: `held_steers::a_message_in_flight_at_a_stop_comes_back_once_and_is_never_delivered`,
+`held_steers::a_message_written_into_a_request_the_stop_cut_off_comes_back_once`,
+`held_steers::a_message_whose_round_was_committed_stays_in_the_conversation_once`,
+`held_steers::held_messages_come_back_when_the_daemon_stops` (now the
+first too), `daemon::activity::steers::tests::a_stop_takes_the_one_in_flight_and_the_uncommitted_written_ones`,
+`client::runner::steers::tests::an_unkept_input_is_this_client_s_only_if_it_delivered_a_steer_of_it`,
+`ui::tests::turns::a_message_the_engine_did_not_keep_returns_to_the_editor`.
+The three rig tests other than the guard failed with the stop's old
+code (the client was told nothing; the waits ran out, or no `Unkept`).

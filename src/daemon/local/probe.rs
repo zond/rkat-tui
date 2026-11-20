@@ -143,6 +143,20 @@ impl Local {
         self.core.activity.held_user(agent)
     }
 
+    /// Tests: the input `agent`'s message in flight went as, once the
+    /// engine answered its send ([`crate::daemon::activity::steers`]).
+    #[must_use]
+    pub fn in_flight_for_test(&self, agent: &str) -> Option<meerkat_core::lifecycle::InputId> {
+        self.core.activity.in_flight_input(agent)
+    }
+
+    /// Tests: how many of `agent`'s messages written into a request whose
+    /// round is not committed yet a stop would give back.
+    #[must_use]
+    pub fn written_for_test(&self, agent: &str) -> usize {
+        self.core.activity.written(agent)
+    }
+
     /// Measurements: hold even the first message of a model call, to go
     /// at its first tool request (`docs/evidence.md`, "Holding the first
     /// message too").

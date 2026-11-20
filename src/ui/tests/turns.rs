@@ -677,6 +677,27 @@ fn a_message_the_agent_did_not_take_returns_to_the_editor() {
     assert_eq!(app.input.text(), "three");
 }
 
+/// A message shown delivered whose request the daemon's stop cut off
+/// returns to the editor before the draft, with one notice saying why.
+#[test]
+fn a_message_the_engine_did_not_keep_returns_to_the_editor() {
+    let mut app = running_app();
+    app.input.set_text("draft");
+    let fx = app.update(Msg::Unkept {
+        text: "use nextest".into(),
+        why: "the daemon stopped before the agent read it".into(),
+    });
+    assert!(fx.is_empty());
+    assert_eq!(app.input.text(), "use nextest\ndraft");
+    assert_eq!(
+        last_notice(&app),
+        Some((
+            NoticeLevel::Warn,
+            "the agent did not keep “use nextest” (the daemon stopped before the agent read it); it is back in the editor".into()
+        ))
+    );
+}
+
 #[test]
 fn esc_with_nothing_pending_interrupts() {
     let mut app = running_app();

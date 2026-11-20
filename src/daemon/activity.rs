@@ -292,25 +292,70 @@ impl Activity {
         }
     }
 
-    /// The daemon stops: every message of the user's still held is taken
-    /// (never sent: the engine does not deliver even a sent one that a
-    /// stop catches in a run), its client told why (`why`: it goes back
-    /// to the editor); the texts, oldest first, for the caller to save.
+    /// The daemon stops: every agent's message of the user's in flight
+    /// and the ones held behind it, taken (never sent: the engine does not
+    /// deliver a sent one that a stop catches in a run); the caller
+    /// recalls the one in flight and tells the clients
+    /// ([`Self::dropped_at_stop`]).
     #[must_use]
-    pub fn drop_for_stop(&self, why: &str) -> Vec<String> {
-        let dropped: Vec<(String, Vec<steers::Held>)> = self
-            .agents
+    pub fn take_for_stop(&self) -> Vec<(String, steers::AtStop)> {
+        self.agents
             .lock()
             .iter_mut()
-            .map(|(agent, state)| (agent.clone(), state.steers.drop_all()))
-            .filter(|(_, held)| !held.is_empty())
-            .collect();
-        let mut texts = Vec::new();
-        for (agent, held) in dropped {
-            self.dropped(&agent, &held, why);
-            texts.extend(held.into_iter().map(|held| held.text));
+            .map(|(agent, state)| (agent.clone(), state.steers.take_for_stop()))
+            .filter(|(_, taken)| !taken.is_empty())
+            .collect()
+    }
+
+    /// Tell the clients that `ids` of `agent` (held ids, or the input a
+    /// message in flight went as) were never sent, and why (`why`: they
+    /// go back to the editor).
+    pub fn dropped_at_stop(&self, agent: &str, ids: Vec<InputId>, why: &str) {
+        if ids.is_empty() {
+            return;
         }
-        texts
+        (self.told)(&HeldChange {
+            agent: agent.to_string(),
+            ids,
+            now: HeldNow::Dropped {
+                why: why.to_string(),
+            },
+        });
+    }
+
+    /// Tell the clients that `input` of `agent`, written into a request
+    /// whose answer the stop cut off, is not kept by the engine
+    /// ([`HeldNow::Unkept`]): its client takes `text` back.
+    pub fn unkept_at_stop(&self, agent: &str, input: InputId, text: &str, why: &str) {
+        (self.told)(&HeldChange {
+            agent: agent.to_string(),
+            ids: vec![input],
+            now: HeldNow::Unkept {
+                why: why.to_string(),
+                text: text.to_string(),
+            },
+        });
+    }
+
+    /// Tests: how many of `agent`'s written inputs a stop would give back.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn written(&self, agent: &str) -> usize {
+        self.agents
+            .lock()
+            .get(agent)
+            .map_or(0, |state| state.steers.written_len())
+    }
+
+    /// Tests: the input `agent`'s message in flight went as, once the
+    /// engine answered its send.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn in_flight_input(&self, agent: &str) -> Option<InputId> {
+        self.agents
+            .lock()
+            .get(agent)
+            .and_then(|state| state.steers.in_flight_input())
     }
 
     /// Tell the clients that `dropped` of `agent` were never sent, and why.
@@ -483,6 +528,14 @@ impl Activity {
             });
         }
         next
+    }
+
+    /// A tool of `agent`'s open run started: what its requests carried of
+    /// the user's is committed ([`Steers::round_committed`]).
+    pub fn round_committed(&self, agent: &str) {
+        if let Some(state) = self.agents.lock().get_mut(agent) {
+            state.steers.round_committed();
+        }
     }
 
     /// `inputs` of `agent` were taken back or ended (a recall, an

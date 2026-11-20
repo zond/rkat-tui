@@ -1314,6 +1314,15 @@ pub enum HeldNow {
         /// Why.
         why: String,
     },
+    /// Written into a request whose answer the daemon's stop cut off, so
+    /// the engine does not keep it (why, in words): the client that sent
+    /// it, which saw it delivered, takes this text back.
+    Unkept {
+        /// Why.
+        why: String,
+        /// What the message said (several sent as one: all of them).
+        text: String,
+    },
 }
 
 /// [`method::Inputs`]'s result, in the order asked.

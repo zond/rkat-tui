@@ -753,6 +753,12 @@ impl Watcher {
                     self.release_user(releasing);
                 }
             }
+            // The engine commits a round before any of its tools runs: what
+            // the round's request carried of the user's is kept from now on,
+            // even through a stop (`activity::steers`, `Steers::written`).
+            AgentEvent::ToolExecutionStarted { .. } | AgentEvent::ToolResultReceived { .. } => {
+                self.watched.activity.round_committed(&self.name);
+            }
             _ => {}
         }
         match &envelope.payload {

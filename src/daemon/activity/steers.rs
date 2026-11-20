@@ -73,6 +73,8 @@ use meerkat_core::lifecycle::InputId;
 const ALIASES_KEPT: usize = 128;
 /// How many inputs written before the in-flight send's answer are kept.
 const SEEN_KEPT: usize = 16;
+/// How many of the open run's written inputs are kept for a stop.
+const WRITTEN_KEPT: usize = 16;
 
 /// Who sent the message in flight.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +180,34 @@ pub struct Steers {
     /// Sent held messages: their id and the input they went as, newest
     /// last.
     aliases: Vec<(InputId, InputId)>,
+    /// The user's inputs the open run wrote into a request, with their
+    /// text, newest last; forgotten when the run ends or a tool of it
+    /// starts ([`Self::round_committed`]). The engine keeps such a steer
+    /// only once the round of the request that carried it is committed,
+    /// after that request's answer: a stop before that loses it
+    /// (`docs/evidence.md`, "A message in flight at a daemon stop"), so
+    /// the stop gives these back too.
+    written: Vec<(InputId, String)>,
+}
+
+/// What a daemon stop takes of one agent's messages of the user's
+/// ([`Steers::take_for_stop`]).
+#[derive(Debug, Default)]
+pub struct AtStop {
+    /// The one in flight: the input it went as, and its text.
+    pub in_flight: Option<(InputId, String)>,
+    /// The ones the open run wrote into a request, oldest first.
+    pub written: Vec<(InputId, String)>,
+    /// The ones held behind the one in flight, oldest first.
+    pub held: Vec<Held>,
+}
+
+impl AtStop {
+    /// Whether it holds nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.in_flight.is_none() && self.written.is_empty() && self.held.is_empty()
+    }
 }
 
 /// Numbers the daemon's sends of held messages.
@@ -271,8 +301,11 @@ impl Steers {
         match input {
             Ok(input) => {
                 let written = flight.seen.contains(&input);
-                flight.input = Some(input);
+                flight.input = Some(input.clone());
                 flight.seen.clear();
+                if written {
+                    self.wrote(&input);
+                }
                 (written, if written { self.next() } else { None })
             }
             Err(()) => (false, self.next()),
@@ -317,6 +350,9 @@ impl Steers {
             }
             _ => false,
         };
+        if in_flight {
+            self.wrote(input);
+        }
         (delivered, if in_flight { self.next() } else { None })
     }
 
@@ -385,6 +421,7 @@ impl Steers {
     /// No run of the agent is open any more: what is held goes as one
     /// input that starts the next run; nothing is in flight.
     pub fn run_ended(&mut self) -> Option<Release> {
+        self.written.clear();
         let held = match std::mem::take(&mut self.now) {
             UserSteers::InFlight(flight) => flight.held,
             UserSteers::NoneInFlight => Vec::new(),
@@ -476,9 +513,75 @@ impl Steers {
     /// Every held message, taken (the agent was seated again or retired,
     /// or the daemon stops); nothing is in flight.
     pub fn drop_all(&mut self) -> Vec<Held> {
+        self.written.clear();
         match std::mem::take(&mut self.now) {
             UserSteers::InFlight(flight) => flight.held,
             UserSteers::NoneInFlight => Vec::new(),
+        }
+    }
+
+    /// The daemon stops: the message in flight (the input it went as and
+    /// its text, when the engine answered its send and it is still
+    /// followed), the ones the open run wrote into a request
+    /// ([`Self::written`]) and every held one, taken; nothing is in
+    /// flight.
+    pub fn take_for_stop(&mut self) -> AtStop {
+        let written = std::mem::take(&mut self.written);
+        match std::mem::take(&mut self.now) {
+            UserSteers::InFlight(flight) => {
+                let in_flight = match (flight.owner, flight.input) {
+                    (Owner::Gone, _) | (_, None) => None,
+                    (_, Some(input)) => Some((input, flight.text)),
+                };
+                AtStop {
+                    in_flight,
+                    written,
+                    held: flight.held,
+                }
+            }
+            UserSteers::NoneInFlight => AtStop {
+                in_flight: None,
+                written,
+                held: Vec::new(),
+            },
+        }
+    }
+
+    /// A tool of the open run started: the engine committed the round
+    /// whose request carried what was written (it commits a round before
+    /// any of its tools runs), so a stop no longer loses those.
+    pub fn round_committed(&mut self) {
+        self.written.clear();
+    }
+
+    /// The one in flight, `input`, was written into a request of the open
+    /// run: kept with its text until that request's round is committed
+    /// or the run ends ([`Self::written`]).
+    fn wrote(&mut self, input: &InputId) {
+        if let UserSteers::InFlight(flight) = &self.now
+            && !flight.text.is_empty()
+        {
+            self.written.push((input.clone(), flight.text.clone()));
+            let over = self.written.len().saturating_sub(WRITTEN_KEPT);
+            self.written.drain(..over);
+        }
+    }
+
+    /// Tests: how many of the open run's written inputs a stop would give
+    /// back ([`Self::written`]).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn written_len(&self) -> usize {
+        self.written.len()
+    }
+
+    /// Tests: the input the message in flight went as, once answered.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn in_flight_input(&self) -> Option<InputId> {
+        match &self.now {
+            UserSteers::InFlight(flight) => flight.input.clone(),
+            UserSteers::NoneInFlight => None,
         }
     }
 
@@ -535,6 +638,39 @@ mod tests {
         assert_eq!(delivered, vec![two, three]);
         assert_eq!(release, None);
         assert!(steers.is_quiet());
+    }
+
+    /// A stop takes the one in flight once the engine answered its send,
+    /// and the written ones until a tool of their round starts or the run
+    /// ends; a sent release's text is all of its messages.
+    #[test]
+    fn a_stop_takes_the_one_in_flight_and_the_uncommitted_written_ones() {
+        let mut steers = Steers::default();
+        steers.admit(true, "k1", "one");
+        assert!(steers.take_for_stop().is_empty(), "not answered yet");
+        steers.admit(true, "k1", "one");
+        steers.admit(true, "k2", "two");
+        let first = InputId::new();
+        steers.answered(&send("k1"), Ok(first.clone()));
+        let release = steers.applied(&first).1.unwrap();
+        let merged = InputId::new();
+        steers.released(release.serial, &release.ids(), Ok(merged.clone()));
+        let taken = steers.take_for_stop();
+        assert_eq!(taken.written, vec![(first.clone(), "one".to_string())]);
+        assert_eq!(taken.in_flight, Some((merged, "two".to_string())));
+        assert!(steers.is_quiet() && steers.take_for_stop().is_empty());
+        // Committed by a tool's start; forgotten at the run's end.
+        steers.admit(true, "k3", "three");
+        steers.answered(&send("k3"), Ok(first.clone()));
+        steers.applied(&first);
+        assert_eq!(steers.written_len(), 1);
+        steers.round_committed();
+        assert!(steers.take_for_stop().is_empty());
+        steers.admit(true, "k4", "four");
+        steers.answered(&send("k4"), Ok(first.clone()));
+        steers.applied(&first);
+        steers.run_ended();
+        assert!(steers.take_for_stop().is_empty());
     }
 
     /// Not running: never held. An input written before the send's answer

@@ -985,8 +985,10 @@ impl Runner {
     /// The daemon's held messages moved on ([`protocol::HELD`]): this
     /// client's among them are sent (followed by the engine's input from
     /// now on, their lines say they go in at the next step), written
-    /// into a request (delivered), or dropped unsent (back to the editor,
-    /// [`Msg::NotDelivered`]).
+    /// into a request (delivered), dropped unsent (back to the editor,
+    /// [`Msg::NotDelivered`]), or, delivered, not kept by the engine
+    /// because the daemon's stop cut their request off (back to the
+    /// editor too, [`Msg::Unkept`]).
     pub(super) fn held_changed(&mut self, change: protocol::HeldChange) {
         match change.now {
             protocol::HeldNow::Released { input_id } => {
@@ -1009,6 +1011,15 @@ impl Runner {
                             why: Some(why.clone()),
                         });
                     }
+                }
+            }
+            protocol::HeldNow::Unkept { why, text } => {
+                if change
+                    .ids
+                    .iter()
+                    .any(|input| self.steering.steers.unkept(input))
+                {
+                    self.send(Msg::Unkept { text, why });
                 }
             }
         }

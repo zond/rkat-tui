@@ -441,6 +441,15 @@ pub enum Msg {
         /// Why, in words, when the runtime recorded why.
         why: Option<String>,
     },
+    /// A steered message shown as delivered whose request the daemon's
+    /// stop cut off: the engine does not keep it, so it returns to the
+    /// editor.
+    Unkept {
+        /// What it said.
+        text: String,
+        /// Why, in words.
+        why: String,
+    },
     /// A file tool produced a diff.
     Diff {
         /// Tool-use id of the producing call.
@@ -1972,6 +1981,7 @@ impl App {
             Msg::Returned(ids) => self.returned(&ids),
             Msg::BtwAnswered(answer) => self.btw_answered(answer),
             Msg::NotDelivered { id, why } => self.not_delivered(id, why.as_deref()),
+            Msg::Unkept { text, why } => self.unkept(text, &why),
             Msg::QuitDecided(decision) => self.quit_decided(decision, &mut fx),
             Msg::Rerooted { workspace, realm } => {
                 let home = self.transcript.home().map(std::path::Path::to_path_buf);

@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- A message you typed mid-run was lost without a word when the daemon
+  stopped before the agent's next answer: the one waiting in the engine
+  (only the ones held behind it came back), and one already shown
+  delivered whose model request the stop cut off (the engine keeps such
+  a message only once the step that read it is saved, and drops it at
+  the restart). Both now come back to your editor with a notice and are
+  saved in the realm's `tui_unsent.txt`; the waiting one is taken back
+  from the engine first, so it is never delivered after the restart as
+  well. A message whose step the agent answered stays in the
+  conversation, once.
 - A message typed just as one run the agent did not start for you ended
   (a helper's message, say) and the next began went in only after that
   whole next run: the client's turn had ended, so the message went as a

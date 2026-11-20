@@ -382,10 +382,11 @@ async fn held_messages_outlive_their_client_s_detach() {
 
 /// The daemon stops with two messages held behind the one in flight. The
 /// engine does not deliver even the one in flight after the restart (a
-/// steer a stop catches in a run), so the held two are not sent: their
-/// client gets them back as not sent (to the editor), and they are saved
-/// in the realm's unsent file for a user whose client is gone. Nothing
-/// reaches the model twice or is lost.
+/// steer a stop catches in a run), so the held two are not sent and the
+/// one in flight is recalled: their client gets all three back as not
+/// sent (to the editor), and they are saved in the realm's unsent file
+/// for a user whose client is gone. Nothing reaches the model twice or is
+/// lost.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn held_messages_come_back_when_the_daemon_stops() {
     let ws = Workspace::new();
@@ -412,12 +413,17 @@ async fn held_messages_come_back_when_the_daemon_stops() {
             })
             .await;
     }
+    client
+        .saw(|msg| {
+            matches!(msg, Msg::NotDelivered { id: PendingId(1), why: Some(why) }
+                if why.contains("the daemon stopped before the agent read it"))
+        })
+        .await;
     let file = common::realm_of(&ws.root).join(rkat_tui::workbench::unsent::UNSENT_FILE);
     let saved = std::fs::read_to_string(&file).unwrap();
-    assert!(
-        saved.contains("STOP-TWO") && saved.contains("STOP-THREE") && !saved.contains("STOP-ONE"),
-        "{saved}"
-    );
+    for text in ["STOP-ONE", "STOP-TWO", "STOP-THREE"] {
+        assert_eq!(saved.matches(text).count(), 1, "{saved}");
+    }
     assert!(
         !llm.requests()
             .iter()
@@ -425,6 +431,259 @@ async fn held_messages_come_back_when_the_daemon_stops() {
         "a held message reached the model"
     );
     client.quit().await;
+}
+
+/// How many times `text` shows in the stored conversation of `agent`.
+async fn stored_count(daemon: &rig::Running, agent: &str, text: &str) -> usize {
+    let session = daemon.session_of(agent).await;
+    let stored = daemon.transcript(&session).await;
+    user_texts(&stored)
+        .iter()
+        .map(|said| said.matches(text).count())
+        .sum()
+}
+
+/// Whether `msg` says the client's steer `id` was not delivered.
+fn not_delivered(msg: &Msg, id: u64) -> bool {
+    matches!(msg, Msg::NotDelivered { id: PendingId(i), .. } if *i == id)
+}
+
+/// The daemon stops while the one message in flight waits for the next
+/// request (request 0 is held, so no request carries it). The engine
+/// would keep it queued and never deliver it after the restart
+/// (`docs/evidence.md`, "A message in flight at a daemon stop"): the stop
+/// recalls it, its client gets it back as not sent, exactly once, and it
+/// is saved in the realm's unsent file; after the restart no request and
+/// no stored message holds it, and the engine records it as taken back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_message_in_flight_at_a_stop_comes_back_once_and_is_never_delivered() {
+    let ws = Workspace::new();
+    let gate = Arc::new(Notify::new());
+    let llm = held_once(&gate);
+    let daemon = rig::Running::start(&ws.root, &llm).await;
+    let mut client = rig::Client::attach(&ws.root).await;
+    let agent = client.agent().await;
+    client.send(Effect::StartTurn("go".into()));
+    llm.wait_call(0).await;
+    client.send(steer(1, "FLIGHT-ONE"));
+    client
+        .saw(|msg| {
+            matches!(
+                msg,
+                Msg::SteerAck {
+                    id: PendingId(1),
+                    result: Ok(())
+                }
+            )
+        })
+        .await;
+    let local = daemon.local();
+    common::until(|| local.in_flight_for_test(&agent).is_some()).await;
+    let input = local.in_flight_for_test(&agent).unwrap();
+    drop(local);
+    daemon.stop().await;
+    let back = client.saw(|msg| not_delivered(msg, 1)).await;
+    let Msg::NotDelivered { why: Some(why), .. } = back else {
+        panic!("{back:?}")
+    };
+    assert!(
+        why.contains("the daemon stopped before the agent read it"),
+        "{why}"
+    );
+    let file = common::realm_of(&ws.root).join(rkat_tui::workbench::unsent::UNSENT_FILE);
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(saved.matches("FLIGHT-ONE").count(), 1, "{saved}");
+    // The restart resumes the stopped run; a later prompt runs too.
+    let daemon = rig::Running::start(&ws.root, &llm).await;
+    client.attached().await;
+    daemon.idle(&agent).await;
+    client.send(Effect::StartTurn("LATER".into()));
+    common::until(|| {
+        llm.requests()
+            .iter()
+            .any(|m| user_texts(m).iter().any(|t| t == "LATER"))
+    })
+    .await;
+    daemon.idle(&agent).await;
+    let fates = daemon
+        .connect_bound()
+        .await
+        .call("rkat/inputs", json!({"input_ids": [input]}))
+        .await
+        .unwrap();
+    assert!(
+        !llm.requests()
+            .iter()
+            .any(|messages| format!("{messages:?}").contains("FLIGHT-ONE")),
+        "the message came back and reached the model too"
+    );
+    assert_eq!(stored_count(&daemon, &agent, "FLIGHT-ONE").await, 0);
+    assert_eq!(
+        client
+            .seen
+            .iter()
+            .filter(|msg| not_delivered(msg, 1))
+            .count(),
+        1,
+        "offered back once"
+    );
+    assert!(
+        format!("{fates}").contains("dropped"),
+        "the engine's record of it: {fates}"
+    );
+    client.quit().await;
+    daemon.stop().await;
+}
+
+/// What a stop after the message in flight was written into request 1
+/// left: whether its client got it back (and the notice's reason), the
+/// unsent file, how often the stored conversation holds it after the
+/// restart, whether a request after the restart carried it, and the
+/// engine's record of it then. `committed`: request 1 is answered with a
+/// tool, which runs (the round is committed), and the stop comes during
+/// request 2; else during request 1.
+struct WrittenAtStop {
+    unkept: Vec<String>,
+    saved: String,
+    stored: usize,
+    carried_after: bool,
+    fate: String,
+}
+
+async fn stop_after_written(committed: bool, text: &'static str) -> WrittenAtStop {
+    let ws = Workspace::new();
+    let (first, second) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Gated(Arc::clone(&first), Box::new(contacts("c0"))),
+        Step::Gated(Arc::clone(&second), Box::new(contacts("c1"))),
+        Step::Gated(Arc::new(Notify::new()), Box::new(contacts("c2"))),
+        Step::Text("done"),
+        Step::Text("done"),
+        Step::Text("done"),
+    ]);
+    let daemon = rig::Running::start(&ws.root, &llm).await;
+    let mut client = rig::Client::attach(&ws.root).await;
+    let agent = client.agent().await;
+    client.send(Effect::StartTurn("go".into()));
+    llm.wait_call(0).await;
+    client.send(steer(1, text));
+    client
+        .saw(|msg| {
+            matches!(
+                msg,
+                Msg::SteerAck {
+                    id: PendingId(1),
+                    result: Ok(())
+                }
+            )
+        })
+        .await;
+    let local = daemon.local();
+    common::until(|| local.in_flight_for_test(&agent).is_some()).await;
+    let input = local.in_flight_for_test(&agent).unwrap();
+    first.notify_one();
+    client
+        .saw(|msg| matches!(msg, Msg::SteerDelivered(PendingId(1))))
+        .await;
+    llm.wait_call(1).await;
+    assert!(carried(&llm, 1, text));
+    if committed {
+        second.notify_one();
+        llm.wait_call(2).await;
+        // The daemon read the tool's start (the round's commit).
+        common::until(|| local.written_for_test(&agent) == 0).await;
+    } else {
+        assert_eq!(local.written_for_test(&agent), 1);
+    }
+    drop(local);
+    daemon.stop().await;
+    client
+        .saw(|msg| {
+            matches!(
+                msg,
+                Msg::Status(rkat_tui::ui::StatusUpdate::Connection(
+                    rkat_tui::ui::Connection::Reconnecting
+                ))
+            )
+        })
+        .await;
+    let unkept = client
+        .seen
+        .iter()
+        .filter_map(|msg| match msg {
+            Msg::Unkept { text, why } => Some(format!("{text}: {why}")),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !client.seen.iter().any(|msg| not_delivered(msg, 1)),
+        "a delivered message was told as not delivered"
+    );
+    let file = common::realm_of(&ws.root).join(rkat_tui::workbench::unsent::UNSENT_FILE);
+    let saved = std::fs::read_to_string(&file).unwrap_or_default();
+    let before = llm.requests().len();
+    let daemon = rig::Running::start(&ws.root, &llm).await;
+    client.attached().await;
+    daemon.idle(&agent).await;
+    let stored = stored_count(&daemon, &agent, text).await;
+    let carried_after = llm.requests()[before..]
+        .iter()
+        .any(|messages| user_texts(messages).iter().any(|said| said.contains(text)));
+    let fate = daemon
+        .connect_bound()
+        .await
+        .call("rkat/inputs", json!({"input_ids": [input]}))
+        .await
+        .unwrap()
+        .to_string();
+    client.quit().await;
+    daemon.stop().await;
+    WrittenAtStop {
+        unkept,
+        saved,
+        stored,
+        carried_after,
+        fate,
+    }
+}
+
+/// The message in flight is written into request 1, and the daemon stops
+/// while request 1 is held: the engine commits a round only after its
+/// request's answer, and drops the uncommitted steer at the restart
+/// (recorded "the agent's runtime was stopped"; the stored conversation
+/// does not hold it). So its client, which saw it delivered, gets it back
+/// once, and it is saved as unsent; nothing after the restart carries it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_message_written_into_a_request_the_stop_cut_off_comes_back_once() {
+    let seen = stop_after_written(false, "CUT-ONE").await;
+    assert_eq!(seen.unkept.len(), 1, "{:?}", seen.unkept);
+    assert!(
+        seen.unkept[0].starts_with("CUT-ONE: the daemon stopped before the agent read it"),
+        "{:?}",
+        seen.unkept
+    );
+    assert_eq!(seen.saved.matches("CUT-ONE").count(), 1, "{}", seen.saved);
+    assert_eq!(seen.stored, 0, "the engine kept it after all");
+    assert!(!seen.carried_after);
+    assert!(
+        seen.fate.contains("dropped") && seen.fate.contains("runtime was stopped"),
+        "{}",
+        seen.fate
+    );
+}
+
+/// The opposite order: request 1, which carried the message, is answered
+/// with a tool that runs (its round committed), and the daemon stops
+/// during request 2. The message stays the agent's: not offered back, not
+/// in the unsent file, and in the stored conversation once after the
+/// restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_message_whose_round_was_committed_stays_in_the_conversation_once() {
+    let seen = stop_after_written(true, "KEPT-ONE").await;
+    assert!(seen.unkept.is_empty(), "{:?}", seen.unkept);
+    assert!(!seen.saved.contains("KEPT-ONE"), "{}", seen.saved);
+    assert_eq!(seen.stored, 1);
+    assert!(seen.fate.contains("taken"), "{}", seen.fate);
 }
 
 /// ↑ takes back a held message for free: it leaves the hold, the one in

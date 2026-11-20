@@ -213,8 +213,16 @@ ends before the first went in, the held ones go at once with it, as the
 next run's input. When the daemon stops with messages held, they are not
 sent (the engine would not deliver them after the restart): they come
 back to your editor as not sent and are saved in the realm's
-`tui_unsent.txt`, which the next start announces. A client that detaches
-leaves them with the daemon, which sends them as usual. Everything you send is such a
+`tui_unsent.txt`, which the next start announces. The one waiting in the
+engine comes back the same way (the daemon takes it back from the engine
+first, so it is never delivered after the restart as well), and so does
+one already shown delivered when the stop cut off the model request that
+carried it before the agent answered: the engine keeps a message only
+once the step that read it is saved (its tools started, or the run
+ended), and drops it at the restart otherwise; a notice says the agent
+did not keep it. One the agent answered stays in the conversation. A
+client that detaches leaves them with the daemon, which sends them as
+usual (nothing is lost at a detach). Everything you send is such a
 message to the engine, a prompt typed while the agent looks idle too: it
 goes into the next model request of whatever run the agent has by then,
 or starts a run when it has none, and never waits behind a run that

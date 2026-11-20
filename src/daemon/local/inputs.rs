@@ -307,21 +307,79 @@ impl SentLog {
 }
 
 impl Local {
-    /// The daemon stops: the user's messages it still holds are not sent
-    /// (the engine does not deliver even a sent message that a stop catches
-    /// in a run, `docs/evidence.md`), their clients get them back in the
-    /// editor, and they are saved in the realm's unsent file, which the
-    /// next start announces, for a user whose client is gone.
-    pub fn save_held_at_stop(&self) {
+    /// The daemon stops: the user's messages it still holds are not sent;
+    /// the one in flight that no request carries yet is recalled from the
+    /// engine (which drops such a steer at the restart), and one written
+    /// into a request whose round the stop cuts off is given back too (the
+    /// engine drops that as well: `docs/evidence.md`, "A message in flight
+    /// at a daemon stop"). Their clients get them back in the editor, and
+    /// they are saved in the realm's unsent file, which the next start
+    /// announces, for a user whose client is gone. One whose round was
+    /// committed (a tool of it started) is the agent's and is kept; so is
+    /// one in flight that a request took first (the recall answers it as
+    /// reached).
+    pub async fn save_unsent_at_stop(&self) {
         let realm = &self.parts.report.realm;
         let file = realm.join(crate::workbench::unsent::UNSENT_FILE);
-        let why = format!(
+        let held_why = format!(
             "the daemon stopped before it sent it; it is also saved in {}",
             file.display()
         );
-        let texts = self.core.activity.drop_for_stop(&why);
+        let flight_why = format!(
+            "the daemon stopped before the agent read it; it is also saved in {}",
+            file.display()
+        );
+        let mut texts = Vec::new();
+        for (agent, taken) in self.core.activity.take_for_stop() {
+            // Written into a request whose round the stop cuts off: the
+            // engine drops it at the restart, and no recall can take it
+            // back (it is no longer queued).
+            for (input, text) in taken.written {
+                self.core
+                    .activity
+                    .unkept_at_stop(&agent, input, &text, &flight_why);
+                texts.push(text);
+            }
+            if let Some((input, text)) = taken.in_flight
+                && self.recalled_at_stop(&agent, &input).await
+            {
+                self.core
+                    .activity
+                    .dropped_at_stop(&agent, vec![input], &flight_why);
+                texts.push(text);
+            }
+            let ids = taken.held.iter().map(|held| held.id.clone()).collect();
+            self.core.activity.dropped_at_stop(&agent, ids, &held_why);
+            texts.extend(taken.held.into_iter().map(|held| held.text));
+        }
         if let Some(saved) = crate::workbench::unsent::save_texts(realm, &texts) {
-            tracing::info!(count = saved.count, path = %saved.path.display(), "saved the user's held messages as the daemon stops");
+            tracing::info!(count = saved.count, path = %saved.path.display(), "saved the user's unsent messages as the daemon stops");
+        }
+    }
+
+    /// Whether `agent`'s `input` was taken back from the engine as the
+    /// daemon stops (`false`: a request carries it, or it could not be
+    /// asked, and it stays the agent's).
+    async fn recalled_at_stop(
+        &self,
+        agent: &str,
+        input: &meerkat_core::lifecycle::InputId,
+    ) -> bool {
+        let Some(session) = self.core.conversations.current(agent) else {
+            return false;
+        };
+        match self
+            .parts
+            .machine
+            .recall_queued_input(&session, input)
+            .await
+        {
+            Ok(Some(recall)) => recall.abandoned(),
+            Ok(None) => false,
+            Err(err) => {
+                tracing::warn!(%input, %err, "the message in flight was not recalled as the daemon stops");
+                false
+            }
         }
     }
 

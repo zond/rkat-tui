@@ -791,9 +791,10 @@ impl Daemon {
         // Nor an agent's socket, nor a connected helper's.
         self.local.core().wires.close();
         self.local.core().links.close();
-        // The user's messages held for an open run go back to their
-        // clients and are saved, not lost (`activity::steers`).
-        self.local.save_held_at_stop();
+        // The user's messages held for an open run, and the one in flight
+        // that no request carries yet, go back to their clients and are
+        // saved, not lost (`activity::steers`).
+        self.local.save_unsent_at_stop().await;
         // No more idle questions: one left asking about a conversation the
         // shutdown unregisters would keep the runtime and the mobs' handles
         // past the daemon's end (`activity::Activity::stop`).

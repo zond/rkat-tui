@@ -67,10 +67,16 @@ pub(super) struct Steers {
     /// Held ids the daemon sent, and the input each went as (a late word
     /// of the daemon's on one names it by its held id).
     sent_as: Vec<(InputId, InputId)>,
+    /// The inputs this client's steers were delivered by, newest last: a
+    /// daemon stop may cut off the request that carried one, and its
+    /// client takes the text back ([`Self::unkept`]).
+    delivered: Vec<InputId>,
 }
 
 /// How many of [`Steers::sent_as`] are kept.
 const SENT_AS_KEPT: usize = 64;
+/// How many of [`Steers::delivered`] are kept.
+const DELIVERED_KEPT: usize = 64;
 
 impl Steers {
     /// `id` was handed to the sender.
@@ -88,11 +94,32 @@ impl Steers {
         };
         self.sending.remove(at);
         let applied = self.applied.remove(&input);
-        if !applied {
+        if applied {
+            self.delivered_by(&input);
+        } else {
             self.admitted.push((input, id));
         }
         self.forget_applied();
         applied
+    }
+
+    /// A steer of this client's was delivered by `input`.
+    fn delivered_by(&mut self, input: &InputId) {
+        if !self.delivered.contains(input) {
+            self.delivered.push(input.clone());
+        }
+        let over = self.delivered.len().saturating_sub(DELIVERED_KEPT);
+        self.delivered.drain(..over);
+    }
+
+    /// The daemon says the request that carried `input` was cut off by
+    /// its stop and the engine does not keep it: whether it delivered a
+    /// steer of this client's (then this client takes the text back,
+    /// once).
+    pub(super) fn unkept(&mut self, input: &InputId) -> bool {
+        let before = self.delivered.len();
+        self.delivered.retain(|delivered| delivered != input);
+        self.delivered.len() != before
     }
 
     /// The send of `id` failed, or was answered without an input: it is
@@ -116,8 +143,12 @@ impl Steers {
     /// the daemon held and sent as one, [`Self::rekey`]).
     pub(super) fn applied(&mut self, input: &InputId) -> Vec<PendingId> {
         let taken = self.take_input(input);
-        if taken.is_empty() && !self.sending.is_empty() {
-            self.applied.insert(input.clone());
+        if taken.is_empty() {
+            if !self.sending.is_empty() {
+                self.applied.insert(input.clone());
+            }
+        } else {
+            self.delivered_by(input);
         }
         taken
     }
@@ -173,7 +204,11 @@ impl Steers {
                 .iter()
                 .find(|(sent, _)| sent == id)
                 .map_or_else(|| id.clone(), |(_, input)| input.clone());
-            taken.extend(self.take_input(&input));
+            let steers = self.take_input(&input);
+            if !steers.is_empty() {
+                self.delivered_by(&input);
+            }
+            taken.extend(steers);
         }
         taken.sort();
         taken.dedup();
@@ -313,6 +348,26 @@ mod tests {
         steers.rekey(std::slice::from_ref(&four), &again);
         assert_eq!(steers.applied_held(&[four]), vec![PendingId(4)]);
         assert_eq!(steers.applied(&again), NONE);
+    }
+
+    /// A delivered steer's input is known as this client's for a stop
+    /// that cuts its request off, once; another client's never is.
+    #[test]
+    fn an_unkept_input_is_this_client_s_only_if_it_delivered_a_steer_of_it() {
+        let mut steers = Steers::default();
+        let (mine, early, other) = (input(), input(), input());
+        steers.sending(PendingId(1));
+        steers.admitted(PendingId(1), mine.clone());
+        assert!(!steers.unkept(&mine), "not delivered yet");
+        assert_eq!(steers.applied(&mine), vec![PendingId(1)]);
+        steers.sending(PendingId(2));
+        assert_eq!(steers.applied(&early), NONE);
+        assert!(steers.admitted(PendingId(2), early.clone()));
+        assert_eq!(steers.applied(&other), NONE);
+        assert!(steers.unkept(&mine));
+        assert!(!steers.unkept(&mine), "taken back once");
+        assert!(steers.unkept(&early));
+        assert!(!steers.unkept(&other));
     }
 
     #[test]

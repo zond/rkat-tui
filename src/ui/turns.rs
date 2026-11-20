@@ -438,6 +438,19 @@ impl App {
         self.scroll.bottom();
     }
 
+    /// [`Msg::Unkept`](crate::ui::Msg::Unkept): a message shown delivered
+    /// whose request the daemon's stop cut off returns to the editor
+    /// (before the draft), with one notice saying so and why.
+    pub(super) fn unkept(&mut self, text: String, why: &str) {
+        let quoted = quote_short(&text);
+        self.prepend_to_editor(vec![text]);
+        self.transcript.push_notice(
+            NoticeLevel::Warn,
+            format!("the agent did not keep {quoted} ({why}); it is back in the editor"),
+        );
+        self.scroll.bottom();
+    }
+
     /// [`Msg::Returned`](crate::ui::Msg::Returned): the interrupt took
     /// these messages back. During the turn they leave the queue and wait
     /// for its end, which puts them in the editor with the others and
