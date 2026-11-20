@@ -50,6 +50,8 @@ mod helpers;
 mod layout;
 mod notices;
 pub mod outcome;
+#[cfg(any(test, feature = "test-support"))]
+mod probe;
 mod restore;
 pub mod tool_line;
 
@@ -615,27 +617,6 @@ impl Transcript {
         Self::default()
     }
 
-    /// The blocks a toggle key looks at: the transcript's blocks on screen
-    /// (`scope == None`) or the full view of the helper `scope`, newest
-    /// first.
-    #[cfg(any(test, feature = "test-support"))]
-    fn scoped_blocks_rev(&self, scope: Option<BlockId>) -> Vec<BlockId> {
-        match scope {
-            Some(header) => {
-                let mut ids = self.helper_view_blocks(header);
-                ids.reverse();
-                ids
-            }
-            None => self
-                .entries
-                .iter()
-                .rev()
-                .map(|entry| entry.id)
-                .filter(|id| !self.is_hidden(*id))
-                .collect(),
-        }
-    }
-
     /// The transcript as plain text for `/export`: one `## ` header per
     /// shown block (user, assistant, reasoning, tool, approval, notice,
     /// helper, queued) and its text. Folded reasoning, collapsed tool output
@@ -859,37 +840,10 @@ impl Transcript {
         self.entries.iter().map(|entry| (entry.id, &entry.block))
     }
 
-    /// The last block.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn last(&self) -> Option<&Block> {
-        self.entries.last().map(|entry| &entry.block)
-    }
-
     /// The id the next block will get: every block added from now on has
     /// this id or a later one.
     pub fn next_id(&self) -> BlockId {
         BlockId(self.next_id)
-    }
-
-    /// All blocks in order (a copy).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn blocks(&self) -> Vec<Block> {
-        self.entries
-            .iter()
-            .map(|entry| entry.block.clone())
-            .collect()
-    }
-
-    /// Number of blocks.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Whether the transcript has no blocks.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
     }
 
     /// Block by id.
@@ -1257,31 +1211,6 @@ impl Transcript {
         }
     }
 
-    /// Toggle collapse on the most recent reasoning block on screen.
-    /// Returns whether one existed.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn toggle_last_reasoning(&mut self) -> bool {
-        self.toggle_last_reasoning_in(None)
-    }
-
-    /// Toggle collapse on the most recent reasoning block of the transcript
-    /// on screen (`None`) or of the full view of the helper `scope`.
-    /// Returns whether one existed.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn toggle_last_reasoning_in(&mut self, scope: Option<BlockId>) -> bool {
-        let Some(id) = self
-            .scoped_blocks_rev(scope)
-            .into_iter()
-            .find(|id| matches!(self.block(*id), Some(Block::Reasoning { .. })))
-        else {
-            return false;
-        };
-        if let Some(Block::Reasoning { collapsed, .. }) = self.block_mut(id) {
-            *collapsed = !*collapsed;
-        }
-        true
-    }
-
     /// Ctrl-O: show every foldable block in full, or fold them all back
     /// (one state for the whole transcript, the helpers' blocks and views
     /// included): each tool call's arguments, output and diff, every
@@ -1328,13 +1257,6 @@ impl Transcript {
         let first = self.start_line(id)?;
         let len = self.lines_of(index);
         (len > 0).then_some((first, len))
-    }
-
-    /// Whether every foldable block is shown in full ([`Self::toggle_detail`]).
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn detail(&self) -> bool {
-        self.detail
     }
 
     /// Where tool lines show paths from: relative to the project `root`,
@@ -1446,21 +1368,6 @@ impl Transcript {
             }
             _ => None,
         }
-    }
-
-    /// The most recent tool block on screen with output to show or hide.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn last_tool_with_output(&self) -> Option<BlockId> {
-        self.last_tool_with_output_in(None)
-    }
-
-    /// The most recent tool block with output of the transcript on screen
-    /// (`None`) or of the full view of the helper `scope`.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn last_tool_with_output_in(&self, scope: Option<BlockId>) -> Option<BlockId> {
-        self.scoped_blocks_rev(scope)
-            .into_iter()
-            .find(|id| self.block(*id).is_some_and(tool_has_output))
     }
 
     /// The tool block of a call by its tool-use id as the model issued it: a
@@ -1604,14 +1511,6 @@ impl Transcript {
             .collect()
     }
 
-    /// Laid-out line `idx` of the whole transcript, as of the last
-    /// [`Self::ensure_layout`] (`None` past the end or for stale blocks).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn line(&self, idx: usize) -> Option<&Line<'static>> {
-        let (block, offset) = self.locate(idx)?;
-        self.layout_at(block)?.lines.get(offset)
-    }
-
     /// Number of laid-out lines as of the last [`Self::ensure_layout`].
     pub fn line_count(&self) -> usize {
         let known = self.layout.known(self.entries.len());
@@ -1630,14 +1529,9 @@ impl Transcript {
             .collect()
     }
 
-    /// Apply a primary-agent event. Returns the usage of a completed LLM turn, if any
-    /// (a turn the provider sent no accounting for returns `None`).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn apply_agent_event(&mut self, event: &AgentEvent) -> Option<TurnUsage> {
-        self.apply_agent_event_at(event, Instant::now())
-    }
-
-    /// [`Self::apply_agent_event`] with an explicit clock (for tests).
+    /// Apply a primary-agent event at `now`. Returns the usage of a
+    /// completed LLM turn, if any (a turn the provider sent no accounting
+    /// for returns `None`).
     pub fn apply_agent_event_at(&mut self, event: &AgentEvent, now: Instant) -> Option<TurnUsage> {
         self.apply_event(None, event, now)
     }

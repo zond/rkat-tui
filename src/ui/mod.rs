@@ -29,6 +29,8 @@ pub mod paste;
 pub mod peer;
 pub mod permissions;
 pub mod picker;
+#[cfg(any(test, feature = "test-support"))]
+mod probe;
 pub mod render;
 pub mod runtime;
 pub mod search;
@@ -1158,27 +1160,6 @@ impl StatusInfo {
         self.output_tokens = self.output_tokens.saturating_add(output);
     }
 
-    /// Token totals per model, for the cost readout.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn cost(&self) -> &SessionCost {
-        &self.cost
-    }
-
-    /// Prices for the cost readout.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn prices(&self) -> &crate::pricing::PriceTable {
-        &self.prices
-    }
-
-    /// Number of messages typed mid-turn that have not been delivered yet.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn queued(&self) -> usize {
-        self.queued
-    }
-
     /// The mode as `/auto` and `/mode` describe it.
     #[must_use]
     pub fn mode_text(&self) -> String {
@@ -1702,12 +1683,6 @@ impl App {
             || self.transcript.helpers_lingering()
     }
 
-    /// Whether a bell is due; clears it.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn take_bell(&mut self) -> bool {
-        std::mem::take(&mut self.ring)
-    }
-
     /// Ask for a bell when enabled and the terminal is unfocused.
     fn notify(&mut self) {
         if self.bell && !self.focused {
@@ -1777,12 +1752,6 @@ impl App {
         self
     }
 
-    /// The context-compaction policy in effect.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn compaction_policy(&self) -> CompactionPolicy {
-        self.gauge.policy()
-    }
-
     /// Replace the prompt history (another realm's, after a re-home).
     pub fn replace_history(&mut self, history: Vec<String>) {
         self.input.set_history(history);
@@ -1795,22 +1764,9 @@ impl App {
         self
     }
 
-    /// Lines submitted with Enter (prompts and slash commands, as typed) since the
-    /// last call, oldest first; blank submissions are never recorded.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn take_submitted(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.submitted)
-    }
-
     /// Record the transcript viewport height (set by the renderer).
     pub fn set_viewport_height(&mut self, height: usize) {
         self.viewport_height = height.max(1);
-    }
-
-    /// Return and reset the redraw flag.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn take_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.dirty)
     }
 
     /// Everything the UI loop has to do itself since the last call, in the
