@@ -150,15 +150,16 @@ pub const ENTER_NEEDS_A_ROW: &str =
     "Enter answers the row you move to with ↑/↓; or press a row's number or letter";
 
 impl EscalationDialog {
-    /// A key: Ctrl-C closes (the caller stops every escalation); a held
-    /// key only moves the cursor or edits the comment; other Ctrl/Alt
+    /// A key: Ctrl-C closes (the caller stops every escalation) and a held
+    /// one does nothing ([`ctrl_c_answer`]); a held key only moves the
+    /// cursor or edits the comment, never with Ctrl or Alt; other Ctrl/Alt
     /// keys do nothing; the rest go to [`Self::answer`].
     pub fn key(&mut self, key: &KeyEvent) -> ModalKey<EscalationAnswer> {
-        if is_held(key) && !self.accepts_repeat(key.code) {
-            return ModalKey::Stay;
+        if let Some(answer) = ctrl_c_answer(key) {
+            return answer;
         }
-        if is_ctrl_c(key) {
-            return ModalKey::Close;
+        if is_held(key) && (has_ctrl_or_alt(key) || !self.accepts_repeat(key.code)) {
+            return ModalKey::Stay;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
             self.expanded = !self.expanded;
@@ -914,5 +915,34 @@ mod tests {
         let d = EscalationDialog::default();
         assert!(d.accepts_repeat(KeyCode::Down));
         assert!(!d.accepts_repeat(KeyCode::Char('y')));
+    }
+
+    /// A held Ctrl-C (or any held Ctrl key) does nothing in every state
+    /// of the dialog, the open comment field included: a repeat never
+    /// closes it.
+    #[test]
+    fn a_held_ctrl_key_never_acts_in_the_escalation_dialog() {
+        let held = |code| {
+            let mut key = KeyEvent::new(code, KeyModifiers::CONTROL);
+            key.kind = KeyEventKind::Repeat;
+            key
+        };
+        let mut writing = EscalationDialog::default();
+        writing.answer(KeyCode::Char('4'));
+        let mut expanded = EscalationDialog {
+            expanded: true,
+            ..EscalationDialog::default()
+        };
+        expanded.answer(KeyCode::Char('4'));
+        for mut d in [EscalationDialog::default(), writing, expanded] {
+            let before = d.clone();
+            assert_eq!(d.key(&held(KeyCode::Char('c'))), ModalKey::Stay);
+            assert_eq!(d.key(&held(KeyCode::Char('o'))), ModalKey::Stay);
+            assert_eq!(d, before, "a held Ctrl key changes nothing");
+            assert_eq!(
+                d.key(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+                ModalKey::Close
+            );
+        }
     }
 }

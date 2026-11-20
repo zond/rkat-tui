@@ -85,6 +85,11 @@
 
 ### Fixed
 
+- A held Ctrl-C while writing the comment of an approval's "No" closed
+  the dialog (and stopped every pending approval), as if the repeat were
+  typed text; a held Ctrl-O there toggled the full arguments. A held
+  Ctrl or Alt key now does nothing in the approval dialog, in every
+  state, as in the other dialogs.
 - After a `/compact`, a run of the agent that came straight after the
   compaction's (a helper's note or another agent's message queued behind
   it, or ahead of it) was taken as part of the compaction's quiet run: its
