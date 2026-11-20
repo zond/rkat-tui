@@ -60,8 +60,57 @@
 //! run, which the parent's messages start now that the child is wired to it.
 //! A single-use fork is retired once the engine recorded that outcome
 //! ([`HelperEndings::fork_outcome_recorded`]).
+//!
+//! # States
+//!
+//! Each helper seen is in one [`Ending`], all under one lock:
+//!
+//! - `Followed`: any helper but a `delegate` one, with its tag, how many
+//!   runs of it started, and a [`Phase`]:
+//!   - `Working { messaged_parent }`: spawned and not run yet, running, or
+//!     its run's end not decided yet (at work);
+//!   - `Idle`: its latest run's end was decided idle, or it was restored
+//!     with no run;
+//!   - `Checkpoint { through }`: its runs up to `through` (the run at its
+//!     limit and the status run after it) are its checkpoint's.
+//!
+//!   and, for a fork, what the engine tells of it ([`ForkNews`]: nothing,
+//!   its first run's end, or its outcome on record).
+//! - `Delegate { tag, end }`: a `delegate` helper an earlier build left;
+//!   `end` ([`DelegateEnd`]) is `Seated`, `LeftOver` or `RunEnded`.
+//! - `Settled`: its ending was settled, told or not.
+//!
+//! The transitions, each a named method of the state it moves:
+//!
+//! - spawned: absent or `Settled` → `Followed` (`Working`) or `Delegate`
+//!   (`Seated`); one live already only takes the new tag.
+//! - run started: `Working` or `Idle` → `Working { messaged_parent: false }`;
+//!   `Checkpoint` stays while the run is one of its own, else → `Working`.
+//! - tool called: `Working` records whether it messaged its parent;
+//!   refused in any other phase.
+//! - run ended: `Checkpoint` → nothing; at the limit with a checkpoint
+//!   to take it → `Checkpoint { through: run + 1 }`; otherwise the end is
+//!   decided ([`HelperEndings::run_ended`]).
+//! - run decided idle: → `Idle`, refused once a later run started; a
+//!   single-use helper is then `Settled` (done), unless a helper of its
+//!   own is still at work.
+//! - restored idle: `Working` with no run → `Idle`; refused once a run
+//!   started.
+//! - checkpoint continues or stops: → `Checkpoint` through the current
+//!   run; stopped, a single-use helper is then `Settled`.
+//! - fork outcome recorded: a single-use fork only (a restored fresh fork's
+//!   record is its own first run's, refused) → `ForkNews::Recorded`.
+//! - delegate: `Seated` → `LeftOver` or `RunEnded`; the other news then
+//!   settles it in the same take.
+//! - stop, lost, left, retire owed, done: any live state → `Settled`, in
+//!   one take, so exactly one of them tells; each refuses a `Settled` one.
+//!
+//! Unrepresentable: a followed helper without a tag; a `delegate` helper
+//! known left over with its run ended and not settled; the record of
+//! whether a run messaged its parent while it is idle; a helper both
+//! settled and followed.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, OnceLock, Weak};
 
 use meerkat_core::AgentEvent;
@@ -233,32 +282,349 @@ pub struct LimitReached {
     pub run: u64,
 }
 
-/// What is known of one helper that has not ended yet.
-#[derive(Debug, Clone, Default)]
-struct Tracked {
-    tag: Option<HelperTag>,
-    /// A `delegate` helper an earlier build left ([`HelperEndings::left_over`]).
-    left_over: bool,
-    terminal: Option<Terminal>,
+/// One helper's ending, as far as it is known: the state of
+/// [`HelperEndings`] for each key it has seen (see the module doc's
+/// states).
+#[derive(Debug, Clone)]
+enum Ending {
+    /// A `delegate` helper an earlier build left, not ended yet.
+    Delegate {
+        /// What it is and whom it works for (`None`: its spawn was not
+        /// seen yet, only its run's end or its being left over).
+        tag: Option<HelperTag>,
+        /// What is known of its end.
+        end: DelegateEnd,
+    },
+    /// Any other helper, followed run by run, not ended yet.
+    Followed(Followed),
+    /// Its ending was settled, told or not: a late event of it tells
+    /// nothing. Kept for the daemon's life (a few dozen bytes each); a key
+    /// seated again is a new helper ([`HelperEndings::spawned`]).
+    Settled,
+}
+
+impl Ending {
+    /// The state a helper spawned as `key` with `tag` starts in.
+    fn spawned(key: &HelperKey, tag: HelperTag) -> Self {
+        if is_delegate(key) {
+            Self::Delegate {
+                tag: Some(tag),
+                end: DelegateEnd::Seated,
+            }
+        } else {
+            Self::Followed(Followed::new(tag))
+        }
+    }
+
+    /// Whether it is at work: a followed helper not decided idle since its
+    /// last run started, or a `delegate` helper whose spawn was seen (it
+    /// is never decided idle: its run's end settles it).
+    fn at_work(&self) -> bool {
+        match self {
+            Self::Delegate { tag, .. } => tag.is_some(),
+            Self::Followed(followed) => followed.at_work(),
+            Self::Settled => false,
+        }
+    }
+}
+
+/// What is known of a `delegate` helper's end: it is told once it is
+/// known left over and its run ended, in either order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DelegateEnd {
+    /// Seated; neither known left over nor ended.
+    Seated,
+    /// An earlier build left it ([`HelperEndings::left_over`]); its run
+    /// goes on.
+    LeftOver,
+    /// Its run ended so, before it was known left over.
+    RunEnded(Terminal),
+}
+
+impl DelegateEnd {
+    /// It is known left over: how its parent is told when its run ended
+    /// already (`None`: not yet).
+    fn left_over(&mut self) -> Option<How> {
+        match std::mem::replace(self, Self::LeftOver) {
+            Self::RunEnded(terminal) => Some(delegate_how(terminal)),
+            Self::Seated | Self::LeftOver => None,
+        }
+    }
+
+    /// Its run ended `terminal`: how its parent is told when it is known
+    /// left over (`None`: not yet; the latest end is kept).
+    fn run_ended(&mut self, terminal: Terminal) -> Option<How> {
+        match self {
+            Self::LeftOver => Some(delegate_how(terminal)),
+            Self::Seated | Self::RunEnded(_) => {
+                *self = Self::RunEnded(terminal);
+                None
+            }
+        }
+    }
+}
+
+/// How the parent of a `delegate` helper an earlier build left is told
+/// of its run's end `terminal`.
+fn delegate_how(terminal: Terminal) -> How {
+    match terminal {
+        Terminal::Completed(answer) => How::Finished { answer },
+        Terminal::Failed(reason) => How::Failed { reason },
+        Terminal::Cancelled => How::Failed {
+            reason: "its run was cancelled".to_string(),
+        },
+        Terminal::Limit { .. } => How::Failed {
+            reason: "its run reached its step limit".to_string(),
+        },
+    }
+}
+
+/// A helper other than a `delegate` one, followed run by run.
+#[derive(Debug, Clone)]
+struct Followed {
+    /// What it is and whom it works for.
+    tag: HelperTag,
     /// How many runs of it started (a run's end is told only while no
     /// later one started).
     runs: u64,
-    /// The last tool call of its current run was a message to its parent.
-    messaged_parent: bool,
-    /// Its first run's end is told by the engine (a fresh fork's outcome).
-    first_told_elsewhere: bool,
-    /// A fork whose completed outcome the engine recorded for its parent
-    /// (`ForkJobTerminal`, [`HelperEndings::fork_outcome_recorded`]): it is
-    /// single-use from then on, retired once it is idle.
-    outcome_recorded: bool,
-    /// The run whose end left it idle with nothing queued for it (`None`:
-    /// no such end decided yet).
-    idle_after: Option<u64>,
-    /// The ends of its runs up to this one are its checkpoint's (the run
-    /// at its limit and the status run after it): no ending of it (0: no
-    /// checkpoint yet).
-    hold_through: u64,
+    /// Where it is between its runs.
+    phase: Phase,
+    /// What the engine tells of it as a fork.
+    fork: ForkNews,
 }
+
+/// Where a followed helper is between its runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// At work: spawned and not run yet, running, or its run's end not
+    /// decided yet. `messaged_parent`: the last tool call of its current
+    /// run was a message to its parent.
+    Working {
+        /// The last call of its current run was a message to its parent.
+        messaged_parent: bool,
+    },
+    /// Its run `runs` (0: restored, woken with no run) was decided idle,
+    /// with nothing queued for it.
+    Idle,
+    /// The ends of its runs up to `through` are its checkpoint's (the run
+    /// at its limit and the status run after it): no ending of it. Always
+    /// `runs <= through`: the first run past it leaves this phase.
+    Checkpoint {
+        /// The last run that is the checkpoint's.
+        through: u64,
+    },
+}
+
+/// What the engine tells of a fork's runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForkNews {
+    /// Nothing: each run's end is told here (any helper not a fork, and a
+    /// fork rebuilt after a restart whose outcome is not on record).
+    Nothing,
+    /// A fresh fork: the engine tells its first run's end ("Background
+    /// fork_off job … finished"); its outcome is not on record yet.
+    FirstRun,
+    /// A single-use fork whose completed outcome the engine recorded for
+    /// its parent (`ForkJobTerminal`,
+    /// [`HelperEndings::fork_outcome_recorded`]): done, retired once idle.
+    /// `first_run`: a fresh fork's (its first run's end is the engine's).
+    Recorded {
+        /// Its first run's end is the engine's to tell.
+        first_run: bool,
+    },
+}
+
+impl ForkNews {
+    /// Whether its first run's end is the engine's to tell.
+    fn first_run(self) -> bool {
+        matches!(self, Self::FirstRun | Self::Recorded { first_run: true })
+    }
+
+    /// Whether its outcome is on record for its parent.
+    fn recorded(self) -> bool {
+        matches!(self, Self::Recorded { .. })
+    }
+}
+
+/// What a run's end of a followed helper goes to ([`Followed::run_ended`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RunEnd {
+    /// Nothing: a member not started by `assign`, or a run of its
+    /// checkpoint.
+    Nothing,
+    /// Its checkpoint: the run `run` reached its limit after `steps` model
+    /// calls.
+    Checkpoint {
+        /// Which of its runs it is.
+        run: u64,
+        /// The model calls the run made.
+        steps: u64,
+    },
+    /// The decision whether run `run` left it idle.
+    Decide {
+        /// Which of its runs it is.
+        run: u64,
+    },
+}
+
+/// What a decided run's end is told from ([`Followed::went_idle`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IdleRun {
+    /// What it is and whom it works for.
+    tag: HelperTag,
+    /// The run's last call was a message to its parent.
+    messaged_parent: bool,
+    /// The run is its first, whose end the engine tells.
+    told_by_engine: bool,
+    /// Its outcome is on record for its parent.
+    recorded: bool,
+}
+
+impl Followed {
+    /// A helper spawned as `tag`, not run yet.
+    fn new(tag: HelperTag) -> Self {
+        Self {
+            tag,
+            runs: 0,
+            phase: Phase::Working {
+                messaged_parent: false,
+            },
+            fork: ForkNews::Nothing,
+        }
+    }
+
+    /// Whether it is at work (not decided idle since its last run started).
+    fn at_work(&self) -> bool {
+        self.phase != Phase::Idle
+    }
+
+    /// A run of it started: it is at work, unless the run is still its
+    /// checkpoint's.
+    fn run_started(&mut self) {
+        self.runs += 1;
+        match self.phase {
+            Phase::Checkpoint { through } if self.runs <= through => {}
+            _ => {
+                self.phase = Phase::Working {
+                    messaged_parent: false,
+                };
+            }
+        }
+    }
+
+    /// It called a tool; `to_parent`: a message to its parent. Recorded
+    /// only while it is at work outside a checkpoint (no other phase reads
+    /// it, and the next run starts afresh).
+    fn called(&mut self, to_parent: bool) {
+        if let Phase::Working { messaged_parent } = &mut self.phase {
+            *messaged_parent = to_parent;
+        }
+    }
+
+    /// Its current run ended, not cancelled; `limit`: at its turn limit
+    /// after so many model calls. With `checkpoints` (a checkpoint takes
+    /// such a run) that run and the status run after it are the
+    /// checkpoint's; without, the run's end is decided as a failure's.
+    fn run_ended(&mut self, limit: Option<u64>, checkpoints: bool) -> RunEnd {
+        if self.tag.kind == super::HelperKind::Other {
+            return RunEnd::Nothing;
+        }
+        if let Phase::Checkpoint { .. } = self.phase {
+            return RunEnd::Nothing;
+        }
+        if let Some(steps) = limit
+            && checkpoints
+        {
+            self.phase = Phase::Checkpoint {
+                through: self.runs + 1,
+            };
+            return RunEnd::Checkpoint {
+                run: self.runs,
+                steps,
+            };
+        }
+        RunEnd::Decide { run: self.runs }
+    }
+
+    /// Its run `run` was decided idle: what it is told from (`None`: a
+    /// later run started, so this end is none).
+    fn went_idle(&mut self, run: u64) -> Option<IdleRun> {
+        if self.runs != run {
+            return None;
+        }
+        let messaged_parent = matches!(
+            self.phase,
+            Phase::Working {
+                messaged_parent: true
+            }
+        );
+        self.phase = Phase::Idle;
+        Some(IdleRun {
+            tag: self.tag.clone(),
+            messaged_parent,
+            told_by_engine: self.fork.first_run() && run <= 1,
+            recorded: self.fork.recorded(),
+        })
+    }
+
+    /// Restored, it was woken with no run: idle. Refused once a run of it
+    /// started (or its checkpoint holds it).
+    fn restored_idle(&mut self) {
+        if self.runs == 0 && matches!(self.phase, Phase::Working { .. }) {
+            self.phase = Phase::Idle;
+        }
+    }
+
+    /// Its checkpoint continued or stopped it: the run its status was asked
+    /// in (the current one) is the checkpoint's too.
+    fn hold_checkpoint(&mut self) {
+        let through = match self.phase {
+            Phase::Checkpoint { through } => through.max(self.runs),
+            Phase::Working { .. } | Phase::Idle => self.runs,
+        };
+        self.phase = Phase::Checkpoint { through };
+    }
+
+    /// It is a fresh fork: its first run's end is the engine's to tell.
+    fn first_run_told_by_engine(&mut self) {
+        self.fork = match self.fork {
+            ForkNews::Nothing | ForkNews::FirstRun => ForkNews::FirstRun,
+            ForkNews::Recorded { .. } => ForkNews::Recorded { first_run: true },
+        };
+    }
+
+    /// The engine recorded its outcome for its parent (`restored`: found
+    /// when the daemon restored it): the run after which it is idle now,
+    /// to be retired (`None`: it is not, or the record is not one that
+    /// makes it done). Refused for a kept fork, any helper not a fork, and
+    /// a restored fresh fork (its record is the one its own first run
+    /// writes).
+    fn outcome_recorded(&mut self, restored: bool) -> Option<u64> {
+        let single =
+            super::HelperKind::Started(super::HelperContext::Fork, super::HelperLife::Single);
+        if self.tag.kind != single || (restored && self.fork.first_run()) {
+            return None;
+        }
+        self.fork = ForkNews::Recorded {
+            first_run: self.fork.first_run(),
+        };
+        // Restored after its outcome came: a fork that ran no run since is
+        // idle.
+        if restored {
+            self.restored_idle();
+        }
+        (self.phase == Phase::Idle).then_some(self.runs)
+    }
+
+    /// Whether it is still idle after run `run`.
+    fn idle_after(&self, run: u64) -> bool {
+        self.runs == run && self.phase == Phase::Idle
+    }
+}
+
+/// [`HelperEndings::settle`] found the helper settled already.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AlreadySettled;
 
 /// How many inputs the runtime holds for a helper that are not finished
 /// (`None`: it cannot be told; then its run's end is taken as it is).
@@ -276,29 +642,6 @@ const RECHECK_FIRST: std::time::Duration = std::time::Duration::from_millis(50);
 /// The longest wait between two questions.
 const RECHECK_MAX: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// What [`decide`] makes of a `delegate` helper an earlier build left:
-/// `None` while it has not ended (or is not known to be one), else how its
-/// parent is told; it is then retired when still seated.
-fn decide(delegate: bool, tracked: &Tracked) -> Option<How> {
-    if !delegate || !tracked.left_over {
-        return None;
-    }
-    match tracked.terminal.as_ref()? {
-        Terminal::Completed(answer) => Some(How::Finished {
-            answer: answer.clone(),
-        }),
-        Terminal::Failed(reason) => Some(How::Failed {
-            reason: reason.clone(),
-        }),
-        Terminal::Cancelled => Some(How::Failed {
-            reason: "its run was cancelled".to_string(),
-        }),
-        Terminal::Limit { .. } => Some(How::Failed {
-            reason: "its run reached its step limit".to_string(),
-        }),
-    }
-}
-
 /// Whether `key` is a `delegate` helper (a member of an implicit mob).
 fn is_delegate(key: &HelperKey) -> bool {
     key.mob.as_str().starts_with("implicit-")
@@ -307,13 +650,9 @@ fn is_delegate(key: &HelperKey) -> bool {
 /// The helpers that have not ended yet, and where each ending goes.
 #[derive(Debug, Default)]
 pub struct HelperEndings {
-    tracked: Mutex<HashMap<HelperKey, Tracked>>,
-    /// The helpers whose ending was settled, so a late event of one (its
-    /// cancelled run's end after the user stopped it) tells nothing again.
-    /// Kept for the daemon's life, however many end after it (one key a
-    /// helper: a few dozen bytes each); a key seated again is a new helper
-    /// and leaves it ([`Self::spawned`]).
-    settled: Mutex<HashSet<HelperKey>>,
+    /// Each helper seen, in its state ([`Ending`]), under one lock: a
+    /// helper's state is read and moved in one take.
+    helpers: Mutex<HashMap<HelperKey, Ending>>,
     /// Where the endings to tell go (the daemon's delivery).
     sink: OnceLock<mpsc::UnboundedSender<Ended>>,
     /// The mob host (a helper is retired through it).
@@ -635,8 +974,8 @@ impl HelperEndings {
     /// The checkpoint of `key` continues it: the end of the run its
     /// status was asked in is no ending (the runs after it are).
     pub fn checkpoint_continues(&self, key: &HelperKey) {
-        if let Some(tracked) = self.tracked.lock().get_mut(key) {
-            tracked.hold_through = tracked.hold_through.max(tracked.runs);
+        if let Some(Ending::Followed(followed)) = self.helpers.lock().get_mut(key) {
+            followed.hold_checkpoint();
         }
     }
 
@@ -647,18 +986,17 @@ impl HelperEndings {
     /// A helper that ended meanwhile (the user stopped it) tells nothing.
     pub fn checkpoint_stopped(&self, key: &HelperKey, steps: u64, reason: String, status: String) {
         let tag = {
-            let mut tracked = self.tracked.lock();
-            let Some(entry) = tracked.get_mut(key) else {
+            let mut helpers = self.helpers.lock();
+            let Some(Ending::Followed(followed)) = helpers.get_mut(key) else {
                 return;
             };
-            entry.hold_through = entry.hold_through.max(entry.runs);
-            entry.tag.clone()
+            followed.hold_checkpoint();
+            followed.tag.clone()
         };
-        let Some(tag) = tag else { return };
         match tag.kind.life() {
             Some(super::HelperLife::Single) => {
                 let below = self.take_below(key);
-                if let Some(tag) = self.settle(key) {
+                if let Ok(Some(tag)) = self.settle(key) {
                     self.tell(Ended {
                         key: key.clone(),
                         tag,
@@ -692,7 +1030,10 @@ impl HelperEndings {
     /// on).
     #[must_use]
     pub fn is_live(&self, key: &HelperKey) -> bool {
-        !self.is_settled(key) && self.tracked.lock().contains_key(key)
+        matches!(
+            self.helpers.lock().get(key),
+            Some(Ending::Delegate { .. } | Ending::Followed(_))
+        )
     }
 
     /// Retire helpers through `state` (once).
@@ -711,12 +1052,11 @@ impl HelperEndings {
     /// decided before the last stop and did not reach the engine. It is
     /// retired now; nobody is told (its parent was, then).
     pub fn retire_owed(&self, key: &HelperKey) {
-        if self.is_settled(key) {
+        if self.settle(key).is_err() {
             return;
         }
         tracing::info!(helper = %key, "a helper the last stop left seated after it finished: it is retired");
         let below = self.take_below(key);
-        self.settle(key);
         self.retire_done(key, below);
     }
 
@@ -730,10 +1070,13 @@ impl HelperEndings {
             return Vec::new();
         };
         let below = registry.bound_below(key);
-        for (child, _) in &below {
-            if !self.is_settled(child) {
-                self.settle(child);
+        {
+            let mut helpers = self.helpers.lock();
+            for (child, _) in &below {
+                helpers.insert(child.clone(), Ending::Settled);
             }
+        }
+        for (child, _) in &below {
             registry.owe_retire(child);
         }
         below
@@ -741,22 +1084,29 @@ impl HelperEndings {
 
     /// Whether `key`'s ending was settled already.
     fn is_settled(&self, key: &HelperKey) -> bool {
-        self.settled.lock().contains(key)
+        matches!(self.helpers.lock().get(key), Some(Ending::Settled))
     }
 
-    /// The helper `key` (`tag`) was spawned or rebuilt.
+    /// The helper `key` (`tag`) was spawned or rebuilt: one followed
+    /// already keeps its state with this tag; a settled key seated again is
+    /// a new helper.
     pub fn spawned(&self, key: &HelperKey, tag: &HelperTag) {
-        // The same member id spawned again: a new helper.
-        self.settled.lock().remove(key);
-        self.tracked.lock().entry(key.clone()).or_default().tag = Some(tag.clone());
+        let mut helpers = self.helpers.lock();
+        match helpers.get_mut(key) {
+            Some(Ending::Followed(followed)) => followed.tag = tag.clone(),
+            Some(Ending::Delegate { tag: known, .. }) => *known = Some(tag.clone()),
+            Some(Ending::Settled) | None => {
+                helpers.insert(key.clone(), Ending::spawned(key, tag.clone()));
+            }
+        }
     }
 
     /// The fresh fork `key`'s first run's end reaches its parent from the
     /// engine ("Background fork_off job … finished"): only its later runs
     /// are told here.
     pub fn first_run_told_by_engine(&self, key: &HelperKey) {
-        if let Some(tracked) = self.tracked.lock().get_mut(key) {
-            tracked.first_told_elsewhere = true;
+        if let Some(Ending::Followed(followed)) = self.helpers.lock().get_mut(key) {
+            followed.first_run_told_by_engine();
         }
     }
 
@@ -771,27 +1121,9 @@ impl HelperEndings {
     pub fn fork_outcome_recorded(self: &Arc<Self>, key: &HelperKey, restored: bool) {
         self.outcomes_reported
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let idle_after = {
-            let mut tracked = self.tracked.lock();
-            let Some(entry) = tracked.get_mut(key) else {
-                return;
-            };
-            let single = entry.tag.as_ref().is_some_and(|tag| {
-                tag.kind
-                    == super::HelperKind::Started(
-                        super::HelperContext::Fork,
-                        super::HelperLife::Single,
-                    )
-            });
-            // A fresh fork's record is the one its own first run writes.
-            if !single || (restored && entry.first_told_elsewhere) {
-                return;
-            }
-            entry.outcome_recorded = true;
-            if restored && entry.runs == 0 && entry.idle_after.is_none() {
-                entry.idle_after = Some(0);
-            }
-            entry.idle_after.filter(|after| *after == entry.runs)
+        let idle_after = match self.helpers.lock().get_mut(key) {
+            Some(Ending::Followed(followed)) => followed.outcome_recorded(restored),
+            _ => None,
         };
         let Some(runs) = idle_after else { return };
         let probe = self.probe.get().map(|probe| Arc::clone(&probe.0));
@@ -804,10 +1136,10 @@ impl HelperEndings {
             // As a run's end is decided: no note to it in flight, and
             // nothing it has not read.
             let _deciding = endings.deciding.lock().await;
-            let still_idle =
-                endings.tracked.lock().get(&key).is_some_and(|tracked| {
-                    tracked.runs == runs && tracked.idle_after == Some(runs)
-                });
+            let still_idle = matches!(
+                endings.helpers.lock().get(&key),
+                Some(Ending::Followed(followed)) if followed.idle_after(runs)
+            );
             // A restored fork's runtime holds an input of the restore
             // itself that no run takes (probed 2026-11-18: still held
             // 30 s after the start), so only a live fork is asked.
@@ -830,7 +1162,7 @@ impl HelperEndings {
     fn retire_fork(&self, key: &HelperKey) {
         tracing::info!(helper = %key, "the fork's outcome reached its parent: it is retired");
         let below = self.take_below(key);
-        self.settle(key);
+        let _ = self.settle(key);
         self.retire_done(key, below);
     }
 
@@ -839,7 +1171,7 @@ impl HelperEndings {
     /// its run ends (also when that came first), with its answer, and it
     /// is retired then.
     pub fn left_over(&self, key: &HelperKey) {
-        self.update(key, |tracked| tracked.left_over = true);
+        self.delegate_news(key, DelegateEnd::left_over);
     }
 
     /// Ask the runtime what a helper still holds through `probe` (once).
@@ -849,17 +1181,16 @@ impl HelperEndings {
 
     /// A run of the helper `key` started.
     pub fn run_started(&self, key: &HelperKey) {
-        if let Some(tracked) = self.tracked.lock().get_mut(key) {
-            tracked.runs += 1;
-            tracked.messaged_parent = false;
+        if let Some(Ending::Followed(followed)) = self.helpers.lock().get_mut(key) {
+            followed.run_started();
         }
     }
 
     /// The helper `key` called a tool; `to_parent`: a message to its
     /// parent.
     pub fn called(&self, key: &HelperKey, to_parent: bool) {
-        if let Some(tracked) = self.tracked.lock().get_mut(key) {
-            tracked.messaged_parent = to_parent;
+        if let Some(Ending::Followed(followed)) = self.helpers.lock().get_mut(key) {
+            followed.called(to_parent);
         }
     }
 
@@ -868,53 +1199,47 @@ impl HelperEndings {
     /// runtime holds nothing more for it ([`Self::settle_idle`]).
     pub fn run_ended(self: &Arc<Self>, key: &HelperKey, terminal: Terminal) {
         if is_delegate(key) {
-            self.update(key, |tracked| tracked.terminal = Some(terminal));
+            self.delegate_news(key, |end| end.run_ended(terminal));
             return;
         }
         if terminal == Terminal::Cancelled {
             return;
         }
-        let (runs, tag) = {
-            let mut tracked = self.tracked.lock();
-            match tracked.get_mut(key) {
-                Some(Tracked {
-                    tag: Some(tag),
-                    runs,
-                    hold_through,
-                    ..
-                }) if tag.kind != super::HelperKind::Other => {
-                    // Its checkpoint's runs end no helper.
-                    if *hold_through > 0 && *runs <= *hold_through {
-                        return;
-                    }
-                    if let Terminal::Limit { .. } = terminal
-                        && self.checkpoints.get().is_some()
-                    {
-                        *hold_through = *runs + 1;
-                    }
-                    (*runs, tag.clone())
-                }
-                _ => return,
-            }
+        let limit = match terminal {
+            Terminal::Limit { steps } => Some(steps),
+            _ => None,
         };
-        let terminal = match terminal {
-            Terminal::Limit { steps } => match self.checkpoints.get() {
-                Some(sink) => {
-                    if sink
+        let checkpoints = self.checkpoints.get();
+        let (end, tag) = match self.helpers.lock().get_mut(key) {
+            Some(Ending::Followed(followed)) => (
+                followed.run_ended(limit, checkpoints.is_some()),
+                followed.tag.clone(),
+            ),
+            _ => return,
+        };
+        let runs = match end {
+            RunEnd::Nothing => return,
+            RunEnd::Checkpoint { run, steps } => {
+                if let Some(sink) = checkpoints
+                    && sink
                         .send(LimitReached {
                             key: key.clone(),
                             tag,
                             steps,
-                            run: runs,
+                            run,
                         })
                         .is_err()
-                    {
-                        tracing::debug!("the helper checkpoints' sink is gone");
-                    }
-                    return;
+                {
+                    tracing::debug!("the helper checkpoints' sink is gone");
                 }
-                None => Terminal::Failed("its run reached its step limit".to_string()),
-            },
+                return;
+            }
+            RunEnd::Decide { run } => run,
+        };
+        let terminal = match terminal {
+            Terminal::Limit { .. } => {
+                Terminal::Failed("its run reached its step limit".to_string())
+            }
             other => other,
         };
         let probe = self.probe.get().map(|probe| Arc::clone(&probe.0));
@@ -1022,11 +1347,8 @@ impl HelperEndings {
     /// work ([`Self::at_work`]) until a run of it starts. A helper that ran
     /// in this daemon already is left as it is.
     pub fn restored_idle(&self, key: &HelperKey) {
-        if let Some(tracked) = self.tracked.lock().get_mut(key)
-            && tracked.runs == 0
-            && tracked.idle_after.is_none()
-        {
-            tracked.idle_after = Some(0);
+        if let Some(Ending::Followed(followed)) = self.helpers.lock().get_mut(key) {
+            followed.restored_idle();
         }
     }
 
@@ -1035,14 +1357,15 @@ impl HelperEndings {
     /// yet, one running, one whose run ended and is being decided). A
     /// helper not followed (or settled) is not.
     fn at_work(&self, key: &HelperKey) -> bool {
-        self.tracked.lock().get(key).is_some_and(|tracked| {
-            tracked.tag.is_some() && tracked.idle_after != Some(tracked.runs)
-        })
+        self.helpers.lock().get(key).is_some_and(Ending::at_work)
     }
 
     /// How many runs of `key` started (`None`: not followed).
     fn runs_of(&self, key: &HelperKey) -> Option<u64> {
-        self.tracked.lock().get(key).map(|tracked| tracked.runs)
+        match self.helpers.lock().get(key) {
+            Some(Ending::Followed(followed)) => Some(followed.runs),
+            _ => None,
+        }
     }
 
     /// The run `runs` of `key` ended `terminal` and nothing is queued for
@@ -1050,22 +1373,19 @@ impl HelperEndings {
     /// parent is told, and it is retired) and a long-lived member went idle
     /// (its parent is told, unless the run's last call was a message to it).
     fn went_idle(&self, key: &HelperKey, runs: u64, terminal: Terminal) {
-        let (tag, messaged_parent, first_told_elsewhere, outcome_recorded) = {
-            let mut tracked = self.tracked.lock();
-            match tracked.get_mut(key) {
-                Some(tracked) if tracked.runs == runs => {
-                    tracked.idle_after = Some(runs);
-                    (
-                        tracked.tag.clone(),
-                        tracked.messaged_parent,
-                        tracked.first_told_elsewhere && runs <= 1,
-                        tracked.outcome_recorded,
-                    )
-                }
-                _ => return,
-            }
+        let decided = match self.helpers.lock().get_mut(key) {
+            Some(Ending::Followed(followed)) => followed.went_idle(runs),
+            _ => None,
         };
-        let Some(tag) = tag else { return };
+        let Some(IdleRun {
+            tag,
+            messaged_parent,
+            told_by_engine: first_told_elsewhere,
+            recorded: outcome_recorded,
+        }) = decided
+        else {
+            return;
+        };
         self.idle_decided
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         use super::{HelperContext::Fork, HelperContext::Fresh, HelperKind::Started};
@@ -1143,7 +1463,7 @@ impl HelperEndings {
             return;
         }
         let below = self.take_below(key);
-        if let Some(tag) = self.settle(key) {
+        if let Ok(Some(tag)) = self.settle(key) {
             self.tell(Ended {
                 key: key.clone(),
                 tag,
@@ -1154,28 +1474,39 @@ impl HelperEndings {
         self.retire_done(key, below);
     }
 
-    fn update(&self, key: &HelperKey, change: impl FnOnce(&mut Tracked)) {
-        if self.is_settled(key) {
+    /// News of the `delegate` helper `key` (one not seen spawned yet is
+    /// followed from now on): when `change` makes its end known, it is
+    /// settled in the same take, its parent is told (when its tag is known)
+    /// and it is retired. A settled one, or a key of no `delegate` helper,
+    /// is left as it is.
+    fn delegate_news(&self, key: &HelperKey, change: impl FnOnce(&mut DelegateEnd) -> Option<How>) {
+        if !is_delegate(key) {
             return;
         }
-        let decision = {
-            let mut tracked = self.tracked.lock();
-            let entry = tracked.entry(key.clone()).or_default();
-            change(entry);
-            decide(is_delegate(key), entry)
+        let (how, tag) = {
+            let mut helpers = self.helpers.lock();
+            let entry = helpers.entry(key.clone()).or_insert(Ending::Delegate {
+                tag: None,
+                end: DelegateEnd::Seated,
+            });
+            let Ending::Delegate { tag, end } = entry else {
+                return;
+            };
+            let Some(how) = change(end) else { return };
+            let tag = tag.take();
+            *entry = Ending::Settled;
+            (how, tag)
         };
-        if let Some(how) = decision {
-            let below = self.take_below(key);
-            if let Some(tag) = self.settle(key) {
-                self.tell(Ended {
-                    key: key.clone(),
-                    tag,
-                    how,
-                    with: labels(&below),
-                });
-            }
-            self.retire(key, false, below);
+        let below = self.take_below(key);
+        if let Some(tag) = tag {
+            self.tell(Ended {
+                key: key.clone(),
+                tag,
+                how,
+                with: labels(&below),
+            });
         }
+        self.retire(key, false, below);
     }
 
     /// The user stopped the helper `key` (`tag`, when the caller knows it
@@ -1184,12 +1515,12 @@ impl HelperEndings {
     /// its parent is told, naming them. Returns whether it was a helper
     /// not ended yet.
     pub fn stop(&self, key: &HelperKey, tag: Option<HelperTag>) -> bool {
-        if self.is_settled(key) {
+        let Ok(followed) = self.settle(key) else {
             return false;
-        }
+        };
         let below = self.take_below(key);
         let with = labels(&below);
-        let known = self.settle(key).or(tag);
+        let known = followed.or(tag);
         self.retire(key, true, below);
         match known {
             Some(tag) => {
@@ -1208,12 +1539,11 @@ impl HelperEndings {
     /// The daemon found `key` (`tag`) left over by its last stop and no
     /// longer seated (the engine retired it): its parent is told.
     pub fn lost(&self, key: &HelperKey, tag: HelperTag) {
-        if self.is_settled(key) {
-            return;
-        }
         // Nothing is retired: the helper is not seated, and a member
         // seated under its id from now on is another helper.
-        self.settle(key);
+        if self.settle(key).is_err() {
+            return;
+        }
         self.tell(Ended {
             key: key.clone(),
             tag,
@@ -1225,16 +1555,22 @@ impl HelperEndings {
     /// The helper `key` is ended with the conversation it worked for (its
     /// agent switched conversations): nobody is told.
     pub fn left(&self, key: &HelperKey) {
-        if !self.is_settled(key) {
-            self.settle(key);
-        }
+        let _ = self.settle(key);
     }
 
-    /// Mark `key` settled; its tag, when one was known.
-    fn settle(&self, key: &HelperKey) -> Option<HelperTag> {
-        let tag = self.tracked.lock().remove(key).and_then(|t| t.tag);
-        self.settled.lock().insert(key.clone());
-        tag
+    /// Settle `key`, in one take: the tag it was followed with (`None`:
+    /// not followed, or a `delegate` helper whose spawn was not seen).
+    ///
+    /// # Errors
+    ///
+    /// It was settled already: its ending is someone else's to tell.
+    fn settle(&self, key: &HelperKey) -> Result<Option<HelperTag>, AlreadySettled> {
+        match self.helpers.lock().insert(key.clone(), Ending::Settled) {
+            Some(Ending::Settled) => Err(AlreadySettled),
+            Some(Ending::Followed(followed)) => Ok(Some(followed.tag)),
+            Some(Ending::Delegate { tag, .. }) => Ok(tag),
+            None => Ok(None),
+        }
     }
 
     fn tell(&self, ended: Ended) {
@@ -1414,7 +1750,7 @@ impl HelperEndings {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn is_tracked(&self, key: &HelperKey) -> bool {
-        self.tracked.lock().contains_key(key)
+        self.is_live(key)
     }
 
     /// Tests: whether `key`'s ending was settled (told or not).
@@ -1910,6 +2246,200 @@ mod tests {
         registry.endings().run_started(&child);
         registry.endings().restored_idle(&child);
         assert!(registry.endings().at_work(&child));
+    }
+
+    fn followed(kind: crate::mobs::HelperKind) -> Followed {
+        Followed::new(tagged("h", kind))
+    }
+
+    fn working(messaged_parent: bool) -> Phase {
+        Phase::Working { messaged_parent }
+    }
+
+    /// A followed helper's run moves it between at work and idle; a
+    /// decision of a run a later one replaced, and a tool call outside a
+    /// run, are refused.
+    #[test]
+    fn a_followed_helper_s_runs_move_it_between_work_and_idle() {
+        use crate::mobs::{HelperContext, HelperKind, HelperLife};
+        let mut helper = followed(HelperKind::Started(HelperContext::Fresh, HelperLife::Kept));
+        assert!(helper.at_work(), "spawned and not run yet");
+        helper.run_started();
+        helper.called(true);
+        assert_eq!(helper.phase, working(true));
+        assert_eq!(helper.run_ended(None, true), RunEnd::Decide { run: 1 });
+        // A later run started before the first's end was decided.
+        helper.run_started();
+        assert_eq!(helper.phase, working(false));
+        assert_eq!(helper.went_idle(1), None, "refused: run 2 replaced it");
+        assert!(helper.at_work());
+        let idle = helper.went_idle(2).unwrap();
+        assert!(!idle.messaged_parent && !idle.told_by_engine && !idle.recorded);
+        assert_eq!(helper.phase, Phase::Idle);
+        assert!(!helper.at_work() && helper.idle_after(2));
+        // A call outside a run is not recorded.
+        helper.called(true);
+        assert_eq!(helper.phase, Phase::Idle);
+        // A member not started by `assign` has no ending of its runs.
+        let mut other = followed(HelperKind::Other);
+        other.run_started();
+        assert_eq!(other.run_ended(None, true), RunEnd::Nothing);
+    }
+
+    /// Restored with no run, a helper is idle; once a run started that is
+    /// refused.
+    #[test]
+    fn restored_idle_is_refused_once_a_run_started() {
+        use crate::mobs::{HelperContext, HelperKind, HelperLife};
+        let kind = HelperKind::Started(HelperContext::Fresh, HelperLife::Kept);
+        let mut restored = followed(kind);
+        restored.restored_idle();
+        assert_eq!(restored.phase, Phase::Idle);
+        let mut ran = followed(kind);
+        ran.run_started();
+        ran.restored_idle();
+        assert_eq!(ran.phase, working(false));
+    }
+
+    /// A run at its limit opens the checkpoint through the status run
+    /// after it; their ends are nothing; the checkpoint's continue holds
+    /// the current run and the next run leaves it. Without a checkpoint
+    /// the limit is decided as any end.
+    #[test]
+    fn a_checkpoint_holds_its_runs_and_the_next_run_leaves_it() {
+        use crate::mobs::{HelperContext, HelperKind, HelperLife};
+        let kind = HelperKind::Started(HelperContext::Fresh, HelperLife::Single);
+        let mut helper = followed(kind);
+        helper.run_started();
+        assert_eq!(
+            helper.run_ended(Some(7), true),
+            RunEnd::Checkpoint { run: 1, steps: 7 }
+        );
+        assert_eq!(helper.phase, Phase::Checkpoint { through: 2 });
+        assert!(helper.at_work());
+        helper.run_started();
+        helper.called(true);
+        assert_eq!(
+            helper.phase,
+            Phase::Checkpoint { through: 2 },
+            "the status run"
+        );
+        assert_eq!(helper.run_ended(None, true), RunEnd::Nothing);
+        helper.hold_checkpoint();
+        assert_eq!(helper.phase, Phase::Checkpoint { through: 2 });
+        helper.run_started();
+        assert_eq!(helper.phase, working(false), "the continued run");
+        assert_eq!(helper.run_ended(None, true), RunEnd::Decide { run: 3 });
+        let mut plain = followed(kind);
+        plain.run_started();
+        assert_eq!(plain.run_ended(Some(7), false), RunEnd::Decide { run: 1 });
+    }
+
+    /// The engine tells a fresh fork's first run; its outcome on record
+    /// makes a single-use fork done once idle. A kept fork's record, a
+    /// fresh helper's and a restored fresh fork's are refused.
+    #[test]
+    fn a_fork_s_news_are_taken_only_where_they_apply() {
+        use crate::mobs::{HelperContext, HelperKind, HelperLife};
+        let single = HelperKind::Started(HelperContext::Fork, HelperLife::Single);
+        let mut fork = followed(single);
+        fork.first_run_told_by_engine();
+        assert_eq!(fork.fork, ForkNews::FirstRun);
+        assert_eq!(
+            fork.outcome_recorded(true),
+            None,
+            "refused: its own first run's"
+        );
+        assert_eq!(fork.fork, ForkNews::FirstRun);
+        fork.run_started();
+        assert_eq!(fork.outcome_recorded(false), None, "still running");
+        assert_eq!(fork.fork, ForkNews::Recorded { first_run: true });
+        let idle = fork.went_idle(1).unwrap();
+        assert!(idle.told_by_engine && idle.recorded);
+        // Restored after its outcome came: idle, done.
+        let mut restored = followed(single);
+        assert_eq!(restored.outcome_recorded(true), Some(0));
+        assert_eq!(restored.fork, ForkNews::Recorded { first_run: false });
+        // Told of later: its first run is still the engine's.
+        restored.first_run_told_by_engine();
+        assert_eq!(restored.fork, ForkNews::Recorded { first_run: true });
+        for kind in [
+            HelperKind::Started(HelperContext::Fork, HelperLife::Kept),
+            HelperKind::Started(HelperContext::Fresh, HelperLife::Single),
+        ] {
+            let mut other = followed(kind);
+            assert_eq!(other.outcome_recorded(false), None);
+            assert_eq!(other.fork, ForkNews::Nothing);
+        }
+    }
+
+    /// A `delegate` helper is told once both its being left over and its
+    /// run's end are known, in either order; the latest end is kept.
+    #[test]
+    fn a_delegate_s_end_needs_both_its_news() {
+        let mut end = DelegateEnd::Seated;
+        assert_eq!(end.run_ended(Terminal::Failed("first".into())), None);
+        assert_eq!(end.run_ended(Terminal::Completed("last".into())), None);
+        assert_eq!(
+            end.left_over(),
+            Some(How::Finished {
+                answer: "last".into()
+            })
+        );
+        let mut end = DelegateEnd::Seated;
+        assert_eq!(end.left_over(), None);
+        assert_eq!(end.left_over(), None);
+        assert_eq!(
+            end.run_ended(Terminal::Cancelled),
+            Some(How::Failed {
+                reason: "its run was cancelled".into()
+            })
+        );
+    }
+
+    /// Settling is one take: the second is refused, and a key seated again
+    /// is a new helper.
+    #[test]
+    fn a_helper_is_settled_once() {
+        use crate::mobs::{HelperContext, HelperKind, HelperLife};
+        let endings = HelperEndings::default();
+        let key = HelperKey::new(MobId::from("tui"), AgentIdentity::from("h"));
+        let kind = HelperKind::Started(HelperContext::Fresh, HelperLife::Single);
+        assert_eq!(endings.settle(&key), Ok(None), "not followed");
+        assert_eq!(endings.settle(&key), Err(AlreadySettled));
+        endings.spawned(&key, &tagged("h", kind));
+        assert!(endings.is_live(&key));
+        assert_eq!(endings.settle(&key).unwrap().unwrap().label(), "h");
+        assert!(!endings.is_live(&key) && endings.settled(&key));
+        // A settled one takes no news.
+        endings.run_started(&key);
+        endings.left_over(&key);
+        assert!(!endings.is_live(&key));
+    }
+
+    /// A `delegate` helper whose run's end came before its spawn was seen
+    /// takes its tag when it is, and is told once it is known left over.
+    #[test]
+    fn a_delegate_seen_ended_before_its_spawn_is_told_with_its_tag() {
+        let (endings, mut rx) = endings();
+        let key = delegate_key("d");
+        endings.run_ended(&key, Terminal::Completed("the answer".into()));
+        assert!(
+            endings.is_live(&key) && !endings.at_work(&key),
+            "no tag yet"
+        );
+        endings.spawned(&key, &tag("d"));
+        assert!(endings.at_work(&key));
+        endings.left_over(&key);
+        let ended = rx.try_recv().unwrap();
+        assert_eq!(ended.tag.label(), "d");
+        assert_eq!(
+            ended.how,
+            How::Finished {
+                answer: "the answer".into()
+            }
+        );
+        assert!(endings.settled(&key));
     }
 
     /// The user's stop of a helper owes its retire until the engine made
