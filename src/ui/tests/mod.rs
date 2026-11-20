@@ -16,6 +16,7 @@ mod helpers;
 mod keys;
 mod mouse;
 mod permissions;
+mod runs;
 mod shell;
 mod turns;
 

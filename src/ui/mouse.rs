@@ -359,6 +359,25 @@ impl App {
         self.mouse.press = None;
     }
 
+    /// Which of the lines of block `id` screen row `row` showed in the last
+    /// frame (0: its first).
+    fn line_in_block(&mut self, row: u16, id: BlockId) -> Option<usize> {
+        let offset = row.checked_sub(self.mouse.transcript_area.y)?;
+        let (_, line) = *self.mouse.transcript_rows.get(usize::from(offset))?;
+        let first = match self.mouse.view {
+            None => self.transcript.start_line(id)?,
+            Some(header) => {
+                let width = self.mouse.transcript_area.width;
+                self.transcript
+                    .helper_view_rows(header, width)
+                    .1
+                    .iter()
+                    .position(|block| *block == id)?
+            }
+        };
+        Some(line.saturating_sub(first))
+    }
+
     /// A left click: expand or collapse the tool block under it; the line
     /// at the bottom of the screen stays there ([`Self::keep_bottom`]).
     /// Returns whether anything changed.
@@ -376,6 +395,15 @@ impl App {
         // own scroll (its first line stays).
         if self.mouse.view.is_none() {
             self.keep_bottom(Some(id));
+        }
+        // A run's line opens or folds the run, not its first block.
+        if let Some(line) = self.line_in_block(row, id)
+            && self
+                .transcript
+                .toggle_run(id, line, self.mouse.view.is_some())
+                .is_some()
+        {
+            return true;
         }
         if self.transcript.toggle_tool(id).is_some() {
             true

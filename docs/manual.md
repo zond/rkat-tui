@@ -3572,7 +3572,18 @@ A message
 reaches the other agent as input: an idle agent wakes for it, a busy one
 takes it at its next step. The receiving TUI shows it as a block labelled
 with the sender (`✉ from agent main-abc`), so you always see why your
-agent acted. The sending side's tool block reads recipient first
+agent acted. Two or more messages in a row from the agent's own helpers
+(of its whole tree), with nothing else drawn between them, show as one
+line: `✉ 7 messages from capture-api, capture-source, capture-camera and
+2 more ▸`, with the latest message's first words after the names when
+the line has room. A click on it opens it: the line (`▾`), then each
+message's own line, each opened to its full text by its own click; a
+click on the line folds them again, and Ctrl-O shows every message in
+full. A single message, and a message from another agent of the
+workspace or from an agent wired with `/wire`, stays its own line and
+parts such a run, as does any other line (the agent's text, a tool call,
+your message, a notice). A helper's view folds the messages its own
+helpers sent it the same way, as that helper's lines. The sending side's tool block reads recipient first
 (`send_message → main-abc: <start of the message>`, the name taken from
 the conversation's `contacts` result, else the peer id) and a
 delivered message folds to `sent to <name>` (the receipt behind the

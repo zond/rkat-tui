@@ -44,6 +44,16 @@ impl LayoutCache {
         self.clean = 0;
     }
 
+    /// The first of `len` blocks [`Self::begin`] at `width` would lay out,
+    /// without starting.
+    pub(super) fn stale_from(&self, width: u16, len: usize) -> usize {
+        if width == self.width {
+            self.clean.min(len)
+        } else {
+            0
+        }
+    }
+
     /// Start laying out `len` blocks at `width`: returns the first block
     /// whose sum must be recomputed. A new width makes all of them stale.
     pub(super) fn begin(&mut self, width: u16, len: usize) -> usize {

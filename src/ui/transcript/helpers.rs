@@ -9,9 +9,9 @@ use meerkat_core::{ScopedAgentEvent, StreamScopeFrame};
 use ratatui::text::Line;
 use serde_json::Value;
 
-use super::{Block, BlockId, CachedLayout, HelperScope, Transcript};
+use super::{Block, BlockId, CachedLayout, HelperScope, Transcript, role_lines};
 use crate::ui::markdown::truncate_chars;
-use crate::ui::render::{SPINNER, SPINNER_FRAME_MS, block_lines};
+use crate::ui::render::{SPINNER, SPINNER_FRAME_MS};
 
 /// Maximum characters of a helper header's last-activity preview.
 pub const MAX_HELPER_PREVIEW: usize = 60;
@@ -354,6 +354,18 @@ impl Helpers {
         self.kinds.insert(label.to_string(), kind);
     }
 
+    /// Whether `name` is one of the agent's helpers (of its tree): it has
+    /// a header, a call started it, or the daemon lists it seated. An
+    /// agent of the workspace or of another one is none.
+    pub(super) fn knows(&self, name: &str) -> bool {
+        self.folds.contains_key(name)
+            || self.kinds.contains_key(name)
+            || self
+                .seated
+                .as_ref()
+                .is_some_and(|seated| seated.contains(name))
+    }
+
     /// The helper `label` left the workspace's mob.
     fn unseat(&mut self, label: &str) {
         if let Some(seated) = &mut self.seated {
@@ -627,21 +639,26 @@ impl Transcript {
         width: u16,
     ) -> (Vec<Line<'static>>, Vec<BlockId>) {
         let ids = self.helper_view_blocks(header);
+        let indices: Vec<usize> = ids.iter().filter_map(|id| self.index_of(*id)).collect();
+        let roles = self.run_roles(&indices);
         let mut lines = Vec::new();
         let mut blocks = Vec::new();
-        for id in ids {
-            let Some(entry) = self.entry_mut(id) else {
+        for (index, role) in indices.into_iter().zip(roles) {
+            let Some(entry) = self.entries.get_mut(index) else {
                 continue;
             };
+            let id = entry.id;
             if entry
                 .view_layout
                 .as_ref()
                 .is_none_or(|cached| cached.width != width)
+                || entry.view_role != role
             {
                 entry.view_layout = Some(CachedLayout {
                     width,
-                    lines: block_lines(&entry.block, width),
+                    lines: role_lines(&entry.block, &role, width),
                 });
+                entry.view_role = role;
             }
             if let Some(cached) = &entry.view_layout {
                 lines.extend(cached.lines.iter().cloned());
@@ -722,6 +739,10 @@ impl Transcript {
             ended: None,
         }));
         self.set_owner(id, parent);
+        if !self.helpers.knows(label) {
+            // A new helper: the runs of its messages may change.
+            self.layout.touch(0);
+        }
         self.helpers.add_fold(label, id);
         id
     }
@@ -751,7 +772,13 @@ impl Transcript {
     /// (its whole tree, by label): the whole list, each time one is
     /// seated or leaves.
     pub fn seated_helpers(&mut self, labels: impl IntoIterator<Item = String>) {
-        self.helpers.seated = Some(labels.into_iter().collect());
+        let seated: std::collections::HashSet<String> = labels.into_iter().collect();
+        let grown = seated.iter().any(|label| !self.helpers.knows(label));
+        self.helpers.seated = Some(seated);
+        if grown {
+            // Who is a helper changed: the runs of their messages may.
+            self.layout.touch(0);
+        }
     }
 
     /// Whether the helper `fold` is live, from what the daemon knows of
@@ -788,6 +815,10 @@ impl Transcript {
             }
         }
         for label in labels {
+            if !self.helpers.knows(label) {
+                // A new helper: the runs of its messages may change.
+                self.layout.touch(0);
+            }
             self.helpers
                 .note_kind(label, kind, tool == "mob_spawn_member");
             if let Some(id) = self.helpers.fold(label) {

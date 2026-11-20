@@ -1752,12 +1752,12 @@ fn a_note_that_reaches_a_running_turn_is_one_folded_line() {
 }
 
 /// The run input of a message `from` sent, as the engine gives it.
-fn peer_input(from: &str, body: &str) -> String {
+pub(super) fn peer_input(from: &str, body: &str) -> String {
     format!("Peer message\nPeer message from tui/main/{from}:\n{body}\nPeer message")
 }
 
 /// A helper's run started on `input`.
-fn run_on(input: &str) -> AgentEvent {
+pub(super) fn run_on(input: &str) -> AgentEvent {
     use meerkat_core::types::{ContentInput, RunInput, TranscriptMessageIdentity};
     AgentEvent::RunStarted {
         session_id: meerkat_core::SessionId::new(),

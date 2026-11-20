@@ -44,7 +44,7 @@ use serde_json::Value;
 
 use super::delivery::PendingId;
 use super::markdown::truncate_chars;
-use super::render::{SPINNER, block_lines};
+use super::render::SPINNER;
 
 mod helpers;
 mod layout;
@@ -53,6 +53,7 @@ pub mod outcome;
 #[cfg(any(test, feature = "test-support"))]
 mod probe;
 mod restore;
+mod runs;
 pub mod tool_line;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -64,6 +65,7 @@ use helpers::{Helpers, helper_args_preview};
 use layout::LayoutCache;
 use notices::{compaction_skipped, retry_notice, upstream_notice};
 pub use restore::blocks_from_messages;
+use runs::{RunRole, role_lines};
 
 /// Maximum tool-result lines kept in the preview (matches the CLI stream renderer).
 pub const MAX_TOOL_RESULT_LINES: usize = 20;
@@ -561,6 +563,9 @@ pub struct Transcript {
     announced: Vec<(String, Heard)>,
     /// The laid-out lines before each block ([`Self::ensure_layout`]).
     layout: LayoutCache,
+    /// The blocks of the runs opened by a click ([`runs`]): a run is
+    /// opened while one of its blocks is here.
+    open_runs: std::collections::HashSet<BlockId>,
 }
 
 /// One block of the transcript and what is kept about it.
@@ -573,6 +578,10 @@ struct Entry {
     /// Its layout at one width as a helper's full view draws it (folded
     /// helpers do not hide it there).
     view_layout: Option<CachedLayout>,
+    /// Its part in a run as its `layout` draws it ([`runs`]).
+    role: RunRole,
+    /// Its part in a run as its `view_layout` draws it.
+    view_role: RunRole,
     /// The header of the helper it belongs to (`None`: the session's own
     /// blocks and top-level helper headers).
     owner: Option<BlockId>,
@@ -825,11 +834,6 @@ impl Transcript {
         self.entries.get(self.index_of(id)?)
     }
 
-    fn entry_mut(&mut self, id: BlockId) -> Option<&mut Entry> {
-        let index = self.index_of(id)?;
-        self.entries.get_mut(index)
-    }
-
     /// The header of the helper `id` belongs to.
     pub(super) fn owner_of(&self, id: BlockId) -> Option<BlockId> {
         self.entry(id)?.owner
@@ -907,6 +911,12 @@ impl Transcript {
                 if fold.state.is_running() {
                     fold.state = HelperState::Done;
                 }
+            }
+            if let Block::Tool { name, args, .. } = &block {
+                // The helpers its calls started are its helpers (their
+                // messages fold into runs).
+                let (name, args) = (name.clone(), args.clone());
+                self.note_spawn(&name, &args);
             }
             self.push_raw(block);
         }
@@ -1219,6 +1229,12 @@ impl Transcript {
     pub fn toggle_detail(&mut self) -> bool {
         self.detail = !self.detail;
         let collapse = !self.detail;
+        // Every opened run folds again (with the detail on nothing is in
+        // a run).
+        if !self.open_runs.is_empty() {
+            self.open_runs.clear();
+            self.layout.touch(0);
+        }
         for index in 0..self.entries.len() {
             let changed = match &mut self.entries[index].block {
                 Block::Reasoning { collapsed, .. }
@@ -1418,22 +1434,29 @@ impl Transcript {
     /// blocks from the first one changed since the last call are visited
     /// (all of them when the width changed).
     pub fn ensure_layout(&mut self, width: u16) -> usize {
+        // A run's line counts the blocks after its first: a change to one
+        // of them lays the run out again from its first block.
+        let from = self.layout.stale_from(width, self.entries.len());
+        self.layout.touch(self.run_start(from));
         let start = self.layout.begin(width, self.entries.len());
-        for i in start..self.entries.len() {
+        let roles = self.transcript_roles(start);
+        for (i, role) in (start..self.entries.len()).zip(roles) {
             let entry = &self.entries[i];
             if entry
                 .layout
                 .as_ref()
                 .is_none_or(|cached| cached.width != width)
+                || entry.role != role
             {
                 let lines = if self.is_hidden(entry.id) {
                     Vec::new()
                 } else {
-                    block_lines(&entry.block, width)
+                    role_lines(&entry.block, &role, width)
                 };
                 #[cfg(test)]
                 self.layout.note_laid_out();
                 self.entries[i].layout = Some(CachedLayout { width, lines });
+                self.entries[i].role = role;
             }
             let lines = self.lines_of(i);
             self.layout.record(i, lines);
@@ -1849,6 +1872,8 @@ impl Transcript {
             block,
             layout: None,
             view_layout: None,
+            role: RunRole::Alone,
+            view_role: RunRole::Alone,
             owner: None,
         });
         id
@@ -2408,6 +2433,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{test_args, test_tool_result, test_usage};
     use super::*;
+    use crate::ui::render::block_lines;
     use meerkat_core::{LlmRetrySchedule, ScopedAgentEvent, StopReason, StreamScopeFrame, Usage};
     use serde_json::json;
 

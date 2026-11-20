@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Two or more messages in a row from the agent's own helpers fold into
+  one line, `✉ 7 messages from capture-api, capture-source,
+  capture-camera and 2 more ▸` (the latest message's first words after
+  the names when they fit): with six helpers running, the transcript
+  showed about twenty `✉ from agent …` lines one after another. A click
+  opens the run into its messages, each still opened by its own click,
+  and folds it again; Ctrl-O shows them all in full. A single message
+  and messages from other agents of the workspace or from `/wire` peers
+  stay their own lines. The same in a helper's view and in a resumed
+  conversation; nothing stored changes.
+
 ## [0.0.18] - 2026-11-20
 
 ### Added
