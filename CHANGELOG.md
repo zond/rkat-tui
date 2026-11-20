@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.18] - 2026-11-20
+
 ### Added
 
 - `helpers.max_live` (8 by default, at most 64; a project file may only

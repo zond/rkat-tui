@@ -213,6 +213,15 @@ repository). Open upstream issues this code waits on:
   become a plain steer when it ships; two typed messages one request
   apart are the engine's until then.
 
+- #2433 (filed 2026-11-20): engine events for facts we poll for (a
+  spawned or forked member listed, wireable and registered; a session
+  with no run and no pending input; a session actor live again after a
+  reseat; six smaller ones). The polling loops it names
+  (`src/mobs/follow.rs` `wire_to_parent`, `src/daemon/connect.rs`,
+  `src/daemon/activity.rs`, the helpers' idle decision, the client's
+  stream reopen) shrink to one
+  await each as its parts ship.
+
 - #2300: `blob_save_file` and `view_image` taking additional allowed
   directories from the host. The scratch-directory instruction's sentence
   about them (`src/bootstrap/persona.rs`) goes when it ships.
