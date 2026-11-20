@@ -294,8 +294,8 @@ async fn a_connection_without_the_token_never_reaches_the_router() {
 
 /// The proxy forwards only what it parsed. The engine's frame parser trims
 /// Unicode whitespace (`str::trim`) that `serde_json` does not, so a
-/// `session/create` behind a leading form feed could fail the proxy's
-/// parse, take a raw-forward branch and run in the engine as a session
+/// `session/create` behind a leading form feed fails the proxy's parse yet
+/// reads as a request to the engine, where it would run as a session
 /// outside the mob. A line the proxy cannot read as a JSON-RPC request
 /// is answered by the proxy and never forwarded: the form-feed variants of
 /// a refused and of a served method both get a parse error, the

@@ -17,7 +17,8 @@ use ratatui::text::Line;
 
 use super::markdown::{truncate_to_width, wrap_text};
 use super::modal::{
-    ListCursor, ModalKey, has_ctrl_or_alt, is_ctrl_c, is_held, push_line_text, window_lines,
+    ListCursor, ModalKey, ctrl_c_answer, has_ctrl_or_alt, ignored_key, is_held, push_line_text,
+    window_lines,
 };
 use super::{App, BlockId, Effect, MemoryTarget, Modal, OpenHelperView, ScrollState};
 use crate::approval::grants::GrantScope;
@@ -873,19 +874,14 @@ impl ListPicker {
     /// reaches the row's own keys. Ctrl-C still closes the picker, acting
     /// on nothing.
     pub fn key(&mut self, key: &KeyEvent) -> ModalKey<PickAct> {
-        let held = is_held(key);
-        if is_ctrl_c(key) {
-            return if held {
-                ModalKey::Stay
-            } else {
-                ModalKey::Close
-            };
+        if let Some(answer) = ctrl_c_answer(key) {
+            return answer;
         }
         if self.detail_key(key) {
             return ModalKey::Stay;
         }
         if let Some(PickerLine::Confirm { act, nudged, .. }) = &mut self.line {
-            if held || has_ctrl_or_alt(key) {
+            if is_held(key) || has_ctrl_or_alt(key) {
                 return ModalKey::Stay;
             }
             return match key.code {
@@ -904,11 +900,7 @@ impl ListPicker {
                 }
             };
         }
-        let moves = matches!(
-            key.code,
-            KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
-        );
-        if (held && !moves) || has_ctrl_or_alt(key) {
+        if ignored_key(key) {
             return ModalKey::Stay;
         }
         if let Some(PickerLine::Field(field)) = &mut self.line {
