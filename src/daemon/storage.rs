@@ -342,15 +342,7 @@ async fn reload_registration(
     member: &AgentIdentity,
 ) -> Result<(), MobError> {
     #[cfg(any(test, feature = "test-support"))]
-    if core
-        .reload_faults
-        .fetch_update(
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
-            |left| left.checked_sub(1),
-        )
-        .is_ok()
-    {
+    if core.probe.reload_fails() {
         return Err(MobError::Internal(
             "a reload failed on purpose (test)".into(),
         ));

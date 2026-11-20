@@ -2,6 +2,9 @@
 //! `Arc` by the live agents ([`super::agents::Agents`]) and the local
 //! methods ([`super::local::Local`]).
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod probe;
+
 use std::sync::Arc;
 
 use meerkat_mob_mcp::MobMcpState;
@@ -67,24 +70,9 @@ pub struct Core {
     pub revisions: Arc<super::instructions::Instructions>,
     /// Who each agent and helper can message (`contacts`).
     pub contacts: Arc<super::contacts::Contacts>,
-    /// Tests: how many of the next member reloads fail
-    /// ([`super::storage::reload`]).
+    /// Tests: the faults they queue ([`probe::CoreProbe`]).
     #[cfg(any(test, feature = "test-support"))]
-    pub reload_faults: std::sync::atomic::AtomicU32,
-    /// Tests: how the next steers of a helper's note fail
-    /// ([`super::agents::Agents::steer`]).
-    #[cfg(any(test, feature = "test-support"))]
-    pub note_faults: parking_lot::Mutex<Vec<NoteFault>>,
-}
-
-/// Tests: how one steer of a helper's note fails.
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoteFault {
-    /// Refused before it reaches the engine: the agent never reads it.
-    Refused,
-    /// Sent, and then answered with an error (the engine took it).
-    Late,
+    pub probe: probe::CoreProbe,
 }
 
 impl std::fmt::Debug for Core {

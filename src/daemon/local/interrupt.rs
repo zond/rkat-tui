@@ -149,7 +149,7 @@ impl Local {
         }
         self.core.activity.changed(&agent, false);
         #[cfg(any(test, feature = "test-support"))]
-        self.interrupts.lock().push(answer.clone());
+        self.probe.interrupted(&answer);
         Ok(answer)
     }
 
@@ -278,13 +278,6 @@ impl Local {
         RunInterrupt::Failed {
             why: plain_refusal(err),
         }
-    }
-
-    /// Tests: every interrupt's answer, in order.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn interrupts(&self) -> Vec<Interrupted> {
-        self.interrupts.lock().clone()
     }
 }
 

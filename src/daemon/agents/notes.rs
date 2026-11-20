@@ -344,27 +344,13 @@ impl Agents {
         }
         let _sending = self.core.activity.sending(name);
         #[cfg(any(test, feature = "test-support"))]
-        let fault = if wake == Wake::HelperEnded {
-            let mut faults = self.core.note_faults.lock();
-            (!faults.is_empty()).then(|| faults.remove(0))
-        } else {
-            None
-        };
-        #[cfg(any(test, feature = "test-support"))]
-        if fault == Some(crate::daemon::core::NoteFault::Refused) {
-            return Err("the note was refused on purpose (test)".to_string());
-        }
+        let late = self.core.probe.steering(wake == Wake::HelperEnded)?;
         let steered = match hold_or_steer(&self.core, name, text).await {
             Delivery::Steered(steered) => steered,
             held @ Delivery::Held(_) => return held.accepted(failed),
         };
         #[cfg(any(test, feature = "test-support"))]
-        let steered = match (steered, fault) {
-            (Ok(()), Some(crate::daemon::core::NoteFault::Late)) => {
-                Err("the note was answered late on purpose (test)".to_string())
-            }
-            (steered, _) => steered,
-        };
+        let steered = crate::daemon::core::probe::CoreProbe::answer(steered, late);
         // A helper's note stays marked as sent after an error: should the
         // engine have taken it all the same, the run it starts is still
         // recognised, and the copy held meanwhile goes then

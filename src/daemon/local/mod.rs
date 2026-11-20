@@ -49,6 +49,8 @@ mod inputs;
 mod interrupt;
 mod lifecycle;
 mod model;
+#[cfg(any(test, feature = "test-support"))]
+mod probe;
 mod report;
 mod settings;
 mod wires;
@@ -114,18 +116,9 @@ pub struct Local {
     /// prompt to an idle agent waits until every one routed before it
     /// ended ([`Local::observe`]).
     modes_done: tokio::sync::watch::Sender<u64>,
-    /// Tests: how many times each engine method was forwarded.
+    /// Tests: what they observe and hold ([`probe::Probe`]).
     #[cfg(any(test, feature = "test-support"))]
-    forwarded: parking_lot::Mutex<std::collections::HashMap<String, usize>>,
-    /// Tests: a mode change waits on it before its note.
-    #[cfg(any(test, feature = "test-support"))]
-    mode_hold: Arc<tokio::sync::RwLock<()>>,
-    /// Tests: every `rkat/interrupt`'s answer, in order.
-    #[cfg(any(test, feature = "test-support"))]
-    interrupts: parking_lot::Mutex<Vec<protocol::Interrupted>>,
-    /// Tests: how many prompts waited for a mode change.
-    #[cfg(any(test, feature = "test-support"))]
-    mode_waits: Arc<AtomicU64>,
+    probe: probe::Probe,
 }
 
 /// What only [`Local`] reads, beside the [`Core`] it shares.
@@ -217,28 +210,8 @@ impl Local {
             modes_routed: AtomicU64::new(0),
             modes_done: tokio::sync::watch::Sender::new(0),
             #[cfg(any(test, feature = "test-support"))]
-            forwarded: parking_lot::Mutex::default(),
-            #[cfg(any(test, feature = "test-support"))]
-            mode_hold: Arc::default(),
-            #[cfg(any(test, feature = "test-support"))]
-            interrupts: parking_lot::Mutex::default(),
-            #[cfg(any(test, feature = "test-support"))]
-            mode_waits: Arc::default(),
+            probe: probe::Probe::default(),
         }
-    }
-
-    /// Tests: hold every mode change before its note until the guard is
-    /// dropped.
-    #[cfg(any(test, feature = "test-support"))]
-    pub async fn hold_mode_notes(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
-        Arc::clone(&self.mode_hold).write_owned().await
-    }
-
-    /// Tests: how many prompts waited for a mode change to end.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn mode_waits(&self) -> u64 {
-        self.mode_waits.load(Ordering::SeqCst)
     }
 
     /// The proxy read `caller`'s local call `method` and is about to run
@@ -262,7 +235,7 @@ impl Local {
         }
         let mut done = self.modes_done.subscribe();
         #[cfg(any(test, feature = "test-support"))]
-        self.mode_waits.fetch_add(1, Ordering::SeqCst);
+        self.probe.mode_wait();
         Some(super::serve::Wait(Box::pin(async move {
             if tokio::time::timeout(MODE_WAIT, done.wait_for(|ended| *ended >= target))
                 .await
@@ -279,63 +252,6 @@ impl Local {
     #[must_use]
     pub fn core(&self) -> &Arc<Core> {
         &self.core
-    }
-
-    /// Tests: leave `agent`'s session as a failed durable commit does
-    /// (the engine's own test hook: its registration needs a reload, so
-    /// the next send is refused with `MemberReloadRequired`). Whether it
-    /// did. Meant for an agent with no run behind it: applied while a
-    /// run's terminal is still being written, it fails that write too
-    /// (`tests/it/storage.rs`).
-    #[cfg(any(test, feature = "test-support"))]
-    pub async fn degrade_for_test(&self, agent: &str) -> bool {
-        let Some(session) = self.core.conversations.current(agent) else {
-            return false;
-        };
-        self.parts
-            .machine
-            .force_session_durability_reload_required_for_test(&session)
-            .await
-    }
-
-    /// Tests: the next `count` member reloads fail
-    /// ([`crate::daemon::storage::reload`]).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn fail_reloads_for_test(&self, count: u32) {
-        self.core
-            .reload_faults
-            .store(count, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// Tests: a message of the daemon's own to `agent`, as its notes go
-    /// (held for an open run, [`crate::daemon::agents::hold_or_steer`]);
-    /// answered once the engine took it.
-    ///
-    /// # Errors
-    ///
-    /// The engine's refusal, as text.
-    #[cfg(any(test, feature = "test-support"))]
-    pub async fn steer_for_test(&self, agent: &str, text: &str) -> Result<(), String> {
-        crate::daemon::agents::hold_or_steer(&self.core, agent, text.to_string())
-            .await
-            .outcome()
-            .await
-    }
-
-    /// Tests: how many of the daemon's notes are held for `agent`'s open
-    /// run ([`crate::daemon::activity::HeldNote`]).
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn held_notes_for_test(&self, agent: &str) -> usize {
-        self.core.activity.held_notes(agent)
-    }
-
-    /// How many requests of the engine method `method` the clients sent
-    /// through the proxy (tests: what a client polls).
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn forwarded(&self, method: &str) -> usize {
-        self.forwarded.lock().get(method).copied().unwrap_or(0)
     }
 
     /// Append `line` to the audit log (nothing when there is none).
@@ -536,9 +452,7 @@ impl Local {
             .to_string();
         self.admit(caller, &method, request.get("params"))?;
         #[cfg(any(test, feature = "test-support"))]
-        {
-            *self.forwarded.lock().entry(method.clone()).or_insert(0) += 1;
-        }
+        self.probe.forwarding(&method);
         let Some(params) = request.get_mut("params") else {
             return Ok(Observed::plain(request));
         };

@@ -391,7 +391,7 @@ fn agent_carries(llm: &ScriptedLlmClient, text: &str) -> usize {
 /// once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_note_whose_steer_fails_is_held_and_goes_with_the_next_message_once() {
-    use rkat_tui::daemon::core::NoteFault;
+    use rkat_tui::daemon::core::probe::NoteFault;
     let ws = Workspace::new();
     let gate = Arc::new(tokio::sync::Notify::new());
     let llm = failing_note_script(&gate);
@@ -406,6 +406,7 @@ async fn a_note_whose_steer_fails_is_held_and_goes_with_the_next_message_once() 
     daemon
         .local()
         .core()
+        .probe
         .note_faults
         .lock()
         .push(NoteFault::Refused);
@@ -453,7 +454,7 @@ async fn a_note_whose_steer_fails_is_held_and_goes_with_the_next_message_once() 
 /// again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_note_steered_but_answered_with_an_error_is_not_told_twice() {
-    use rkat_tui::daemon::core::NoteFault;
+    use rkat_tui::daemon::core::probe::NoteFault;
     let ws = Workspace::new();
     let gate = Arc::new(tokio::sync::Notify::new());
     let llm = failing_note_script(&gate);
@@ -468,6 +469,7 @@ async fn a_note_steered_but_answered_with_an_error_is_not_told_twice() {
     daemon
         .local()
         .core()
+        .probe
         .note_faults
         .lock()
         .push(NoteFault::Late);

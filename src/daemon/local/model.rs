@@ -277,7 +277,7 @@ impl Local {
             .decisions
             .broadcast(protocol::MODE, &ModeStatus::of(&self.core.engine));
         #[cfg(any(test, feature = "test-support"))]
-        let _held = self.mode_hold.read().await;
+        let _held = self.probe.mode_note().await;
         self.note_plan_mode().await.into_iter().collect()
     }
 

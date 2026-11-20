@@ -293,17 +293,9 @@ pub struct DaemonOptions {
     pub(crate) policy: engine::PolicyOptions,
     /// The build the daemon names (`None`: [`crate::BUILD`]).
     pub(crate) build: Option<String>,
-    /// Tests: how many of the next agent spawns fail.
+    /// Tests: the faults and holds of the start ([`testing::TestOptions`]).
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) spawn_faults: Option<Arc<std::sync::atomic::AtomicUsize>>,
-    /// Tests: the start waits for this before it reads the agents' tool
-    /// catalogs.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) before_catalogs: Option<Arc<tokio::sync::Notify>>,
-    /// Tests: no follower reads the mobs' profiles, so every spawn by a
-    /// profile's name reads them itself (`mobs::profiles`).
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) profiles_unfollowed: bool,
+    pub(crate) test: testing::TestOptions,
     /// The state directory the default endpoint file goes in (`None`:
     /// the user's, [`endpoint::state_home`], or the runtime directory's).
     pub(crate) state_home: Option<PathBuf>,
@@ -320,19 +312,16 @@ impl Default for DaemonOptions {
             build: None,
             state_home: None,
             #[cfg(any(test, feature = "test-support"))]
-            spawn_faults: None,
-            #[cfg(any(test, feature = "test-support"))]
-            before_catalogs: None,
-            #[cfg(any(test, feature = "test-support"))]
-            profiles_unfollowed: false,
+            test: testing::TestOptions::default(),
         }
     }
 }
 
+/// Tests: what they set of a daemon before its start.
+#[cfg(any(test, feature = "test-support"))]
 impl DaemonOptions {
     /// Write the endpoint file at `file` instead of the default place.
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_endpoint_file(mut self, file: PathBuf) -> Self {
         self.endpoint_file = Some(file);
         self
@@ -342,7 +331,6 @@ impl DaemonOptions {
     /// state directory: the default place is still chosen (and checked
     /// against the shell's grants), in a directory a test owns.
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_state_home(mut self, dir: PathBuf) -> Self {
         self.state_home = Some(dir);
         self
@@ -351,18 +339,16 @@ impl DaemonOptions {
     /// Fail as many of the next agent spawns as `faults` holds (a switch,
     /// and seating the previous conversation again, can then fail).
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_spawn_faults(mut self, faults: Arc<std::sync::atomic::AtomicUsize>) -> Self {
-        self.spawn_faults = Some(faults);
+        self.test.spawn_faults = Some(faults);
         self
     }
 
     /// Hold the start before it reads the agents' tool catalogs until
     /// `gate` is notified (a test orders a resumed run's turn first).
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_before_catalogs(mut self, gate: Arc<tokio::sync::Notify>) -> Self {
-        self.before_catalogs = Some(gate);
+        self.test.before_catalogs = Some(gate);
         self
     }
 
@@ -370,16 +356,14 @@ impl DaemonOptions {
     /// name always finds them unread (a test of a spawn that comes before
     /// the follower).
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_profiles_unfollowed(mut self) -> Self {
-        self.profiles_unfollowed = true;
+        self.test.profiles_unfollowed = true;
         self
     }
 
     /// Name `build` as the daemon's build (a client of another build
     /// says so).
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_build(mut self, build: &str) -> Self {
         self.build = Some(build.to_string());
         self
@@ -387,14 +371,12 @@ impl DaemonOptions {
 
     /// Started by a client that presents `token`.
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_start_token(mut self, token: &str) -> Self {
         self.start_token = Some(token.to_string());
         self
     }
 
     /// Bootstrap with `bootstrap` (a scripted LLM, host paths, a lister).
-    #[cfg(feature = "test-support")]
     #[must_use]
     pub fn with_bootstrap(mut self, bootstrap: BootstrapOptions) -> Self {
         self.bootstrap = bootstrap;
@@ -403,7 +385,6 @@ impl DaemonOptions {
 
     /// Compose without the consequence-policy registry (to observe what
     /// the engine does with a member whose durable binding names it).
-    #[cfg(feature = "test-support")]
     #[must_use]
     pub fn without_policy_registry(mut self) -> Self {
         self.policy.without_registry = true;
@@ -413,11 +394,43 @@ impl DaemonOptions {
     /// Seat the agents and helpers with an earlier build's instructions
     /// and leave every conversation's as it is (the first start of a
     /// test of the upgrade, [`instructions`]).
-    #[cfg(feature = "test-support")]
     #[must_use]
     pub fn with_stale_instructions(mut self) -> Self {
         self.policy.stale_instructions = true;
         self
+    }
+}
+
+/// What tests reach of a started daemon.
+#[cfg(any(test, feature = "test-support"))]
+impl Daemon {
+    /// What tests reach of a started daemon.
+    #[must_use]
+    pub fn seams(&self) -> &testing::Seams {
+        &self.seams
+    }
+
+    /// The daemon's own methods and its view of the proxied ones (tests).
+    #[must_use]
+    pub fn local(&self) -> &Arc<local::Local> {
+        &self.local
+    }
+
+    /// The engine's own method router, past the proxy (tests: what a
+    /// plain session in the realm looks like, which no client can create).
+    #[must_use]
+    pub fn engine_side(&self) -> testing::EngineSide {
+        testing::EngineSide {
+            runtime: Arc::downgrade(&self.runtime),
+            config_store: Arc::downgrade(&self.config_store),
+            deferral: Arc::downgrade(self.local.deferral()),
+        }
+    }
+
+    /// The mob host every member lives in.
+    #[must_use]
+    pub fn mob_state(&self) -> &Arc<MobMcpState> {
+        &self.state
     }
 }
 
@@ -575,10 +588,9 @@ impl Daemon {
         composed.profiles.bind(&composed.state);
         mob::ensure_mob(&composed.state, &composed.root).await?;
         // After the mobs are restored: the follower's first read sees them.
-        #[cfg(any(test, feature = "test-support"))]
-        let follow = !options.profiles_unfollowed;
-        #[cfg(not(any(test, feature = "test-support")))]
         let follow = true;
+        #[cfg(any(test, feature = "test-support"))]
+        let follow = follow && !options.test.profiles_unfollowed;
         if follow {
             composed
                 .tasks
@@ -590,7 +602,7 @@ impl Daemon {
         let conversations = open_conversations(
             &composed,
             #[cfg(any(test, feature = "test-support"))]
-            options.spawn_faults.clone(),
+            options.test.spawn_faults.clone(),
         )?;
         let core = Arc::new(core::Core {
             state: Arc::clone(&composed.state),
@@ -640,9 +652,7 @@ impl Daemon {
             revisions: Arc::clone(&composed.revisions),
             contacts: Arc::clone(&composed.contacts),
             #[cfg(any(test, feature = "test-support"))]
-            reload_faults: std::sync::atomic::AtomicU32::new(0),
-            #[cfg(any(test, feature = "test-support"))]
-            note_faults: parking_lot::Mutex::new(Vec::new()),
+            probe: core::probe::CoreProbe::default(),
         });
         let agents = agents::Agents::new(
             Arc::clone(&core),
@@ -666,7 +676,7 @@ impl Daemon {
             &agents,
             &composed,
             #[cfg(any(test, feature = "test-support"))]
-            options.before_catalogs.clone(),
+            options.test.before_catalogs.clone(),
         )
         .await?;
         // The connections of helpers in different mobs the last daemon
@@ -737,39 +747,6 @@ impl Daemon {
             .collect(),
             local,
         })
-    }
-
-    /// What tests reach of a started daemon.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn seams(&self) -> &testing::Seams {
-        &self.seams
-    }
-
-    /// The daemon's own methods and its view of the proxied ones (tests).
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn local(&self) -> &Arc<local::Local> {
-        &self.local
-    }
-
-    /// The engine's own method router, past the proxy (tests: what a
-    /// plain session in the realm looks like, which no client can create).
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn engine_side(&self) -> testing::EngineSide {
-        testing::EngineSide {
-            runtime: Arc::downgrade(&self.runtime),
-            config_store: Arc::downgrade(&self.config_store),
-            deferral: Arc::downgrade(self.local.deferral()),
-        }
-    }
-
-    /// The mob host every member lives in.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn mob_state(&self) -> &Arc<MobMcpState> {
-        &self.state
     }
 
     /// The bound address clients connect to.
@@ -909,6 +886,19 @@ pub mod testing {
     use meerkat_core::ConfigStore;
     use meerkat_rpc::session_runtime::SessionRuntime;
     use serde_json::Value;
+
+    /// What tests set of a daemon's start ([`super::DaemonOptions`]).
+    #[derive(Clone, Default)]
+    pub(crate) struct TestOptions {
+        /// How many of the next agent spawns fail.
+        pub(crate) spawn_faults: Option<Arc<std::sync::atomic::AtomicUsize>>,
+        /// The start waits for this before it reads the agents' tool
+        /// catalogs.
+        pub(crate) before_catalogs: Option<Arc<tokio::sync::Notify>>,
+        /// No follower reads the mobs' profiles, so every spawn by a
+        /// profile's name reads them itself (`mobs::profiles`).
+        pub(crate) profiles_unfollowed: bool,
+    }
 
     /// What tests reach of a started daemon ([`super::Daemon::seams`]).
     pub struct Seams {
