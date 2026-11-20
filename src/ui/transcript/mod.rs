@@ -47,6 +47,7 @@ use super::markdown::truncate_chars;
 use super::render::{SPINNER, block_lines};
 
 mod helpers;
+mod layout;
 mod notices;
 pub mod outcome;
 mod restore;
@@ -54,10 +55,11 @@ pub mod tool_line;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use helpers::PANEL_LINGER;
-use helpers::helper_args_preview;
 pub use helpers::{
     HelperFold, HelperKind, HelperLast, HelperState, HelperView, MAX_HELPER_PREVIEW,
 };
+use helpers::{Helpers, helper_args_preview};
+use layout::LayoutCache;
 use notices::{compaction_skipped, retry_notice, upstream_notice};
 pub use restore::blocks_from_messages;
 
@@ -533,35 +535,13 @@ pub struct Transcript {
     /// The open prose and reasoning blocks deltas append to: the session's
     /// own under `None`, each helper's under its header.
     streams: IndexMap<Option<BlockId>, Stream>,
-    /// The model of each helper (by label) the UI has heard of, for block
-    /// labels.
-    helper_models: IndexMap<String, String>,
-    /// The current header of each helper, by label.
-    helper_folds: IndexMap<String, BlockId>,
-    /// Helpers listed as running by the last live update.
-    live_helpers: Vec<String>,
-    /// How new helper headers start.
-    helper_view: HelperView,
-    /// The name of the agent this transcript is (`main-ab12`): who gave
-    /// its helpers their tasks.
-    agent_name: Option<String>,
+    /// What the transcript knows of its helpers besides their blocks.
+    helpers: Helpers,
     /// Where tool lines show paths from.
     paths: tool_line::PathView,
     /// Whether every foldable block is shown in full (Ctrl-O): new ones
     /// arrive so.
     detail: bool,
-    /// What each helper is (by label), from the call that started it.
-    helper_kinds: IndexMap<String, HelperKind>,
-    /// The members of the workspace's mob as the daemon last listed them,
-    /// with every helper seen live since (`None`: not listed yet): a
-    /// helper of the agent's own mob it does not name has left it.
-    seated_helpers: Option<std::collections::HashSet<String>>,
-    /// The helpers spawned into a mob of the agent's own making
-    /// (`mob_spawn_member`), whose seat that listing does not say.
-    elsewhere: std::collections::HashSet<String>,
-    /// The clock of the last update ([`Self::settle_helpers`]): an ended
-    /// helper leaves the panel [`helpers::PANEL_LINGER`] after it ended.
-    panel_now: Option<Instant>,
     /// Notes for tool calls whose block has not arrived yet, by tool-use id
     /// (at most [`MAX_PENDING_NOTES`], oldest dropped first).
     pending_notes: IndexMap<String, String>,
@@ -574,26 +554,8 @@ pub struct Transcript {
     /// report it was: the other report of the same run shows nothing
     /// again (at most [`MAX_ANNOUNCED`], the oldest dropped).
     announced: Vec<(String, Heard)>,
-    /// The spinner clock of running helper headers.
-    helper_clock: Option<Instant>,
-    /// Number of helper headers.
-    helper_count: usize,
-    /// `prefix[i]`: the laid-out lines of blocks `[0, i)`, valid for
-    /// `i <= clean` ([`Self::ensure_layout`]): a frame finds its first
-    /// visible block by binary search instead of walking the transcript.
-    prefix: Vec<usize>,
-    /// Blocks `[0, clean)` have a layout at `laid_width` that `prefix`
-    /// sums; any change to a block lowers it to that block
-    /// ([`Self::touch`]).
-    clean: usize,
-    /// The width the clean blocks were laid out at.
-    laid_width: u16,
-    /// Blocks laid out so far (tests).
-    #[cfg(test)]
-    laid_out: usize,
-    /// Blocks visited to find and copy visible lines (tests).
-    #[cfg(test)]
-    walked: std::cell::Cell<usize>,
+    /// The laid-out lines before each block ([`Self::ensure_layout`]).
+    layout: LayoutCache,
 }
 
 /// One block of the transcript and what is kept about it.
@@ -609,6 +571,14 @@ struct Entry {
     /// The header of the helper it belongs to (`None`: the session's own
     /// blocks and top-level helper headers).
     owner: Option<BlockId>,
+}
+
+impl Entry {
+    /// Its block changed: both its layouts are stale.
+    fn forget_layouts(&mut self) {
+        self.layout = None;
+        self.view_layout = None;
+    }
 }
 
 /// One agent's streaming state (the session's or a helper's): the prose
@@ -959,18 +929,13 @@ impl Transcript {
 
     /// Remove every block (the helper view setting stays).
     pub fn clear(&mut self) {
-        let helper_view = self.helper_view;
-        let agent_name = self.agent_name.take();
+        let helpers = std::mem::take(&mut self.helpers).cleared();
         let paths = std::mem::take(&mut self.paths);
         let detail = self.detail;
-        // The mob's members are no conversation's.
-        let seated = self.seated_helpers.take();
         *self = Self::default();
-        self.helper_view = helper_view;
-        self.agent_name = agent_name;
+        self.helpers = helpers;
         self.paths = paths;
         self.detail = detail;
-        self.seated_helpers = seated;
     }
 
     /// Replace the whole transcript with `blocks` (e.g. after resuming a
@@ -991,20 +956,30 @@ impl Transcript {
         self.refresh_tool_heads();
     }
 
-    /// Block `index` (or one before it) changed: the clean prefix ends
-    /// there.
-    pub(super) fn touch(&mut self, index: usize) {
-        self.clean = self.clean.min(index);
+    /// The block at `index` changed: its layouts and every line count from
+    /// it on are stale. The one way a block's change reaches the caches.
+    fn invalidate(&mut self, index: usize) -> Option<&mut Entry> {
+        self.layout.touch(index);
+        let entry = self.entries.get_mut(index)?;
+        entry.forget_layouts();
+        Some(entry)
+    }
+
+    /// Whether the block at `index` is hidden may have changed (its owner,
+    /// or a fold above it): its transcript layout and the line counts from
+    /// it on are stale. Its full-view layout stays: the full view draws it
+    /// whatever folds hide it in the transcript.
+    fn invalidate_shown(&mut self, index: usize) -> Option<&mut Entry> {
+        self.layout.touch(index);
+        let entry = self.entries.get_mut(index)?;
+        entry.layout = None;
+        Some(entry)
     }
 
     /// Mutable access to a block; invalidates its layout.
     pub fn block_mut(&mut self, id: BlockId) -> Option<&mut Block> {
         let index = self.index_of(id)?;
-        self.touch(index);
-        let entry = self.entries.get_mut(index)?;
-        entry.layout = None;
-        entry.view_layout = None;
-        Some(&mut entry.block)
+        Some(&mut self.invalidate(index)?.block)
     }
 
     /// Note that a run's input `text` was shown by its `heard` report.
@@ -1256,12 +1231,10 @@ impl Transcript {
     pub fn remove_block(&mut self, id: BlockId) -> Option<Block> {
         let index = self.index_of(id)?;
         let entry = self.entries.remove(index);
-        self.touch(index);
-        if matches!(entry.block, Block::Helper(_)) {
-            self.helper_count = self.helper_count.saturating_sub(1);
-        }
+        self.layout.touch(index);
+        self.helpers
+            .forget_block(id, matches!(entry.block, Block::Helper(_)));
         self.by_tool_id.retain(|_, b| *b != id);
-        self.helper_folds.retain(|_, b| *b != id);
         for entry in &mut self.entries {
             entry.owner = entry.owner.filter(|b| *b != id);
         }
@@ -1275,10 +1248,9 @@ impl Transcript {
 
     /// Drop every cached layout (e.g. on resize).
     pub fn invalidate_all(&mut self) {
-        self.clean = 0;
+        self.layout.invalidate_all();
         for entry in &mut self.entries {
-            entry.layout = None;
-            entry.view_layout = None;
+            entry.forget_layouts();
         }
     }
 
@@ -1331,10 +1303,7 @@ impl Transcript {
                 _ => false,
             };
             if changed {
-                self.touch(index);
-                let entry = &mut self.entries[index];
-                entry.layout = None;
-                entry.view_layout = None;
+                self.invalidate(index);
             }
         }
         self.detail
@@ -1344,8 +1313,7 @@ impl Transcript {
     /// [`Self::ensure_layout`] (`None`: not laid out since it changed).
     #[must_use]
     pub fn start_line(&self, id: BlockId) -> Option<usize> {
-        let index = self.index_of(id)?;
-        (index <= self.clean).then(|| self.prefix.get(index).copied())?
+        self.layout.start_line(self.index_of(id)?)
     }
 
     /// The first laid-out line of block `id` and how many lines it takes,
@@ -1392,14 +1360,13 @@ impl Transcript {
             } = &self.entries[index].block
             {
                 let fresh = tool_line::head(name, args, &self.paths);
-                if fresh != *head {
-                    self.touch(index);
-                    let entry = &mut self.entries[index];
-                    if let Block::Tool { head, .. } = &mut entry.block {
-                        *head = fresh;
-                    }
-                    entry.layout = None;
-                    entry.view_layout = None;
+                if fresh != *head
+                    && let Some(Entry {
+                        block: Block::Tool { head, .. },
+                        ..
+                    }) = self.invalidate(index)
+                {
+                    *head = fresh;
                 }
             }
         }
@@ -1422,13 +1389,13 @@ impl Transcript {
             if secs == *ticked {
                 continue;
             }
-            self.touch(index);
-            let entry = &mut self.entries[index];
-            if let Block::Tool { ticked, .. } = &mut entry.block {
+            if let Some(Entry {
+                block: Block::Tool { ticked, .. },
+                ..
+            }) = self.invalidate(index)
+            {
                 *ticked = secs;
             }
-            entry.layout = None;
-            entry.view_layout = None;
             changed = true;
         }
         changed
@@ -1445,13 +1412,13 @@ impl Transcript {
         else {
             return false;
         };
-        self.touch(index);
-        let entry = &mut self.entries[index];
-        if let Block::Compaction { summary, .. } = &mut entry.block {
+        if let Some(Entry {
+            block: Block::Compaction { summary, .. },
+            ..
+        }) = self.invalidate(index)
+        {
             *summary = Some(read);
         }
-        entry.layout = None;
-        entry.view_layout = None;
         true
     }
 
@@ -1541,15 +1508,7 @@ impl Transcript {
     /// blocks from the first one changed since the last call are visited
     /// (all of them when the width changed).
     pub fn ensure_layout(&mut self, width: u16) -> usize {
-        if width != self.laid_width {
-            self.laid_width = width;
-            self.clean = 0;
-        }
-        let start = self.clean.min(self.entries.len());
-        self.prefix.truncate(start + 1);
-        if self.prefix.is_empty() {
-            self.prefix.push(0);
-        }
+        let start = self.layout.begin(width, self.entries.len());
         for i in start..self.entries.len() {
             let entry = &self.entries[i];
             if entry
@@ -1563,16 +1522,13 @@ impl Transcript {
                     block_lines(&entry.block, width)
                 };
                 #[cfg(test)]
-                {
-                    self.laid_out += 1;
-                }
+                self.layout.note_laid_out();
                 self.entries[i].layout = Some(CachedLayout { width, lines });
             }
-            let base = self.prefix.get(i).copied().unwrap_or(0);
-            self.prefix.push(base + self.lines_of(i));
+            let lines = self.lines_of(i);
+            self.layout.record(i, lines);
         }
-        self.clean = self.entries.len();
-        self.prefix.get(self.clean).copied().unwrap_or(0)
+        self.layout.finish(self.entries.len())
     }
 
     /// The cached line count of block `index` (0 when not laid out).
@@ -1589,22 +1545,16 @@ impl Transcript {
     /// as of the last [`Self::ensure_layout`]: a binary search over the
     /// clean prefix, then a walk over the blocks changed since.
     fn locate(&self, idx: usize) -> Option<(usize, usize)> {
-        let known = self
-            .clean
-            .min(self.prefix.len().saturating_sub(1))
-            .min(self.entries.len());
-        let known_lines = self.prefix.get(known).copied().unwrap_or(0);
-        let (mut block, mut base) = if idx < known_lines {
-            let at = self.prefix[..=known]
-                .partition_point(|&lines| lines <= idx)
-                .saturating_sub(1);
-            (at, self.prefix.get(at).copied().unwrap_or(0))
+        let known = self.layout.known(self.entries.len());
+        let from = if idx < known.lines {
+            self.layout.block_holding(idx, known.blocks)
         } else {
-            (known, known_lines)
+            known
         };
+        let (mut block, mut base) = (from.blocks, from.lines);
         while block < self.entries.len() {
             #[cfg(test)]
-            self.walked.set(self.walked.get() + 1);
+            self.layout.note_walked();
             let n = self.lines_of(block);
             if idx < base + n {
                 return Some((block, idx - base));
@@ -1624,7 +1574,7 @@ impl Transcript {
         };
         while out.len() < len && block < self.entries.len() {
             #[cfg(test)]
-            self.walked.set(self.walked.get() + 1);
+            self.layout.note_walked();
             let entry = &self.entries[block];
             if let Some(cached) = &entry.layout {
                 let room = len - out.len();
@@ -1661,13 +1611,9 @@ impl Transcript {
 
     /// Number of laid-out lines as of the last [`Self::ensure_layout`].
     pub fn line_count(&self) -> usize {
-        let known = self
-            .clean
-            .min(self.prefix.len().saturating_sub(1))
-            .min(self.entries.len());
-        let known_lines = self.prefix.get(known).copied().unwrap_or(0);
-        known_lines
-            + (known..self.entries.len())
+        let known = self.layout.known(self.entries.len());
+        known.lines
+            + (known.blocks..self.entries.len())
                 .map(|i| self.lines_of(i))
                 .sum::<usize>()
     }
@@ -1999,7 +1945,7 @@ impl Transcript {
         let id = BlockId(self.next_id);
         self.next_id += 1;
         if matches!(block, Block::Helper(_)) {
-            self.helper_count += 1;
+            self.helpers.count_header();
         }
         self.entries.push(Entry {
             id,
@@ -3710,6 +3656,39 @@ mod tests {
         assert_eq!(h2, h1 + 2);
     }
 
+    /// Every way a block changes reaches both of its layouts and the line
+    /// counts from it on, and leaves the blocks before it alone.
+    #[test]
+    fn an_edit_invalidates_the_blocks_layouts_and_the_counts_after_it() {
+        let mut t = Transcript::new();
+        let a = t.push(Block::User { text: "a".into() });
+        let b = t.push(Block::User { text: "b".into() });
+        let c = t.push(Block::User { text: "c".into() });
+        t.ensure_layout(40);
+        for index in 0..3 {
+            t.entries[index].view_layout = Some(CachedLayout {
+                width: 40,
+                lines: Vec::new(),
+            });
+        }
+        assert!(t.start_line(c).is_some());
+        assert!(t.block_mut(b).is_some());
+        assert!(t.start_line(a).is_some(), "an earlier block stays laid out");
+        assert!(t.start_line(c).is_none(), "a later block's start is stale");
+        let entry = t.entry(b).expect("b");
+        assert!(entry.layout.is_none() && entry.view_layout.is_none());
+        assert!(t.entry(a).expect("a").view_layout.is_some());
+        t.ensure_layout(40);
+        assert!(t.start_line(c).is_some());
+        t.invalidate_all();
+        assert!(t.start_line(b).is_none());
+        assert!(
+            t.entries
+                .iter()
+                .all(|e| e.layout.is_none() && e.view_layout.is_none())
+        );
+    }
+
     #[test]
     fn replace_and_remove_blocks_keep_order_and_ids() {
         let mut t = Transcript::new();
@@ -3754,23 +3733,27 @@ mod tests {
             });
         }
         let total = t.ensure_layout(80);
-        assert_eq!(t.laid_out, 10_000);
+        assert_eq!(t.layout.laid_out, 10_000);
         assert_eq!(total, t.line_count());
         let last = BlockId(t.len() - 1);
         if let Some(Block::User { text }) = t.block_mut(last) {
             text.push_str("\nmore");
         }
-        let laid = t.laid_out;
+        let laid = t.layout.laid_out;
         let grown = t.ensure_layout(80);
-        assert_eq!(t.laid_out, laid + 1, "only the changed block");
+        assert_eq!(t.layout.laid_out, laid + 1, "only the changed block");
         assert_eq!(grown, total + 1);
-        t.walked.set(0);
+        t.layout.walked.set(0);
         let lines = t.visible_lines(grown - 40, 40);
         let blocks = t.visible_blocks(grown - 40, 40);
         assert_eq!(lines.len(), 40);
         assert_eq!(blocks.len(), 40);
         assert_eq!(blocks.last(), Some(&last));
-        assert!(t.walked.get() < 100, "walked {} blocks", t.walked.get());
+        assert!(
+            t.layout.walked.get() < 100,
+            "walked {} blocks",
+            t.layout.walked.get()
+        );
         // The lines are the same as a walk over everything gives.
         let all: Vec<String> = (0..grown)
             .map(|i| t.line(i).map(ToString::to_string).unwrap_or_default())
@@ -3782,12 +3765,12 @@ mod tests {
         if let Some(Block::User { text }) = t.block_mut(BlockId(5_000)) {
             text.push_str("\nmid");
         }
-        let laid = t.laid_out;
+        let laid = t.layout.laid_out;
         assert_eq!(t.ensure_layout(80), grown + 1);
-        assert_eq!(t.laid_out, laid + 1);
+        assert_eq!(t.layout.laid_out, laid + 1);
         assert_eq!(t.visible_lines(0, grown + 1).len(), grown + 1);
         t.ensure_layout(60);
-        assert_eq!(t.laid_out, laid + 1 + 10_000);
+        assert_eq!(t.layout.laid_out, laid + 1 + 10_000);
     }
 
     #[test]

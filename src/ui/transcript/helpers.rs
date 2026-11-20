@@ -208,6 +208,160 @@ impl HelperFold {
     }
 }
 
+/// What the transcript knows of its helpers besides their blocks.
+///
+/// It owns:
+/// - each helper's current header, by label, and how many headers there
+///   are;
+/// - what the UI heard of each helper: its model, its kind, whether it was
+///   spawned into a mob of the agent's own making;
+/// - which helpers the last live update listed as running, and which the
+///   daemon last listed as seated;
+/// - the clocks: the header spinner's start and the last panel update;
+/// - how new headers start (folded or expanded) and the name of the agent
+///   whose helpers they are.
+///
+/// A new conversation in the same transcript ([`Helpers::cleared`]) keeps
+/// only the view setting, the agent's name and the seated list (the mob's
+/// members are no conversation's); everything else is the old
+/// conversation's and goes.
+#[derive(Debug, Default)]
+pub(super) struct Helpers {
+    /// The model of each helper (by label) the UI has heard of, for block
+    /// labels.
+    models: IndexMap<String, String>,
+    /// The current header of each helper, by label.
+    folds: IndexMap<String, BlockId>,
+    /// Helpers listed as running by the last live update.
+    live: Vec<String>,
+    /// How new helper headers start.
+    view: HelperView,
+    /// The name of the agent this transcript is (`main-ab12`): who gave
+    /// its helpers their tasks.
+    agent_name: Option<String>,
+    /// What each helper is (by label), from the call that started it.
+    kinds: IndexMap<String, HelperKind>,
+    /// The members of the workspace's mob as the daemon last listed them,
+    /// with every helper seen live since (`None`: not listed yet): a
+    /// helper of the agent's own mob it does not name has left it.
+    seated: Option<std::collections::HashSet<String>>,
+    /// The helpers spawned into a mob of the agent's own making
+    /// (`mob_spawn_member`), whose seat that listing does not say.
+    elsewhere: std::collections::HashSet<String>,
+    /// The clock of the last update ([`Transcript::settle_helpers`]): an
+    /// ended helper leaves the panel [`PANEL_LINGER`] after it ended.
+    panel_now: Option<Instant>,
+    /// The spinner clock of running helper headers (set by the first
+    /// header).
+    clock: Option<Instant>,
+    /// Number of helper headers.
+    count: usize,
+}
+
+impl Helpers {
+    /// What stays for a new conversation: the view setting, the agent's
+    /// name and the seated list.
+    pub(super) fn cleared(self) -> Self {
+        Self {
+            view: self.view,
+            agent_name: self.agent_name,
+            seated: self.seated,
+            ..Self::default()
+        }
+    }
+
+    /// The model of the helper `label`, when known.
+    fn model(&self, label: &str) -> Option<&str> {
+        self.models.get(label).map(String::as_str)
+    }
+
+    /// The current header of the helper `label`.
+    fn fold(&self, label: &str) -> Option<BlockId> {
+        self.folds.get(label).copied()
+    }
+
+    /// The current headers, in the order they were made.
+    fn fold_ids(&self) -> Vec<BlockId> {
+        self.folds.values().copied().collect()
+    }
+
+    /// `id` is the header of the helper `label` from now on; the first
+    /// header starts the spinner clock.
+    fn add_fold(&mut self, label: &str, id: BlockId) {
+        self.folds.insert(label.to_string(), id);
+        if self.clock.is_none() {
+            self.clock = Some(Instant::now());
+        }
+    }
+
+    /// A helper header was made.
+    pub(super) fn count_header(&mut self) {
+        self.count += 1;
+    }
+
+    /// The block `id` was removed (`header`: it was a helper header): no
+    /// helper's header is it any more.
+    pub(super) fn forget_block(&mut self, id: BlockId, header: bool) {
+        if header {
+            self.count = self.count.saturating_sub(1);
+        }
+        self.folds.retain(|_, b| *b != id);
+    }
+
+    /// The last live update listed `now` as running: the headers of the
+    /// helpers it listed before and lists no more.
+    fn relist(&mut self, now: Vec<String>) -> Vec<BlockId> {
+        let gone = self
+            .live
+            .iter()
+            .filter(|label| !now.contains(label))
+            .filter_map(|label| self.fold(label))
+            .collect();
+        self.live = now;
+        gone
+    }
+
+    /// Whether the helper `fold` is live (see
+    /// [`Transcript::helper_live`]).
+    fn is_live(&self, fold: &HelperFold) -> bool {
+        let going = fold.state.is_running() || fold.ended.is_none();
+        if self.elsewhere.contains(&fold.label) {
+            return going;
+        }
+        going
+            && self
+                .seated
+                .as_ref()
+                .is_none_or(|seated| seated.contains(&fold.label))
+    }
+
+    /// Whether the helper `fold` that is not live is still shown on the
+    /// panel at the last update's clock: it ended less than
+    /// [`PANEL_LINGER`] ago.
+    fn lingers(&self, fold: &HelperFold) -> bool {
+        fold.left.is_some_and(|left| {
+            self.panel_now
+                .is_none_or(|now| now.saturating_duration_since(left) < PANEL_LINGER)
+        })
+    }
+
+    /// The helper `label` started as `kind` (`elsewhere`: in a mob of the
+    /// agent's own making).
+    fn note_kind(&mut self, label: &str, kind: HelperKind, elsewhere: bool) {
+        if elsewhere {
+            self.elsewhere.insert(label.to_string());
+        }
+        self.kinds.insert(label.to_string(), kind);
+    }
+
+    /// The helper `label` left the workspace's mob.
+    fn unseat(&mut self, label: &str) {
+        if let Some(seated) = &mut self.seated {
+            seated.remove(label);
+        }
+    }
+}
+
 /// A helper header's preview of a call's arguments: the first string
 /// argument, quoted and shortened (`"fn resolve"`), else the serialized
 /// arguments shortened; empty for no arguments.
@@ -239,14 +393,15 @@ pub(super) fn helper_args_preview(args: &Value) -> String {
 impl Transcript {
     /// Set how new helper headers start (folded or expanded).
     pub fn set_helper_view(&mut self, view: HelperView) {
-        self.helper_view = view;
+        self.helpers.view = view;
     }
 
     /// Remember that the helper `label` runs on `model` (its blocks name it).
     pub fn note_helper_model(&mut self, label: &str, model: &str) {
-        self.helper_models
+        self.helpers
+            .models
             .insert(label.to_string(), model.to_string());
-        if let Some(id) = self.helper_folds.get(label).copied()
+        if let Some(id) = self.helpers.fold(label)
             && let Some(Block::Helper(fold)) = self.block(id)
             && fold.model.as_deref() != Some(model)
             && let Some(Block::Helper(fold)) = self.block_mut(id)
@@ -266,39 +421,33 @@ impl Transcript {
         let mut now_live = Vec::new();
         for (label, model, depth) in live {
             self.note_helper_model(label, model);
-            let fresh = !self.live_helpers.iter().any(|l| l == label);
+            let fresh = !self.helpers.live.iter().any(|l| l == label);
             if fresh
-                && let Some(id) = self.helper_folds.get(label).copied()
+                && let Some(id) = self.helpers.fold(label)
                 && matches!(self.block(id), Some(Block::Helper(f)) if !f.state.is_running())
             {
-                self.helper_folds.shift_remove(label);
+                self.helpers.folds.shift_remove(label);
             }
             if depth == 1 {
                 self.ensure_fold(&[label]);
             }
             now_live.push(label.to_string());
         }
-        let gone: Vec<BlockId> = self
-            .live_helpers
-            .iter()
-            .filter(|label| !now_live.contains(label))
-            .filter_map(|label| self.helper_folds.get(label.as_str()).copied())
-            .collect();
-        for id in gone {
+        for id in self.helpers.relist(now_live) {
             self.update_fold(id, |fold| {
                 if fold.state.is_running() {
                     fold.state = HelperState::Done;
                 }
             });
         }
-        self.live_helpers = now_live;
     }
 
     /// Whether a helper header spins (a helper runs).
     pub fn helpers_running(&self) -> bool {
-        self.helper_clock.is_some()
+        self.helpers.clock.is_some()
             && self
-                .helper_folds
+                .helpers
+                .folds
                 .values()
                 .any(|id| matches!(self.block(*id), Some(Block::Helper(f)) if f.state.is_running()))
     }
@@ -306,17 +455,13 @@ impl Transcript {
     /// Advance the spinner of running helper headers. Returns whether any
     /// header changed.
     pub fn tick_helpers(&mut self, now: Instant) -> bool {
-        let Some(clock) = self.helper_clock else {
+        let Some(clock) = self.helpers.clock else {
             return false;
         };
         let elapsed = now.saturating_duration_since(clock).as_millis();
         let frame = (elapsed / SPINNER_FRAME_MS) as usize % SPINNER.len();
         let mut changed = false;
-        for i in 0..self.helper_folds.len() {
-            let Some((_, id)) = self.helper_folds.get_index(i) else {
-                continue;
-            };
-            let id = *id;
+        for id in self.helpers.fold_ids() {
             if matches!(self.block(id), Some(Block::Helper(f)) if f.state.is_running() && f.spin != frame)
             {
                 self.update_fold(id, |fold| fold.spin = frame);
@@ -369,14 +514,14 @@ impl Transcript {
     /// Whether the transcript has any helper header.
     #[cfg(any(test, feature = "test-support"))]
     pub fn has_helpers(&self) -> bool {
-        self.helper_count > 0
+        self.helpers.count > 0
     }
 
     /// An update at `now`: each helper that is live is noted so, and one
     /// that was and is no longer gets the time it left (the panel shows it
     /// dim for [`PANEL_LINGER`] after). Turns do not matter.
     pub fn settle_helpers(&mut self, now: Instant) {
-        self.panel_now = Some(now);
+        self.helpers.panel_now = Some(now);
         let changes: Vec<(BlockId, bool)> = self
             .helper_headers()
             .filter_map(|(id, fold)| {
@@ -401,22 +546,12 @@ impl Transcript {
         }
     }
 
-    /// Whether the helper `fold` that is not live is still shown on the
-    /// panel at the last update's clock: it ended less than
-    /// [`PANEL_LINGER`] ago.
-    fn lingers(&self, fold: &HelperFold) -> bool {
-        fold.left.is_some_and(|left| {
-            self.panel_now
-                .is_none_or(|now| now.saturating_duration_since(left) < PANEL_LINGER)
-        })
-    }
-
     /// Whether the panel shows a helper that ended and will leave it (the
     /// UI ticks until it has).
     #[must_use]
     pub fn helpers_lingering(&self) -> bool {
         self.helper_headers()
-            .any(|(_, fold)| !self.helper_live(fold) && self.lingers(fold))
+            .any(|(_, fold)| !self.helper_live(fold) && self.helpers.lingers(fold))
     }
 
     /// The helpers the panel lists: the live ones (running, or seated
@@ -430,7 +565,7 @@ impl Transcript {
         let mut groups: IndexMap<BlockId, (u8, Vec<BlockId>)> = IndexMap::new();
         for (id, fold) in self.helper_headers() {
             let live = self.helper_live(fold);
-            if !live && !self.lingers(fold) && keep != Some(id) {
+            if !live && !self.helpers.lingers(fold) && keep != Some(id) {
                 continue;
             }
             let section = match (fold.state.is_running(), live) {
@@ -535,14 +670,14 @@ impl Transcript {
         }
         self.update_fold(id, |fold| fold.expanded = expanded);
         // Every block inside the helper appears or disappears.
-        let inside: Vec<bool> = self
+        let inside: Vec<usize> = self
             .iter()
-            .map(|(block, _)| self.owned_by(block, id))
+            .enumerate()
+            .filter(|(_, (block, _))| self.owned_by(*block, id))
+            .map(|(index, _)| index)
             .collect();
-        for (entry, inside) in self.entries.iter_mut().zip(inside) {
-            if inside {
-                entry.layout = None;
-            }
+        for index in inside {
+            self.invalidate_shown(index);
         }
         true
     }
@@ -565,8 +700,8 @@ impl Transcript {
         let Some((label, parents)) = path.split_last() else {
             return BlockId(usize::MAX);
         };
-        if let Some(id) = self.helper_folds.get(*label) {
-            return *id;
+        if let Some(id) = self.helpers.fold(label) {
+            return id;
         }
         let parent = (!parents.is_empty()).then(|| self.ensure_fold(parents));
         // The helper's own block: it parts no other scope's prose.
@@ -576,31 +711,27 @@ impl Transcript {
             state: HelperState::Running,
             calls: 0,
             last: HelperLast::Nothing,
-            expanded: self.helper_view == HelperView::Expanded,
+            expanded: self.helpers.view == HelperView::Expanded,
             usage: None,
             depth: path.len(),
             spin: 0,
             was_live: false,
             left: None,
-            kind: self.helper_kinds.get(*label).copied(),
+            kind: self.helpers.kinds.get(*label).copied(),
             inputs: 0,
             ended: None,
         }));
         self.set_owner(id, parent);
-        self.helper_folds.insert((*label).to_string(), id);
-        if self.helper_clock.is_none() {
-            self.helper_clock = Some(Instant::now());
-        }
+        self.helpers.add_fold(label, id);
         id
     }
 
     pub(super) fn set_owner(&mut self, id: BlockId, owner: Option<BlockId>) {
         // Whether it is hidden may have changed: its layout goes.
-        if let Some(index) = self.index_of(id) {
-            self.touch(index);
-            let entry = &mut self.entries[index];
+        if let Some(index) = self.index_of(id)
+            && let Some(entry) = self.invalidate_shown(index)
+        {
             entry.owner = owner;
-            entry.layout = None;
         }
     }
 
@@ -613,14 +744,14 @@ impl Transcript {
     /// The name of the agent this transcript is: who gave its helpers
     /// their tasks.
     pub fn set_agent_name(&mut self, name: Option<String>) {
-        self.agent_name = name;
+        self.helpers.agent_name = name;
     }
 
     /// The daemon listed the helpers seated for this conversation now
     /// (its whole tree, by label): the whole list, each time one is
     /// seated or leaves.
     pub fn seated_helpers(&mut self, labels: impl IntoIterator<Item = String>) {
-        self.seated_helpers = Some(labels.into_iter().collect());
+        self.helpers.seated = Some(labels.into_iter().collect());
     }
 
     /// Whether the helper `fold` is live, from what the daemon knows of
@@ -631,15 +762,7 @@ impl Transcript {
     /// (`mob_spawn_member`) is live until the daemon says it ended.
     #[must_use]
     pub fn helper_live(&self, fold: &HelperFold) -> bool {
-        let going = fold.state.is_running() || fold.ended.is_none();
-        if self.elsewhere.contains(&fold.label) {
-            return going;
-        }
-        going
-            && self
-                .seated_helpers
-                .as_ref()
-                .is_none_or(|seated| seated.contains(&fold.label))
+        self.helpers.is_live(fold)
     }
 
     /// A tool call of the agent or of a helper: one that starts helpers
@@ -665,11 +788,9 @@ impl Transcript {
             }
         }
         for label in labels {
-            if tool == "mob_spawn_member" {
-                self.elsewhere.insert(label.to_string());
-            }
-            self.helper_kinds.insert(label.to_string(), kind);
-            if let Some(id) = self.helper_folds.get(label).copied() {
+            self.helpers
+                .note_kind(label, kind, tool == "mob_spawn_member");
+            if let Some(id) = self.helpers.fold(label) {
                 self.update_fold(id, |fold| fold.kind = Some(kind));
             }
         }
@@ -741,12 +862,10 @@ impl Transcript {
             return;
         };
         if how == crate::daemon::protocol::HELPER_RETIRED {
-            if let Some(seated) = &mut self.seated_helpers {
-                seated.remove(label.as_str());
-            }
+            self.helpers.unseat(label);
             // It left its mob: shown on its line, unless its line says how
             // it ended already (`finished`, `stopped by you`).
-            if let Some(id) = self.helper_folds.get(label.as_str()).copied() {
+            if let Some(id) = self.helpers.fold(label) {
                 self.update_fold(id, |fold| {
                     if fold.ended.is_none() {
                         fold.ended = Some(how.to_string());
@@ -765,7 +884,7 @@ impl Transcript {
         } else {
             HelperState::Cancelled
         };
-        if let Some(id) = self.helper_folds.get(label.as_str()).copied() {
+        if let Some(id) = self.helpers.fold(label) {
             self.update_fold(id, |fold| {
                 fold.ended = Some(how.to_string());
                 fold.state = state;
@@ -795,7 +914,7 @@ impl Transcript {
 
     /// The model of the helper `label`, when known.
     pub fn helper_model(&self, label: &str) -> Option<&str> {
-        self.helper_models.get(label).map(String::as_str)
+        self.helpers.model(label)
     }
 
     /// `[label · model]`, or `[label]` while the model is unknown.
@@ -831,7 +950,7 @@ impl Transcript {
             return;
         };
         let parent = match path.len() {
-            0 | 1 => self.agent_name.clone(),
+            0 | 1 => self.helpers.agent_name.clone(),
             n => path.get(n - 2).map(|p| (*p).to_string()),
         };
         let helper = HelperScope {
@@ -842,5 +961,111 @@ impl Transcript {
             parent,
         };
         self.apply_event(Some(&helper), &scoped.event, now);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    /// Helpers a conversation filled in: a header, a model, a kind, a live
+    /// listing, the clocks, the view, the agent and the seated list.
+    fn heard() -> Helpers {
+        let mut helpers = Helpers {
+            view: HelperView::Expanded,
+            agent_name: Some("main-ab12".into()),
+            seated: Some(["scout".to_string()].into_iter().collect()),
+            ..Helpers::default()
+        };
+        helpers.models.insert("scout".into(), "m".into());
+        helpers.add_fold("scout", BlockId(3));
+        helpers.count_header();
+        helpers.note_kind(
+            "scout",
+            HelperKind::Started(HelperContext::Fresh, HelperLife::Kept),
+            true,
+        );
+        let _gone = helpers.relist(vec!["scout".into()]);
+        helpers.panel_now = Some(Instant::now());
+        helpers
+    }
+
+    #[test]
+    fn a_new_conversation_keeps_the_view_the_agent_and_the_seated_list_only() {
+        let helpers = heard().cleared();
+        assert_eq!(helpers.view, HelperView::Expanded);
+        assert_eq!(helpers.agent_name.as_deref(), Some("main-ab12"));
+        assert!(helpers.seated.as_ref().is_some_and(|s| s.contains("scout")));
+        assert_eq!(helpers.fold("scout"), None);
+        assert_eq!(helpers.model("scout"), None);
+        assert!(helpers.kinds.is_empty());
+        assert!(helpers.elsewhere.is_empty());
+        assert!(helpers.live.is_empty());
+        assert_eq!(helpers.count, 0);
+        assert!(helpers.clock.is_none());
+        assert!(helpers.panel_now.is_none());
+    }
+
+    #[test]
+    fn a_removed_header_is_no_helpers_header_and_is_not_counted() {
+        let mut helpers = heard();
+        helpers.forget_block(BlockId(7), false);
+        assert_eq!(helpers.fold("scout"), Some(BlockId(3)));
+        assert_eq!(helpers.count, 1);
+        helpers.forget_block(BlockId(3), true);
+        assert_eq!(helpers.fold("scout"), None);
+        assert_eq!(helpers.count, 0);
+        helpers.forget_block(BlockId(3), true);
+        assert_eq!(helpers.count, 0, "never below zero");
+    }
+
+    #[test]
+    fn a_relisting_names_the_headers_of_the_helpers_no_longer_listed() {
+        let mut helpers = heard();
+        helpers.add_fold("other", BlockId(5));
+        let _gone = helpers.relist(vec!["scout".into(), "other".into()]);
+        assert_eq!(helpers.relist(vec!["other".into()]), vec![BlockId(3)]);
+        assert_eq!(helpers.live, vec!["other".to_string()]);
+    }
+
+    #[test]
+    fn the_first_header_starts_the_spinner_clock_and_later_ones_keep_it() {
+        let mut helpers = Helpers::default();
+        helpers.add_fold("a", BlockId(1));
+        let clock = helpers.clock;
+        assert!(clock.is_some());
+        helpers.add_fold("b", BlockId(2));
+        assert_eq!(helpers.clock, clock);
+        assert_eq!(helpers.fold_ids(), vec![BlockId(1), BlockId(2)]);
+    }
+
+    #[test]
+    fn a_helper_of_the_agents_own_mob_is_live_without_a_seat() {
+        let mut helpers = heard();
+        helpers.seated = Some(std::collections::HashSet::new());
+        let fold = |label: &str| HelperFold {
+            label: label.into(),
+            model: None,
+            state: HelperState::Done,
+            calls: 0,
+            last: HelperLast::Nothing,
+            expanded: false,
+            usage: None,
+            depth: 1,
+            spin: 0,
+            was_live: false,
+            left: None,
+            kind: None,
+            inputs: 0,
+            ended: None,
+        };
+        assert!(helpers.is_live(&fold("scout")), "spawned elsewhere");
+        assert!(!helpers.is_live(&fold("unseated")));
+        helpers.seated = Some(["unseated".to_string()].into_iter().collect());
+        assert!(helpers.is_live(&fold("unseated")));
+        helpers.unseat("unseated");
+        assert!(!helpers.is_live(&fold("unseated")));
     }
 }
