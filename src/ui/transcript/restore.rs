@@ -35,7 +35,7 @@ pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
             }
             Message::BlockAssistant(_) if compact_reply => compact_reply = false,
             Message::BlockAssistant(assistant) => {
-                blocks.extend(prose_block(&assistant.blocks));
+                blocks.extend(prose_blocks(&assistant.blocks));
                 for call in assistant.tool_calls() {
                     let args = serde_json::from_str(call.args.get())
                         .unwrap_or_else(|_| serde_json::Value::String(call.args.get().to_string()));
@@ -94,16 +94,38 @@ fn restored_user(text: String) -> Vec<Block> {
 /// module's rule ([`super`]): its text blocks joined as they are, as the
 /// engine joins them, whatever provider parts or items they were; a
 /// restored conversation shows no reasoning, so nothing visible parts
-/// them. Text that is only whitespace shows nothing and is no block.
-fn prose_block(blocks: &[AssistantBlock]) -> Option<Block> {
-    let md: String = blocks
-        .iter()
-        .filter_map(|block| match block {
-            AssistantBlock::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    (!md.trim().is_empty()).then_some(Block::Assistant { md })
+/// them. Text that is only whitespace shows nothing and is no block. A
+/// text block that opens with the line `thought` is a model's reasoning
+/// sent as text ([`super::leaked_thought`]): it is drawn as the collapsed
+/// reasoning it is, and parts the prose around it.
+fn prose_blocks(blocks: &[AssistantBlock]) -> Vec<Block> {
+    fn prose(md: &mut String, out: &mut Vec<Block>) {
+        let md = std::mem::take(md);
+        if !md.trim().is_empty() {
+            out.push(Block::Assistant { md });
+        }
+    }
+    let mut out = Vec::new();
+    let mut md = String::new();
+    for block in blocks {
+        let AssistantBlock::Text { text, .. } = block else {
+            continue;
+        };
+        match super::leaked_thought(text) {
+            super::Thought::Is(reasoning) => {
+                prose(&mut md, &mut out);
+                if !reasoning.trim().is_empty() {
+                    out.push(Block::Reasoning {
+                        text: reasoning.to_string(),
+                        collapsed: true,
+                    });
+                }
+            }
+            super::Thought::Undecided | super::Thought::Not => md.push_str(text),
+        }
+    }
+    prose(&mut md, &mut out);
+    out
 }
 
 /// The peer messages another agent sent, of a committed system notice
@@ -373,6 +395,47 @@ mod tests {
             }
         );
         assert!(matches!(&restored[1], Block::Tool { name, .. } if name == "read_file"));
+    }
+
+    /// A stored text block that opens with the line `thought` (a model's
+    /// reasoning sent as text) restores as collapsed reasoning without the
+    /// line, the answer's own text block after it as prose; a block that
+    /// merely begins with the word is prose.
+    #[test]
+    fn a_stored_leaked_thought_restores_as_reasoning() {
+        use meerkat_core::{BlockAssistantMessage, StopReason};
+        let text = |text: &str| AssistantBlock::Text {
+            text: text.into(),
+            meta: None,
+        };
+        let answer = BlockAssistantMessage::new(
+            vec![
+                text("thought\n- check the build\n- draft: it passes"),
+                text("The build passes."),
+            ],
+            StopReason::EndTurn,
+        );
+        let plain =
+            BlockAssistantMessage::new(vec![text("thought about it: yes")], StopReason::EndTurn);
+        let restored = blocks_from_messages(&[
+            Message::BlockAssistant(answer),
+            Message::BlockAssistant(plain),
+        ]);
+        assert_eq!(
+            restored,
+            vec![
+                Block::Reasoning {
+                    text: "- check the build\n- draft: it passes".into(),
+                    collapsed: true
+                },
+                Block::Assistant {
+                    md: "The build passes.".into()
+                },
+                Block::Assistant {
+                    md: "thought about it: yes".into()
+                },
+            ]
+        );
     }
 
     /// A stored call of a tool not offered (`reply_to_peer`, which an

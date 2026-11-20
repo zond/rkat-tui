@@ -13952,3 +13952,47 @@ Tests: `client_turns::a_message_typed_as_a_run_ends_rides_the_next_run_s_next_re
 `client::runner::tests::a_steer_waits_behind_a_held_prompt`,
 `client::runner::turn::state::tests::a_prompt_s_first_run_is_the_one_that_carries_it`,
 `ui::tests::shell::a_message_held_for_a_command_is_steered_into_a_run_that_began_meanwhile`.
+
+## A model's reasoning sent as text (owner, 2026-11-20)
+
+The owner: a Gemini-family model behind an OpenAI-compatible proxy
+returned its reasoning as a text block whose first line is `thought`,
+the answer as a text block after it; the transcript drew `• thought` and
+the reasoning as a reply.
+
+The engine (0.9.16, `meerkat-openai` `client_compatible.rs`): a Chat
+Completions delta's `reasoning_content`, `reasoning` or `thinking` field
+becomes `ReasoningDelta`, its `content` becomes `TextDelta`. Text in
+`content` is text to the engine, which has no rule for a `thought` line;
+whether the proxy also sent the same reasoning in a reasoning field
+cannot be read from the code (it depends on the proxy) and the owner's
+logs are not read here. If it did, the transcript would show two
+thinking lines for the step. `TextDelta` names no text part, so the
+stream gives no boundary between two text blocks with nothing between
+them: live, the rule applies to the transcript's own prose block (which
+ends at a tool call, a notice, reasoning or the step's end); a stored
+message keeps its text blocks, so `/resume` splits at them.
+
+The rule (`transcript::leaked_thought`): after any leading blank space
+and blank lines, exactly `thought` then a line end (`\n` or `\r\n`);
+anything else on the line, another case, or the word in a sentence is
+prose. A new prose block holds its non-blank start while it is still a
+start of that line, so nothing flashes; decided, it becomes a collapsed
+`Block::Reasoning` in place (the step's text goes on in it) or prose
+with the held words. Drawing only: the stored messages and what goes to
+the model are unchanged, so `/export` and `/copy` treat it as they treat
+reasoning (export writes `## reasoning`, the text only when expanded;
+`/copy` copies answers only).
+
+Not done, a recommendation: filtering such text from outgoing requests
+would take a request-side rewrite of the assistant messages the engine
+replays (the engine builds them from the stored blocks; rkat-tui already
+wraps the client for `blank_text.rs`, which could drop or convert a text
+block matching the same rule). Whether it is worth it depends on whether
+the proxy's model wants its own thought back (Gemini replays thought
+signatures, not thought text) and on measuring the tokens it costs.
+
+Tests: `transcript::tests::the_thought_line_is_exact`,
+`transcript::tests::a_leaked_thought_streams_as_reasoning_in_any_cut`,
+`transcript::tests::near_misses_of_the_thought_line_stay_prose`,
+`transcript::restore::tests::a_stored_leaked_thought_restores_as_reasoning`.

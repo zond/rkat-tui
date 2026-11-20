@@ -539,6 +539,10 @@ pub struct Transcript {
     /// The open prose and reasoning blocks deltas append to: the session's
     /// own under `None`, each helper's under its header.
     streams: IndexMap<Option<BlockId>, Stream>,
+    /// A deciding prose block's words not shown yet, by its scope
+    /// ([`Stream::deciding`]): a start of the line `thought`, held so a
+    /// model's reasoning sent as text never flashes as a reply.
+    held: IndexMap<Option<BlockId>, String>,
     /// What the transcript knows of its helpers besides their blocks.
     helpers: Helpers,
     /// Where tool lines show paths from.
@@ -604,6 +608,50 @@ struct Stream {
     reasoning: Option<BlockId>,
     text_seen: bool,
     reasoning_seen: bool,
+    /// The open prose block's first line is not decided yet: it may be a
+    /// model's reasoning sent as text ([`leaked_thought`]); its words are
+    /// held in [`Transcript::held`] until it is.
+    deciding: bool,
+    /// The open reasoning block is such text: the step's text goes on in
+    /// it.
+    thought: bool,
+}
+
+/// The line a model that sends its reasoning as ordinary text (a
+/// Gemini-family model behind an OpenAI-compatible proxy) opens it with.
+const THOUGHT_LINE: &str = "thought";
+
+/// What a prose block's text says of itself so far.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Thought<'a> {
+    /// It opens with the line `thought` (after any blank space): the
+    /// model's reasoning, which is the rest.
+    Is(&'a str),
+    /// It could still: blank, or a start of that line.
+    Undecided,
+    /// It does not.
+    Not,
+}
+
+/// Whether `text` opens with exactly the line `thought` (leading blank
+/// space and blank lines allowed, nothing else on the line), which marks
+/// a model's reasoning sent as ordinary text; the rest is the reasoning.
+/// A block that merely begins with the word (`thought about it`,
+/// `Thought: x`) is not.
+pub(crate) fn leaked_thought(text: &str) -> Thought<'_> {
+    let start = text.trim_start();
+    match start.strip_prefix(THOUGHT_LINE) {
+        Some(rest) => match rest
+            .strip_prefix("\r\n")
+            .or_else(|| rest.strip_prefix('\n'))
+        {
+            Some(reasoning) => Thought::Is(reasoning),
+            None if rest.is_empty() || rest == "\r" => Thought::Undecided,
+            None => Thought::Not,
+        },
+        None if THOUGHT_LINE.starts_with(start) => Thought::Undecided,
+        None => Thought::Not,
+    }
 }
 
 /// Who a helper's event belongs to ([`Transcript::apply_scoped_event_at`]).
@@ -1206,7 +1254,20 @@ impl Transcript {
             entry.owner = entry.owner.filter(|b| *b != id);
         }
         self.streams.retain(|header, _| *header != Some(id));
+        self.held.retain(|header, _| *header != Some(id));
+        let deciding: Vec<Option<BlockId>> = self
+            .streams
+            .iter()
+            .filter(|(_, stream)| stream.assistant == Some(id))
+            .map(|(scope, _)| *scope)
+            .collect();
+        for scope in deciding {
+            self.held.shift_remove(&scope);
+        }
         for stream in self.streams.values_mut() {
+            if stream.assistant == Some(id) {
+                stream.deciding = false;
+            }
             stream.assistant = stream.assistant.filter(|b| *b != id);
             stream.reasoning = stream.reasoning.filter(|b| *b != id);
         }
@@ -1580,7 +1641,10 @@ impl Transcript {
             self.note_spawn(name, args.as_value());
         }
         match event {
-            AgentEvent::TurnStarted { .. } => *self.stream(scope) = Stream::default(),
+            AgentEvent::TurnStarted { .. } => {
+                self.settle_held(scope);
+                *self.stream(scope) = Stream::default();
+            }
             AgentEvent::TurnCompleted { usage, .. } => {
                 self.close_streams(scope);
                 if let (Some(h), Some(usage)) = (helper, usage) {
@@ -1888,25 +1952,104 @@ impl Transcript {
     /// Append prose to `scope`'s open prose block (made, owned by the
     /// helper's header, when none is open); its reasoning block closes.
     /// An empty delta changes nothing.
+    ///
+    /// A new prose block decides its first line first ([`leaked_thought`]):
+    /// a start of the line `thought` is held, not shown; the line whole
+    /// makes the block a collapsed reasoning block, which takes the
+    /// step's text from then on; anything else is prose. Blank space goes
+    /// into the block at once (it shows nothing).
     fn append_text(&mut self, scope: Option<BlockId>, delta: &str) {
         if delta.is_empty() {
             return;
         }
         let stream = *self.stream(scope);
-        if let Some(id) = stream.assistant
-            && let Some(Block::Assistant { md }) = self.block_mut(id)
+        if stream.thought
+            && let Some(id) = stream.reasoning
+            && let Some(Block::Reasoning { text, .. }) = self.block_mut(id)
         {
+            text.push_str(delta);
+            self.stream(scope).text_seen = true;
+            return;
+        }
+        let id = match stream.assistant {
+            Some(id) if matches!(self.block(id), Some(Block::Assistant { .. })) => id,
+            _ => {
+                let id = self.push_raw(Block::Assistant { md: String::new() });
+                self.set_owner(id, scope);
+                let stream = self.stream(scope);
+                stream.assistant = Some(id);
+                stream.deciding = true;
+                id
+            }
+        };
+        if self.stream(scope).deciding {
+            let held = self.held.shift_remove(&scope).unwrap_or_default();
+            let md = match self.block(id) {
+                Some(Block::Assistant { md }) => md.clone(),
+                _ => String::new(),
+            };
+            let whole = format!("{md}{held}{delta}");
+            match leaked_thought(&whole) {
+                Thought::Is(reasoning) => {
+                    let collapsed = !self.detail;
+                    self.replace_block(
+                        id,
+                        Block::Reasoning {
+                            text: reasoning.to_string(),
+                            collapsed,
+                        },
+                    );
+                    let stream = self.stream(scope);
+                    stream.assistant = None;
+                    stream.reasoning = Some(id);
+                    stream.thought = true;
+                    stream.deciding = false;
+                    stream.text_seen = true;
+                    return;
+                }
+                Thought::Undecided => {
+                    let words = whole.trim_start();
+                    let blank = whole[..whole.len() - words.len()].to_string();
+                    if !words.is_empty() {
+                        self.held.insert(scope, words.to_string());
+                    }
+                    if let Some(Block::Assistant { md }) = self.block_mut(id) {
+                        *md = blank;
+                    }
+                }
+                Thought::Not => {
+                    if let Some(Block::Assistant { md }) = self.block_mut(id) {
+                        *md = whole;
+                    }
+                    self.stream(scope).deciding = false;
+                }
+            }
+        } else if let Some(Block::Assistant { md }) = self.block_mut(id) {
             md.push_str(delta);
-        } else {
-            let id = self.push_raw(Block::Assistant {
-                md: delta.to_string(),
-            });
-            self.set_owner(id, scope);
-            self.stream(scope).assistant = Some(id);
         }
         let stream = self.stream(scope);
         stream.reasoning = None;
         stream.text_seen = true;
+    }
+
+    /// The prose `scope` closes or something else of it comes: a first
+    /// line it still held was not the line `thought`, and shows as the
+    /// prose it is.
+    fn settle_held(&mut self, scope: Option<BlockId>) {
+        let Some(stream) = self.streams.get_mut(&scope) else {
+            return;
+        };
+        if !std::mem::take(&mut stream.deciding) {
+            return;
+        }
+        let assistant = stream.assistant;
+        let held = self.held.shift_remove(&scope).unwrap_or_default();
+        if let Some(id) = assistant
+            && !held.is_empty()
+            && let Some(Block::Assistant { md }) = self.block_mut(id)
+        {
+            md.push_str(&held);
+        }
     }
 
     /// Append reasoning to `scope`'s open reasoning block (made collapsed,
@@ -1914,6 +2057,7 @@ impl Transcript {
     /// closes. Blank reasoning with no reasoning block open is dropped: it
     /// shows nothing, so it neither opens a block nor parts the prose.
     fn append_reasoning(&mut self, scope: Option<BlockId>, delta: &str) {
+        self.settle_held(scope);
         let stream = *self.stream(scope);
         if stream.reasoning.is_none() && delta.trim().is_empty() {
             return;
@@ -1932,14 +2076,17 @@ impl Transcript {
         }
         let stream = self.stream(scope);
         stream.assistant = None;
+        stream.thought = false;
         stream.reasoning_seen = true;
     }
 
     /// Close `scope`'s open prose and reasoning blocks.
     fn close_streams(&mut self, scope: Option<BlockId>) {
+        self.settle_held(scope);
         if let Some(stream) = self.streams.get_mut(&scope) {
             stream.assistant = None;
             stream.reasoning = None;
+            stream.thought = false;
         }
     }
 
@@ -2546,6 +2693,158 @@ mod tests {
             assistant_message_id: None,
         });
         assert_eq!(t.blocks(), &[Block::Assistant { md: "Hello".into() }]);
+    }
+
+    /// The rule: the exact line `thought` (blank space and lines before it
+    /// allowed, nothing after it on the line) opens a model's reasoning
+    /// sent as text; a start of that line is undecided; anything else,
+    /// the word in a sentence or with other words on its line, is prose.
+    #[test]
+    fn the_thought_line_is_exact() {
+        let cases = [
+            ("thought\nPlan it.", Thought::Is("Plan it.")),
+            ("\n  thought\r\n- a\n- b", Thought::Is("- a\n- b")),
+            ("thought\n", Thought::Is("")),
+            ("", Thought::Undecided),
+            (" \n", Thought::Undecided),
+            ("th", Thought::Undecided),
+            ("thought", Thought::Undecided),
+            ("thought\r", Thought::Undecided),
+            ("thought about it", Thought::Not),
+            ("thoughts\nx", Thought::Not),
+            ("thought \nx", Thought::Not),
+            ("Thought: x", Thought::Not),
+            ("Thought\nx", Thought::Not),
+            ("the plan", Thought::Not),
+            ("I thought\nso", Thought::Not),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(leaked_thought(text), expected, "{text:?}");
+        }
+    }
+
+    fn streamed(deltas: &[&str]) -> Transcript {
+        let mut t = Transcript::new();
+        t.apply_agent_event(&AgentEvent::TurnStarted {
+            turn_number: 0,
+            assistant_message_id: None,
+        });
+        for delta in deltas {
+            t.apply_agent_event(&text(delta));
+        }
+        t
+    }
+
+    /// A text block opening with the line `thought` streams as a collapsed
+    /// reasoning block without the line, however the deltas cut it (the
+    /// word split, the line's end in the next delta); nothing shows while
+    /// the line is undecided, and the rest of the step's text goes on in
+    /// it. The answer after something visible is prose again.
+    #[test]
+    fn a_leaked_thought_streams_as_reasoning_in_any_cut() {
+        let cuts: [&[&str]; 4] = [
+            &["thought\nPlan: read.\n- a", "\n- b"],
+            &["tho", "ught", "\nPlan: read.\n- a\n- b"],
+            &["\n", "thought", "\n", "Plan: read.\n- a\n- b"],
+            &["t", "hought\r\nPlan: read.\n- a\n- b"],
+        ];
+        for deltas in cuts {
+            let mut held = Transcript::new();
+            held.apply_agent_event(&AgentEvent::TurnStarted {
+                turn_number: 0,
+                assistant_message_id: None,
+            });
+            for (i, delta) in deltas.iter().enumerate() {
+                held.apply_agent_event(&text(delta));
+                if i + 1 < deltas.len() {
+                    let shown: Vec<_> = held
+                        .blocks()
+                        .iter()
+                        .flat_map(|b| block_lines(b, 60))
+                        .map(|l| l.to_string())
+                        .collect();
+                    assert!(
+                        !shown.iter().any(|l| l.starts_with('•')),
+                        "{deltas:?}: {shown:?}"
+                    );
+                }
+            }
+            let reasoning = match held
+                .blocks()
+                .iter()
+                .rev()
+                .find(|b| !matches!(b, Block::Assistant { md } if md.trim().is_empty()))
+            {
+                Some(Block::Reasoning { text, collapsed }) => {
+                    (text.trim_start().to_string(), *collapsed)
+                }
+                other => panic!("{deltas:?}: {other:?}"),
+            };
+            assert_eq!(
+                reasoning,
+                ("Plan: read.\n- a\n- b".to_string(), true),
+                "{deltas:?}"
+            );
+        }
+        // The answer in the next step is prose.
+        let mut t = streamed(&["thought\nlook first"]);
+        t.apply_agent_event(&AgentEvent::TurnStarted {
+            turn_number: 1,
+            assistant_message_id: None,
+        });
+        t.apply_agent_event(&text("The answer."));
+        assert_eq!(
+            t.blocks(),
+            &[
+                Block::Reasoning {
+                    text: "look first".into(),
+                    collapsed: true
+                },
+                Block::Assistant {
+                    md: "The answer.".into()
+                }
+            ]
+        );
+        let lines: Vec<String> = block_lines(&t.blocks()[0], 60)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(lines[0], "✻ thinking (10 chars, Ctrl-O to expand)");
+    }
+
+    /// The word in a sentence, or a start of the line the step ends on,
+    /// is prose as it was; a held start shows once it is decided.
+    #[test]
+    fn near_misses_of_the_thought_line_stay_prose() {
+        for deltas in [
+            &["thought", " about it"][..],
+            &["Thought: x"],
+            &["th", "e plan"],
+            &["thought \nx"],
+        ] {
+            let t = streamed(deltas);
+            assert_eq!(
+                t.blocks(),
+                &[Block::Assistant {
+                    md: deltas.concat()
+                }],
+                "{deltas:?}"
+            );
+        }
+        // Held to the step's end, it shows as it is.
+        let mut t = streamed(&["thought"]);
+        assert!(matches!(&t.blocks()[0], Block::Assistant { md } if md.is_empty()));
+        t.apply_agent_event(&AgentEvent::TurnCompleted {
+            stop_reason: StopReason::EndTurn,
+            usage: test_usage(Usage::default()),
+            assistant_message_id: None,
+        });
+        assert_eq!(
+            t.blocks(),
+            &[Block::Assistant {
+                md: "thought".into()
+            }]
+        );
     }
 
     #[test]

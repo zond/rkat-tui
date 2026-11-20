@@ -2161,7 +2161,12 @@ api_style = "chat_completions"       # or "responses", the default
 rkat-tui gives the engine `<base_url>/v1` for Chat Completions (requests
 go to `/v1/chat/completions`), and the Responses client goes to
 `/v1/responses` either way. Text, reasoning and tool calls stream in both
-styles. `api_style` takes exactly `responses` or `chat_completions`;
+styles. Some proxies hand a model's reasoning back as ordinary text (a
+Gemini-family model's, as a text block whose first line is exactly
+`thought`): the transcript draws such a block as thinking (`✻ thinking`,
+without that line; Ctrl-O expands it), live and after `/resume`, and
+`/export` and `/copy` treat it as thinking; it is still stored and sent
+back to the model as the text it was. `api_style` takes exactly `responses` or `chat_completions`;
 anything else stops the start naming the key, and on an `anthropic` or
 `gemini` endpoint it skips the endpoint with a notice (those dialects have
 one wire each). Limits: `[thinking]` does not apply to such an endpoint

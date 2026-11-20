@@ -16,6 +16,15 @@
   waiting for that run's end, and one typed while a prompt of yours
   waits for the connection waits behind it rather than for the end of
   its turn.
+- A model that sends its reasoning as ordinary text (a Gemini-family
+  model behind an OpenAI-compatible proxy: a text block whose first line
+  is exactly `thought`) was drawn as a reply, `• thought` and the
+  reasoning below it. Such a block is now drawn as thinking, `✻ thinking
+  (N chars, Ctrl-O to expand)` without the `thought` line, live (the line
+  is held until it is decided, so it never flashes as a reply) and after
+  `/resume`; `/export` and `/copy` treat it as thinking. A block that
+  merely begins with the word is unchanged, and what is stored and sent
+  back to the model is unchanged.
 
 ### Changed
 
