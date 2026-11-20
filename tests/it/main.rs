@@ -70,6 +70,7 @@ mod semantic_recall;
 mod settings;
 mod shell_jobs;
 mod skills;
+mod ssh_wires;
 mod storage;
 mod tool_costs;
 mod trusted_hosts;

@@ -860,7 +860,7 @@ pub fn agent_entries(
                 detached: row.detached,
                 mine: mine == Some(row.name.as_str()),
                 unretirable: row.retire_refusal(mine),
-                wires: row.wires.iter().map(protocol::WireRow::label).collect(),
+                wires: row.wires.iter().map(protocol::WireRow::shown).collect(),
             }
         })
         .collect()

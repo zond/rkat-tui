@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/wire ssh://<host>/<workspace>/<agent>` wires your agent to an agent
+  on another machine, the way rsync works over ssh (`/wire ssh://<host>`
+  lists the agents there). `<host>` goes to `ssh` as is, so your
+  `~/.ssh/config` applies; ssh runs without prompts (`BatchMode`), and
+  rkat-tui stores no credentials. Your workspace's daemon runs `ssh
+  <host> rkat-tui --wire-remote` to exchange the two agents' cards and
+  holds one ssh connection per wire carrying both directions as
+  Unix-socket forwards; it tells you once when the link drops and once
+  when it is back, makes it again by itself (also after a restart), and
+  a message sent while it is down fails with words the agent can act on.
+  `/agents` and `/unwire` show the host and the link's state; `/unwire`
+  removes both halves. The same rkat-tui must be installed there (named
+  with `--remote-rkat-tui <path>` when it is not on the `PATH`).
+
 ### Fixed
 
 - A message you typed mid-run was lost without a word when the daemon

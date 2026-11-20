@@ -40,7 +40,11 @@ use meerkat_mob_mcp::MobMcpState;
 use serde::{Deserialize, Serialize};
 
 use super::MOB_ID;
-use super::protocol::{WireCard, WireRow, wire_label};
+use super::protocol::{Via, WireCard, WireRow, Wired, wire_label};
+use super::remote_wire::{
+    CardReply, LinkSpec, LinkState, Op, RemoteAgent, RemoteError, Request, SshHost, SshLinks,
+    Transport, down_words, forward_name, link_argv, remote_program,
+};
 
 /// The directory of the sockets under the realm.
 pub const SOCKET_DIR: &str = "wire";
@@ -119,6 +123,9 @@ pub enum WireError {
         /// Why.
         why: String,
     },
+    /// A wire over ssh failed on the way or on the other machine.
+    #[error(transparent)]
+    Remote(#[from] RemoteError),
 }
 
 /// The cards each agent was wired to, as `<realm>/wires.json` holds them.
@@ -236,6 +243,8 @@ pub struct Wires {
     records: parking_lot::Mutex<Records>,
     /// Each live agent's socket, or why its bind failed (for its card).
     sockets: parking_lot::Mutex<HashMap<String, Result<Socket, String>>>,
+    /// The ssh links of the wires to agents on other machines.
+    ssh: Arc<SshLinks>,
 }
 
 impl std::fmt::Debug for Wires {
@@ -247,14 +256,16 @@ impl std::fmt::Debug for Wires {
 }
 
 impl Wires {
-    /// The wires of the realm at `realm` serving `workspace`; a records
-    /// file that cannot be read is reported (`Err` beside the value: the
-    /// daemon starts with none and says so).
+    /// The wires of the realm at `realm` serving `workspace`, reaching
+    /// other machines through `transport`; a records file that cannot be
+    /// read is reported (`Err` beside the value: the daemon starts with
+    /// none and says so).
     #[must_use]
     pub fn open(
         state: Arc<MobMcpState>,
         realm: &Path,
         workspace: &Path,
+        transport: Arc<dyn Transport>,
     ) -> (Arc<Self>, Option<String>) {
         let file = realm.join(RECORDS_FILE);
         let (records, problem) = match Records::read(&file) {
@@ -275,8 +286,15 @@ impl Wires {
             realm: realm.to_path_buf(),
             records: parking_lot::Mutex::new(records),
             sockets: parking_lot::Mutex::new(HashMap::new()),
+            ssh: SshLinks::new(transport),
         });
         (wires, problem)
+    }
+
+    /// The ssh links (how the user is told of their drops is set on it).
+    #[must_use]
+    pub fn ssh(&self) -> &Arc<SshLinks> {
+        &self.ssh
     }
 
     /// The socket path of `agent`.
@@ -330,8 +348,10 @@ impl Wires {
         self.sockets.lock().remove(agent);
     }
 
-    /// Stop every socket and remove them (the daemon stops).
+    /// Stop every socket and remove them, and take the ssh links down
+    /// (the daemon stops).
     pub fn close(&self) {
+        self.ssh.close();
         self.sockets.lock().clear();
     }
 
@@ -369,7 +389,220 @@ impl Wires {
             peer_id: descriptor.peer_id.to_string(),
             pubkey: meerkat_comms::PubKey(descriptor.pubkey).to_pubkey_string(),
             address: format!("uds://{}", path.display()),
+            via: None,
         })
+    }
+
+    /// The agents of the daemons running on `host` (`program`: the
+    /// remote rkat-tui).
+    ///
+    /// # Errors
+    ///
+    /// [`WireError::Remote`].
+    pub async fn list_ssh(
+        &self,
+        host: &str,
+        program: Option<&str>,
+    ) -> Result<Vec<RemoteAgent>, WireError> {
+        let host = SshHost::parse(host)?;
+        let program = remote_program(program)?;
+        let reply = self
+            .ssh
+            .transport()
+            .call(&host, &program, Request::new(Op::List))
+            .await?;
+        Ok(reply.into_result(&host)?)
+    }
+
+    /// Wire `agent` both ways to the agent `target` names on `host`: its
+    /// card fetched there, the link made (both forwards bound), this
+    /// agent's card handed over as that machine reaches it, then this
+    /// side wired; the link held from then on. A failure undoes what was
+    /// done. The text says what was done.
+    ///
+    /// # Errors
+    ///
+    /// [`WireError`], [`WireError::Remote`] in the user's words.
+    pub async fn wire_ssh(
+        &self,
+        agent: &str,
+        host: &str,
+        target: &str,
+        program: Option<&str>,
+    ) -> Result<String, WireError> {
+        let host = SshHost::parse(host)?;
+        let program_text = remote_program(program)?;
+        let transport = Arc::clone(self.ssh.transport());
+        let ours = self.card(agent).await?;
+        let reply: CardReply = transport
+            .call(
+                &host,
+                &program_text,
+                Request::new(Op::Card {
+                    target: target.to_string(),
+                }),
+            )
+            .await?
+            .into_result(&host)?;
+        let theirs = reply.card;
+        if theirs.pubkey == ours.pubkey {
+            return Err(WireError::BadCard(
+                "it is this agent itself (the same workspace on the same machine)".to_string(),
+            ));
+        }
+        let remote_target = theirs
+            .address
+            .strip_prefix("uds://")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                WireError::BadCard(format!("its address {} is no Unix socket", theirs.address))
+            })?;
+        let remote_dir = remote_target.parent().ok_or_else(|| {
+            WireError::BadCard(format!(
+                "its socket {} has no directory",
+                remote_target.display()
+            ))
+        })?;
+        let name = forward_name(&format!(
+            "{host}\n{}\n{}\n{agent}",
+            theirs.workspace.display(),
+            theirs.agent
+        ));
+        let spec = LinkSpec {
+            host: host.clone(),
+            program: program_text.clone(),
+            local_forward: self.dir.join(&name),
+            remote_target: remote_target.clone(),
+            remote_forward: remote_dir.join(&name),
+            local_target: self.socket_path(agent),
+        };
+        // Every path fits before anything is started.
+        link_argv(&spec, &[], reply.max_socket_path)?;
+        let link = transport.link(spec.clone(), reply.max_socket_path).await?;
+        let there = format!("{}/{}", theirs.workspace.display(), theirs.agent);
+        let ours_there = WireCard {
+            address: format!("uds://{}", spec.remote_forward.display()),
+            ..ours.clone()
+        };
+        let wired_there: Wired = transport
+            .call(
+                &host,
+                &program_text,
+                Request::new(Op::Wire {
+                    target: there.clone(),
+                    card: ours_there,
+                }),
+            )
+            .await?
+            .into_result(&host)?;
+        let label = theirs.label();
+        let here = WireCard {
+            address: format!("uds://{}", spec.local_forward.display()),
+            via: Some(Via {
+                host: host.to_string(),
+                program: program.map(str::to_string),
+                remote_target,
+                remote_forward: spec.remote_forward.clone(),
+                remote_limit: reply.max_socket_path,
+                sent_key: ours.pubkey.clone(),
+            }),
+            ..theirs
+        };
+        let wired_here = match self.wire(agent, here).await {
+            Ok(already) => already,
+            Err(err) => {
+                if !wired_there.already {
+                    let undo = Request::new(Op::Unwire {
+                        target: there,
+                        workspace: self.workspace.clone(),
+                        peer: agent.to_string(),
+                    });
+                    if let Err(undo) = transport.call(&host, &program_text, undo).await {
+                        tracing::warn!(%agent, peer = %label, error = %undo, "the remote half of a failed ssh wire stays");
+                    }
+                }
+                drop(link);
+                return Err(err);
+            }
+        };
+        self.ssh
+            .hold(agent, &label, spec, reply.max_socket_path, Some(link));
+        let ours_label = ours.label();
+        Ok(if wired_here && wired_there.already {
+            format!(
+                "{ours_label} and {label} are wired already over ssh to {host}: /unwire {label} removes it"
+            )
+        } else {
+            format!(
+                "wired {ours_label} and {label} over ssh to {host}: each can message the other (send_message); this machine holds the link and makes it again when it drops; /unwire {label} removes it"
+            )
+        })
+    }
+
+    /// The link of `agent`'s ssh wire `card` from its record.
+    fn spec_of(&self, agent: &str, card: &WireCard, via: &Via) -> Result<LinkSpec, WireError> {
+        Ok(LinkSpec {
+            host: SshHost::parse(&via.host)?,
+            program: remote_program(via.program.as_deref())?,
+            local_forward: card
+                .address
+                .strip_prefix("uds://")
+                .map(PathBuf::from)
+                .ok_or_else(|| WireError::BadCard(card.address.clone()))?,
+            remote_target: via.remote_target.clone(),
+            remote_forward: via.remote_forward.clone(),
+            local_target: self.socket_path(agent),
+        })
+    }
+
+    /// Hold the links of `agent`'s ssh wires that are not held (a start,
+    /// a switch), and hand the remote daemons this agent's new key where
+    /// it changed (a switch), off the call.
+    async fn restore_ssh(&self, agent: &str, cards: &[WireCard]) {
+        let current = self.card(agent).await.ok();
+        for card in cards {
+            let Some(via) = &card.via else { continue };
+            let label = card.label();
+            let spec = match self.spec_of(agent, card, via) {
+                Ok(spec) => spec,
+                Err(err) => {
+                    tracing::warn!(%agent, peer = %label, error = %err, "the stored ssh wire is unusable");
+                    continue;
+                }
+            };
+            if self.ssh.state(agent, &label).is_none() {
+                self.ssh
+                    .hold(agent, &label, spec.clone(), via.remote_limit, None);
+            }
+            let Some(current) = &current else { continue };
+            if current.pubkey == via.sent_key {
+                continue;
+            }
+            let ours_there = WireCard {
+                address: format!("uds://{}", via.remote_forward.display()),
+                ..current.clone()
+            };
+            let request = Request::new(Op::Wire {
+                target: format!("{}/{}", card.workspace.display(), card.agent),
+                card: ours_there,
+            });
+            match self.ssh.transport().call(&spec.host, &spec.program, request).await {
+                Ok(reply) => match reply.into_result::<Wired>(&spec.host) {
+                    Ok(_) => {
+                        let mut updated = card.clone();
+                        if let Some(via) = &mut updated.via {
+                            via.sent_key.clone_from(&current.pubkey);
+                        }
+                        self.set_card(agent, &card.workspace, &card.agent, Some(updated));
+                        if let Err(err) = self.save() {
+                            tracing::warn!(%agent, peer = %label, error = %err, "the refreshed ssh wire's key is not recorded");
+                        }
+                    }
+                    Err(err) => self.ssh.tell(agent, format!("{label} does not know this agent's new conversation: {err}; /wire ssh://{}/{} again", spec.host, card.label())),
+                },
+                Err(err) => self.ssh.tell(agent, format!("{label} does not know this agent's new conversation: {err}; /wire ssh://{}/{} again once it can be reached", spec.host, card.label())),
+            }
+        }
     }
 
     /// Wire `agent` to the agent `card` names: the engine's external edge
@@ -424,12 +657,64 @@ impl Wires {
     }
 
     /// Remove `agent`'s wire to `peer` of `workspace` (the engine's edge
-    /// and the card); whether there was one.
+    /// and the card); whether there was one, and, for a wire over ssh,
+    /// what became of the remote half (removed through ssh, or stale and
+    /// how to remove it there), its link taken down.
     ///
     /// # Errors
     ///
     /// [`WireError::Engine`], [`WireError::Save`].
     pub async fn unwire(
+        &self,
+        agent: &str,
+        workspace: &Path,
+        peer: &str,
+    ) -> Result<(bool, Option<String>), WireError> {
+        let via = self
+            .card_of(agent, workspace, peer)
+            .and_then(|card| card.via.clone().map(|via| (card, via)));
+        let removed = self.unwire_here(agent, workspace, peer).await?;
+        let Some((card, via)) = via else {
+            return Ok((removed, None));
+        };
+        let label = card.label();
+        self.ssh.drop_link(agent, &label);
+        let ours = wire_label(&self.workspace, agent);
+        let words = match self.spec_of(agent, &card, &via) {
+            Err(err) => Err(err.to_string()),
+            Ok(spec) => {
+                let request = Request::new(Op::Unwire {
+                    target: format!("{}/{}", card.workspace.display(), card.agent),
+                    workspace: self.workspace.clone(),
+                    peer: agent.to_string(),
+                });
+                match self
+                    .ssh
+                    .transport()
+                    .call(&spec.host, &spec.program, request)
+                    .await
+                {
+                    Ok(reply) => reply
+                        .into_result::<super::protocol::Unwired>(&spec.host)
+                        .map_err(|err| err.to_string()),
+                    Err(err) => Err(err.to_string()),
+                }
+            }
+        };
+        Ok((
+            removed,
+            Some(match words {
+                Ok(_) => format!("removed on {} too", via.host),
+                Err(why) => format!(
+                    "the half on {} stays ({why}); it delivers nothing now, and `/unwire {ours}` in that workspace there removes it",
+                    via.host
+                ),
+            }),
+        ))
+    }
+
+    /// [`Self::unwire`] on this daemon only.
+    async fn unwire_here(
         &self,
         agent: &str,
         workspace: &Path,
@@ -462,6 +747,7 @@ impl Wires {
             .get(agent)
             .cloned()
             .unwrap_or_default();
+        self.restore_ssh(agent, &cards).await;
         for card in cards {
             let label = card.label();
             if self.has_edge(agent, &label).await {
@@ -486,6 +772,7 @@ impl Wires {
     /// left the mob, and its edges with it).
     pub fn forget(&self, agent: &str) {
         self.unbind(agent);
+        self.ssh.drop_agent(agent);
         let removed = self.records.lock().agents.remove(agent).is_some();
         if removed && let Err(err) = self.save() {
             tracing::warn!(%agent, error = %err, "the retired agent's wires stay recorded");
@@ -519,6 +806,14 @@ impl Wires {
                     .map(|card| WireRow {
                         workspace: card.workspace.clone(),
                         agent: card.agent.clone(),
+                        host: card.via.as_ref().map(|via| via.host.clone()),
+                        link: card.via.as_ref().map(|_| {
+                            self.ssh
+                                .state(agent, &card.label())
+                                .unwrap_or(LinkState::Down)
+                                .as_str()
+                                .to_string()
+                        }),
                     })
                     .collect()
             })
@@ -551,6 +846,10 @@ impl Wires {
     #[must_use]
     pub fn unreachable(&self, agent: &str, peer_id: &str) -> Option<String> {
         let card = self.wired_card(agent, peer_id)?;
+        if let Some(via) = &card.via {
+            return (self.ssh.state(agent, &card.label()) != Some(LinkState::Up))
+                .then(|| down_words(&card.label(), &via.host));
+        }
         let path = Path::new(card.address.strip_prefix("uds://")?);
         if path.exists() {
             return None;
@@ -591,7 +890,15 @@ impl Wires {
     /// peer id is its key's.
     fn descriptor(&self, card: &WireCard) -> Result<TrustedPeerDescriptor, WireError> {
         let label = card.label();
-        if same_path(&card.workspace, &self.workspace) {
+        // A workspace on another machine may have this one's path: such a
+        // card names its link (`via`), or, on the remote side, a forwarded
+        // socket.
+        let over_ssh = card.via.is_some()
+            || card
+                .address
+                .strip_prefix("uds://")
+                .is_some_and(|path| super::remote_wire::is_forward_path(Path::new(path)));
+        if !over_ssh && same_path(&card.workspace, &self.workspace) {
             return Err(WireError::SameWorkspace { label });
         }
         if !super::agents::is_agent(&card.agent) {
@@ -932,6 +1239,7 @@ mod tests {
             peer_id: "p".into(),
             pubkey: "ed25519:x".into(),
             address: "uds:///r/wire/main-cd34.sock".into(),
+            via: None,
         })));
         let note = unacknowledged_note("other/main-cd34");
         assert!(
@@ -955,11 +1263,40 @@ mod tests {
                 peer_id: "p".into(),
                 pubkey: "ed25519:x".into(),
                 address: "uds:///r/wire/main-cd34.sock".into(),
+                via: None,
             }],
         );
         std::fs::write(&file, serde_json::to_vec(&records).unwrap()).unwrap();
         assert_eq!(Records::read(&file).unwrap(), records);
         std::fs::write(&file, b"{not json").unwrap();
         assert!(Records::read(&file).is_err());
+    }
+
+    /// A wire over ssh is stored with its link, and a file of a build
+    /// without such wires (no `via`) still opens, as local wires.
+    #[test]
+    fn an_ssh_wire_round_trips_and_an_older_file_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(RECORDS_FILE);
+        std::fs::write(
+            &file,
+            br#"{"agents":{"main-ab12":[{"workspace":"/w/other","agent":"main-cd34","peer_id":"p","pubkey":"ed25519:x","address":"uds:///r/wire/main-cd34.sock"}]}}"#,
+        )
+        .unwrap();
+        let older = Records::read(&file).unwrap();
+        assert_eq!(older.agents["main-ab12"][0].via, None);
+        let mut records = older;
+        let card = &mut records.agents.get_mut("main-ab12").unwrap()[0];
+        card.address = "uds:///r/wire/s-0123456789abcdef.sock".into();
+        card.via = Some(Via {
+            host: "me@box".into(),
+            program: Some("/opt/rkat-tui".into()),
+            remote_target: "/b/r/wire/main-cd34.sock".into(),
+            remote_forward: "/b/r/wire/s-0123456789abcdef.sock".into(),
+            remote_limit: 103,
+            sent_key: "ed25519:y".into(),
+        });
+        std::fs::write(&file, serde_json::to_vec(&records).unwrap()).unwrap();
+        assert_eq!(Records::read(&file).unwrap(), records);
     }
 }

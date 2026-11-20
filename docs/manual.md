@@ -3756,9 +3756,10 @@ there) and start rkat-tui there again with this version"). Neither
 daemon trusts the other daemon: each trusts one named agent's key.
 Wiring two agents that are wired already changes nothing and says so;
 an agent of your own workspace is refused (they are wired to each other
-already). `/wire` from a TUI attached with `--attach=HOST:PORT` to a
-daemon on another machine is refused: wires join daemons of one machine
-through local sockets.
+already). `/wire <workspace>/<agent>` from a TUI attached with
+`--attach=HOST:PORT` to a daemon on another machine is refused: such
+wires join daemons of one machine through local sockets (`/wire
+ssh://…`, below, is made by the daemon and works from any client).
 
 The two halves are two calls, not one step: an `rkat-tui` that dies
 after the other daemon wired and before yours did (killed, or its
@@ -3828,9 +3829,60 @@ that retires (`/quit`, the `/agents` retire key, the daemon's
 terminate) loses its wires; the other side keeps a stale one, which
 its `/unwire` picker marks and removes.
 
+**Agents on another machine (over ssh).** `/wire
+ssh://<host>/<workspace>/<agent>` wires your agent to an agent of a
+workspace on another machine, the way rsync works over ssh: `<host>` is
+handed to `ssh` as is, so your `~/.ssh/config` applies (aliases, users,
+ports, jump hosts, keys, your agent). `/wire ssh://<host>` lists the
+agents of the daemons running there (`agents on box: api/main-cd34
+(idle, 1 client, /home/me/api); …`). Only the machine you type on
+starts the connection; the other machine never connects back. What it
+needs:
+
+- here, OpenSSH's `ssh`, and `ssh <host> true` working without a prompt:
+  rkat-tui runs ssh with `BatchMode=yes`, stores no credentials and never
+  asks for a password, so a host that needs one fails with ssh's own
+  words and "make `ssh box true` work first";
+- there, the same rkat-tui, on the `PATH` of a non-interactive shell
+  (`ssh box rkat-tui --version` shows it), or named with `/wire
+  ssh://box/api/main-cd34 --remote-rkat-tui ~/.cargo/bin/rkat-tui`; a
+  missing one, or another version, fails with words that say to install
+  the same rkat-tui there;
+- there, rkat-tui running in that workspace (its daemon is what is
+  wired); the ssh server must allow Unix-socket forwarding
+  (`AllowStreamLocalForwarding`, on by default).
+
+Your workspace's daemon, not the TUI, runs `ssh` (as you, outside the
+agent's sandbox; nothing the agent can call starts it). It runs `ssh box
+rkat-tui --wire-remote` for each step (list, fetch the agent's card, hand
+over yours, take it down), and holds one long-lived connection per wire
+that carries both directions as Unix-socket forwards: your agent's sends
+reach the forwarded socket in your realm's `wire/` directory, which leads
+to the other agent's socket there, and the other agent's sends reach a
+forwarded socket in its realm's `wire/` directory, which leads to yours.
+Each side is then an ordinary wire as above (notes, `contacts`, tier 1,
+plan mode, a new conversation's key). ssh is only the transport: every
+message is still signed by the sending agent's key and checked against
+the one key the receiving daemon trusts for that wire.
+
+When the connection drops (the other machine sleeps, the network goes),
+your daemon notices within about 45 s, tells you once ("the link to box
+is down …"), and makes it again by itself, after 1 s, then a pause that
+doubles up to a minute; when it is back you are told once more. While it
+is down a `send_message` either way fails at once (your agent reads "the
+link to box is down … try again later, or tell the user"), and nothing
+is kept for later. `/agents` and the `/unwire` picker show each such
+wire with its host and its link (`over ssh to box, link up`). The wire
+is stored (`wires.json`), so a restart of your daemon makes the link
+again; a restart of the other one needs nothing. `/unwire` removes your
+half at once and the other through ssh; when the other machine cannot
+be reached, its half stays (it delivers nothing) and the notice says how
+to remove it there (`/unwire alpha/main-ab12` in that workspace).
+
 **Not covered.** Only top-level agents are wired, not helpers or forks;
-only agents of daemons on the same machine; one pair per `/wire`, no
-groups. The socket's path must fit a Unix socket address (107 bytes on
+a wire over ssh starts only from the machine you type on (the other one
+cannot `/wire` back through it, and its `/unwire` removes only its own
+half); one pair per `/wire`, no groups. The socket's path must fit a Unix socket address (107 bytes on
 Linux, 103 on macOS): a realm under a very long `--config-dir` gets no
 socket, and `/wire` names the path and the limit.
 

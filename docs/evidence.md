@@ -14210,3 +14210,74 @@ first too), `daemon::activity::steers::tests::a_stop_takes_the_one_in_flight_and
 `ui::tests::turns::a_message_the_engine_did_not_keep_returns_to_the_editor`.
 The three rig tests other than the guard failed with the stop's old
 code (the client was told nothing; the waits ran out, or no `Unkept`).
+
+## `/wire` over ssh (owner, 2026-11-20)
+
+Asked: wire an agent to one on another machine, "kind of like rsync over
+ssh", only from the machine the user types on. Design
+(`daemon::remote_wire`, `client::wire_remote`, `daemon::wires`):
+
+- The initiating daemon runs ssh (it outlives the TUI), as the user,
+  outside the agent's sandbox; only a bound client's `rkat/wire_ssh` and
+  a stored wire start it. The argv is built in one place and passed as
+  is: control `-o BatchMode=yes -o ConnectTimeout=15 -- <host> <program>
+  --wire-remote`; link the same plus `-o ExitOnForwardFailure=yes -o
+  ServerAliveInterval=15 -o ServerAliveCountMax=3 -o
+  StreamLocalBindUnlink=yes -L <here>/wire/s-<16 hex>.sock:<remote
+  agent's socket> -R <there>/wire/s-<16 hex>.sock:<this agent's
+  socket>`. The host refuses a leading `-`, whitespace, control
+  characters and `/`; the remote program only plain path characters (ssh
+  hands the remote command to a shell as one line). Socket paths must
+  fit each machine's `sun_path` (the remote says its limit) and carry no
+  `:`.
+- The remote side is `rkat-tui --wire-remote`: one JSON request line in,
+  one reply line out (`{"rkat_wire":1,"op":…}`; ops `list`, `card`,
+  `wire`, `unwire`, `clear`, `hold`), version-checked both ways; it calls
+  that user's own daemons through their endpoint files as `/wire` does
+  locally, nothing more. `clear` removes only a socket named as a
+  forward in a `wire/` directory (a stale `-R` socket, which an sshd
+  without `StreamLocalBindUnlink` refuses to replace; tried after a link
+  fails). The link's own command is `hold`: it answers once the `-R`
+  socket exists (so "up" means both forwards bound and the session
+  running) and holds until its standard input ends.
+- Each daemon's card for the other names the forwarded socket on its own
+  machine, so both halves are ordinary wires (`Wires::wire`, the
+  engine's external edge, the roster, `peer_label`'s tier 1, restore on a
+  switch). The initiator's card carries `via` (`wires.json`, optional:
+  older files open as local wires); a card with `via`, or one addressed
+  at a forwarded socket, skips the same-workspace check, since another
+  machine's workspace may have this one's path. Envelopes are still
+  signed and checked against the one trusted key; ssh is transport.
+- `SshLinks` holds one task per wire: made again after a drop after 1 s,
+  doubling to a minute (reset after a link that stayed up a minute), one
+  notice down and one back (`rkat/agent_notice`); while it is not up the
+  gate refuses a send with `down_words` (`Wires::unreachable`). A
+  conversation switch hands the remote daemon the new key through ssh
+  (`Via::sent_key`); `/unwire` takes the remote half down through ssh,
+  else says it stays and how its `/unwire` there removes it.
+
+Found with the real ssh run: the link came up and ended at once, ssh
+exiting 0. tokio's `Child::wait` closes the child's standard input
+before it waits, and that end is the remote `hold`'s end. `SshLink`
+keeps standard input open until the wait returns. The stand-in does not
+exercise the process, so only the real-ssh test pins it.
+
+Tests: `daemon::remote_wire::tests::*` (argv exact, host and program
+validation, socket paths, the protocol and its version check, a failed
+launch's words, the backoff), `client::wire_remote::tests::*` (another
+version refused, no daemon there, only a stale forward cleared),
+`daemon::wires::tests::an_ssh_wire_round_trips_and_an_older_file_opens`,
+`client::runner::wires::tests::an_ssh_target_is_a_host_an_agent_there_and_the_remote_program`,
+`client::wires::tests::the_unwire_picker_says_whether_the_other_side_runs`,
+`ssh_wires::an_ssh_wire_carries_messages_both_ways_and_survives_drops_and_restarts`
+and `ssh_wires::an_ssh_wire_that_cannot_be_made_says_why` (a stand-in
+transport: control calls answered by `wire_remote::answer` against the
+other daemon, which runs in a rerun of the test as in `cross_workspace`,
+and the two forwards made in-process), and the ignored
+`ssh_wires::a_real_ssh_wire_carries_messages_both_ways`: a private
+`sshd -f <temp config> -D` of this user on a loopback port (its own host
+key, `authorized_keys`, client key; `ssh -F <temp config>`; the remote
+session's `XDG_STATE_HOME` set by `SetEnv`), run by hand and passing:
+wire, a message each way, `/unwire` on both sides. Not tested: `/unwire`
+while the link is down, a remote sshd that refuses Unix-socket
+forwarding, a key refresh over ssh after a switch.

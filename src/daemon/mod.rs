@@ -53,6 +53,7 @@ pub mod mob;
 pub mod policy;
 pub mod prepare;
 pub mod protocol;
+pub mod remote_wire;
 pub mod schedules;
 pub mod schema_compat;
 pub mod serve;
@@ -336,6 +337,14 @@ impl DaemonOptions {
         self
     }
 
+    /// Reach other machines through `transport` in place of `ssh` (a
+    /// stand-in, or `ssh` with options of the test's own).
+    #[must_use]
+    pub fn with_transport(mut self, transport: Arc<dyn remote_wire::Transport>) -> Self {
+        self.test.transport = Some(transport);
+        self
+    }
+
     /// Fail as many of the next agent spawns as `faults` holds (a switch,
     /// and seating the previous conversation again, can then fail).
     #[must_use]
@@ -562,6 +571,7 @@ impl Daemon {
             return Err(DaemonError::NotLoopback(options.listen));
         }
         let started_at = endpoint::timestamp(std::time::SystemTime::now());
+        let transport = transport_of(&options);
         let workspace = std::fs::canonicalize(&layers.scope.context_root)
             .unwrap_or_else(|_| layers.scope.context_root.clone());
         let places = EndpointPlaces::find(
@@ -613,7 +623,7 @@ impl Daemon {
                 options.start_token,
                 options.build.unwrap_or_else(|| crate::BUILD.to_string()),
             ),
-            wires: open_wires(&mut composed, &workspace),
+            wires: open_wires(&mut composed, &workspace, transport),
             links: Arc::clone(&composed.links),
             schedules: Arc::new(schedules::Schedules::new(
                 composed.runtime.schedule_service(),
@@ -890,6 +900,8 @@ pub mod testing {
         /// No follower reads the mobs' profiles, so every spawn by a
         /// profile's name reads them itself (`mobs::profiles`).
         pub(crate) profiles_unfollowed: bool,
+        /// How other machines are reached, in place of `ssh`.
+        pub(crate) transport: Option<Arc<dyn crate::daemon::remote_wire::Transport>>,
     }
 
     /// What tests reach of a started daemon ([`super::Daemon::seams`]).
@@ -1041,15 +1053,45 @@ fn open_conversations(
     Ok(Arc::new(conversations))
 }
 
+/// How the daemon reaches other machines: `ssh`, or a test's stand-in.
+fn transport_of(options: &DaemonOptions) -> Arc<dyn remote_wire::Transport> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(transport) = &options.test.transport {
+        return Arc::clone(transport);
+    }
+    let _ = options;
+    Arc::new(remote_wire::Ssh::default())
+}
+
 /// Every agent's socket for wires to other workspaces, and the cards they
 /// were wired to (none, with a start-up notice, when the records cannot
 /// be read).
-fn open_wires(composed: &mut engine::Composed, workspace: &Path) -> Arc<wires::Wires> {
+fn open_wires(
+    composed: &mut engine::Composed,
+    workspace: &Path,
+    transport: Arc<dyn remote_wire::Transport>,
+) -> Arc<wires::Wires> {
     let (wires, problem) = wires::Wires::open(
         Arc::clone(&composed.state),
         &composed.scope.realm_root(),
         workspace,
+        transport,
     );
+    let decisions = Arc::downgrade(&composed.decisions);
+    wires
+        .ssh()
+        .set_tell(Arc::new(move |agent: &str, warn: bool, text: String| {
+            if let Some(decisions) = decisions.upgrade() {
+                decisions.broadcast(
+                    protocol::AGENT_NOTICE,
+                    &protocol::AgentNotice {
+                        agent: agent.to_string(),
+                        warn,
+                        text,
+                    },
+                );
+            }
+        }));
     if let Some(problem) = problem {
         tracing::warn!(%problem, "no cross-workspace wires this run");
         composed

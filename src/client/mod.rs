@@ -45,6 +45,7 @@ pub mod remote;
 pub mod runner;
 pub mod sessions;
 pub mod transport;
+pub mod wire_remote;
 pub mod wires;
 
 use std::io::IsTerminal as _;

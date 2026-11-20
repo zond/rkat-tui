@@ -222,6 +222,12 @@ pub struct Args {
     #[arg(long)]
     pub list: bool,
 
+    /// The remote side of `/wire ssh://…`: answer one wire request (a JSON
+    /// line) on standard input, as the initiating machine's daemon runs it
+    /// through ssh, then exit. Not for interactive use.
+    #[arg(long, hide = true)]
+    pub wire_remote: bool,
+
     /// Re-home the state of a workspace that moved: the state REF names
     /// (its id, or the path the workspace had; `--list` shows both) serves
     /// this workspace from now on. State this workspace already has is

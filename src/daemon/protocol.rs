@@ -468,6 +468,11 @@ methods! {
     Wire = "rkat/wire" (WireParams) -> Wired;
     /// `/unwire`: drop the agent's cross-workspace wire to `peer`.
     Unwire = "rkat/unwire" (UnwireParams) -> Unwired;
+    /// `/wire ssh://<host>/…`: this daemon runs ssh to the host, lists its
+    /// agents or wires the caller's agent to one of them both ways, and
+    /// holds the link ([`crate::daemon::remote_wire`]). A bound caller
+    /// only: its own agent.
+    WireSsh = "rkat/wire_ssh" (WireSshParams) -> WiredSsh;
     /// `/auto check`: send the corpus cases the selection names through
     /// the daemon's classifier as a review shows them
     /// ([`crate::approval::reviewer::Reviewer::check`]) and answer
@@ -1607,8 +1612,34 @@ pub struct WireCard {
     pub peer_id: String,
     /// Its comms public key, `ed25519:<base64>`.
     pub pubkey: String,
-    /// Its socket, `uds://<path>`.
+    /// Its socket, `uds://<path>`: for an agent on another machine, the
+    /// forwarded socket on this one.
     pub address: String,
+    /// How this daemon reaches it when it is on another machine (`/wire
+    /// ssh://…`); `None`: on this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<Via>,
+}
+
+/// The ssh link of a wire to an agent on another machine
+/// (`crate::daemon::remote_wire`), as the initiating daemon keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Via {
+    /// The ssh host, as the user gave it.
+    pub host: String,
+    /// The remote rkat-tui's program (`None`: `rkat-tui` on its `PATH`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+    /// The remote agent's own socket there (the `-L` target).
+    pub remote_target: std::path::PathBuf,
+    /// The forwarded socket there that reaches this daemon's agent (the
+    /// `-R` socket), which the remote's card for this agent names.
+    pub remote_forward: std::path::PathBuf,
+    /// The longest socket path that machine binds.
+    pub remote_limit: usize,
+    /// This agent's key as last handed to the remote daemon.
+    #[serde(default)]
+    pub sent_key: String,
 }
 
 impl WireCard {
@@ -1675,6 +1706,37 @@ pub struct Unwired {
     pub label: String,
     /// A wire was removed (`false`: there was none).
     pub removed: bool,
+    /// For a wire over ssh: what became of the remote half, in words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+}
+
+/// [`method::WireSsh`]'s parameters: the host, the agent there
+/// (`<workspace>/<agent>`, the workspace by name or path, or a workspace
+/// with one agent; `None`: list the agents there), and the remote
+/// rkat-tui's program.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WireSshParams {
+    /// The ssh host.
+    pub host: String,
+    /// The agent there; `None`: only list them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// The remote rkat-tui (`None`: `rkat-tui` on its `PATH`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+}
+
+/// [`method::WireSsh`]'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WiredSsh {
+    /// The agents there (a listing).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<crate::daemon::remote_wire::RemoteAgent>,
+    /// What was done, in words (a wire).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// One cross-workspace wire of an agent ([`AgentRow::wires`]).
@@ -1684,6 +1746,12 @@ pub struct WireRow {
     pub workspace: std::path::PathBuf,
     /// The other agent's name.
     pub agent: String,
+    /// The ssh host it is reached through (`None`: on this machine).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Its link's state, for one over ssh: `connecting`, `up` or `down`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 impl WireRow {
@@ -1691,6 +1759,20 @@ impl WireRow {
     #[must_use]
     pub fn label(&self) -> String {
         wire_label(&self.workspace, &self.agent)
+    }
+
+    /// The label as `/agents` shows it: one over ssh with its host and
+    /// its link's state (`api/main-ab12 (ssh box, link up)`).
+    #[must_use]
+    pub fn shown(&self) -> String {
+        match &self.host {
+            Some(host) => format!(
+                "{} (ssh {host}, link {})",
+                self.label(),
+                self.link.as_deref().unwrap_or("down")
+            ),
+            None => self.label(),
+        }
     }
 }
 

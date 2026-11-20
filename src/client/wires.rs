@@ -387,6 +387,15 @@ pub async fn unwire(
     } else {
         format!("this agent had no wire to {label}")
     };
+    // Over ssh, this daemon took the remote half down itself.
+    if row.host.is_some() {
+        match here.remote {
+            Some(remote) if remote.starts_with("removed on ") => text.push_str(" on both sides"),
+            Some(remote) => text.push_str(&format!("; {remote}")),
+            None => {}
+        }
+        return Ok(text);
+    }
     match others.iter().find(|o| o.status.workspace == row.workspace) {
         None => text.push_str(&format!(
             "; the daemon of {} is not running, so its side is removed when you run /unwire there or that agent retires (it can no longer reach this one either way)",
@@ -427,7 +436,8 @@ pub async fn refresh(own: &Connection, rows: &[WireRow], others: &[Other]) -> Ve
         }
     };
     let mut stale = Vec::new();
-    for row in rows {
+    // A wire over ssh is refreshed by the daemon that holds its link.
+    for row in rows.iter().filter(|row| row.host.is_none()) {
         let label = row.label();
         let Some(other) = others.iter().find(|o| o.status.workspace == row.workspace) else {
             stale.push(format!(
@@ -451,7 +461,7 @@ pub async fn refresh(own: &Connection, rows: &[WireRow], others: &[Other]) -> Ve
 
 /// One bounded call of `M` on the daemon of `workspace` at `endpoint`,
 /// through a probe connection of its own; the failure in words.
-async fn call_other<M: Method>(
+pub(crate) async fn call_other<M: Method>(
     endpoint: &Endpoint,
     workspace: &Path,
     params: &M::Params,
@@ -541,9 +551,13 @@ pub fn unwire_picker(wired: &[WireRow], others: &[Other]) -> crate::ui::ListPick
         .iter()
         .map(|w| {
             let other = others.iter().find(|o| o.status.workspace == w.workspace);
-            let state = match other {
-                None => "its daemon is not running".to_string(),
-                Some(o) => match o.status.agents.iter().find(|a| a.name == w.agent) {
+            let state = match (&w.host, other) {
+                (Some(host), _) => format!(
+                    "over ssh to {host}, link {}",
+                    w.link.as_deref().unwrap_or("down")
+                ),
+                (None, None) => "its daemon is not running".to_string(),
+                (None, Some(o)) => match o.status.agents.iter().find(|a| a.name == w.agent) {
                     None => "retired there (the wire is stale)".to_string(),
                     Some(a) => a.run().picker_word().to_string(),
                 },
@@ -657,6 +671,8 @@ mod tests {
         let wired = vec![WireRow {
             workspace: "/w/web".into(),
             agent: "main-cccc".into(),
+            host: None,
+            link: None,
         }];
         let picker = wire_picker(&all, &wired);
         let texts: Vec<&str> = picker.rows.iter().map(|r| r.text.as_str()).collect();
@@ -684,20 +700,37 @@ mod tests {
 
     #[test]
     fn the_unwire_picker_says_whether_the_other_side_runs() {
-        let wired = vec![WireRow {
-            workspace: "/w/web".into(),
-            agent: "main-cccc".into(),
-        }];
+        let wired = vec![
+            WireRow {
+                workspace: "/w/web".into(),
+                agent: "main-cccc".into(),
+                host: None,
+                link: None,
+            },
+            WireRow {
+                workspace: "/w/far".into(),
+                agent: "main-eeee".into(),
+                host: Some("box".into()),
+                link: Some("down".into()),
+            },
+        ];
         let picker = unwire_picker(&wired, &[]);
         assert_eq!(
             picker.rows[0].text,
             "web/main-cccc  its daemon is not running"
         );
+        assert_eq!(
+            picker.rows[1].text,
+            "far/main-eeee  over ssh to box, link down"
+        );
+        assert_eq!(wired[1].shown(), "far/main-eeee (ssh box, link down)");
+        assert_eq!(wired[0].shown(), "web/main-cccc");
+        let wired = &wired[..1];
         assert!(matches!(
             picker.rows[0].keys[0].does,
             crate::ui::Does::Ask(..)
         ));
-        assert_eq!(resolve_wire("web", &wired).unwrap().agent, "main-cccc");
+        assert_eq!(resolve_wire("web", wired).unwrap().agent, "main-cccc");
         assert!(resolve_wire("web", &[]).is_err());
         // The other daemon runs, but the agent retired there: stale.
         let status: Status = serde_json::from_value(serde_json::json!({
@@ -716,7 +749,7 @@ mod tests {
             },
             status,
         };
-        let picker = unwire_picker(&wired, &[other]);
+        let picker = unwire_picker(wired, &[other]);
         assert_eq!(
             picker.rows[0].text,
             "web/main-cccc  retired there (the wire is stale)"

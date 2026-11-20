@@ -207,6 +207,9 @@ pub use ui::UiError;
 /// configuration cannot be read, no daemon can be reached, or the terminal
 /// cannot be driven.
 pub async fn run(args: Args) -> Result<(), TuiError> {
+    if args.wire_remote {
+        return client::wire_remote::serve_stdio().await;
+    }
     if args.list {
         client::list::print(
             None,

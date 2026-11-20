@@ -507,15 +507,24 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "wire",
         aliases: &[],
-        usage: "[workspace/agent]",
+        usage: "[workspace/agent | ssh://host[/workspace/agent]]",
         summary: "wire this agent to an agent of another workspace",
-        help: &[(
-            "/wire [workspace/agent]",
-            "open a picker of the agents of other workspaces whose daemon\nruns (workspace, agent, working or idle, clients): Enter wires\nthis agent and that one both ways, so each can message the\nother; with a name (a workspace alone when one agent works\nthere), wire directly",
-        )],
+        help: &[
+            (
+                "/wire [workspace/agent]",
+                "open a picker of the agents of other workspaces whose daemon\nruns (workspace, agent, working or idle, clients): Enter wires\nthis agent and that one both ways, so each can message the\nother; with a name (a workspace alone when one agent works\nthere), wire directly",
+            ),
+            (
+                "/wire ssh://host[/workspace/agent]",
+                "wire to an agent on another machine over ssh (this machine\nholds the link); a host alone lists its agents;\n--remote-rkat-tui <path> names rkat-tui there",
+            ),
+        ],
         parse: |rest| match words(rest).as_slice() {
             [] => Some(Command::Wire(None)),
             [target] => Some(Command::Wire(Some((*target).to_string()))),
+            [target, "--remote-rkat-tui", path] if target.starts_with("ssh://") => Some(
+                Command::Wire(Some(format!("{target} --remote-rkat-tui {path}"))),
+            ),
             _ => None,
         },
     },

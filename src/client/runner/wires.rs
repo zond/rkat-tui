@@ -82,6 +82,22 @@ impl Runner {
     /// `/wire`: the picker of other workspaces' agents, or wire to the one
     /// `target` names.
     pub(super) fn wire(&self, target: Option<String>) {
+        if let Some(text) = target.as_deref().filter(|t| t.starts_with(SSH_SCHEME)) {
+            let parsed = parse_ssh(text);
+            self.with_scene(
+                "nothing was wired",
+                false,
+                |say, connection, _scene| async move {
+                    match parsed {
+                        Ok(params) => wire_over_ssh(&say, &connection, params).await,
+                        Err(why) => {
+                            say.notice(NoticeLevel::Warn, format!("nothing was wired: {why}"));
+                        }
+                    }
+                },
+            );
+            return;
+        }
         if self.wire_refused("nothing was wired") {
             return;
         }
@@ -167,7 +183,15 @@ impl Runner {
             false,
             |say, connection, scene| async move {
                 let others = scene.others().await;
-                let row = protocol::WireRow { workspace, agent };
+                let row = cross::rows_of(&scene.status)
+                    .into_iter()
+                    .find(|row| row.workspace == workspace && row.agent == agent)
+                    .unwrap_or(protocol::WireRow {
+                        workspace,
+                        agent,
+                        host: None,
+                        link: None,
+                    });
                 let done = unwire_with(&say, &connection, &scene.status, &row, &others).await;
                 if let Some(status) = daemon_status(&connection).await {
                     show(
@@ -207,6 +231,102 @@ impl Runner {
             }
         });
     }
+}
+
+/// How `/wire` names an agent on another machine.
+const SSH_SCHEME: &str = "ssh://";
+
+/// The flag of `/wire ssh://…` that names the remote rkat-tui.
+const REMOTE_PROGRAM_FLAG: &str = "--remote-rkat-tui";
+
+/// How long the daemon may take to make a wire over ssh (a few ssh
+/// calls and the link).
+const SSH_WIRE_BOUND: std::time::Duration = std::time::Duration::from_secs(150);
+
+/// `ssh://<host>[/<workspace>/<agent>] [--remote-rkat-tui <path>]` as the
+/// daemon's parameters (no target: list the agents there).
+fn parse_ssh(text: &str) -> Result<protocol::WireSshParams, String> {
+    let mut words = text.split_whitespace();
+    let url = words.next().unwrap_or_default();
+    let program = match (words.next(), words.next(), words.next()) {
+        (None, ..) => None,
+        (Some(REMOTE_PROGRAM_FLAG), Some(path), None) => Some(path.to_string()),
+        _ => {
+            return Err(format!(
+                "write it as /wire ssh://<host>/<workspace>/<agent> [{REMOTE_PROGRAM_FLAG} <path>]"
+            ));
+        }
+    };
+    let rest = url.strip_prefix(SSH_SCHEME).unwrap_or(url);
+    let (host, target) = match rest.split_once('/') {
+        Some((host, "")) => (host, None),
+        Some((host, target)) => (host, Some(target.to_string())),
+        None => (rest, None),
+    };
+    if host.is_empty() {
+        return Err(format!("{text} names no host"));
+    }
+    Ok(protocol::WireSshParams {
+        host: host.to_string(),
+        target,
+        program,
+    })
+}
+
+/// `/wire ssh://…` through this client's daemon, which runs ssh.
+async fn wire_over_ssh(say: &Say, connection: &Connection, params: protocol::WireSshParams) {
+    let host = params.host.clone();
+    let listing = params.target.is_none();
+    let call = crate::client::remote::call::<protocol::method::WireSsh>(connection, &params);
+    let answer = match tokio::time::timeout(SSH_WIRE_BOUND, call).await {
+        Ok(Ok(answer)) => answer,
+        Ok(Err(crate::client::ClientError::Rpc { message, .. })) => {
+            say.notice(NoticeLevel::Warn, format!("nothing was wired: {message}"));
+            return;
+        }
+        Ok(Err(err)) => {
+            say.notice(
+                NoticeLevel::Warn,
+                format!("nothing was wired: this workspace's daemon did not answer: {err}"),
+            );
+            return;
+        }
+        Err(_) => {
+            say.notice(
+                NoticeLevel::Warn,
+                format!("this workspace's daemon took longer than {} s with the wire to {host}; /agents shows whether it was made", SSH_WIRE_BOUND.as_secs()),
+            );
+            return;
+        }
+    };
+    if listing {
+        let text = if answer.agents.is_empty() {
+            format!(
+                "no rkat-tui daemon runs on {host}: start rkat-tui in the workspace there, then /wire ssh://{host}/<workspace>/<agent>"
+            )
+        } else {
+            let rows: Vec<String> = answer
+                .agents
+                .iter()
+                .map(|a| {
+                    format!(
+                        "{} ({}, {}, {})",
+                        protocol::wire_label(&a.workspace, &a.agent),
+                        a.run,
+                        crate::text::count(a.clients, "client"),
+                        a.workspace.display()
+                    )
+                })
+                .collect();
+            format!(
+                "agents on {host}: {}; /wire ssh://{host}/<workspace>/<agent> wires one",
+                rows.join("; ")
+            )
+        };
+        say.notice(NoticeLevel::Info, text);
+        return;
+    }
+    say.notice(NoticeLevel::Info, answer.text.unwrap_or_default());
 }
 
 /// Show `picker` (`refresh`: only in place of an open one of its kind).
@@ -272,6 +392,33 @@ async fn unwire_with(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ssh_target_is_a_host_an_agent_there_and_the_remote_program() {
+        let p = parse_ssh("ssh://me@box/api/main-ab12").unwrap();
+        assert_eq!(
+            (p.host.as_str(), p.target.as_deref(), p.program),
+            ("me@box", Some("api/main-ab12"), None)
+        );
+        let p =
+            parse_ssh("ssh://box//home/u/api/main-ab12 --remote-rkat-tui /opt/rkat-tui").unwrap();
+        assert_eq!(p.target.as_deref(), Some("/home/u/api/main-ab12"));
+        assert_eq!(p.program.as_deref(), Some("/opt/rkat-tui"));
+        for listing in ["ssh://box", "ssh://box/"] {
+            let p = parse_ssh(listing).unwrap();
+            assert_eq!((p.host.as_str(), p.target), ("box", None));
+        }
+        assert!(
+            parse_ssh("ssh:///api")
+                .unwrap_err()
+                .contains("names no host")
+        );
+        assert!(
+            parse_ssh("ssh://box/api --other x")
+                .unwrap_err()
+                .contains("--remote-rkat-tui <path>")
+        );
+    }
 
     #[test]
     fn a_target_in_the_own_workspace_is_told_apart() {

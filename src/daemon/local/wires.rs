@@ -85,7 +85,7 @@ impl Local {
     ) -> Result<Unwired, Refusal> {
         let agent = self.wire_agent(caller, agent)?;
         let label = protocol::wire_label(workspace, peer);
-        let removed = self
+        let (removed, remote) = self
             .core
             .wires
             .unwire(&agent, workspace, peer)
@@ -97,6 +97,45 @@ impl Local {
                     .of_agent(&agent),
             );
         }
-        Ok(Unwired { label, removed })
+        Ok(Unwired {
+            label,
+            removed,
+            remote,
+        })
+    }
+
+    /// `rkat/wire_ssh`: list the agents on a host, or wire the caller's
+    /// own agent to one of them over ssh; a new wire is audited. Only a
+    /// client bound to its agent may: the user's `/wire`, never a probe.
+    pub(super) async fn wire_ssh(
+        &self,
+        caller: &Caller,
+        params: protocol::WireSshParams,
+    ) -> Result<protocol::WiredSsh, Refusal> {
+        let Some(agent) = caller.agent.clone() else {
+            return Err(Refusal::new(
+                protocol::NO_AGENT,
+                "a wire over ssh is made for the agent this connection works with",
+            ));
+        };
+        let wires = &self.core.wires;
+        let Some(target) = params.target else {
+            let agents = wires
+                .list_ssh(&params.host, params.program.as_deref())
+                .await
+                .map_err(wire_refusal)?;
+            return Ok(protocol::WiredSsh { agents, text: None });
+        };
+        let text = wires
+            .wire_ssh(&agent, &params.host, &target, params.program.as_deref())
+            .await
+            .map_err(wire_refusal)?;
+        self.audit(
+            Line::event("wired", format!("{target} over ssh to {}", params.host)).of_agent(&agent),
+        );
+        Ok(protocol::WiredSsh {
+            agents: Vec::new(),
+            text: Some(text),
+        })
     }
 }

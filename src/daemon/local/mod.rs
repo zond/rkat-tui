@@ -425,6 +425,7 @@ impl Local {
             method::Card, protocol::WireAgentParams { agent } => self.card(&caller, agent).await;
             method::Wire, protocol::WireParams { agent, card } => self.wire(&caller, agent, card).await;
             method::Unwire, protocol::UnwireParams { agent, workspace, peer } => self.unwire(&caller, agent, &workspace, &peer).await;
+            method::WireSsh, params => self.wire_ssh(&caller, params).await;
         }
         Err(Refusal::new(
             METHOD_NOT_FOUND,
