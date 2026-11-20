@@ -65,7 +65,16 @@ use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
+use crate::late::Late;
+
 use super::attendance::{Attendance, Runs};
+
+/// The names of the engine's handles the daemon's start-up binds
+/// ([`crate::late`]).
+const ORIGINS: &str = "the approval engine's tool catalogs";
+const ATTENDANCE: &str = "the approval engine's attendance";
+const PERMISSION_FILES: &str = "the approval engine's settings files";
+const FORGET_HOOKS: &str = "the approval engine's forget hooks";
 use super::audit::{AuditSink, DecisionRecord, Outlets, ReviewRecord};
 use super::blocks::{Blocked, Blocks};
 use super::builds::{
@@ -445,14 +454,14 @@ pub struct ApprovalEngine {
     /// Who holds those files' permission sections beside the engine (the
     /// daemon's settings): each change of the engine's and its file's goes
     /// in as one under it ([`PermissionFiles`]); unset, no one does.
-    permission_files: OnceLock<Arc<dyn PermissionFiles>>,
+    permission_files: Late<Arc<dyn PermissionFiles>>,
     /// Called between a rule's push into the engine and its file's write
     /// (set by tests only, which make a sync of the files arrive there).
     between_steps: OnceLock<Arc<dyn Fn() + Send + Sync>>,
-    origins: OnceLock<Arc<dyn ToolOrigins>>,
+    origins: Late<Arc<dyn ToolOrigins>>,
     /// Who is with each agent ([`super::attendance`]); unset: nobody is
     /// attached, and only a run a client's input started is attended.
-    attendance: OnceLock<Arc<dyn Attendance>>,
+    attendance: Late<Arc<dyn Attendance>>,
     /// The workspace's agents as peers (a message to one is tier 1).
     agent_peers: OnceLock<Arc<dyn super::attendance::AgentPeers>>,
     /// Who answered each escalation, by its id, as the desk was told
@@ -460,6 +469,9 @@ pub struct ApprovalEngine {
     answerers: Mutex<HashMap<u64, String>>,
     /// Called by [`Self::forget_session`] (helper hosts prune their state).
     forget_hooks: RwLock<Vec<ForgetHook>>,
+    /// Whether a session was forgotten with no hook installed (said once,
+    /// [`crate::late`]).
+    no_forget_hooks: std::sync::atomic::AtomicBool,
     /// The numbers of blocked calls, grants and statements.
     next_id: AtomicU64,
     reviewer: Reviewer,
@@ -566,13 +578,14 @@ impl ApprovalEngine {
             reviewer: Reviewer::new(classifier, outlets.clone()),
             outlets,
             files,
-            permission_files: OnceLock::new(),
+            permission_files: Late::new(),
             between_steps: OnceLock::new(),
-            origins: OnceLock::new(),
-            attendance: OnceLock::new(),
+            origins: Late::new(),
+            attendance: Late::new(),
             agent_peers: OnceLock::new(),
             answerers: Mutex::new(HashMap::new()),
             forget_hooks: RwLock::new(Vec::new()),
+            no_forget_hooks: std::sync::atomic::AtomicBool::new(false),
             next_id: AtomicU64::new(first_id),
             grants,
             statements,
@@ -654,7 +667,7 @@ impl ApprovalEngine {
     /// definitions cannot be read, every call is judged as a foreign tool.
     /// Returns `false` when origins were already set.
     pub fn set_tool_origins(&self, origins: Arc<dyn ToolOrigins>) -> bool {
-        self.origins.set(origins).is_ok()
+        self.origins.set(origins)
     }
 
     /// Who is with each agent: from now on a call that needs review in a
@@ -662,7 +675,7 @@ impl ApprovalEngine {
     /// ([`super::attendance`]). Set once; returns `false` when it was set
     /// already.
     pub fn set_attendance(&self, attendance: Arc<dyn Attendance>) -> bool {
-        self.attendance.set(attendance).is_ok()
+        self.attendance.set(attendance)
     }
 
     /// Tell the gate which comms peers are the workspace's agents: a
@@ -733,7 +746,7 @@ impl ApprovalEngine {
     fn attended(&self, session_id: &SessionId, run: Option<&RunId>) -> bool {
         if self
             .attendance
-            .get()
+            .get(ATTENDANCE)
             .is_some_and(|attendance| attendance.attached(session_id))
         {
             return true;
@@ -746,7 +759,7 @@ impl ApprovalEngine {
 
     /// The origin of `name` among `session_id`'s live tools.
     pub async fn tool_origin(&self, session_id: &SessionId, name: &str) -> Option<ToolOrigin> {
-        let origins = self.origins.get()?;
+        let origins = self.origins.get(ORIGINS)?;
         origins.catalog(session_id).await?.get(name).cloned()
     }
 
@@ -973,6 +986,9 @@ impl ApprovalEngine {
         self.blocks.forget(session_id);
         self.builds.forget(session_id);
         let hooks = self.forget_hooks.read().clone();
+        if hooks.is_empty() {
+            crate::late::warn_once(&self.no_forget_hooks, FORGET_HOOKS);
+        }
         for hook in hooks {
             hook(session_id);
         }
@@ -981,6 +997,33 @@ impl ApprovalEngine {
     /// Run `hook` whenever a session is forgotten ([`Self::forget_session`]).
     pub fn add_forget_hook(&self, hook: ForgetHook) {
         self.forget_hooks.write().push(hook);
+    }
+
+    /// The handles the daemon's start-up binds ([`crate::late`]) that are
+    /// unbound, by name (the audit sink only when `audited`: without an
+    /// audit log there is none to bind).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn unbound(&self, audited: bool) -> Vec<&'static str> {
+        let mut unbound = Vec::new();
+        for (name, bound) in [
+            (ORIGINS, self.origins.is_bound()),
+            (ATTENDANCE, self.attendance.is_bound()),
+            (PERMISSION_FILES, self.permission_files.is_bound()),
+            (FORGET_HOOKS, !self.forget_hooks.read().is_empty()),
+            (
+                "the approval engine's scratch directories",
+                self.grants.scratch_bound(),
+            ),
+            (
+                "the approval engine's audit sink",
+                !audited || self.outlets.audited(),
+            ),
+        ] {
+            if !bound {
+                unbound.push(name);
+            }
+        }
+        unbound
     }
 
     /// The permission mode now.
@@ -1711,7 +1754,7 @@ impl ApprovalEngine {
         tier: Tier,
         reason: DenyReason,
     ) -> Verdict {
-        if let Some(attendance) = self.attendance.get() {
+        if let Some(attendance) = self.attendance.get(ATTENDANCE) {
             attendance.missed(
                 caller.session_id,
                 unattended_notice(caller.agent, &facts.action),
@@ -2808,6 +2851,32 @@ mod tests {
         let mut rig = bare_rig(verdicts, timeout);
         rig.present = attended(&rig.engine);
         rig
+    }
+
+    /// An engine nothing bound names every handle the daemon's start-up
+    /// binds as unbound (the audit sink only when there is an audit log),
+    /// and one bound is no longer named.
+    #[test]
+    fn an_unbound_engine_names_each_late_handle() {
+        let rig = bare_rig(vec![], Duration::from_secs(1));
+        assert_eq!(
+            rig.engine.unbound(true),
+            [
+                ORIGINS,
+                ATTENDANCE,
+                PERMISSION_FILES,
+                FORGET_HOOKS,
+                "the approval engine's scratch directories",
+                "the approval engine's audit sink",
+            ]
+        );
+        assert!(
+            !rig.engine
+                .unbound(false)
+                .contains(&"the approval engine's audit sink")
+        );
+        rig.engine.add_forget_hook(Arc::new(|_: &SessionId| {}));
+        assert!(!rig.engine.unbound(true).contains(&FORGET_HOOKS));
     }
 
     /// A rig whose engine was never told who is with its agents

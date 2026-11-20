@@ -88,6 +88,7 @@ pub(crate) mod hex;
 pub mod http;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod http;
+pub(crate) mod late;
 #[cfg(feature = "test-support")]
 pub mod memory;
 #[cfg(not(feature = "test-support"))]

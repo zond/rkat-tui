@@ -19,7 +19,7 @@
 //! created again under its id moves the epoch too.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use meerkat_mob::{MobDefinition, MobHandle, MobId, Profile, ProfileName};
@@ -56,8 +56,12 @@ struct Read {
 pub struct MobProfiles {
     read: parking_lot::RwLock<Read>,
     /// The state the definitions are read from ([`Self::bind`]).
-    state: OnceLock<Weak<MobMcpState>>,
+    state: crate::late::Late<Weak<MobMcpState>>,
 }
+
+/// The name of the profiles' handle the daemon's start-up binds
+/// ([`crate::late`]).
+const STATE: &str = "the mob profiles' mob host";
 
 impl MobProfiles {
     /// Read the definitions from `state` (once; a second state is
@@ -66,11 +70,17 @@ impl MobProfiles {
         let _ = self.state.set(Arc::downgrade(state));
     }
 
+    /// Whether [`Self::bind`] was called ([`crate::late`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_bound(&self) -> bool {
+        self.state.is_bound()
+    }
+
     /// The profile `name` of the mob `mob`: from the definitions as read,
     /// read again now when the set of mobs changed since.
     #[must_use]
     pub fn lookup(&self, mob: &MobId, name: &str) -> Stored {
-        if let Some(state) = self.state.get().and_then(Weak::upgrade) {
+        if let Some(state) = self.state.get(STATE).and_then(Weak::upgrade) {
             let epoch = *state.mob_set_changes().borrow();
             if self.read.read().epoch != Some(epoch) {
                 self.read_now(&state, epoch);

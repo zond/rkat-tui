@@ -116,7 +116,9 @@ mod probe;
 pub use probe::DecidingHookFn;
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Weak};
+
+use crate::late::Late;
 
 use meerkat_core::AgentEvent;
 use meerkat_mob_mcp::MobMcpState;
@@ -661,13 +663,13 @@ pub struct HelperEndings {
     /// Where the endings to tell go (the daemon's delivery).
     sink: Option<mpsc::UnboundedSender<Ended>>,
     /// The mob host (a helper is retired through it).
-    state: OnceLock<Weak<MobMcpState>>,
+    state: Late<Weak<MobMcpState>>,
     /// How many endings were told so far.
     told: std::sync::atomic::AtomicUsize,
     /// How many retires these endings started.
     retires: std::sync::atomic::AtomicUsize,
     /// Asks the runtime what a helper still holds ([`InputsProbe`]).
-    probe: OnceLock<Probe>,
+    probe: Late<Probe>,
     /// How many runs' ends were decided as a helper's going idle (told or
     /// not).
     idle_decided: std::sync::atomic::AtomicUsize,
@@ -694,8 +696,14 @@ pub struct HelperEndings {
     retirements: Arc<Retirements>,
     /// Where a decided retire is recorded, so a start that finds the
     /// helper still seated retires it ([`Self::owe_to`]).
-    owed: OnceLock<Weak<super::HelperRegistry>>,
+    owed: Late<Weak<super::HelperRegistry>>,
 }
+
+/// The names of the endings' handles the daemon's start-up binds
+/// ([`crate::late`]).
+const STATE: &str = "the helper endings' mob host";
+const PROBE: &str = "the helper endings' inputs probe";
+const OWED: &str = "the helper endings' owed retires";
 
 /// The retirements of helpers under way, closed when the daemon stops: the
 /// engine's stop of a member that a retire of it meets mid-way fails the
@@ -980,6 +988,20 @@ impl HelperEndings {
         let _ = self.state.set(Arc::downgrade(state));
     }
 
+    /// The handles the daemon's start-up binds ([`crate::late`]) that are
+    /// unbound, by name.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn unbound(&self) -> Vec<&'static str> {
+        [
+            (STATE, self.state.is_bound()),
+            (PROBE, self.probe.is_bound()),
+            (OWED, self.owed.is_bound()),
+        ]
+        .into_iter()
+        .filter_map(|(name, bound)| (!bound).then_some(name))
+        .collect()
+    }
+
     /// Record each retire decided for a finished helper in `registry`'s
     /// bindings (once): a start that finds it still seated retires it
     /// ([`Self::retire_owed`]).
@@ -1005,7 +1027,7 @@ impl HelperEndings {
     /// is owed, so a stop before it reaches the engine leaves it to the
     /// next start.
     pub fn take_below(&self, key: &HelperKey) -> Vec<(HelperKey, HelperTag)> {
-        let Some(registry) = self.owed.get().and_then(Weak::upgrade) else {
+        let Some(registry) = self.owed.get(OWED).and_then(Weak::upgrade) else {
             return Vec::new();
         };
         let below = registry.bound_below(key);
@@ -1065,7 +1087,7 @@ impl HelperEndings {
             _ => None,
         };
         let Some(runs) = idle_after else { return };
-        let probe = self.probe.get().map(|probe| Arc::clone(&probe.0));
+        let probe = self.probe.get(PROBE).map(|probe| Arc::clone(&probe.0));
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
@@ -1181,7 +1203,7 @@ impl HelperEndings {
             }
             other => other,
         };
-        let probe = self.probe.get().map(|probe| Arc::clone(&probe.0));
+        let probe = self.probe.get(PROBE).map(|probe| Arc::clone(&probe.0));
         match (probe, tokio::runtime::Handle::try_current()) {
             (Some(probe), Ok(runtime)) => {
                 let endings = Arc::clone(self);
@@ -1376,7 +1398,7 @@ impl HelperEndings {
     /// is not done yet: it stays seated, that helper's ending is told to it
     /// (a run of it reads it) and that run's end decides again.
     fn done(&self, key: &HelperKey, how: How) {
-        if let Some(registry) = self.owed.get().and_then(Weak::upgrade)
+        if let Some(registry) = self.owed.get(OWED).and_then(Weak::upgrade)
             && registry
                 .bound_below(key)
                 .iter()
@@ -1518,10 +1540,10 @@ impl HelperEndings {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // A stopped helper is owed until the engine retired it: a daemon
         // stop before that leaves it to the next start.
-        if any && let Some(registry) = self.owed.get().and_then(Weak::upgrade) {
+        if any && let Some(registry) = self.owed.get(OWED).and_then(Weak::upgrade) {
             registry.owe_retire(key);
         }
-        let Some(state) = self.state.get().and_then(Weak::upgrade) else {
+        let Some(state) = self.state.get(STATE).and_then(Weak::upgrade) else {
             return;
         };
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -1552,10 +1574,10 @@ impl HelperEndings {
     fn retire_done(&self, key: &HelperKey, below: Vec<(HelperKey, HelperTag)>) {
         self.retires
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if let Some(registry) = self.owed.get().and_then(Weak::upgrade) {
+        if let Some(registry) = self.owed.get(OWED).and_then(Weak::upgrade) {
             registry.owe_retire(key);
         }
-        let Some(state) = self.state.get().and_then(Weak::upgrade) else {
+        let Some(state) = self.state.get(STATE).and_then(Weak::upgrade) else {
             return;
         };
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -1591,7 +1613,7 @@ impl HelperEndings {
     ) -> Result<(), String> {
         let state = self
             .state
-            .get()
+            .get(STATE)
             .and_then(Weak::upgrade)
             .ok_or("the daemon is stopping")?;
         retire_seated(

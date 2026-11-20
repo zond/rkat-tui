@@ -32,7 +32,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use meerkat_core::SessionId;
 use parking_lot::{Mutex, RwLock};
@@ -317,7 +317,7 @@ pub struct Grants {
     plan: GrantedDirs,
     /// Each session's scratch directory ([`Self::set_scratch`]); unset:
     /// none has one.
-    scratch: OnceLock<ScratchLookup>,
+    scratch: crate::late::Late<ScratchLookup>,
     /// The directories the user named for every session, now.
     named: RwLock<Vec<NamedDir>>,
     /// The grants the user made for each session and its helpers, by id.
@@ -347,7 +347,7 @@ impl Grants {
         start.extend(named(&plan.user_read, false));
         Self {
             plan,
-            scratch: OnceLock::new(),
+            scratch: crate::late::Late::new(),
             named: RwLock::new(start),
             sessions: Mutex::new(HashMap::new()),
         }
@@ -431,12 +431,20 @@ impl Grants {
     /// it as the session's own from now on ([`super::scratch`]). Set once;
     /// returns `false` when it was set already.
     pub fn set_scratch(&self, lookup: ScratchLookup) -> bool {
-        self.scratch.set(lookup).is_ok()
+        self.scratch.set(lookup)
+    }
+
+    /// Whether [`Self::set_scratch`] was called.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn scratch_bound(&self) -> bool {
+        self.scratch.is_bound()
     }
 
     /// `session`'s scratch directory, if it has one.
     pub(super) fn scratch(&self, session: &SessionId) -> Option<PathBuf> {
-        self.scratch.get().and_then(|lookup| lookup(session))
+        self.scratch
+            .get("the approval engine's scratch directories")
+            .and_then(|lookup| lookup(session))
     }
 
     /// Whether the confinement plan lets the shell write `path` (a default

@@ -643,6 +643,8 @@ impl Daemon {
             revisions: Arc::clone(&composed.revisions),
             contacts: Arc::clone(&composed.contacts),
             #[cfg(any(test, feature = "test-support"))]
+            profiles: Arc::clone(&composed.profiles),
+            #[cfg(any(test, feature = "test-support"))]
             probe: core::probe::CoreProbe::default(),
         });
         let agents = agents::Agents::new(

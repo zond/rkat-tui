@@ -205,6 +205,19 @@ fn last_request(llm: &ScriptedLlmClient) -> String {
     format!("{:?}", llm.requests().last().unwrap())
 }
 
+/// Every handle the start-up binds once the parts it reaches exist
+/// (`bind_late`, `bind_agents`, the agents' own) is bound in a daemon
+/// started as production starts it: a binding added and forgotten there
+/// is named here, never a silent no-op (the crate's `late` module).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_started_daemon_binds_every_late_handle() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    assert_eq!(daemon.local().unbound_for_test(), Vec::<&str>::new());
+    daemon.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_attaches_and_finds_its_agent() {
     let ws = Workspace::new();

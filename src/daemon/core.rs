@@ -70,6 +70,10 @@ pub struct Core {
     pub revisions: Arc<super::instructions::Instructions>,
     /// Who each agent and helper can message (`contacts`).
     pub contacts: Arc<super::contacts::Contacts>,
+    /// Tests: the mobs' profiles, whose binding the start-up check reads
+    /// ([`crate::late`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub profiles: Arc<crate::mobs::profiles::MobProfiles>,
     /// Tests: the faults they queue ([`probe::CoreProbe`]).
     #[cfg(any(test, feature = "test-support"))]
     pub probe: probe::CoreProbe,

@@ -24,6 +24,12 @@
   own line. The run's line grows as calls finish, opens and folds by
   click as the message runs do, and folds the same in a helper's view
   and a resumed conversation.
+- A handle the daemon's start-up binds that was never bound (the approval
+  engine's tool catalogs, attendance, settings files, scratch directories
+  and forget hooks; the helper endings', contacts' and mob profiles' mob
+  host and links; the instructions' bring-up hook) now says so once in
+  the daemon's log when it is first reached, instead of doing nothing
+  silently; a started daemon binds them all, which a test holds.
 
 ## [0.0.18] - 2026-11-20
 

@@ -14,7 +14,15 @@
 //! - **Used by** the tool itself: an agent's instructions say to call it
 //!   after a compaction ([`crate::bootstrap::persona::compaction_persona`]).
 
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Weak};
+
+use crate::late::Late;
+
+/// The names of the handles the daemon's start-up binds
+/// ([`crate::late`]).
+const STATE: &str = "contacts' mob host";
+const LINKS: &str = "contacts' links across mobs";
+const ROSTER: &str = "contacts' roster of agents";
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -246,9 +254,9 @@ struct HeldEntry<'a> {
 /// The daemon's `contacts`.
 pub struct Contacts {
     registry: Arc<HelperRegistry>,
-    state: OnceLock<Weak<MobMcpState>>,
-    links: OnceLock<Weak<super::links::Links>>,
-    roster: OnceLock<Weak<dyn Roster>>,
+    state: Late<Weak<MobMcpState>>,
+    links: Late<Weak<super::links::Links>>,
+    roster: Late<Weak<dyn Roster>>,
     /// The deepest a helper may be (a helper at it holds none).
     max_depth: u8,
 }
@@ -266,11 +274,25 @@ impl Contacts {
     pub fn new(registry: Arc<HelperRegistry>, max_depth: u8) -> Self {
         Self {
             registry,
-            state: OnceLock::new(),
-            links: OnceLock::new(),
-            roster: OnceLock::new(),
+            state: Late::new(),
+            links: Late::new(),
+            roster: Late::new(),
             max_depth,
         }
+    }
+
+    /// The handles the daemon's start-up binds ([`crate::late`]) that are
+    /// unbound, by name.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn unbound(&self) -> Vec<&'static str> {
+        [
+            (STATE, self.state.is_bound()),
+            (LINKS, self.links.is_bound()),
+            (ROSTER, self.roster.is_bound()),
+        ]
+        .into_iter()
+        .filter_map(|(name, bound)| (!bound).then_some(name))
+        .collect()
     }
 
     /// Read the members through `state` and the connections across mobs
@@ -287,7 +309,7 @@ impl Contacts {
     }
 
     fn state(&self) -> Option<Arc<MobMcpState>> {
-        self.state.get().and_then(Weak::upgrade)
+        self.state.get(STATE).and_then(Weak::upgrade)
     }
 
     /// The caller running as `session`: the agent's session its tree
@@ -346,7 +368,7 @@ impl Contacts {
         }
         let links = self
             .links
-            .get()
+            .get(LINKS)
             .and_then(Weak::upgrade)
             .map(|links| links.links())
             .unwrap_or_default();
@@ -425,7 +447,7 @@ impl Contacts {
                 .or_else(|| agent.clone())
                 .unwrap_or_default()
         });
-        let roster = self.roster.get().and_then(Weak::upgrade);
+        let roster = self.roster.get(ROSTER).and_then(Weak::upgrade);
         let states = match &roster {
             Some(roster) => roster.agent_states().await,
             None => Vec::new(),

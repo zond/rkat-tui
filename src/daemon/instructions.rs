@@ -246,10 +246,16 @@ pub struct Instructions {
     waiting: parking_lot::Mutex<HashMap<SessionId, Whose>>,
     /// Tells the agents' side of a bring-up made at a run's end.
     on_updated: parking_lot::Mutex<Option<OnUpdated>>,
+    /// Whether a bring-up was made with no `on_updated` (said once,
+    /// [`crate::late`]).
+    no_hook: std::sync::atomic::AtomicBool,
     /// Tests: the agents and helpers are seated with [`stale`] sections.
     #[cfg(any(test, feature = "test-support"))]
     stale: bool,
 }
+
+/// The name of the hook the daemon's start-up binds ([`crate::late`]).
+const ON_UPDATED: &str = "the instructions' bring-up hook";
 
 /// Called with the conversation and whose it is when a waiting bring-up
 /// was made.
@@ -270,6 +276,7 @@ impl Instructions {
             audit,
             waiting: parking_lot::Mutex::new(HashMap::new()),
             on_updated: parking_lot::Mutex::new(None),
+            no_hook: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
             stale: false,
         })
@@ -284,6 +291,7 @@ impl Instructions {
             audit,
             waiting: parking_lot::Mutex::new(HashMap::new()),
             on_updated: parking_lot::Mutex::new(None),
+            no_hook: std::sync::atomic::AtomicBool::new(false),
             stale: true,
         })
     }
@@ -301,6 +309,12 @@ impl Instructions {
     /// Call `on_updated` when a waiting bring-up was made.
     pub fn on_updated(&self, on_updated: OnUpdated) {
         *self.on_updated.lock() = Some(on_updated);
+    }
+
+    /// Whether [`Self::on_updated`] was called ([`crate::late`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_bound(&self) -> bool {
+        self.on_updated.lock().is_some()
     }
 
     /// Whether `messages` need a bring-up for `sections`.
@@ -427,8 +441,9 @@ impl Instructions {
         };
         if self.bring_up(session, &whose).await == Outcome::Updated {
             let on_updated = self.on_updated.lock().clone();
-            if let Some(on_updated) = on_updated {
-                on_updated(session, &whose);
+            match on_updated {
+                Some(on_updated) => on_updated(session, &whose),
+                None => crate::late::warn_once(&self.no_hook, ON_UPDATED),
             }
         }
     }

@@ -84,6 +84,12 @@ impl Outlets {
         self.audit.set(audit).is_ok()
     }
 
+    /// Whether an audit sink is set (without an audit log none is).
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn audited(&self) -> bool {
+        self.audit.get().is_some()
+    }
+
     /// The audit sink, when one is set.
     pub(super) fn audit(&self) -> Option<&Arc<dyn AuditSink>> {
         self.audit.get()

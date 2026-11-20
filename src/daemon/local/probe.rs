@@ -98,6 +98,23 @@ impl Local {
         self.core.probe.fail_reloads(count);
     }
 
+    /// Tests: every handle the daemon's start-up binds (`bind_late`,
+    /// `bind_agents`, the agents' own) that is unbound, by name
+    /// ([`crate::late`]). A started daemon has none.
+    pub fn unbound_for_test(&self) -> Vec<&'static str> {
+        let core = &self.core;
+        let mut unbound = core.engine.unbound(core.audit.is_some());
+        unbound.extend(core.registry.endings().unbound());
+        unbound.extend(core.contacts.unbound());
+        if !core.profiles.is_bound() {
+            unbound.push("the mob profiles' mob host");
+        }
+        if !core.revisions.is_bound() {
+            unbound.push("the instructions' bring-up hook");
+        }
+        unbound
+    }
+
     /// Tests: a message of the daemon's own to `agent`, as its notes go
     /// (held for an open run, [`crate::daemon::agents::hold_or_steer`]);
     /// answered once the engine took it.

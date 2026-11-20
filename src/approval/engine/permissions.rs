@@ -29,7 +29,7 @@ impl ApprovalEngine {
     /// Install who holds the settings files' sections ([`PermissionFiles`]);
     /// `false` when one was installed already.
     pub fn set_permission_files(&self, files: Arc<dyn PermissionFiles>) -> bool {
-        self.permission_files.set(files).is_ok()
+        self.permission_files.set(files)
     }
 
     /// Call `hook` between a rule's push into the engine and its file's
@@ -43,7 +43,9 @@ impl ApprovalEngine {
     /// The files held still for one change ([`PermissionFiles::writing`]),
     /// when someone holds them beside the engine.
     fn writing(&self) -> Option<Box<dyn Writing + '_>> {
-        self.permission_files.get().map(|files| files.writing())
+        self.permission_files
+            .get(super::PERMISSION_FILES)
+            .map(|files| files.writing())
     }
 
     /// Add a rule, written to the file of `level` (the user's own
@@ -78,7 +80,7 @@ impl ApprovalEngine {
         let rule = self.of_level(rule, level);
         let rules = Arc::clone(&self.rules);
         let files = self.files.clone();
-        let held = self.permission_files.get().cloned();
+        let held = self.permission_files.get(super::PERMISSION_FILES).cloned();
         let between = self.between_steps.get().cloned();
         tokio::task::spawn_blocking(move || {
             let _writing = held.as_ref().map(|held| held.writing());
