@@ -3,8 +3,28 @@
 //! the helper mobs it follows and the agent's current session.
 
 use super::commands::others_notice;
-use super::switch::replay_to_end;
+use super::switch::{AgentSwitch, replay_to_end};
 use super::*;
+use crate::client::catchup::Cursor;
+
+/// Where the events shown stand: the mark of the last one shown, and the
+/// daemon they came from (the cursor names it, see
+/// [`super::super::catchup::daemon_id`]: a restarted daemon numbers its
+/// events in a new space).
+#[derive(Default)]
+pub(super) struct Seen {
+    pub(super) mark: Option<Mark>,
+    pub(super) daemon_id: Option<String>,
+}
+
+impl Seen {
+    /// The cursor to save or attach with, once anything was shown.
+    fn cursor(&self) -> Option<Cursor> {
+        self.mark
+            .as_ref()
+            .map(|mark| mark.cursor(self.daemon_id.as_deref()))
+    }
+}
 
 impl Runner {
     /// Try the failed connect again, as the first one (a daemon may be
@@ -83,17 +103,14 @@ impl Runner {
     pub(super) fn connect(&mut self, first: bool, tries: u32) {
         let files = self.config.endpoint_files.clone();
         // The agent's saved cursor is read once it is known (at attach).
-        let saved = self
-            .mark
-            .as_ref()
-            .map(|mark| mark.cursor(self.daemon_id_seen.as_deref()));
+        let saved = self.seen.cursor();
         let attach = Attach {
             agent: match &self.agent {
-                _ if self.seat_new => AgentChoice::New,
+                _ if self.switches.agent == AgentSwitch::New => AgentChoice::New,
                 Some(name) => AgentChoice::Agent { name: name.clone() },
                 None => self.config.agent.clone(),
             },
-            cursor: (!self.agent_switch).then(|| self.config.cursor.clone()),
+            cursor: (self.switches.agent == AgentSwitch::None).then(|| self.config.cursor.clone()),
             start_token: self.config.start_token.clone(),
         };
         let plan = ConnectPlan {
@@ -140,32 +157,32 @@ impl Runner {
         } = established;
         let address = link.endpoint.address;
         let agent = link.connection.agent().to_string();
-        let switched_agent = std::mem::take(&mut self.agent_switch);
-        self.seat_new = false;
+        let switched_agent = std::mem::take(&mut self.switches.agent) != AgentSwitch::None;
         let seated = link.connection.seated();
         self.agent = Some(agent.clone());
         self.send(Msg::Status(StatusUpdate::Agent(Some(agent.clone()))));
         let daemon_id = super::super::catchup::daemon_id(&link.endpoint.token);
         // A daemon this client has not shown yet (the first attach, or one
         // that restarted): what its start-up had to say.
-        let new_daemon = self.daemon_id_seen.as_deref() != Some(daemon_id.as_str());
-        self.daemon_id_seen = Some(daemon_id);
+        let new_daemon = self.seen.daemon_id.as_deref() != Some(daemon_id.as_str());
+        self.seen.daemon_id = Some(daemon_id);
         let session = link.session.to_string();
-        let fresh = self.mark.is_none();
+        let fresh = self.seen.mark.is_none();
         // A render from the start replaces what was shown; a resumed
         // stream goes on from the mark the cursor was saved from.
         if reset.is_some()
             || self
+                .seen
                 .mark
                 .as_ref()
                 .is_none_or(|current| current.session_id() != mark.session_id())
         {
-            self.mark = Some(mark);
+            self.seen.mark = Some(mark);
         }
         self.send(Msg::Status(StatusUpdate::Session(session.clone())));
         self.say_attached(&agent, address, seated, fresh, switched_agent);
         if let Some(identity) = identity {
-            self.followers.set_default_model(&identity.model);
+            self.helpers.followers.set_default_model(&identity.model);
             self.show_model(
                 identity.endpoint_name(),
                 WireDialect::parse(&identity.provider),
@@ -189,17 +206,17 @@ impl Runner {
         });
         // The helpers of this conversation: what was shown before a
         // reconnect stays shown.
-        if fresh || self.followers.owner() != Some(&link.session) {
-            self.followers.reset(link.session.clone());
+        if fresh || self.helpers.followers.owner() != Some(&link.session) {
+            self.helpers.followers.reset(link.session.clone());
         } else {
-            self.followers.streams_lost();
+            self.helpers.followers.streams_lost();
         }
-        self.orphans.clear();
+        self.helpers.orphans.clear();
         self.conn = Conn::Up {
             link,
             leaving: None,
         };
-        self.link_epoch += 1;
+        self.reports.epoch += 1;
         if let Some(blocks) = reset {
             self.send(Msg::ResetTranscript(blocks));
         }
@@ -371,11 +388,9 @@ impl Runner {
             _ => None,
         };
         self.save_cursor();
-        self.followers.streams_lost();
-        self.orphans.clear();
-        self.known_mobs.clear();
-        self.pushed_session = None;
-        self.switching = false;
+        self.helpers.connection_lost();
+        self.switches.pushed = None;
+        self.switches.running = false;
         // What is still pending shows again after the reattach.
         for id in self.approvals.clear() {
             self.send(Msg::EscalationResolved(id));
@@ -407,10 +422,8 @@ impl Runner {
     pub(super) fn unlink(&mut self) {
         self.save_cursor();
         self.conn = Conn::Idle;
-        self.followers.streams_lost();
-        self.orphans.clear();
-        self.known_mobs.clear();
-        self.pushed_session = None;
+        self.helpers.connection_lost();
+        self.switches.pushed = None;
         for id in self.approvals.clear() {
             self.send(Msg::EscalationResolved(id));
         }
@@ -484,10 +497,10 @@ impl Runner {
             }
             Push::Switched(moved) if moved.agent == link.connection.agent() => {
                 if moved.session_id == link.session {
-                    self.pushed_session = None;
-                } else if self.switching {
+                    self.switches.pushed = None;
+                } else if self.switches.running {
                     // Shown once the switch under way ends.
-                    self.pushed_session = Some(moved.session_id);
+                    self.switches.pushed = Some(moved.session_id);
                 } else {
                     self.adopt_switch(moved.session_id, Shown::Others, None);
                 }
@@ -500,8 +513,8 @@ impl Runner {
                 if reloaded.agent == link.connection.agent()
                     && reloaded.session_id == link.session =>
             {
-                if self.switching {
-                    self.reloaded = true;
+                if self.switches.running {
+                    self.switches.reloaded = true;
                 } else {
                     let session = link.session.clone();
                     self.rerender(session, Shown::Reloaded);
@@ -562,14 +575,14 @@ impl Runner {
                 mob_id,
                 change: protocol::MobChange::Hosts,
             }) => {
-                self.known_mobs.insert(mob_id.to_string());
+                self.helpers.known_mobs.insert(mob_id.to_string());
                 self.open_known_mobs();
             }
             Push::Mob(protocol::MobNote {
                 mob_id,
                 change: protocol::MobChange::Destroyed,
             }) => {
-                self.known_mobs.remove(mob_id.as_str());
+                self.helpers.known_mobs.remove(mob_id.as_str());
             }
             Push::Stream {
                 stream,
@@ -585,28 +598,29 @@ impl Runner {
             },
             // The conversation's own stream: the daemon seated the agent
             // again on it (a model switch rebuilt its agent).
-            Push::StreamEnd(stream) if stream == link.stream && !self.switching => {
+            Push::StreamEnd(stream) if stream == link.stream && !self.switches.running => {
                 let session = link.session.clone();
                 self.rerender(session, Shown::Reseated);
             }
-            Push::StreamEnd(stream) => self.followers.ended(&stream),
+            Push::StreamEnd(stream) => self.helpers.followers.ended(&stream),
         }
     }
 
     /// An event of a mob's stream: a helper's, or one of a stream whose
     /// open has not answered yet.
     fn on_mob_event(&mut self, stream: String, attributed: meerkat_mob::AttributedEvent) {
-        if let Some(by) = self.followers.helper_of(&stream, &attributed) {
-            self.followers
+        if let Some(by) = self.helpers.followers.helper_of(&stream, &attributed) {
+            self.helpers
+                .followers
                 .convening(&attributed.envelope.payload, Some(&by));
         }
-        if self.followers.owns(&stream) {
-            let actions = self.followers.event(&stream, attributed);
+        if self.helpers.followers.owns(&stream) {
+            let actions = self.helpers.followers.event(&stream, attributed);
             self.follow(actions);
             // A helper's session or a council may make a mob this agent's.
             self.open_known_mobs();
         } else {
-            self.orphans.hold(stream, attributed);
+            self.helpers.orphans.hold(stream, attributed);
         }
     }
 
@@ -677,7 +691,10 @@ impl Runner {
             .iter()
             .filter_map(|path| path.last().cloned())
             .collect();
-        let actions = self.followers.seated(labels.iter().map(String::as_str));
+        let actions = self
+            .helpers
+            .followers
+            .seated(labels.iter().map(String::as_str));
         self.send(Msg::SeatedHelpers(labels));
         self.follow(actions);
     }
@@ -685,9 +702,10 @@ impl Runner {
     /// Open every known mob that is this agent's and not open yet.
     pub(super) fn open_known_mobs(&mut self) {
         let mobs: Vec<String> = self
+            .helpers
             .known_mobs
             .iter()
-            .filter(|mob| self.followers.should_open(mob))
+            .filter(|mob| self.helpers.followers.should_open(mob))
             .cloned()
             .collect();
         for mob in mobs {
@@ -698,7 +716,7 @@ impl Runner {
     /// The daemon moved the agent to another conversation while a switch
     /// of this client's ran: show it now, unless the switch ended there.
     pub(super) fn follow_pushed_session(&mut self) {
-        let Some(session) = self.pushed_session.take() else {
+        let Some(session) = self.switches.pushed.take() else {
             return;
         };
         if self.conn.link().is_some_and(|link| link.session != session) {
@@ -742,14 +760,15 @@ impl Runner {
     }
 
     pub(super) fn save_cursor(&self) {
-        if let Some(mark) = &self.mark
-            && let Some(agent) = &self.agent
-            && mark.sequence() > 0
+        if let Some(agent) = &self.agent
+            && self
+                .seen
+                .mark
+                .as_ref()
+                .is_some_and(|mark| mark.sequence() > 0)
+            && let Some(cursor) = self.seen.cursor()
         {
-            self.config
-                .cursor
-                .for_agent(agent)
-                .save(&mark.cursor(self.daemon_id_seen.as_deref()));
+            self.config.cursor.for_agent(agent).save(&cursor);
         }
     }
 }

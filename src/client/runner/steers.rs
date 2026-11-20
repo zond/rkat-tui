@@ -20,6 +20,33 @@ use meerkat_core::lifecycle::InputId;
 
 use crate::ui::delivery::PendingId;
 
+/// The runner's side of its steers: the steers followed, the ones the
+/// daemon admitted, and whether what became of them is being asked.
+#[derive(Debug, Default)]
+pub(super) struct Steering {
+    /// This client's steers on their way to the agent, followed across
+    /// turns by the inputs the runtime admitted them as.
+    pub(super) steers: Steers,
+    /// The steers the daemon admitted: the agent has them, or gets them
+    /// after this client leaves, so quitting saves none of them.
+    pub(super) admitted: Vec<PendingId>,
+    /// The question of what became of the followed steers
+    /// (`rkat/inputs`).
+    pub(super) fates: FatesAsk,
+}
+
+/// Where the question of the followed steers' fates stands.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum FatesAsk {
+    /// Nothing is being asked.
+    #[default]
+    NotAsked,
+    /// The question is on its way.
+    Asking,
+    /// An idle notice came while it was: ask again on the answer.
+    AskAgain,
+}
+
 /// This client's steers on their way to the agent.
 #[derive(Debug, Default)]
 pub(super) struct Steers {

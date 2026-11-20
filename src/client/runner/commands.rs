@@ -83,7 +83,7 @@ impl Runner {
             }
             None => lines.push("daemon: not attached".to_string()),
         }
-        if let Some(ShownModel { endpoint, model }) = &self.model {
+        if let Some(ShownModel { endpoint, model }) = &self.models.shown {
             lines.push(format!("model: {endpoint}/{model}"));
         }
         match (&self.config.remote, &self.config.address) {
@@ -164,7 +164,10 @@ impl Runner {
             reference,
             &self.config.endpoints,
             self.bench.models(),
-            self.model.as_ref().map(|shown| shown.endpoint.as_str()),
+            self.models
+                .shown
+                .as_ref()
+                .map(|shown| shown.endpoint.as_str()),
         ) {
             Ok(switch) => switch,
             Err(err) => {

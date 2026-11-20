@@ -6,8 +6,60 @@ use super::*;
 
 pub(super) mod state;
 
+use super::steers::FatesAsk;
 pub(super) use state::Turn;
 use state::{Kind, Overdue, Press, RunStart};
+
+/// What outlives one [`Turn`]: the turns' numbers and the task that sends
+/// them, the last failed prompt, the runs the last turn saw end, the
+/// daemon's last idle notice, and the interrupts' numbers and the press
+/// after one.
+#[derive(Default)]
+pub(super) struct Turns {
+    /// Numbers the UI's turns: a prompt's send failure ends the turn it
+    /// was sent for, not a later one.
+    count: u64,
+    /// The prompts and steers on their way, sent in order by one task
+    /// ([`Runner::outbound`]).
+    outbound: Option<mpsc::UnboundedSender<Outbound>>,
+    /// The prompt of the turn that just failed, in its conversation.
+    failed_prompt: Option<(SessionId, String)>,
+    /// The runs the last turn saw end: a note of one, or its end arriving
+    /// after the turn ended on the daemon's idle notice, joins no turn.
+    finished_runs: HashSet<RunId>,
+    /// What the daemon said last of this agent's being idle.
+    pub(super) idle: Option<protocol::IdleNote>,
+    /// How many interrupts this runner started (each turn's interrupt is
+    /// numbered, [`state::Interrupt::epoch`]).
+    interrupts: u64,
+    /// The last interrupted turn's last press, and whether "already
+    /// stopped" was said for it: a press soon after its end acts on
+    /// nothing ([`INTERRUPT_REPEAT`]).
+    after_interrupt: Option<(Instant, bool)>,
+}
+
+impl Turns {
+    /// The next turn's number.
+    fn next(&mut self) -> u64 {
+        self.count += 1;
+        self.count
+    }
+}
+
+/// The model the agent runs on, as this client knows it.
+#[derive(Default)]
+pub(super) struct Models {
+    /// The model and endpoint as last read or switched to.
+    pub(super) shown: Option<ShownModel>,
+    /// The dialect of the current model's provider.
+    dialect: Option<WireDialect>,
+    /// The last `/model` switch (carried to a `/new` conversation).
+    pub(super) last_switch: Option<ModelSwitch>,
+    /// A model switch (`rkat/set_model`) is on its way: prompts are held
+    /// until it is answered (a `/model` that waited for a turn's end goes
+    /// before the message typed after it).
+    pub(super) switching: bool,
+}
 
 impl Runner {
     pub(super) fn start_turn(&mut self, text: &str) {
@@ -22,19 +74,23 @@ impl Runner {
         // The prompt of the turn that just failed, typed again in its
         // conversation: the task checks whether it is still the last
         // message there.
-        let retry = self.failed_prompt.take().and_then(|(session, failed)| {
-            (self.conn.link().is_some_and(|link| link.session == session)
-                && failed.trim() == text.trim())
-            .then_some(session)
-        });
-        self.turns += 1;
-        self.turn = Turn::prompt(self.turns, text.clone());
+        let retry = self
+            .turns
+            .failed_prompt
+            .take()
+            .and_then(|(session, failed)| {
+                (self.conn.link().is_some_and(|link| link.session == session)
+                    && failed.trim() == text.trim())
+                .then_some(session)
+            });
+        let number = self.turns.next();
+        self.turn = Turn::prompt(number, text.clone());
         self.outbound(Outbound {
             connection,
             text,
             steer: None,
             retry,
-            turn: self.turns,
+            turn: number,
             reports: self.reporter(),
             ui_tx: self.ui_tx.clone(),
         });
@@ -59,8 +115,8 @@ impl Runner {
         // Expected at the agent's next boundary from now on (the stream may
         // deliver it before the send's answer); taken back if the send
         // fails.
-        self.steers.sending(id);
-        self.steers.sent_text(id, &text);
+        self.steering.steers.sending(id);
+        self.steering.steers.sent_text(id, &text);
         self.outbound(Outbound {
             connection,
             text,
@@ -77,11 +133,11 @@ impl Runner {
     /// agent's stream is opened again (its old one ended with the old
     /// registration), then the input goes once more ([`Self::send_again`]).
     pub(super) fn send_after_reload(&mut self, turn: u64, steer: Option<PendingId>, text: String) {
-        self.again = Some((turn, steer, text));
+        self.switches.again = Some((turn, steer, text));
         // A reopen under way (the daemon's [`protocol::RELOADED`], or the
         // old stream's end) is the reload's; else one starts here.
-        if self.switching {
-            self.reloaded = true;
+        if self.switches.running {
+            self.switches.reloaded = true;
         } else if let Some(link) = self.conn.link() {
             let session = link.session.clone();
             self.rerender(session, Shown::Reloaded);
@@ -93,7 +149,7 @@ impl Runner {
     pub(super) fn send_again(&mut self, turn: u64, steer: Option<PendingId>, text: String) {
         if self.turn.id() != Some(turn) {
             if let Some(id) = steer {
-                self.steers.forget(id);
+                self.steering.steers.forget(id);
             }
             return;
         }
@@ -128,7 +184,7 @@ impl Runner {
     ///
     /// A steer's answer names the input the runtime admitted it as, which
     /// the agent's `boundary_append_applied` names when it joins the run
-    /// ([`Steers`]). An answer that names none ([`UNNAMED_INPUT`]) is
+    /// ([`super::steers::Steers`]). An answer that names none ([`UNNAMED_INPUT`]) is
     /// acknowledged (the runtime has the message) and shown delivered at
     /// once with a notice: no other client's delivery is taken for it.
     pub(super) fn sent(
@@ -143,12 +199,12 @@ impl Runner {
                 if current && let Some(open) = self.turn.open_mut() {
                     open.steered();
                 }
-                self.admitted.push(id);
+                self.steering.admitted.push(id);
                 self.send(Msg::SteerAck { id, result: Ok(()) });
                 let delivered = match input {
-                    Some(input) => self.steers.admitted(id, input),
+                    Some(input) => self.steering.steers.admitted(id, input),
                     None => {
-                        self.steers.forget(id);
+                        self.steering.steers.forget(id);
                         self.notice(NoticeLevel::Warn, UNNAMED_INPUT);
                         true
                     }
@@ -162,7 +218,7 @@ impl Runner {
                 }
             }
             (Some(id), Err(SendFailure::NotSent(why))) => {
-                self.steers.forget(id);
+                self.steering.steers.forget(id);
                 self.send(Msg::SteerAck {
                     id,
                     result: Err(SteerFailure::Rejected(why)),
@@ -171,7 +227,7 @@ impl Runner {
             // Not followed any more (no input id to follow it by), and not
             // back in the editor: sent again it could reach the agent twice.
             (Some(id), Err(SendFailure::Unknown(why))) => {
-                self.steers.forget(id);
+                self.steering.steers.forget(id);
                 self.send(Msg::SteerAck {
                     id,
                     result: Err(SteerFailure::Unknown(why)),
@@ -206,7 +262,7 @@ impl Runner {
     /// [`Msg::Recalled`] when the daemon has (or with nothing to ask, at
     /// once).
     pub(super) fn recall(&mut self) {
-        let outstanding = self.steers.outstanding();
+        let outstanding = self.steering.steers.outstanding();
         if outstanding.is_empty() {
             self.send(Msg::Recalled {
                 recalled: Vec::new(),
@@ -241,10 +297,13 @@ impl Runner {
     /// already reached the agent.
     pub(super) fn recalled(&mut self, result: Result<protocol::Recalled, String>) {
         let (recalled, errors) = match result {
-            Ok(answer) => (self.steers.recalled(&answer.recalled), answer.errors),
+            Ok(answer) => (
+                self.steering.steers.recalled(&answer.recalled),
+                answer.errors,
+            ),
             Err(why) => (Vec::new(), vec![why]),
         };
-        self.admitted.retain(|id| !recalled.contains(id));
+        self.steering.admitted.retain(|id| !recalled.contains(id));
         self.send(Msg::Recalled { recalled, errors });
     }
 
@@ -253,7 +312,7 @@ impl Runner {
     /// the agent before the prompt it follows); the task is started on
     /// first use.
     pub(super) fn outbound(&mut self, outbound: Outbound) {
-        let sender = self.outbound.get_or_insert_with(|| {
+        let sender = self.turns.outbound.get_or_insert_with(|| {
             let (tx, mut rx) = mpsc::unbounded_channel::<Outbound>();
             tokio::spawn(async move {
                 while let Some(outbound) = rx.recv().await {
@@ -292,7 +351,7 @@ impl Runner {
     pub(super) fn interrupt(&mut self) {
         let now = Instant::now();
         if !self.turn.is_open() {
-            if let Some((last, said)) = &mut self.after_interrupt
+            if let Some((last, said)) = &mut self.turns.after_interrupt
                 && now.duration_since(*last) < INTERRUPT_REPEAT
             {
                 *last = now;
@@ -301,7 +360,7 @@ impl Runner {
                 }
                 return;
             }
-            self.after_interrupt = None;
+            self.turns.after_interrupt = None;
             self.interrupt_unseen();
             return;
         }
@@ -338,8 +397,9 @@ impl Runner {
             // what the turn runs now (a follow-up run another client's
             // message started).
             Press::New => {
-                self.interrupts += 1;
-                let target = turn.begin_interrupt(self.interrupts, now, now + INTERRUPT_DEADLINE);
+                self.turns.interrupts += 1;
+                let target =
+                    turn.begin_interrupt(self.turns.interrupts, now, now + INTERRUPT_DEADLINE);
                 self.send_interrupt(Some(target), false);
             }
         }
@@ -371,6 +431,7 @@ impl Runner {
         let params = protocol::InterruptParams {
             target,
             input_ids: self
+                .steering
                 .steers
                 .outstanding()
                 .into_iter()
@@ -414,13 +475,13 @@ impl Runner {
         }
         match result {
             Ok(answer) => {
-                let returned = self.steers.recalled(&answer.returned);
-                self.admitted.retain(|id| !returned.contains(id));
+                let returned = self.steering.steers.recalled(&answer.returned);
+                self.steering.admitted.retain(|id| !returned.contains(id));
                 if !returned.is_empty() {
                     self.send(Msg::Returned(returned));
                 }
                 for input in &answer.read {
-                    if let Some(id) = self.steers.settled(input) {
+                    if let Some(id) = self.steering.steers.settled(input) {
                         self.send(Msg::SteerDelivered(id));
                     }
                 }
@@ -442,7 +503,7 @@ impl Runner {
         self.settle_turn();
         // A steer the interrupt left unsettled, with the agent idle and
         // holding nothing: its fate is asked now (held back meanwhile).
-        if self.idle.as_ref().is_some_and(|idle| idle.held == 0) {
+        if self.turns.idle.as_ref().is_some_and(|idle| idle.held == 0) {
             self.ask_fates();
         }
     }
@@ -514,19 +575,19 @@ impl Runner {
     ) {
         if matches!(envelope.payload, AgentEvent::StreamTruncated { .. }) {
             if let Some(link) = self.conn.link()
-                && !self.switching
+                && !self.switches.running
             {
                 let session = link.session.clone();
                 self.rerender(session, Shown::LostEvents);
             }
             return;
         }
-        if let Some(mark) = &mut self.mark
+        if let Some(mark) = &mut self.seen.mark
             && !mark.admit(epoch, envelope.seq)
         {
             return;
         }
-        self.followers.convening(&envelope.payload, None);
+        self.helpers.followers.convening(&envelope.payload, None);
         if matches!(envelope.payload, AgentEvent::RunStarted { .. }) {
             self.on_run_started(envelope);
             return;
@@ -563,7 +624,7 @@ impl Runner {
             // This client's steer only: another client's input marks
             // nothing here.
             AgentEvent::BoundaryAppendApplied { input_id, .. } => {
-                if let Some(id) = self.steers.applied(input_id) {
+                if let Some(id) = self.steering.steers.applied(input_id) {
                     self.send(Msg::SteerDelivered(id));
                 }
             }
@@ -597,7 +658,7 @@ impl Runner {
     fn join_running(&mut self, payload: &AgentEvent) {
         if !self.turn.is_open()
             && joins_a_run(payload)
-            && !run_of(payload).is_some_and(|run| self.finished_runs.contains(run))
+            && !run_of(payload).is_some_and(|run| self.turns.finished_runs.contains(run))
         {
             self.turn = Turn::open(Kind::Joined);
             self.send(Msg::RemoteTurn { prompt: None });
@@ -657,7 +718,7 @@ impl Runner {
             RunStart::LeaveQuiet => {
                 if let Turn::Open(quiet) = std::mem::take(&mut self.turn) {
                     // The compaction's run, when it ran, ended in it.
-                    self.finished_runs.extend(quiet.runs.ended);
+                    self.turns.finished_runs.extend(quiet.runs.ended);
                 }
             }
             RunStart::Quiet | RunStart::Join | RunStart::First | RunStart::Later => {}
@@ -703,7 +764,7 @@ impl Runner {
         } else {
             prompt
                 .as_deref()
-                .map(|content| self.steers.carried(content))
+                .map(|content| self.steering.steers.carried(content))
                 .unwrap_or_default()
         };
         match start {
@@ -828,7 +889,7 @@ impl Runner {
     /// turn or the last), changes nothing; one it did not is the run to
     /// stop from now on.
     pub(super) fn run_noted(&mut self, run: RunId) {
-        if self.finished_runs.contains(&run) || self.turn.knows(&run) {
+        if self.turns.finished_runs.contains(&run) || self.turn.knows(&run) {
             return;
         }
         if !self.turn.is_open() {
@@ -844,7 +905,7 @@ impl Runner {
     /// no input of the conversation unfinished.
     pub(super) fn idle_reported(&mut self, note: protocol::IdleNote) {
         let holds_nothing = note.held == 0;
-        self.idle = Some(note);
+        self.turns.idle = Some(note);
         self.settle_turn();
         if holds_nothing {
             self.ask_fates();
@@ -857,7 +918,7 @@ impl Runner {
     /// which (`rkat/inputs`) rather than conclude from the absence of an
     /// event; [`Self::input_fates`] takes the answer.
     pub(super) fn ask_fates(&mut self) {
-        let outstanding = self.steers.outstanding();
+        let outstanding = self.steering.steers.outstanding();
         // While the turn's interrupt is unanswered its answer settles the
         // steers it named (returned to the editor, or read): asking here
         // too would race it, and a message the stopped run dropped would
@@ -866,14 +927,14 @@ impl Runner {
         if outstanding.is_empty() || self.turn.awaits_interrupt() {
             return;
         }
-        if let Some(again) = &mut self.asking_fates {
-            *again = true;
+        if self.steering.fates != FatesAsk::NotAsked {
+            self.steering.fates = FatesAsk::AskAgain;
             return;
         }
         let Some(connection) = self.connection() else {
             return;
         };
-        self.asking_fates = Some(false);
+        self.steering.fates = FatesAsk::Asking;
         let reports = self.reporter();
         tokio::spawn(async move {
             let params = protocol::RecallParams {
@@ -894,19 +955,19 @@ impl Runner {
     /// editor ([`Msg::NotDelivered`]); one still held, or not found in the
     /// agent's conversation, stays followed.
     pub(super) fn input_fates(&mut self, result: Result<protocol::InputFates, String>) {
-        let again = self.asking_fates.take().unwrap_or(false);
+        let again = std::mem::take(&mut self.steering.fates) == FatesAsk::AskAgain;
         match result {
             Ok(answer) => {
                 for row in answer.inputs {
                     match row.fate {
                         protocol::InputFate::Taken => {
-                            if let Some(id) = self.steers.settled(&row.input_id) {
+                            if let Some(id) = self.steering.steers.settled(&row.input_id) {
                                 self.send(Msg::SteerDelivered(id));
                             }
                         }
                         protocol::InputFate::Dropped { why } => {
-                            if let Some(id) = self.steers.settled(&row.input_id) {
-                                self.admitted.retain(|admitted| *admitted != id);
+                            if let Some(id) = self.steering.steers.settled(&row.input_id) {
+                                self.steering.admitted.retain(|admitted| *admitted != id);
                                 self.send(Msg::NotDelivered { id, why });
                             }
                         }
@@ -926,7 +987,7 @@ impl Runner {
     /// is still on its way (its send unanswered: it runs as a follow-up
     /// run). A stale notice (of a run before this turn) ends nothing.
     pub(super) fn settle_turn(&mut self) {
-        let Some(idle) = &self.idle else {
+        let Some(idle) = &self.turns.idle else {
             return;
         };
         let Some(turn) = self.turn.open_mut() else {
@@ -949,7 +1010,7 @@ impl Runner {
                 "the agent's run had already ended when the interrupt reached it",
             );
         }
-        if !over || self.steers.sending_any() {
+        if !over || self.steering.steers.sending_any() {
             return;
         }
         // After an interrupt the messages it took back are not held.
@@ -991,9 +1052,9 @@ impl Runner {
         };
         // Not the runs still open: an unconfirmed turn's run shows again
         // when it reports.
-        self.finished_runs = turn.runs.ended;
+        self.turns.finished_runs = turn.runs.ended;
         // A press right after an interrupted turn's end acts on nothing.
-        self.after_interrupt = turn
+        self.turns.after_interrupt = turn
             .interrupt
             .map(|interrupt| (interrupt.last_press, interrupt.said_stopped));
         let prompt = match turn.kind {
@@ -1018,7 +1079,7 @@ impl Runner {
         };
         // A failed turn's prompt stays committed: the same text typed again
         // is a retry, not a second copy ([`Runner::retry_input`]).
-        self.failed_prompt = match (&turn.result, prompt, self.conn.link()) {
+        self.turns.failed_prompt = match (&turn.result, prompt, self.conn.link()) {
             (Some(Err(TurnFailure::Failed(_))), Some((prompt, false)), Some(link)) => {
                 Some((link.session.clone(), prompt))
             }
@@ -1034,7 +1095,7 @@ impl Runner {
 
     /// The status bar names `model` on `endpoint` (of `dialect`).
     pub(super) fn show_model(&mut self, endpoint: &str, dialect: Option<WireDialect>, model: &str) {
-        self.model = Some(ShownModel {
+        self.models.shown = Some(ShownModel {
             endpoint: endpoint.to_string(),
             model: model.to_string(),
         });
@@ -1042,7 +1103,7 @@ impl Runner {
             endpoint: endpoint.to_string(),
             model: model.to_string(),
         }));
-        self.current_dialect = dialect;
+        self.models.dialect = dialect;
         let configured = self.bench.is_configured_endpoint(endpoint);
         if configured && self.bench.models().is_none() {
             // Its window is the endpoint's: fetch the lists, and show the
@@ -1058,7 +1119,7 @@ impl Runner {
     /// other way round (the listing then covers a model only an endpoint
     /// knows, whose profile the daemon wrote since).
     pub(super) fn send_context_window(&self) {
-        let Some(ShownModel { endpoint, model }) = &self.model else {
+        let Some(ShownModel { endpoint, model }) = &self.models.shown else {
             return;
         };
         let registry = || {
@@ -1073,7 +1134,7 @@ impl Runner {
                     &endpoint.engine_model(model),
                 );
             }
-            let provider = self.current_dialect?.into();
+            let provider = self.models.dialect?.into();
             crate::endpoints::registry_context_window(config, provider, model)
         };
         let listed = || {
@@ -1100,7 +1161,10 @@ impl Runner {
             reference,
             &self.config.endpoints,
             self.bench.models(),
-            self.model.as_ref().map(|shown| shown.endpoint.as_str()),
+            self.models
+                .shown
+                .as_ref()
+                .map(|shown| shown.endpoint.as_str()),
         ) {
             Ok(switch) => self.switch_model(switch),
             Err(err) => {
@@ -1126,7 +1190,7 @@ impl Runner {
             return;
         };
         let reports = self.reporter();
-        self.model_switching = true;
+        self.models.switching = true;
         tokio::spawn(async move {
             let params = protocol::SetModelParams {
                 model: switch.model.clone(),
@@ -1165,7 +1229,7 @@ impl Runner {
                     // A helper that names no model runs on the agent's
                     // model as it is now: its view shows that until the
                     // helper's own session is read.
-                    self.followers.set_default_model(&set.model);
+                    self.helpers.followers.set_default_model(&set.model);
                     // The agent was seated again: its stream is new.
                     if set.reseated {
                         self.rerender(set.session_id.clone(), Shown::Reseated);
@@ -1175,7 +1239,7 @@ impl Runner {
                     NoticeLevel::Info,
                     format!("switched to {} on {}", set.model, switch.endpoint),
                 );
-                self.last_switch = Some(switch);
+                self.models.last_switch = Some(switch);
             }
             Err(why) => self.notice(NoticeLevel::Error, format!("model not changed: {why}")),
         }
@@ -1184,11 +1248,12 @@ impl Runner {
     /// The model lists arrived ([`Workbench::background`]): a `/model
     /// <ref>` that waited for them switches now.
     pub(super) fn model_lists(&mut self, joined: Result<FetchResults, tokio::task::JoinError>) {
-        let current = current(self.model.as_ref());
+        let current = current(self.models.shown.as_ref());
         let reference = self.bench.lists_arrived(joined, current);
         // A configured endpoint's window is its listing's.
         if self
-            .model
+            .models
+            .shown
             .as_ref()
             .is_some_and(|shown| self.bench.is_configured_endpoint(&shown.endpoint))
         {
@@ -1243,15 +1308,15 @@ impl Runner {
             && !self.turn.is_open()
             && let Some(connection) = self.connection()
         {
-            self.turns += 1;
-            self.turn = Turn::open(Kind::Compaction { id: self.turns });
+            let number = self.turns.next();
+            self.turn = Turn::open(Kind::Compaction { id: number });
             self.send(Msg::CompactionRun(true));
             self.outbound(Outbound {
                 connection,
                 text: COMPACT_PROMPT.to_string(),
                 steer: None,
                 retry: None,
-                turn: self.turns,
+                turn: number,
                 reports: self.reporter(),
                 ui_tx: self.ui_tx.clone(),
             });

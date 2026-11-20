@@ -38,7 +38,7 @@ use tokio::time::Instant;
 
 use super::ClientError;
 use super::approvals::{Approvals, decision_params};
-use super::catchup::{Cursor, CursorFile, Mark};
+use super::catchup::{CursorFile, Mark};
 use super::helpers::{Action as FollowerAction, Followers, HelperId};
 use super::launch::{self, Decision};
 use super::push::Push;
@@ -76,7 +76,6 @@ mod turn;
 mod wires;
 
 use conn::{Conn, ConnEvent, Leaving};
-use steers::Steers;
 use turn::Turn;
 
 /// What is sent in place of a prompt that repeats the one a failed turn
@@ -582,61 +581,21 @@ impl<T> Orphans<T> {
     }
 }
 
-/// The client's runner: the loop between the UI and the daemon.
-pub struct Runner {
-    config: ClientConfig,
-    /// The agent the daemon bound this client to (`None` before the first
-    /// attach); a reconnect asks for it again.
-    agent: Option<String>,
-    /// An `/agents <name>` switch runs: the next link renders that agent's
-    /// conversation from its start.
-    agent_switch: bool,
-    /// The agent picker's "new agent" row: connects ask for a new agent
-    /// until one is bound.
-    seat_new: bool,
-    ui_tx: mpsc::UnboundedSender<Msg>,
-    effect_rx: mpsc::UnboundedReceiver<Effect>,
-    /// The connection's lifecycle.
-    conn: Conn,
-    reports_tx: mpsc::UnboundedSender<(u64, Report)>,
-    reports_rx: mpsc::UnboundedReceiver<(u64, Report)>,
+/// The background tasks' reports, each stamped with the link it started
+/// on.
+struct Reports {
+    tx: mpsc::UnboundedSender<(u64, Report)>,
+    rx: mpsc::UnboundedReceiver<(u64, Report)>,
     /// Counts the links made: a report started on an earlier link (a
     /// connection lost since) names a stream or a session of that
     /// connection and is not applied ([`Runner::on_report`]).
-    link_epoch: u64,
-    mark: Option<Mark>,
-    turn: Turn,
-    /// The runs the last turn saw end: a note of one, or its end arriving
-    /// after the turn ended on the daemon's idle notice, joins no turn.
-    finished_runs: HashSet<RunId>,
-    /// This client's steers on their way to the agent, followed across
-    /// turns by the inputs the runtime admitted them as.
-    steers: Steers,
-    /// What the daemon said last of this agent's being idle.
-    idle: Option<protocol::IdleNote>,
-    /// What became of the followed steers is being asked (`rkat/inputs`);
-    /// `Some(true)`: an idle notice came meanwhile, ask again on the answer.
-    asking_fates: Option<bool>,
-    /// How many interrupts this runner started (each turn's interrupt is
-    /// numbered, [`turn::state::Interrupt::epoch`]).
-    interrupts: u64,
-    /// The last interrupted turn's last press, and whether "already
-    /// stopped" was said for it: a press soon after its end acts on
-    /// nothing ([`INTERRUPT_REPEAT`]).
-    after_interrupt: Option<(Instant, bool)>,
-    /// How many `/btw` questions this runner asked, and the pending one's
-    /// number and call (one at a time).
-    btws: u64,
-    btw: Option<(u64, tokio::task::AbortHandle)>,
-    /// The model and endpoint as last read or switched to.
-    model: Option<ShownModel>,
-    /// The daemon the events shown came from (the cursor names it, see
-    /// [`super::catchup::daemon_id`]: a restarted daemon numbers its events
-    /// in a new space).
-    daemon_id_seen: Option<String>,
-    /// The approval dialogs shown.
-    approvals: Approvals,
-    /// The agent's helpers.
+    epoch: u64,
+}
+
+/// The agent's helpers as this client follows them.
+#[derive(Default)]
+struct Helpers {
+    /// The helpers and their views.
     followers: Followers,
     /// Events of streams opened but not registered yet, by stream id.
     orphans: Orphans<meerkat_mob::AttributedEvent>,
@@ -645,52 +604,58 @@ pub struct Runner {
     /// ([`Followers::should_open`], which a helper's session or a council
     /// can make true later).
     known_mobs: HashSet<String>,
-    /// The conversation the daemon last said the agent moved to
-    /// ([`protocol::SWITCHED`]) while a switch of this client's ran: shown
-    /// once that switch ends, unless it ended there.
-    pushed_session: Option<SessionId>,
-    /// A conversation switch (this client's, or adopting another's) runs.
-    switching: bool,
-    /// An input to send once more once the agent's stream is open again
-    /// after its reload ([`Shown::Reloaded`]): its turn, steer and text.
-    again: Option<(u64, Option<PendingId>, String)>,
-    /// The daemon said it reloaded the agent while a reopen of its stream
-    /// was under way (the engine may end the old stream first, which
-    /// reads as [`Shown::Reseated`]): that reopen is the reload's.
-    reloaded: bool,
-    /// The last `/model` switch (carried to a `/new` conversation).
-    last_switch: Option<ModelSwitch>,
-    /// The dialect of the current model's provider.
-    current_dialect: Option<WireDialect>,
+}
+
+impl Helpers {
+    /// The connection is gone: the followers lose their streams, and the
+    /// events held for streams and the mobs known go with it.
+    fn connection_lost(&mut self) {
+        self.followers.streams_lost();
+        self.orphans.clear();
+        self.known_mobs.clear();
+    }
+}
+
+/// The client's runner: the loop between the UI and the daemon.
+///
+/// Each concern holds its own fields: the turn ([`Turn`], and
+/// [`turn::Turns`] for what outlives one), the steers
+/// ([`steers::Steering`]), the model ([`turn::Models`]), the connection
+/// ([`Conn`]), where the events shown stand ([`link::Seen`]), the
+/// helpers, the switches ([`switch::Switches`]), `/btw`
+/// ([`btw::Btws`]) and leaving ([`depart::Departing`]). What stays here
+/// is shared across them: the configuration, the bound agent, the UI's
+/// channels, the reports, the dialogs, the workbench and the held
+/// prompts.
+pub struct Runner {
+    config: ClientConfig,
+    /// The agent the daemon bound this client to (`None` before the first
+    /// attach); a reconnect asks for it again.
+    agent: Option<String>,
+    ui_tx: mpsc::UnboundedSender<Msg>,
+    effect_rx: mpsc::UnboundedReceiver<Effect>,
+    /// The connection's lifecycle.
+    conn: Conn,
+    reports: Reports,
+    turn: Turn,
+    turns: turn::Turns,
+    steering: steers::Steering,
+    models: turn::Models,
+    seen: link::Seen,
+    /// The approval dialogs shown.
+    approvals: Approvals,
+    helpers: Helpers,
+    switches: switch::Switches,
+    btw: btw::Btws,
     /// `!` shell mode, `/remember`, `/memory`, `/export`, prices, the
     /// model lists and unsent messages.
     bench: Workbench,
-    /// The steers the daemon admitted: the agent has them, or gets them
-    /// after this client leaves, so quitting saves none of them.
-    admitted: Vec<PendingId>,
-    /// What to say on the terminal once the UI is gone (how this client
-    /// left the daemon).
-    farewells: Farewells,
     /// Prompts sent before the first attach finished (the command line's
     /// prompt is sent as the UI opens) or while a conversation switch
     /// runs: held until the link is up and no switch runs, or the first
     /// connect failed; `None` once released.
     held: Option<Vec<Effect>>,
-    /// A model switch (`rkat/set_model`) is on its way: prompts are held
-    /// until it is answered (a `/model` that waited for a turn's end goes
-    /// before the message typed after it).
-    model_switching: bool,
-    /// The prompt of the turn that just failed, in its conversation.
-    failed_prompt: Option<(SessionId, String)>,
-    /// Numbers the UI's turns: a prompt's send failure ends the turn it was
-    /// sent for, not a later one.
-    turns: u64,
-    /// The prompts and steers on their way, sent in order by one task
-    /// ([`Self::outbound`]).
-    outbound: Option<mpsc::UnboundedSender<Outbound>>,
-    /// How the UI leaves the daemon, done once the loop ends
-    /// ([`Self::depart`]).
-    departure: Option<Departure>,
+    departing: depart::Departing,
 }
 
 /// What a background task says to the UI ([`Runner::say`]).
@@ -747,45 +712,26 @@ impl Runner {
         Self {
             config,
             agent: None,
-            agent_switch: false,
-            seat_new: false,
             ui_tx,
             effect_rx,
             conn: Conn::Idle,
-            reports_tx,
-            reports_rx,
-            link_epoch: 0,
-            mark: None,
+            reports: Reports {
+                tx: reports_tx,
+                rx: reports_rx,
+                epoch: 0,
+            },
             turn: Turn::default(),
-            finished_runs: HashSet::new(),
-            steers: Steers::default(),
-            idle: None,
-            asking_fates: None,
-            interrupts: 0,
-            after_interrupt: None,
-            btws: 0,
-            btw: None,
-            model: None,
-            daemon_id_seen: None,
+            turns: turn::Turns::default(),
+            steering: steers::Steering::default(),
+            models: turn::Models::default(),
+            seen: link::Seen::default(),
             approvals: Approvals::default(),
-            followers: Followers::default(),
-            orphans: Orphans::default(),
-            known_mobs: HashSet::new(),
-            pushed_session: None,
-            switching: false,
-            again: None,
-            reloaded: false,
-            last_switch: None,
-            current_dialect: None,
+            helpers: Helpers::default(),
+            switches: switch::Switches::default(),
+            btw: btw::Btws::default(),
             bench,
-            admitted: Vec::new(),
-            farewells: Farewells::default(),
             held: Some(Vec::new()),
-            model_switching: false,
-            failed_prompt: None,
-            turns: 0,
-            outbound: None,
-            departure: None,
+            departing: depart::Departing::default(),
         }
     }
 
@@ -793,7 +739,7 @@ impl Runner {
     /// (whether the daemon keeps running).
     #[must_use]
     pub fn farewells(&self) -> Farewells {
-        Arc::clone(&self.farewells)
+        Arc::clone(&self.departing.farewells)
     }
 
     /// Say `text` now and again on the terminal after the UI closed.
@@ -805,7 +751,7 @@ impl Runner {
     fn say(&self) -> Say {
         Say {
             ui_tx: self.ui_tx.clone(),
-            farewells: Arc::clone(&self.farewells),
+            farewells: Arc::clone(&self.departing.farewells),
         }
     }
 
@@ -832,7 +778,7 @@ impl Runner {
                     // Held while a switch runs too: the prompt goes to the
                     // conversation the switch ends on, over its stream.
                     Some(effect @ Effect::StartTurn(_))
-                        if self.held.is_some() || self.switching || self.model_switching =>
+                        if self.held.is_some() || self.switches.running || self.models.switching =>
                     {
                         self.held.get_or_insert_with(Vec::new).push(effect);
                     }
@@ -844,12 +790,12 @@ impl Runner {
                     ConnEvent::Connected(joined) => self.connected(joined),
                     ConnEvent::RetryDue => self.retry(),
                 },
-                Some((epoch, report)) = self.reports_rx.recv() => self.on_report(epoch, report),
+                Some((epoch, report)) = self.reports.rx.recv() => self.on_report(epoch, report),
                 () = sleep_until(self.turn.deadline()) => self.on_deadline(),
                 joined = self.bench.background() => self.model_lists(joined),
             }
         }
-        if let Some(departure) = self.departure.take() {
+        if let Some(departure) = self.departing.chosen.take() {
             self.depart(departure).await;
         }
         self.save_cursor();
@@ -857,7 +803,7 @@ impl Runner {
         if let Conn::Connecting { task, .. } = &self.conn {
             task.abort();
         }
-        self.bench.save_unsent(&self.admitted)
+        self.bench.save_unsent(&self.steering.admitted)
     }
 
     fn send(&self, msg: Msg) {
@@ -868,7 +814,7 @@ impl Runner {
     /// start-up switch runs, or the first connect failed.
     fn releasable(&mut self) -> Vec<Effect> {
         let ready = matches!(self.conn, Conn::Failed)
-            || (self.conn.link().is_some() && !self.switching && !self.model_switching);
+            || (self.conn.link().is_some() && !self.switches.running && !self.models.switching);
         if ready {
             self.held.take().unwrap_or_default()
         } else {
@@ -879,8 +825,8 @@ impl Runner {
     /// The channel a background task started now reports on.
     fn reporter(&self) -> Reporter {
         Reporter {
-            tx: self.reports_tx.clone(),
-            epoch: self.link_epoch,
+            tx: self.reports.tx.clone(),
+            epoch: self.reports.epoch,
         }
     }
 
@@ -901,7 +847,7 @@ impl Runner {
     /// installed, a dead connection's stream id would silently mute the
     /// agent; the reattach read everything again.
     fn on_report(&mut self, epoch: u64, report: Report) {
-        if epoch != self.link_epoch {
+        if epoch != self.reports.epoch {
             match report {
                 Report::Switched { .. } | Report::MobOpened { .. } => {
                     tracing::debug!("dropped a report of a connection lost since");
@@ -948,7 +894,8 @@ impl Runner {
                     .as_deref()
                     .and_then(crate::endpoints::EndpointRef::parse);
                 let shown = self
-                    .model
+                    .models
+                    .shown
                     .as_ref()
                     .map(|m| m.endpoint.clone())
                     .unwrap_or_default();
@@ -972,14 +919,14 @@ impl Runner {
             }
             Report::Rehomed(rehomed) => self.rehomed(*rehomed),
             Report::ModelSet { switch, result } => {
-                self.model_switching = false;
+                self.models.switching = false;
                 self.model_set(switch, result);
             }
             Report::CompactAsked(asked) => self.compact_asked(asked),
             Report::Interrupted { epoch, result } => self.interrupt_answered(epoch, result),
             Report::Btw { id, result } => self.btw_answered(id, result),
             Report::Mobs(mobs) => {
-                self.known_mobs.extend(mobs);
+                self.helpers.known_mobs.extend(mobs);
                 self.open_known_mobs();
             }
             Report::MobOpened { mob, opened } => match opened {
@@ -994,13 +941,13 @@ impl Runner {
                     if let Some(seated) = &seated {
                         self.seated_helpers(seated);
                     }
-                    self.followers.opened(stream.clone(), &mob);
+                    self.helpers.followers.opened(stream.clone(), &mob);
                     let mut actions = Vec::new();
-                    for event in self.orphans.take(&stream) {
-                        actions.extend(self.followers.event(&stream, event));
+                    for event in self.helpers.orphans.take(&stream) {
+                        actions.extend(self.helpers.followers.event(&stream, event));
                     }
                     for (label, session) in members {
-                        actions.extend(self.followers.member(&mob, &label, session));
+                        actions.extend(self.helpers.followers.member(&mob, &label, session));
                     }
                     self.follow(actions);
                     // A helper's session may make a mob this agent's.
@@ -1008,15 +955,15 @@ impl Runner {
                 }
                 Err(why) => {
                     tracing::debug!(%mob, %why, "cannot follow the mob");
-                    self.followers.open_failed(&mob);
+                    self.helpers.followers.open_failed(&mob);
                 }
             },
             Report::Backfilled { helper, events } => {
-                let actions = self.followers.backfilled(&helper, events);
+                let actions = self.helpers.followers.backfilled(&helper, events);
                 self.follow(actions);
             }
             Report::HelperModel { helper, model } => {
-                let actions = self.followers.model(&helper, model);
+                let actions = self.helpers.followers.model(&helper, model);
                 self.follow(actions);
             }
             Report::Switched {
@@ -1024,14 +971,14 @@ impl Runner {
                 why: shown,
                 warning,
             } => {
-                self.switching = false;
+                self.switches.running = false;
                 match result {
                     Ok(adopted) => {
                         self.adopted(adopted, shown, warning);
                         self.follow_pushed_session();
                         // The stream is open again: the input the reload
                         // turned back goes once more.
-                        if let Some((turn, steer, text)) = self.again.take() {
+                        if let Some((turn, steer, text)) = self.switches.again.take() {
                             self.send_again(turn, steer, text);
                         }
                     }
@@ -1057,7 +1004,7 @@ impl Runner {
                 format!("could not list the conversations: {why}"),
             ),
             Report::SwitchRefused(level, text) => {
-                self.switching = false;
+                self.switches.running = false;
                 self.notice(level, text);
                 self.follow_pushed_session();
             }
@@ -1200,7 +1147,7 @@ impl Runner {
             Effect::UnwireFrom { workspace, agent } => self.unwire_from(workspace, agent),
             Effect::DecideQuit => self.decide_quit(),
             // Done once the loop ends: [`Effect::Quit`] follows.
-            Effect::Leave(departure) => self.departure = Some(departure),
+            Effect::Leave(departure) => self.departing.chosen = Some(departure),
             Effect::NewSession => self.switch_conversation(None),
             Effect::ResumeSession(reference) => self.resume_session(reference),
             Effect::RequestResumePicker => self.show_resume_picker(),
@@ -1229,7 +1176,7 @@ impl Runner {
                 ),
             ),
             Effect::RequestModelPicker { refresh } => {
-                let current = current(self.model.as_ref());
+                let current = current(self.models.shown.as_ref());
                 self.bench.request_model_picker(refresh, current, false);
             }
             Effect::RequestClassifierPicker => self.classifier_picker(),
@@ -1364,6 +1311,7 @@ mod tests {
     use super::commands::{
         agent_entries, others_notice, report_lines, schedule_picker, settings_picker,
     };
+    use super::steers::FatesAsk;
     use super::turn::model_switch;
     use super::turn::state::{Deadline, Interrupt, Kind, Open};
     use super::*;
@@ -1872,14 +1820,14 @@ mod tests {
         let (mut runner, mut ui_rx) = runner(dir.path());
         let live = SessionId::new();
         runner.conn = up(link("live", live.clone()).await);
-        runner.link_epoch = 2;
+        runner.reports.epoch = 2;
         let other = SessionId::new();
-        runner.switching = true;
+        runner.switches.running = true;
         runner.on_report(1, switched(&other, "dead"));
         let link_now = runner.conn.link().unwrap();
         assert_eq!(link_now.stream, "live");
         assert_eq!(link_now.session, live);
-        assert!(runner.switching, "a switch started since still runs");
+        assert!(runner.switches.running, "a switch started since still runs");
         while let Ok(msg) = ui_rx.try_recv() {
             assert!(!matches!(msg, Msg::ResetTranscript(_)), "{msg:?}");
         }
@@ -1888,7 +1836,7 @@ mod tests {
         let link_now = runner.conn.link().unwrap();
         assert_eq!(link_now.stream, "next");
         assert_eq!(link_now.session, other);
-        assert!(!runner.switching);
+        assert!(!runner.switches.running);
         let mut reset = false;
         while let Ok(msg) = ui_rx.try_recv() {
             reset |= matches!(msg, Msg::ResetTranscript(_));
@@ -2036,7 +1984,7 @@ mod tests {
         assert!(runner.turn.is_open(), "the unanswered prompt's turn runs");
         assert!(runner.turn.interrupted(), "Esc interrupted it at once");
         // The steer is expected at the next boundary while its send runs.
-        assert!(runner.steers.holds(PendingId(1)));
+        assert!(runner.steering.steers.holds(PendingId(1)));
         // Nothing was answered: no turn end, no acknowledgement yet.
         while let Ok(msg) = ui_rx.try_recv() {
             assert!(
@@ -2053,7 +2001,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut runner, mut ui_rx) = runner(dir.path());
         runner.conn = up(link("live", SessionId::new()).await);
-        runner.switching = true;
+        runner.switches.running = true;
         runner.on_report(
             0,
             Report::Interrupted {
@@ -2061,19 +2009,19 @@ mod tests {
                 result: Err("x".into()),
             },
         );
-        assert!(runner.switching);
+        assert!(runner.switches.running);
         // One of a lost connection says why, and leaves a later switch be.
-        runner.link_epoch = 1;
+        runner.reports.epoch = 1;
         runner.on_report(
             0,
             Report::SwitchRefused(NoticeLevel::Info, "already in this conversation".into()),
         );
-        assert!(runner.switching);
+        assert!(runner.switches.running);
         runner.on_report(
             1,
             Report::SwitchRefused(NoticeLevel::Info, "already in this conversation".into()),
         );
-        assert!(!runner.switching);
+        assert!(!runner.switches.running);
         let notices = std::iter::from_fn(|| ui_rx.try_recv().ok())
             .filter(|msg| matches!(msg, Msg::Notice { text, .. } if text == "already in this conversation"))
             .count();
@@ -2091,10 +2039,10 @@ mod tests {
         runner.turn = prompted(1);
         let early = InputId::new();
         for id in 1..=3 {
-            runner.steers.sending(PendingId(id));
+            runner.steering.steers.sending(PendingId(id));
         }
         // 2's input joined the run before its send answered.
-        assert_eq!(runner.steers.applied(&early), None);
+        assert_eq!(runner.steering.steers.applied(&early), None);
         runner.sent(1, Some(PendingId(1)), Ok(Some(InputId::new())));
         runner.sent(1, Some(PendingId(2)), Ok(Some(early)));
         runner.sent(1, Some(PendingId(3)), Ok(None));
@@ -2121,8 +2069,8 @@ mod tests {
             3
         );
         // 1 waits for its own input; 3 is not followed any more.
-        assert!(runner.steers.holds(PendingId(1)));
-        assert!(!runner.steers.holds(PendingId(3)));
+        assert!(runner.steering.steers.holds(PendingId(1)));
+        assert!(!runner.steering.steers.holds(PendingId(3)));
     }
 
     #[test]
@@ -2467,7 +2415,7 @@ mod tests {
         let (mut runner, _rx) = runner(dir.path());
         let session = SessionId::new();
         runner.conn = up(link("live", session.clone()).await);
-        runner.followers.set_default_model("at-attach");
+        runner.helpers.followers.set_default_model("at-attach");
         let switch = ModelSwitch {
             model: "now".into(),
             provider: Some("anthropic".into()),
@@ -2484,7 +2432,7 @@ mod tests {
                 reseated: false,
             }),
         );
-        assert_eq!(runner.followers.default_model(), "now");
+        assert_eq!(runner.helpers.followers.default_model(), "now");
     }
 
     /// In this client's own turn, a note before the stream's start of the
@@ -2526,9 +2474,9 @@ mod tests {
             let input = InputId::new();
             runner.turn = prompted(0);
             runner.on_event(feed.started(&run), None);
-            runner.steers.sending(PendingId(7));
+            runner.steering.steers.sending(PendingId(7));
             // Its own run's content is its text (`started` runs "x").
-            runner.steers.sent_text(PendingId(7), "x");
+            runner.steering.steers.sent_text(PendingId(7), "x");
             runner.on_event(feed.completed(&run), None);
             runner.idle_reported(feed.idle(&run, 0));
             assert!(runner.turn.is_open(), "its send is unanswered");
@@ -2541,7 +2489,7 @@ mod tests {
                 !msgs.iter().any(|m| matches!(m, Msg::SteerDelivered(_))),
                 "not read yet: {msgs:?}"
             );
-            assert!(runner.steers.holds(PendingId(7)));
+            assert!(runner.steering.steers.holds(PendingId(7)));
             if by_boundary {
                 // A turn of another client's runs; the steer joins it at a
                 // boundary.
@@ -2566,7 +2514,7 @@ mod tests {
                     "{msgs:?}"
                 );
             }
-            assert!(!runner.steers.holds(PendingId(7)));
+            assert!(!runner.steering.steers.holds(PendingId(7)));
             runner.finish_turn();
             drain(&mut rx);
         }
@@ -2588,8 +2536,9 @@ mod tests {
         let (first, note, own) = (RunId::new(), RunId::new(), RunId::new());
         runner.turn = prompted(0);
         runner.on_event(feed.started(&first), None);
-        runner.steers.sending(PendingId(7));
+        runner.steering.steers.sending(PendingId(7));
         runner
+            .steering
             .steers
             .sent_text(PendingId(7), "also update the docs");
         runner.sent(0, Some(PendingId(7)), Ok(Some(InputId::new())));
@@ -2604,7 +2553,7 @@ mod tests {
             !msgs.iter().any(|m| matches!(m, Msg::SteerDelivered(_))),
             "{msgs:?}"
         );
-        assert!(runner.steers.holds(PendingId(7)));
+        assert!(runner.steering.steers.holds(PendingId(7)));
         runner.on_event(feed.completed(&note), None);
         runner.on_event(feed.started_with(&own, "also update the docs"), None);
         let msgs = drain(&mut rx);
@@ -2615,7 +2564,7 @@ mod tests {
             1,
             "{msgs:?}"
         );
-        assert!(!runner.steers.holds(PendingId(7)));
+        assert!(!runner.steering.steers.holds(PendingId(7)));
     }
 
     /// An idle notice with nothing held while this client still follows
@@ -2633,17 +2582,25 @@ mod tests {
         let feed = Feed { session, seq: 0 };
         let inputs: Vec<InputId> = (0..4).map(|_| InputId::new()).collect();
         for (n, input) in (1..).zip(&inputs) {
-            runner.steers.sending(PendingId(n));
+            runner.steering.steers.sending(PendingId(n));
             runner.sent(0, Some(PendingId(n)), Ok(Some(input.clone())));
         }
         drain(&mut rx);
         let run = RunId::new();
         runner.idle_reported(feed.idle(&run, 1));
-        assert_eq!(runner.asking_fates, None, "the runtime still holds one");
+        assert_eq!(
+            runner.steering.fates,
+            FatesAsk::NotAsked,
+            "the runtime still holds one"
+        );
         runner.idle_reported(feed.idle(&run, 0));
-        assert_eq!(runner.asking_fates, Some(false));
+        assert_eq!(runner.steering.fates, FatesAsk::Asking);
         runner.idle_reported(feed.idle(&run, 0));
-        assert_eq!(runner.asking_fates, Some(true), "asked again on the answer");
+        assert_eq!(
+            runner.steering.fates,
+            FatesAsk::AskAgain,
+            "asked again on the answer"
+        );
         let row = |n: usize, fate| protocol::InputRow {
             input_id: inputs[n].clone(),
             fate,
@@ -2672,22 +2629,25 @@ mod tests {
             ),
             "{msgs:?}"
         );
-        assert!(!runner.steers.holds(PendingId(1)));
-        assert!(!runner.steers.holds(PendingId(2)));
-        assert!(runner.steers.holds(PendingId(3)) && runner.steers.holds(PendingId(4)));
+        assert!(!runner.steering.steers.holds(PendingId(1)));
+        assert!(!runner.steering.steers.holds(PendingId(2)));
         assert!(
-            !runner.admitted.contains(&PendingId(2)),
+            runner.steering.steers.holds(PendingId(3))
+                && runner.steering.steers.holds(PendingId(4))
+        );
+        assert!(
+            !runner.steering.admitted.contains(&PendingId(2)),
             "not saved as sent"
         );
-        assert!(runner.admitted.contains(&PendingId(1)));
+        assert!(runner.steering.admitted.contains(&PendingId(1)));
         // The notice that came meanwhile asked again, for the two left.
-        assert_eq!(runner.asking_fates, Some(false));
+        assert_eq!(runner.steering.fates, FatesAsk::Asking);
         // A failed question leaves them followed; nothing is asked again
         // until the next notice.
         runner.input_fates(Err("lost".into()));
-        assert_eq!(runner.asking_fates, None);
+        assert_eq!(runner.steering.fates, FatesAsk::NotAsked);
         assert!(drain(&mut rx).is_empty());
-        assert!(runner.steers.holds(PendingId(3)));
+        assert!(runner.steering.steers.holds(PendingId(3)));
         // The answer to a question for a steer settled since marks nothing.
         runner.input_fates(Ok(protocol::InputFates {
             inputs: vec![row(0, protocol::InputFate::Taken)],
@@ -2927,9 +2887,9 @@ mod tests {
         let run = RunId::new();
         runner.turn = Turn::open(Kind::Joined);
         open_mut(&mut runner).runs.seen(&run);
-        runner.steers.sending(PendingId(1));
+        runner.steering.steers.sending(PendingId(1));
         let input = InputId::new();
-        runner.steers.admitted(PendingId(1), input.clone());
+        runner.steering.steers.admitted(PendingId(1), input.clone());
         runner.interrupt();
         let sent = interrupts_sent(&mut requests).await;
         assert_eq!(sent.len(), 1, "{sent:?}");
@@ -3072,7 +3032,7 @@ mod tests {
             runner.turn = prompted(1);
             runner.steer(PendingId(1), "and this");
             let report = loop {
-                let (_, report) = runner.reports_rx.recv().await.unwrap();
+                let (_, report) = runner.reports.rx.recv().await.unwrap();
                 if let Report::Sent { result, .. } = report {
                     break result;
                 }
@@ -3098,7 +3058,10 @@ mod tests {
             match expect {
                 "admitted" => {
                     assert_eq!(acks, [Ok(())]);
-                    assert!(runner.steers.holds(PendingId(1)), "followed by its input");
+                    assert!(
+                        runner.steering.steers.holds(PendingId(1)),
+                        "followed by its input"
+                    );
                 }
                 "refused" => assert!(matches!(acks.as_slice(), [Err(SteerFailure::Rejected(_))])),
                 _ => assert!(matches!(acks.as_slice(), [Err(SteerFailure::Unknown(_))])),
@@ -3121,7 +3084,7 @@ mod tests {
             runner.conn = up(link);
             runner.start_turn("hello");
             let report = loop {
-                let (_, report) = runner.reports_rx.recv().await.unwrap();
+                let (_, report) = runner.reports.rx.recv().await.unwrap();
                 if let Report::Sent { result, .. } = report {
                     break result;
                 }
@@ -3231,11 +3194,14 @@ mod tests {
         turn.runs.seen(&run);
         turn.runs.over(&run);
         let (unread, read) = (InputId::new(), InputId::new());
-        runner.steers.sending(PendingId(1));
-        runner.steers.admitted(PendingId(1), read.clone());
-        runner.steers.sending(PendingId(2));
-        runner.steers.admitted(PendingId(2), unread.clone());
-        runner.idle = Some(protocol::IdleNote {
+        runner.steering.steers.sending(PendingId(1));
+        runner.steering.steers.admitted(PendingId(1), read.clone());
+        runner.steering.steers.sending(PendingId(2));
+        runner
+            .steering
+            .steers
+            .admitted(PendingId(2), unread.clone());
+        runner.turns.idle = Some(protocol::IdleNote {
             agent: "main".into(),
             session_id: SessionId::new(),
             last_run: Some(run.clone()),

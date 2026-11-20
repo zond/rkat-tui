@@ -6,6 +6,52 @@ use super::commands::daemon_status;
 use super::depart::daemon_ended;
 use super::*;
 
+/// The switches under way: of the agent's conversation (with what the
+/// daemon pushed meanwhile), of the agent itself, and the reopen of the
+/// agent's stream after its reload, which runs as a conversation switch.
+#[derive(Default)]
+pub(super) struct Switches {
+    /// A conversation switch (this client's, or adopting another's) runs.
+    pub(super) running: bool,
+    /// The conversation the daemon last said the agent moved to
+    /// ([`protocol::SWITCHED`]) while a switch of this client's ran: shown
+    /// once that switch ends, unless it ended there.
+    pub(super) pushed: Option<SessionId>,
+    /// An agent switch on its way.
+    pub(super) agent: AgentSwitch,
+    /// The daemon said it reloaded the agent while a reopen of its stream
+    /// was under way (the engine may end the old stream first, which
+    /// reads as [`Shown::Reseated`]): that reopen is the reload's.
+    pub(super) reloaded: bool,
+    /// An input to send once more once the agent's stream is open again
+    /// after its reload ([`Shown::Reloaded`]): its turn, steer and text.
+    pub(super) again: Option<(u64, Option<PendingId>, String)>,
+}
+
+/// An agent switch on its way: the next link renders the agent's
+/// conversation from its start.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum AgentSwitch {
+    /// None runs.
+    #[default]
+    None,
+    /// `/agents <name>`: to the agent [`Runner::agent`] names.
+    Named,
+    /// The agent picker's "new agent" row: connects ask for a new agent
+    /// until one is bound.
+    New,
+}
+
+impl AgentSwitch {
+    /// A switch to the agent [`Runner::agent`] names; a new agent asked
+    /// for and not bound yet stays asked for, as the connect asks.
+    fn name_one(&mut self) {
+        if *self == Self::None {
+            *self = Self::Named;
+        }
+    }
+}
+
 impl Runner {
     /// `/new` (`target: None`) or `/resume <session>`: ask the daemon to
     /// switch the agent's conversation, then show the new one.
@@ -16,7 +62,7 @@ impl Runner {
         let Some(link) = self.conn.link() else {
             return;
         };
-        self.switching = true;
+        self.switches.running = true;
         let connection = Arc::clone(&link.connection);
         let stream = link.stream.clone();
         let reports = self.reporter();
@@ -35,7 +81,7 @@ impl Runner {
             );
             return false;
         }
-        if self.switching {
+        if self.switches.running {
             self.notice(NoticeLevel::Info, "a conversation switch is under way");
             return false;
         }
@@ -55,7 +101,7 @@ impl Runner {
         let Some(link) = self.conn.link() else {
             return;
         };
-        self.switching = true;
+        self.switches.running = true;
         let connection = Arc::clone(&link.connection);
         let stream = link.stream.clone();
         let reports = self.reporter();
@@ -85,7 +131,7 @@ impl Runner {
             identity,
             usage,
         } = adopted;
-        let why = if std::mem::take(&mut self.reloaded) && why == Shown::Reseated {
+        let why = if std::mem::take(&mut self.switches.reloaded) && why == Shown::Reseated {
             Shown::Reloaded
         } else {
             why
@@ -107,10 +153,10 @@ impl Runner {
             }
         }
         let id = session.to_string();
-        self.mark = Some(Mark::rendered(&id, last_seq));
+        self.seen.mark = Some(Mark::rendered(&id, last_seq));
         self.save_cursor();
-        self.followers.reset(session);
-        self.orphans.clear();
+        self.helpers.followers.reset(session);
+        self.helpers.orphans.clear();
         self.send(Msg::Status(StatusUpdate::Session(id.clone())));
         self.send(Msg::ResetTranscript(blocks));
         // The conversation's own totals and gauge, read from the daemon.
@@ -127,7 +173,7 @@ impl Runner {
         self.refresh_tasks();
         if let Some(identity) = identity {
             let model = identity.model.clone();
-            self.followers.set_default_model(&model);
+            self.helpers.followers.set_default_model(&model);
             self.show_model(
                 identity.endpoint_name(),
                 WireDialect::parse(&identity.provider),
@@ -136,7 +182,7 @@ impl Runner {
             // A fresh conversation starts on the daemon's start-up model:
             // this client's last `/model` carries over.
             if why == Shown::New
-                && let Some(switch) = self.last_switch.clone()
+                && let Some(switch) = self.models.last_switch.clone()
                 && switch.model != model
             {
                 self.switch_model(switch);
@@ -180,7 +226,7 @@ impl Runner {
         let Some(link) = self.conn.link() else {
             return;
         };
-        self.switching = true;
+        self.switches.running = true;
         let connection = Arc::clone(&link.connection);
         let stream = link.stream.clone();
         let current = link.session.clone();
@@ -243,7 +289,7 @@ impl Runner {
             );
             return;
         }
-        if self.turn.is_open() || self.switching {
+        if self.turn.is_open() || self.switches.running {
             self.notice(
                 NoticeLevel::Warn,
                 "a turn is running or a switch is under way; switch agents once it ends (or interrupt it)",
@@ -264,7 +310,7 @@ impl Runner {
     /// bound to an agent seated for it, as a plain `rkat-tui` start is; the
     /// agent left keeps running (detached when this was its last client).
     pub(super) fn new_agent(&mut self) {
-        if self.turn.is_open() || self.switching {
+        if self.turn.is_open() || self.switches.running {
             self.notice(
                 NoticeLevel::Warn,
                 "a turn is running or a switch is under way; start a new agent once it ends (or interrupt it)",
@@ -275,9 +321,8 @@ impl Runner {
             return;
         }
         self.unlink();
-        self.mark = None;
-        self.seat_new = true;
-        self.agent_switch = true;
+        self.seen.mark = None;
+        self.switches.agent = AgentSwitch::New;
         // A prompt sent meanwhile goes to the new agent once it is bound.
         self.held.get_or_insert_with(Vec::new);
         self.show(LinkState::Reconnecting);
@@ -302,14 +347,17 @@ impl Runner {
             );
             return;
         }
-        if self.turn.is_open() || self.switching || self.agent.as_deref() == Some(name.as_str()) {
+        if self.turn.is_open()
+            || self.switches.running
+            || self.agent.as_deref() == Some(name.as_str())
+        {
             // Something started meanwhile; the user asks again.
             return;
         }
         self.unlink();
-        self.mark = None;
+        self.seen.mark = None;
         self.agent = Some(name);
-        self.agent_switch = true;
+        self.switches.agent.name_one();
         // A prompt sent meanwhile goes to this agent once it is bound.
         self.held.get_or_insert_with(Vec::new);
         self.show(LinkState::Reconnecting);
@@ -338,7 +386,7 @@ impl Runner {
             Some("/rehome works on this machine's workspace only; run it there")
         } else if self.config.reroot.is_none() {
             Some("this client cannot be re-rooted; use rkat-tui --rehome from the shell")
-        } else if self.turn.is_open() || self.switching {
+        } else if self.turn.is_open() || self.switches.running {
             Some(
                 "a turn is running or a switch is under way; re-home once it ends (or interrupt it)",
             )
@@ -566,8 +614,8 @@ impl Runner {
         });
         self.config = config;
         self.agent = None;
-        self.mark = None;
-        self.daemon_id_seen = None;
+        self.seen.mark = None;
+        self.seen.daemon_id = None;
         self.show(LinkState::Connecting);
         self.connect(true, 0);
     }

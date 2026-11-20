@@ -4,6 +4,15 @@
 use super::*;
 use crate::daemon::endpoint::{Reach, reach};
 
+/// How the client leaves: the departure the UI chose, done once the loop
+/// ends ([`Runner::depart`]), and the lines to say on the terminal once
+/// the UI is gone (shared with every [`Say`]).
+#[derive(Debug, Default)]
+pub(super) struct Departing {
+    pub(super) chosen: Option<Departure>,
+    pub(super) farewells: Farewells,
+}
+
 impl Runner {
     /// `/quit`: the daemon decides how this client leaves and does it
     /// (`rkat/quit`); answered with [`Msg::QuitDecided`]. What it did is

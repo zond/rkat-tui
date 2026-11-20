@@ -7,6 +7,22 @@ use super::*;
 /// daemon's own bound, [`crate::daemon::btw::TIMEOUT`], plus the way).
 const BTW_WAIT: Duration = Duration::from_secs(75);
 
+/// The runner's `/btw` questions: how many it asked (each is numbered),
+/// and the pending one's number and call (one at a time).
+#[derive(Debug, Default)]
+pub(super) struct Btws {
+    asked: u64,
+    pending: Option<(u64, tokio::task::AbortHandle)>,
+}
+
+impl Btws {
+    /// The next question's number.
+    fn next(&mut self) -> u64 {
+        self.asked += 1;
+        self.asked
+    }
+}
+
 impl Runner {
     /// Ask the daemon `question` about the agent's session (with the tool
     /// it runs now); the answer comes as [`Msg::BtwAnswered`]. One at a
@@ -17,7 +33,7 @@ impl Runner {
         running_tool: Option<(String, u64)>,
         current_turn: Option<String>,
     ) {
-        if self.btw.is_some() {
+        if self.btw.pending.is_some() {
             // The UI asks one at a time; this guards another sender.
             self.notice(
                 NoticeLevel::Warn,
@@ -32,8 +48,7 @@ impl Runner {
             ))));
             return;
         };
-        self.btws += 1;
-        let id = self.btws;
+        let id = self.btw.next();
         let reports = self.reporter();
         let task = tokio::spawn(async move {
             let params = protocol::BtwParams {
@@ -54,13 +69,13 @@ impl Runner {
             });
             reports.send(Report::Btw { id, result });
         });
-        self.btw = Some((id, task.abort_handle()));
+        self.btw.pending = Some((id, task.abort_handle()));
     }
 
     /// Esc on the pending `/btw`: the call is dropped here and cancelled in
     /// the daemon; the UI already shows it cancelled.
     pub(super) fn cancel_btw(&mut self) {
-        let Some((id, task)) = self.btw.take() else {
+        let Some((id, task)) = self.btw.pending.take() else {
             return;
         };
         task.abort();
@@ -83,8 +98,13 @@ impl Runner {
     /// The daemon's answer to the `/btw` numbered `id`, if it is still the
     /// pending one.
     pub(super) fn btw_answered(&mut self, id: u64, result: Result<String, String>) {
-        if self.btw.as_ref().is_some_and(|(pending, _)| *pending == id) {
-            self.btw = None;
+        if self
+            .btw
+            .pending
+            .as_ref()
+            .is_some_and(|(pending, _)| *pending == id)
+        {
+            self.btw.pending = None;
             self.send(Msg::BtwAnswered(result));
         }
     }
