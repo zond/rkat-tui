@@ -72,7 +72,7 @@ use std::sync::Arc;
 
 use meerkat_core::SessionId;
 
-pub use registry::{Gone, HelperKey, HelperRegistry, Refused, SeatedHook};
+pub use registry::{Gone, HelperKey, HelperRegistry, Outlets, Refused, SeatedHook};
 pub use registry::{HelperContext, HelperKind, HelperLife, HelperStatus, HelperTag};
 
 use meerkat_mob_mcp::MobMcpState;

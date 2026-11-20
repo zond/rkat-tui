@@ -240,7 +240,8 @@ pub struct Whose {
 /// The daemon's bring-ups.
 pub struct Instructions {
     runtime: Weak<SessionRuntime>,
-    audit: parking_lot::Mutex<Option<Arc<AuditLog>>>,
+    /// Where the audit lines go (none: the audit log did not open).
+    audit: Option<Arc<AuditLog>>,
     /// The conversations whose bring-up waits for their run's end.
     waiting: parking_lot::Mutex<HashMap<SessionId, Whose>>,
     /// Tells the agents' side of a bring-up made at a run's end.
@@ -261,12 +262,12 @@ impl std::fmt::Debug for Instructions {
 }
 
 impl Instructions {
-    /// Over `runtime`'s sessions.
+    /// Over `runtime`'s sessions, writing the audit lines to `audit`.
     #[must_use]
-    pub fn new(runtime: &Arc<SessionRuntime>) -> Arc<Self> {
+    pub fn new(runtime: &Arc<SessionRuntime>, audit: Option<Arc<AuditLog>>) -> Arc<Self> {
         Arc::new(Self {
             runtime: Arc::downgrade(runtime),
-            audit: parking_lot::Mutex::new(None),
+            audit,
             waiting: parking_lot::Mutex::new(HashMap::new()),
             on_updated: parking_lot::Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
@@ -277,10 +278,10 @@ impl Instructions {
     /// Tests: [`Self::new`], seating with [`stale`] sections.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn stale(runtime: &Arc<SessionRuntime>) -> Arc<Self> {
+    pub fn stale(runtime: &Arc<SessionRuntime>, audit: Option<Arc<AuditLog>>) -> Arc<Self> {
         Arc::new(Self {
             runtime: Arc::downgrade(runtime),
-            audit: parking_lot::Mutex::new(None),
+            audit,
             waiting: parking_lot::Mutex::new(HashMap::new()),
             on_updated: parking_lot::Mutex::new(None),
             stale: true,
@@ -295,11 +296,6 @@ impl Instructions {
             return stale(&section);
         }
         section
-    }
-
-    /// Write the audit lines to `audit`.
-    pub fn set_audit(&self, audit: Option<Arc<AuditLog>>) {
-        *self.audit.lock() = audit;
     }
 
     /// Call `on_updated` when a waiting bring-up was made.
@@ -382,7 +378,7 @@ impl Instructions {
             Ok(result) => {
                 self.waiting.lock().remove(session);
                 tracing::info!(%session, name = %whose.name, version = result.version.get(), "brought a conversation's instructions up to this build's");
-                if let Some(audit) = self.audit.lock().as_ref() {
+                if let Some(audit) = &self.audit {
                     let mut line = Line::event(
                         AUDIT_EVENT,
                         format!(

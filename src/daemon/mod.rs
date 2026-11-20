@@ -578,14 +578,8 @@ impl Daemon {
         let parts =
             bootstrap::assemble(layers, config, args, options.bootstrap, LEASE_SURFACE).await?;
         let file = places.choose(&parts.confinement)?;
-        let mut composed = engine::compose(parts, options.policy)?;
-        let audit = open_audit(&mut composed);
-        composed.revisions.set_audit(audit.clone());
-        // Bound before any spawn: a spawn by a profile's name the follower
-        // has not read yet is read for at once. A spawn by an agent's tool
-        // call reaches the customizer only after the engine's restore, so
-        // that read never waits behind it.
-        composed.profiles.bind(&composed.state);
+        let (mut composed, deliveries) = engine::compose(parts, options.policy)?;
+        let audit = composed.audit.clone();
         mob::ensure_mob(&composed.state, &composed.root).await?;
         // After the mobs are restored: the follower's first read sees them.
         let follow = true;
@@ -625,14 +619,11 @@ impl Daemon {
                 composed.runtime.schedule_service(),
                 Arc::clone(&composed.ledger),
             )),
-            activity: {
-                probe_helper_inputs(&composed.root.registry, composed.runtime.runtime_adapter());
-                idle_activity(
-                    &conversations,
-                    composed.runtime.runtime_adapter(),
-                    &composed.decisions,
-                )
-            },
+            activity: idle_activity(
+                &conversations,
+                composed.runtime.runtime_adapter(),
+                &composed.decisions,
+            ),
             conversations,
             audit,
             prepare: Arc::clone(&composed.prepare),
@@ -658,20 +649,14 @@ impl Daemon {
             Arc::clone(&core),
             agents::endings::HeldNotes::open(&composed.scope.realm_root()),
         );
-        core.contacts.bind_roster({
-            let roster: Arc<dyn contacts::Roster> = agents.clone();
-            Arc::downgrade(&roster)
-        });
-        // A helpers' bindings write that fails, and the one that saves it
-        // again, reach every agent's clients and the audit log.
-        core.registry.bindings().on_saving({
-            let agents = Arc::downgrade(&agents);
-            Arc::new(move |saving| storage::bindings_saving(agents.clone(), saving))
-        });
-        attach_engine(&core, &agents, &workspace)?;
-        composed.desk.report_to(&composed.engine);
-        let (endings_task, endings_stop) = deliver_endings(&agents);
-        let checkpoints_task = deliver_checkpoints(&agents);
+        bind_agents(
+            &core,
+            &agents,
+            composed.runtime.runtime_adapter(),
+            &workspace,
+        )?;
+        let (endings_task, endings_stop) = deliver_endings(&agents, deliveries.endings);
+        let checkpoints_task = deliver_checkpoints(&agents, deliveries.checkpoints);
         let first_agent = start_agents(
             &agents,
             &composed,
@@ -1029,25 +1014,6 @@ impl EndpointPlaces {
     }
 }
 
-/// The audit log in the realm: owner-only, outside the workspace and every
-/// grant of the agent's shell, secret to its file tools (see `audit`); it
-/// follows a re-home. None, with a start-up notice, when it cannot be
-/// opened.
-fn open_audit(composed: &mut engine::Composed) -> Option<Arc<audit::AuditLog>> {
-    match audit::AuditLog::open(&composed.scope.realm_root()) {
-        Ok(log) => Some(log),
-        Err(err) => {
-            tracing::warn!(error = %err, "no audit log this run");
-            composed
-                .startup_notices
-                .push(protocol::StartupNotice::warn(format!(
-                    "no audit log this run: {err}"
-                )));
-            None
-        }
-    }
-}
-
 /// The agents' conversations, from the realm's conversation log.
 fn open_conversations(
     composed: &engine::Composed,
@@ -1224,16 +1190,38 @@ fn idle_activity(
     )
 }
 
-/// What the approval engine learns of the agents before any runs: who is
-/// with each (a turn no user started is unattended unless a client is),
-/// which peers are the workspace's agents (a message to one is tier 1),
-/// and the audit log. Each is installed once: a second composition over
-/// one engine is refused rather than left on the first one's agents.
-fn attach_engine(
+/// The handles bound once the agents exist, before any of them runs (the
+/// last group of the order [`engine`]'s `bind_late` states): each reads
+/// the agents, which are built over [`core::Core`] and so after every
+/// handle it holds.
+///
+/// - The contacts read the roster of the agents.
+/// - A helpers' bindings write that fails, and the one that saves it
+///   again, reach every agent's clients and the audit log.
+/// - The helpers' endings ask the runtime what a helper still holds
+///   ([`probe_helper_inputs`]); the probe reads the registry that holds
+///   the endings.
+/// - The approval engine learns who is with each agent (a turn no user
+///   started is unattended unless a client is), which peers are the
+///   workspace's agents (a message to one is tier 1), who holds its
+///   settings files, and the audit log. Each is installed once: a second
+///   composition over one engine is refused rather than left on the first
+///   one's agents.
+fn bind_agents(
     core: &core::Core,
     agents: &Arc<agents::Agents>,
+    machine: Arc<meerkat_runtime::MeerkatMachine>,
     workspace: &Path,
 ) -> Result<(), DaemonError> {
+    core.contacts.bind_roster({
+        let roster: Arc<dyn contacts::Roster> = agents.clone();
+        Arc::downgrade(&roster)
+    });
+    core.registry.bindings().on_saving({
+        let agents = Arc::downgrade(agents);
+        Arc::new(move |saving| storage::bindings_saving(agents.clone(), saving))
+    });
+    probe_helper_inputs(&core.registry, machine);
     let engine = &core.engine;
     let attendance = Arc::new(agents::AgentAttendance::new(agents));
     if !engine.set_attendance(Arc::clone(&attendance) as _) {
@@ -1266,20 +1254,18 @@ fn attach_engine(
     Ok(())
 }
 
-/// The agents' file watches: each batch reaches its agent.
 /// Tell the parents of helpers how they ended ([`agents::endings`]):
-/// the registry's endings go to the agents from now on.
+/// the registry's endings (`rx`) go to the agents.
 /// The task, and what tells it the daemon stops (it then holds what it
 /// has not told yet, [`agents::endings::deliver`]).
 fn deliver_endings(
     agents: &Arc<agents::Agents>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<crate::mobs::endings::Ended>,
 ) -> (
     tokio::task::JoinHandle<()>,
     tokio::sync::watch::Sender<bool>,
 ) {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let (stop, stopping) = tokio::sync::watch::channel(false);
-    agents.core().registry.endings().deliver_to(tx);
     (
         tokio::spawn(agents::endings::deliver(
             Arc::downgrade(agents),
@@ -1290,11 +1276,12 @@ fn deliver_endings(
     )
 }
 
-/// Hand every helper's run that reaches its limit to its checkpoint
-/// ([`checkpoint`]).
-fn deliver_checkpoints(agents: &Arc<agents::Agents>) -> tokio::task::JoinHandle<()> {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    agents.core().registry.endings().checkpoints_to(tx);
+/// Hand every helper's run that reaches its limit (`rx`) to its
+/// checkpoint ([`checkpoint`]).
+fn deliver_checkpoints(
+    agents: &Arc<agents::Agents>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::mobs::endings::LimitReached>,
+) -> tokio::task::JoinHandle<()> {
     let agents = Arc::downgrade(agents);
     tokio::spawn(async move {
         while let Some(reached) = rx.recv().await {
@@ -1306,6 +1293,7 @@ fn deliver_checkpoints(agents: &Arc<agents::Agents>) -> tokio::task::JoinHandle<
     })
 }
 
+/// The agents' file watches: each batch reaches its agent.
 fn deliver_watches(
     agents: &Arc<agents::Agents>,
     mut batches: tokio::sync::mpsc::UnboundedReceiver<watches::Batch>,

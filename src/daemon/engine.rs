@@ -140,6 +140,18 @@ pub struct Composed {
     pub revisions: Arc<super::instructions::Instructions>,
     /// Who each agent and helper can message (`contacts`).
     pub contacts: Arc<super::contacts::Contacts>,
+    /// The audit log (none: it did not open; a start-up notice says so).
+    pub audit: Option<Arc<super::audit::AuditLog>>,
+}
+
+/// What the registry reports that the daemon's agents are told: the
+/// receivers its tasks read once the agents exist (a report made before
+/// waits in its channel).
+pub struct Deliveries {
+    /// Each helper's ending to tell its parent.
+    pub endings: mpsc::UnboundedReceiver<crate::mobs::endings::Ended>,
+    /// Each helper's run at its limit, for its checkpoint.
+    pub checkpoints: mpsc::UnboundedReceiver<crate::mobs::endings::LimitReached>,
 }
 
 /// How `/btw` builds the model client of a session's model identity: the
@@ -178,14 +190,18 @@ pub struct PolicyOptions {
     pub stale_instructions: bool,
 }
 
-/// Compose the runtime and the mob host over `parts`.
+/// Compose the runtime and the mob host over `parts`, with what the
+/// registry reports for the agents.
 ///
 /// # Errors
 ///
 /// [`DaemonError::Hosting`], [`DaemonError::Composition`],
 /// [`DaemonError::Driver`], or [`DaemonError::Bootstrap`] when the
 /// agent's tools cannot be composed.
-pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, DaemonError> {
+pub fn compose(
+    parts: Assembled,
+    policy: PolicyOptions,
+) -> Result<(Composed, Deliveries), DaemonError> {
     let instructions = parts.instructions();
     let Assembled {
         scope,
@@ -263,17 +279,36 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         llm_override,
     })?;
 
+    let realm_root = scope.realm_root();
+    let audit = open_audit(&realm_root, &mut startup_notices);
     // This build's instructions on a conversation an earlier one began.
     #[cfg(any(test, feature = "test-support"))]
     let revisions = if policy.stale_instructions {
-        super::instructions::Instructions::stale(&runtime)
+        super::instructions::Instructions::stale(&runtime, audit.clone())
     } else {
-        super::instructions::Instructions::new(&runtime)
+        super::instructions::Instructions::new(&runtime, audit.clone())
     };
     #[cfg(not(any(test, feature = "test-support")))]
-    let revisions = super::instructions::Instructions::new(&runtime);
-    let realm_root = scope.realm_root();
-    let registry = helper_registry(&realm_root, &approval.engine);
+    let revisions = super::instructions::Instructions::new(&runtime, audit.clone());
+    // What the registry reports, each to a task made below or by the
+    // daemon once its agents exist; a report made before its task runs
+    // waits in its channel.
+    let (gone_tx, gone_rx) = mpsc::unbounded_channel();
+    let (seated_tx, seated_rx) = mpsc::unbounded_channel::<meerkat_core::SessionId>();
+    let (ended_tx, ended_rx) = mpsc::unbounded_channel();
+    let (checkpoints_tx, checkpoints_rx) = mpsc::unbounded_channel();
+    let registry = Arc::new(HelperRegistry::persistent(&realm_root).with_outlets(
+        crate::mobs::Outlets {
+            gone: Some(gone_tx),
+            seated: Some(crate::mobs::SeatedHook(Box::new(
+                move |owner: &meerkat_core::SessionId| {
+                    let _ = seated_tx.send(owner.clone());
+                },
+            ))),
+            ended: Some(ended_tx),
+            checkpoints: Some(checkpoints_tx),
+        },
+    ));
     let (diff_tx, diff_rx) = tokio::sync::mpsc::unbounded_channel();
     let notes = Arc::new(note_tools(&scope));
     // The agents' file watches: the daemon's process watches the
@@ -281,8 +316,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     let (watches, watch_batches) =
         super::watches::Watches::new(scope.project_root.as_path().to_path_buf());
     let engine = Arc::clone(&approval.engine);
-    let (origins, deferrable, reveals) =
-        tool_origins(&runtime, &engine, &scope, &notes, &skill_tools)?;
+    let (origins, deferrable, reveals) = tool_origins(&runtime, &scope, &notes, &skill_tools)?;
     let Some(escalations) = approval.escalations.take() else {
         return Err(DaemonError::Approval(
             "the approval engine has no escalation channel".to_string(),
@@ -398,7 +432,6 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         &realm_root,
         &registry,
     )?;
-    prepare.bind(&state);
     // `connect_helpers` across mobs: the pairs connected so far, their
     // sockets made at the start's check (`Links::reconcile`), each pair
     // ending with an end that leaves.
@@ -407,11 +440,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         tracing::warn!(%problem, "no connections of helpers in different mobs this run");
         startup_notices.push(StartupNotice::warn(problem));
     }
-    links.bind(&state);
-    let (gone_tx, gone_rx) = mpsc::unbounded_channel();
-    registry.on_gone(gone_tx);
     let links_task = links.follow(gone_rx);
-    assigner.bind(&state, &links);
     // The agent-facing mob tools (`mob_*`, `council`, …) reach a session
     // build through the builder's mob-tools slot. `MethodRouter::new` fills
     // it on the first connection, which is after the agent's spawn:
@@ -443,7 +472,17 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         reveals,
     ));
     deferral.install(&runtime);
-    assigner.fork_through(Arc::clone(&deferral.routes));
+    bind_late(&Late {
+        engine: &engine,
+        registry: &registry,
+        origins: &origins,
+        state: &state,
+        prepare: &prepare,
+        links: &links,
+        assigner: &assigner,
+        profiles: &profiles,
+        routes: &deferral.routes,
+    });
     let decisions = Decisions::new(decision_service, principal, Some(Arc::new(router)))
         .map_err(DaemonError::Approval)?;
     let decisions_task = decisions.follow();
@@ -455,7 +494,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         &origins,
         &ledger,
         &decisions,
-        (spawning_rx, &revisions),
+        (spawning_rx, seated_rx, &revisions),
     );
     let notes_task = forward_approval_notes(
         &decisions,
@@ -481,51 +520,167 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         Arc::clone(&decisions),
         engine.escalation_timeout(),
         escalations,
+        Arc::downgrade(&engine),
     );
 
-    Ok(Composed {
-        runtime,
-        config_store,
-        realm_config,
-        skills,
-        state,
-        root: root_plan,
-        lease: realm_lease,
-        scope,
+    Ok((
+        Composed {
+            runtime,
+            config_store,
+            realm_config,
+            skills,
+            state,
+            root: root_plan,
+            lease: realm_lease,
+            scope,
+            engine,
+            desk,
+            decisions,
+            tasks: vec![
+                desk_task,
+                decisions_task,
+                diffs_task,
+                notes_task,
+                follower,
+                destroyed_task,
+                probe_task,
+                links_task,
+            ],
+            links,
+            ledger,
+            origins,
+            deferral,
+            watches,
+            watch_batches,
+            thinking,
+            endpoints: daemon_endpoints,
+            project_inputs,
+            tasks_db,
+            files: approval.files.take(),
+            startup_notices,
+            side_clients,
+            helper_max_depth,
+            prepare,
+            layers,
+            helper_models,
+            profiles,
+            revisions,
+            contacts,
+            audit,
+        },
+        Deliveries {
+            endings: ended_rx,
+            checkpoints: checkpoints_rx,
+        },
+    ))
+}
+
+/// The audit log in the realm: owner-only, outside the workspace and every
+/// grant of the agent's shell, secret to its file tools (see
+/// [`super::audit`]); it follows a re-home. None, with a start-up notice,
+/// when it cannot be opened.
+fn open_audit(
+    realm_root: &std::path::Path,
+    startup_notices: &mut Vec<StartupNotice>,
+) -> Option<Arc<super::audit::AuditLog>> {
+    match super::audit::AuditLog::open(realm_root) {
+        Ok(log) => Some(log),
+        Err(err) => {
+            tracing::warn!(error = %err, "no audit log this run");
+            startup_notices.push(StartupNotice::warn(format!("no audit log this run: {err}")));
+            None
+        }
+    }
+}
+
+/// What [`bind_late`] binds.
+struct Late<'a> {
+    engine: &'a Arc<ApprovalEngine>,
+    registry: &'a Arc<HelperRegistry>,
+    origins: &'a Arc<DaemonToolOrigins>,
+    state: &'a Arc<MobMcpState>,
+    prepare: &'a Arc<super::prepare::Prepare>,
+    links: &'a Arc<super::links::Links>,
+    assigner: &'a Arc<super::assign::Assigner>,
+    profiles: &'a Arc<crate::mobs::profiles::MobProfiles>,
+    routes: &'a Arc<super::deferral::ForkRoutes>,
+}
+
+/// Every handle the composition binds after it is built, in one place.
+/// Everything else is passed at construction; these cannot be, since each
+/// needs something that is built from it or after it. The order of the
+/// daemon's start:
+///
+/// 1. Here, once the mob state and the mob tools exist, before any mob is
+///    restored or any agent runs:
+///    - the approval engine learns of the registry (its forget hook, the
+///      agents' scratch directories) and of the tool catalogs (the origins
+///      and their forget hook). The engine is built by the bootstrap,
+///      ahead of the runtime the catalogs read and of every handle of the
+///      daemon's;
+///    - the smart compaction, the connections across mobs, `assign` (with
+///      its connector and contacts) and the mobs' definitions reach the mob
+///      state. Each is part of the customizer or the tools the mob state
+///      is built over;
+///    - `assign` forks through the mob tools' routes, built over the mob
+///      state.
+/// 2. In [`crate::mobs::install_mob_hooks`], as the mob state is made: the
+///    helpers' endings reach the mob state and owe their retires to the
+///    registry that holds them.
+/// 3. In the daemon's start, once its agents exist (`bind_agents` in
+///    [`super`]): what reads the agents (the contacts' roster, the
+///    bindings' saving hook, the approval engine's attendance, agent peers,
+///    settings files and audit) and the endings' input probe, which reads
+///    the registry that holds them. [`super::agents::Agents::new`] binds
+///    the instructions' bring-up hook to the agents it makes.
+fn bind_late(late: &Late<'_>) {
+    let Late {
         engine,
-        desk,
-        decisions,
-        tasks: vec![
-            desk_task,
-            decisions_task,
-            diffs_task,
-            notes_task,
-            follower,
-            destroyed_task,
-            probe_task,
-            links_task,
-        ],
-        links,
-        ledger,
+        registry,
         origins,
-        deferral,
-        watches,
-        watch_batches,
-        thinking,
-        endpoints: daemon_endpoints,
-        project_inputs,
-        tasks_db,
-        files: approval.files.take(),
-        startup_notices,
-        side_clients,
-        helper_max_depth,
+        state,
         prepare,
-        layers,
-        helper_models,
+        links,
+        assigner,
         profiles,
-        revisions,
-        contacts,
-    })
+        routes,
+    } = *late;
+    let forget = Arc::downgrade(registry);
+    engine.add_forget_hook(Arc::new(move |session: &meerkat_core::SessionId| {
+        if let Some(registry) = forget.upgrade() {
+            registry.forget_session(session);
+        }
+    }));
+    // The gate treats each agent's scratch directory as its sessions' own.
+    let scratch = Arc::downgrade(registry);
+    if !engine
+        .grants()
+        .set_scratch(Arc::new(move |session: &meerkat_core::SessionId| {
+            scratch
+                .upgrade()
+                .and_then(|registry| registry.scratch_of_session(session))
+        }))
+    {
+        tracing::warn!("the approval engine already knows the agents' scratch directories");
+    }
+    if !engine.set_tool_origins(Arc::clone(origins) as Arc<dyn crate::approval::ToolOrigins>) {
+        tracing::warn!("the approval engine already knows its tool catalogs");
+    }
+    let forget = Arc::downgrade(origins);
+    engine.add_forget_hook(Arc::new(move |session: &meerkat_core::SessionId| {
+        if let Some(origins) = forget.upgrade() {
+            origins.forget(session);
+        }
+    }));
+    prepare.bind(state);
+    links.bind(state);
+    assigner.bind(state, links);
+    // Bound before any spawn: a spawn by a profile's name the follower
+    // has not read yet is read for at once. A spawn by an agent's tool
+    // call reaches the customizer only after the engine's restore, so
+    // that read never waits behind it.
+    profiles.bind(state);
+    assigner.fork_through(Arc::clone(routes));
 }
 
 /// What a client shows when it first attaches (`rkat/notices`): the
@@ -592,31 +747,6 @@ fn session_runtime(parts: RuntimeParts<'_>) -> Result<Arc<SessionRuntime>, Daemo
     Ok(Arc::new(runtime))
 }
 
-/// The helpers the agents start, kept in the realm; a forgotten
-/// session's helper bookkeeping goes with it.
-fn helper_registry(
-    realm_root: &std::path::Path,
-    engine: &Arc<ApprovalEngine>,
-) -> Arc<HelperRegistry> {
-    let registry = Arc::new(HelperRegistry::persistent(realm_root));
-    let forget = Arc::downgrade(&registry);
-    engine.add_forget_hook(Arc::new(move |session: &meerkat_core::SessionId| {
-        if let Some(registry) = forget.upgrade() {
-            registry.forget_session(session);
-        }
-    }));
-    // The gate treats each agent's scratch directory as its sessions' own.
-    let scratch = Arc::downgrade(&registry);
-    engine
-        .grants()
-        .set_scratch(Arc::new(move |session: &meerkat_core::SessionId| {
-            scratch
-                .upgrade()
-                .and_then(|registry| registry.scratch_of_session(session))
-        }));
-    registry
-}
-
 /// The principal the daemon decides as (`[daemon] principal`) and the
 /// runtime's durable decisions, which the realm must keep: approval
 /// requests reach the clients as decisions.
@@ -638,11 +768,9 @@ fn consent(
 /// The members' tool catalogs the gate judges calls by, with the tools an
 /// agent's requests leave out until it searches for them and each
 /// conversation's reveals. The tools' names come from one agent's set
-/// (every agent's has the same ones); a forgotten session's catalog goes
-/// with it.
+/// (every agent's has the same ones).
 fn tool_origins(
     runtime: &Arc<SessionRuntime>,
-    engine: &Arc<ApprovalEngine>,
     scope: &RuntimeScope,
     notes: &Arc<NoteToolDispatcher>,
     skills: &Arc<crate::tools::SkillToolDispatcher>,
@@ -672,13 +800,6 @@ fn tool_origins(
         &[catalog, search],
         Arc::clone(&deferrable),
     ));
-    engine.set_tool_origins(Arc::clone(&origins) as Arc<dyn crate::approval::ToolOrigins>);
-    let forget = Arc::downgrade(&origins);
-    engine.add_forget_hook(Arc::new(move |session: &meerkat_core::SessionId| {
-        if let Some(origins) = forget.upgrade() {
-            origins.forget(session);
-        }
-    }));
     Ok((origins, deferrable, reveals))
 }
 
@@ -771,20 +892,16 @@ fn follow_helpers(
     origins: &Arc<DaemonToolOrigins>,
     ledger: &Arc<super::usage::Ledger>,
     decisions: &Arc<Decisions>,
-    (spawning, revisions): (
+    (spawning, mut changes, revisions): (
         mpsc::UnboundedReceiver<crate::mobs::customizer::Spawning>,
+        mpsc::UnboundedReceiver<meerkat_core::SessionId>,
         &Arc<super::instructions::Instructions>,
     ),
 ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
-    // Each change of a conversation's seated helpers goes to its clients
-    // as the whole list: a client's live helpers are the daemon's. One
-    // task reads and sends them in the order the changes came.
-    let (changed, mut changes) = mpsc::unbounded_channel::<meerkat_core::SessionId>();
-    registry.on_seated(crate::mobs::SeatedHook(Box::new(
-        move |owner: &meerkat_core::SessionId| {
-            let _ = changed.send(owner.clone());
-        },
-    )));
+    // Each change of a conversation's seated helpers (the registry's
+    // seated hook) goes to its clients as the whole list: a client's live
+    // helpers are the daemon's. One task reads and sends them in the
+    // order the changes came.
     tokio::spawn({
         let state = Arc::downgrade(state);
         let decisions = Arc::downgrade(decisions);

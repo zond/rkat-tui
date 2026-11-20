@@ -162,8 +162,9 @@ pub struct Desk {
     /// The engine's escalation timeout (each decision's deadline).
     timeout: Duration,
     waiting: Mutex<HashMap<u64, Waiting>>,
-    /// The engine told who answered each escalation (the audit log).
-    engine: Mutex<std::sync::Weak<ApprovalEngine>>,
+    /// The engine told who answered each escalation (the audit log); held
+    /// weakly, since the engine owns the broker this desk serves.
+    engine: std::sync::Weak<ApprovalEngine>,
 }
 
 impl std::fmt::Debug for Desk {
@@ -177,19 +178,20 @@ impl std::fmt::Debug for Desk {
 impl Desk {
     /// A desk holding a decision through `decisions` for each escalation
     /// `requests` delivers (open for `timeout`, the engine's escalation
-    /// timeout), until the engine drops its broker. Returns the desk and
-    /// its task.
+    /// timeout), until the engine drops its broker, and telling `engine`
+    /// who answered each. Returns the desk and its task.
     #[must_use]
     pub fn spawn(
         decisions: Arc<Decisions>,
         timeout: Duration,
         mut requests: mpsc::Receiver<EscalationRequest>,
+        engine: std::sync::Weak<ApprovalEngine>,
     ) -> (Arc<Self>, tokio::task::JoinHandle<()>) {
         let desk = Arc::new(Self {
             decisions,
             timeout,
             waiting: Mutex::new(HashMap::new()),
-            engine: Mutex::new(std::sync::Weak::new()),
+            engine,
         });
         let task = tokio::spawn({
             let desk = Arc::clone(&desk);
@@ -200,12 +202,6 @@ impl Desk {
             }
         });
         (desk, task)
-    }
-
-    /// Tell `engine` who answers each escalation from now on (held
-    /// weakly: the engine owns the broker this desk serves).
-    pub fn report_to(&self, engine: &Arc<ApprovalEngine>) {
-        *self.engine.lock() = Arc::downgrade(engine);
     }
 
     /// The human interrupted `session`'s turn: the open escalations of its
@@ -292,7 +288,7 @@ impl Desk {
                     DecisionPhase::Rejected
                 };
                 self.decisions.ended(&id, Some(phase)).await;
-                if let (Some(by), Some(engine)) = (settled.by, self.engine.lock().upgrade()) {
+                if let (Some(by), Some(engine)) = (settled.by, self.engine.upgrade()) {
                     engine.answered_by(prompt.id, by);
                 }
                 let answer = EscalationAnswer::from_decision(
@@ -1331,7 +1327,12 @@ mod tests {
         )
         .unwrap();
         let (tx, rx) = mpsc::channel(4);
-        let (desk, _task) = Desk::spawn(Arc::clone(&decisions), Duration::from_mins(1), rx);
+        let (desk, _task) = Desk::spawn(
+            Arc::clone(&decisions),
+            Duration::from_mins(1),
+            rx,
+            std::sync::Weak::new(),
+        );
         (desk, decisions, tx)
     }
 

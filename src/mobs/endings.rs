@@ -47,7 +47,7 @@
 //!
 //! A run of any of these that reaches its turn limit ([`Terminal::Limit`])
 //! is no ending: it goes to the daemon's checkpoint
-//! ([`HelperEndings::checkpoints_to`], `crate::daemon::checkpoint`), and
+//! ([`HelperEndings::delivering`], `crate::daemon::checkpoint`), and
 //! the end of the run its status is asked in is held too. The checkpoint
 //! either continues it ([`HelperEndings::checkpoint_continues`]: the runs
 //! after are told as any) or stops it ([`HelperEndings::checkpoint_stopped`]:
@@ -273,7 +273,7 @@ impl Terminal {
 }
 
 /// A helper's run reached its checkpoint: what the daemon's checkpoint
-/// ([`HelperEndings::checkpoints_to`]) is handed.
+/// ([`HelperEndings::delivering`]) is handed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LimitReached {
     /// The helper.
@@ -659,7 +659,7 @@ pub struct HelperEndings {
     /// helper's state is read and moved in one take.
     helpers: Mutex<HashMap<HelperKey, Ending>>,
     /// Where the endings to tell go (the daemon's delivery).
-    sink: OnceLock<mpsc::UnboundedSender<Ended>>,
+    sink: Option<mpsc::UnboundedSender<Ended>>,
     /// The mob host (a helper is retired through it).
     state: OnceLock<Weak<MobMcpState>>,
     /// How many endings were told so far.
@@ -678,9 +678,9 @@ pub struct HelperEndings {
     /// finished, newest last ([`Self::retired_peer`]).
     /// With each, the parent it was retired with (`None`: it finished).
     retired_peers: Arc<RetiredPeers>,
-    /// Where a run at its limit goes for its checkpoint
-    /// ([`Self::checkpoints_to`]); unset, it is a failure.
-    checkpoints: OnceLock<mpsc::UnboundedSender<LimitReached>>,
+    /// Where a run at its limit goes for its checkpoint; none, it is a
+    /// failure.
+    checkpoints: Option<mpsc::UnboundedSender<LimitReached>>,
     /// Held while a helper's going idle is decided and while a note is
     /// sent to a helper ([`Self::while_unsettled`]): a note either lands
     /// before the decision (unfinished input: the helper goes on) or finds
@@ -895,18 +895,18 @@ impl std::fmt::Debug for Probe {
 }
 
 impl HelperEndings {
-    /// Send every ending to tell to `sink` from now on (once).
-    pub fn deliver_to(&self, sink: mpsc::UnboundedSender<Ended>) {
-        if self.sink.set(sink).is_err() {
-            tracing::warn!("helper endings already have a sink; the second is ignored");
-        }
-    }
-
-    /// Hand every helper's run that reaches its limit to `sink` for its
-    /// checkpoint from now on (once).
-    pub fn checkpoints_to(&self, sink: mpsc::UnboundedSender<LimitReached>) {
-        if self.checkpoints.set(sink).is_err() {
-            tracing::warn!("helper checkpoints already have a sink; the second is ignored");
+    /// Endings that send every ending to tell to `sink`, and hand every
+    /// helper's run that reaches its limit to `checkpoints` for its
+    /// checkpoint (none: such a run is a failure).
+    #[must_use]
+    pub fn delivering(
+        sink: Option<mpsc::UnboundedSender<Ended>>,
+        checkpoints: Option<mpsc::UnboundedSender<LimitReached>>,
+    ) -> Self {
+        Self {
+            sink,
+            checkpoints,
+            ..Self::default()
         }
     }
 
@@ -1148,7 +1148,7 @@ impl HelperEndings {
             Terminal::Limit { steps } => Some(steps),
             _ => None,
         };
-        let checkpoints = self.checkpoints.get();
+        let checkpoints = self.checkpoints.as_ref();
         let (end, tag) = match self.helpers.lock().get_mut(key) {
             Some(Ending::Followed(followed)) => (
                 followed.run_ended(limit, checkpoints.is_some()),
@@ -1499,7 +1499,7 @@ impl HelperEndings {
     fn tell(&self, ended: Ended) {
         tracing::info!(helper = %ended.key, how = %ended.how.text(), "a helper ended");
         self.told.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        match self.sink.get() {
+        match &self.sink {
             Some(sink) => {
                 if sink.send(ended).is_err() {
                     tracing::debug!("the helper endings' sink is gone");
@@ -1669,10 +1669,8 @@ mod tests {
     }
 
     fn endings() -> (Arc<HelperEndings>, mpsc::UnboundedReceiver<Ended>) {
-        let endings = Arc::new(HelperEndings::default());
         let (tx, rx) = mpsc::unbounded_channel();
-        endings.deliver_to(tx);
-        (endings, rx)
+        (Arc::new(HelperEndings::delivering(Some(tx), None)), rx)
     }
 
     /// A helper the last daemon left that its mob no longer seats is told
@@ -1933,9 +1931,9 @@ mod tests {
     #[test]
     fn a_run_at_its_limit_goes_to_its_checkpoint_before_any_ending() {
         use crate::mobs::{HelperContext, HelperKind, HelperLife};
-        let (endings, mut rx) = endings();
-        let (tx, mut limits) = mpsc::unbounded_channel();
-        endings.checkpoints_to(tx);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (limits_tx, mut limits) = mpsc::unbounded_channel();
+        let endings = Arc::new(HelperEndings::delivering(Some(tx), Some(limits_tx)));
         let key = HelperKey::new(MobId::from("tui"), AgentIdentity::from("scout"));
         endings.spawned(
             &key,
@@ -2061,10 +2059,14 @@ mod tests {
         HelperKey,
     ) {
         use crate::mobs::{HelperContext::Fresh, HelperKind::Started, HelperLife};
-        let registry = Arc::new(super::super::HelperRegistry::in_memory());
-        registry.endings().owe_to(&registry);
         let (tx, rx) = mpsc::unbounded_channel();
-        registry.endings().deliver_to(tx);
+        let registry = Arc::new(super::super::HelperRegistry::in_memory().with_outlets(
+            crate::mobs::Outlets {
+                ended: Some(tx),
+                ..crate::mobs::Outlets::default()
+            },
+        ));
+        registry.endings().owe_to(&registry);
         let owner = SessionId::new();
         let mob = MobId::from("tui");
         let parent = HelperKey::new(mob.clone(), AgentIdentity::from("p1"));

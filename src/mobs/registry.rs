@@ -259,7 +259,7 @@ impl std::fmt::Display for HelperKey {
 }
 
 /// A helper, or every helper of a mob, that left for good
-/// ([`HelperRegistry::on_gone`]).
+/// ([`Outlets::gone`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Gone {
     /// The helper retired (finished, stopped or retired by a tool).
@@ -317,7 +317,7 @@ struct SessionModel {
 /// ([`HelperRegistry::note_task`]).
 pub const TASK_LINE: usize = 80;
 
-/// What [`HelperRegistry::on_seated`] is told: the owner session whose
+/// What [`Outlets::seated`] is told: the owner session whose
 /// seated helpers changed.
 pub struct SeatedHook(pub Box<dyn Fn(&SessionId) + Send + Sync>);
 
@@ -325,6 +325,25 @@ impl std::fmt::Debug for SeatedHook {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("SeatedHook")
     }
+}
+
+/// Where a registry reports what happens to its helpers, fixed when it is
+/// built ([`HelperRegistry::with_outlets`]): each one left out is not
+/// reported (a test's registry).
+#[derive(Debug, Default)]
+pub struct Outlets {
+    /// Each helper and mob that left for good (the daemon's connections
+    /// of helpers in different mobs follow them, `crate::daemon::links`).
+    pub gone: Option<tokio::sync::mpsc::UnboundedSender<Gone>>,
+    /// The owner session whose seated helpers changed, after each change
+    /// (the daemon pushes the list to the owner's clients,
+    /// [`crate::daemon::protocol::SEATED`]).
+    pub seated: Option<SeatedHook>,
+    /// Each helper's ending to tell its parent ([`super::endings`]).
+    pub ended: Option<tokio::sync::mpsc::UnboundedSender<super::endings::Ended>>,
+    /// Each helper's run at its limit, for its checkpoint; left out, such
+    /// a run is a failure.
+    pub checkpoints: Option<tokio::sync::mpsc::UnboundedSender<super::endings::LimitReached>>,
 }
 
 /// How long a helper whose `assign` call returned keeps its slot while its
@@ -447,8 +466,8 @@ pub struct HelperRegistry {
     /// How each helper ends, and when its parent is told.
     endings: std::sync::Arc<super::endings::HelperEndings>,
     /// Where each helper and mob that left for good is reported
-    /// ([`Self::on_gone`]).
-    gone: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<Gone>>,
+    /// ([`Outlets::gone`]).
+    gone: Option<tokio::sync::mpsc::UnboundedSender<Gone>>,
     /// The helpers `assign` calls are seating, by key: each holds its name
     /// and a slot under its parent's limit, and the kind the call asked for
     /// until its seat takes it ([`Self::reserve`], [`Self::take_intent`]):
@@ -459,8 +478,8 @@ pub struct HelperRegistry {
     /// (`helpers.max_live`).
     max_live: std::sync::atomic::AtomicUsize,
     /// Told the owner session whose seated helpers changed (one was
-    /// seated or left), after the change ([`Self::on_seated`]).
-    seated: std::sync::OnceLock<SeatedHook>,
+    /// seated or left), after the change ([`Outlets::seated`]).
+    seated: Option<SeatedHook>,
     /// Whether each followed helper runs, and since when (its last run's
     /// start or end as the follower saw it).
     activity: Mutex<HashMap<HelperKey, (bool, std::time::Instant)>>,
@@ -492,17 +511,36 @@ impl HelperRegistry {
             destroyed: tokio::sync::broadcast::channel(DESTROYED_QUEUE).0,
             scratch: crate::approval::scratch::ScratchDirs::off(),
             endings: std::sync::Arc::default(),
-            gone: std::sync::OnceLock::new(),
+            gone: None,
             pending: Mutex::new(HashMap::new()),
             max_live: std::sync::atomic::AtomicUsize::new(
                 usize::try_from(crate::config::registry::DEFAULT_HELPERS_LIVE).unwrap_or(8),
             ),
-            seated: std::sync::OnceLock::new(),
+            seated: None,
             activity: Mutex::new(HashMap::new()),
             ended: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "test-support"))]
             probe: probe::RegistryProbe::default(),
         }
+    }
+
+    /// This registry reporting to `outlets` (before it is shared: they are
+    /// fixed from then on).
+    #[must_use]
+    pub fn with_outlets(mut self, outlets: Outlets) -> Self {
+        let Outlets {
+            gone,
+            seated,
+            ended,
+            checkpoints,
+        } = outlets;
+        self.gone = gone;
+        self.seated = seated;
+        self.endings = std::sync::Arc::new(super::endings::HelperEndings::delivering(
+            ended,
+            checkpoints,
+        ));
+        self
     }
 
     /// How each helper ends ([`super::endings`]).
@@ -975,17 +1013,10 @@ impl HelperRegistry {
         self.bindings.member(key).and_then(|binding| binding.task)
     }
 
-    /// Tell `hook` the owner session whose seated helpers changed, after
-    /// each change from now on (once; the daemon pushes the list to the
-    /// owner's clients, [`crate::daemon::protocol::SEATED`]).
-    pub fn on_seated(&self, hook: SeatedHook) {
-        let _ = self.seated.set(hook);
-    }
-
     /// The helpers seated for `owner` may have changed (one was bound,
     /// joined its mob, or left): the hook is told.
     pub fn seated_changed(&self, owner: &SessionId) {
-        if let Some(hook) = self.seated.get() {
+        if let Some(hook) = &self.seated {
             (hook.0)(owner);
         }
     }
@@ -1068,15 +1099,8 @@ impl HelperRegistry {
         self.report_gone(Gone::Mob(mob.clone()));
     }
 
-    /// Report each helper that retires and each mob destroyed from now on
-    /// to `sink` (once; the daemon's connections of helpers in different
-    /// mobs follow them, `crate::daemon::links`).
-    pub fn on_gone(&self, sink: tokio::sync::mpsc::UnboundedSender<Gone>) {
-        let _ = self.gone.set(sink);
-    }
-
     fn report_gone(&self, gone: Gone) {
-        if let Some(sink) = self.gone.get() {
+        if let Some(sink) = &self.gone {
             let _ = sink.send(gone);
         }
     }
