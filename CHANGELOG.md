@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.19] - 2026-11-20
+
 ### Added
 
 - `/wire ssh://<host>/<workspace>/<agent>` wires your agent to an agent
