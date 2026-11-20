@@ -24,6 +24,7 @@ mod diff;
 mod edit;
 mod glob;
 mod grep;
+mod probe;
 mod prune;
 mod read;
 mod read_only;
@@ -42,10 +43,10 @@ pub use compact::{
 pub use diff::FileDiff;
 pub(crate) use glob::mention_walker;
 
+#[cfg(any(test, feature = "test-support"))]
+pub use probe::WalkProbe;
 pub use read_only::ReadOnlyProjectTools;
 pub use scan::SearchLimits;
-#[cfg(any(test, feature = "test-support"))]
-pub use scan::WalkProbe;
 pub(crate) use scan::run_cancellable;
 /// The words the file tools' answers start their parts with, which the
 /// transcript's tool lines read their numbers from
@@ -378,17 +379,14 @@ pub(crate) struct CallMeta {
     pub(crate) cancel: scan::Cancel,
     /// The budget of a `glob` or `grep`.
     pub(crate) limits: SearchLimits,
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) probe: Option<Arc<WalkProbe>>,
+    /// What a test observes of the call's scans ([`probe`]).
+    pub(crate) probe: probe::Probe,
 }
 
 impl CallMeta {
     /// The scan a search of `root` runs under.
     pub(crate) fn scan<'a>(&'a self, root: &'a Path) -> scan::Scan<'a> {
-        let scan = scan::Scan::new(root, self.limits, &self.cancel);
-        #[cfg(any(test, feature = "test-support"))]
-        let scan = scan.with_probe(self.probe.clone());
-        scan
+        scan::Scan::new(root, self.limits, &self.cancel).with_probe(self.probe.clone())
     }
 }
 
@@ -631,8 +629,8 @@ pub struct FileToolDispatcher {
     owner: Option<SessionId>,
     /// How far one `glob` or `grep` may go.
     limits: SearchLimits,
-    #[cfg(any(test, feature = "test-support"))]
-    probe: Option<Arc<WalkProbe>>,
+    /// What a test observes of the searches ([`probe`]).
+    probe: probe::Probe,
 }
 
 impl FileToolDispatcher {
@@ -696,8 +694,7 @@ impl FileToolDispatcher {
             tools,
             owner: None,
             limits: SearchLimits::default(),
-            #[cfg(any(test, feature = "test-support"))]
-            probe: None,
+            probe: probe::Probe::default(),
         }
     }
 
@@ -717,14 +714,6 @@ impl FileToolDispatcher {
             Some(shared) => shared.before_write = Some(mark),
             None => tracing::error!("the file tools' state is shared already: no write mark"),
         }
-        self
-    }
-
-    /// The same dispatcher with its searches counted (and paced) by `probe`.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_walk_probe(mut self, probe: Arc<WalkProbe>) -> Self {
-        self.probe = Some(probe);
         self
     }
 
@@ -749,7 +738,6 @@ impl FileToolDispatcher {
         let shared = Arc::clone(&self.shared);
         let id = call.id.to_string();
         let limits = self.limits;
-        #[cfg(any(test, feature = "test-support"))]
         let probe = self.probe.clone();
         let outcome = run_cancellable(move |cancel| {
             // Still queued when the call went: nothing to do for anyone.
@@ -761,7 +749,6 @@ impl FileToolDispatcher {
                 session,
                 cancel: cancel.clone(),
                 limits,
-                #[cfg(any(test, feature = "test-support"))]
                 probe,
             };
             run(&shared, meta, args)

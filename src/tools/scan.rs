@@ -93,17 +93,6 @@ pub(crate) enum Stop {
     Cancelled,
 }
 
-/// A test's view into the walk: every entry examined is counted, and each
-/// may be slowed down so a test can drop the call mid-walk.
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Default)]
-pub struct WalkProbe {
-    /// Entries examined by every scan of the dispatcher.
-    pub entries: AtomicU64,
-    /// How long each entry takes.
-    pub delay: Duration,
-}
-
 /// One search's budget, shared by the walk's threads.
 pub(crate) struct Scan<'a> {
     root: &'a Path,
@@ -114,8 +103,8 @@ pub(crate) struct Scan<'a> {
     stop: OnceLock<Stop>,
     /// Entries per first-level directory below the root.
     busiest: Mutex<HashMap<OsString, u64>>,
-    #[cfg(any(test, feature = "test-support"))]
-    probe: Option<Arc<WalkProbe>>,
+    /// What a test observes of the walk ([`super::probe`]).
+    probe: super::probe::Probe,
 }
 
 impl<'a> Scan<'a> {
@@ -128,13 +117,12 @@ impl<'a> Scan<'a> {
             examined: AtomicU64::new(0),
             stop: OnceLock::new(),
             busiest: Mutex::new(HashMap::new()),
-            #[cfg(any(test, feature = "test-support"))]
-            probe: None,
+            probe: super::probe::Probe::default(),
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn with_probe(mut self, probe: Option<Arc<WalkProbe>>) -> Self {
+    /// The same scan observed by `probe`.
+    pub(crate) fn with_probe(mut self, probe: super::probe::Probe) -> Self {
         self.probe = probe;
         self
     }
@@ -167,11 +155,7 @@ impl<'a> Scan<'a> {
 
     /// Count one entry; `false` when it is past the cap or the scan must stop.
     fn count(&self) -> bool {
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(probe) = &self.probe {
-            probe.entries.fetch_add(1, Ordering::Relaxed);
-            std::thread::sleep(probe.delay);
-        }
+        self.probe.entry();
         if !self.go_on() {
             return false;
         }
