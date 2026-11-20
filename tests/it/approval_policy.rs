@@ -167,7 +167,7 @@ fn in_project_edit_is_tier_two() {
 #[test]
 fn protected_path_edit_asks_the_user() {
     let h = harness(Options::default());
-    // Content (2026-11-14): auto mode's classifier reviews these; what runs
+    // Content: auto mode's classifier reviews these; what runs
     // later always asks.
     for (path, content) in [
         (".env", true),

@@ -294,9 +294,9 @@ async fn a_connection_without_the_token_never_reaches_the_router() {
 
 /// The proxy forwards only what it parsed. The engine's frame parser trims
 /// Unicode whitespace (`str::trim`) that `serde_json` does not, so a
-/// `session/create` behind a leading form feed used to fail the proxy's
+/// `session/create` behind a leading form feed could fail the proxy's
 /// parse, take a raw-forward branch and run in the engine as a session
-/// outside the mob. Now a line the proxy cannot read as a JSON-RPC request
+/// outside the mob. A line the proxy cannot read as a JSON-RPC request
 /// is answered by the proxy and never forwarded: the form-feed variants of
 /// a refused and of a served method both get a parse error, the
 /// well-formed refusal stays `NOT_SERVED` (`mob/turn_start` among
@@ -323,7 +323,7 @@ async fn the_proxy_forwards_only_requests_it_parsed() {
     assert_eq!(refused["error"]["code"], NOT_SERVED, "{refused}");
     // A request-scoped turn on the connection's own agent is refused the
     // same way: its run would carry the engine's cleanup that can destroy
-    // the agent's own mobs (the 0.9.14 known issue). Prompts are
+    // the agent's own mobs (an engine known issue). Prompts are
     // `mob/member_send`.
     let mut turn = client.member();
     turn["prompt"] = json!("run it");
@@ -461,7 +461,7 @@ async fn a_client_cannot_drive_another_agent_through_the_engine() {
 /// The daemon's notes (`agents::notes::append_note`: the roster, plan
 /// mode, grants, a compaction) are appended with the engine's
 /// `mob_append_system_context`, which writes a durable system message and
-/// admits no input. Meerkat 0.9.15 records as a known limitation
+/// admits no input. The engine records as a known limitation
 /// (lukacf/meerkat#2346) that an external event admitted without a wake
 /// while a turn runs, or in the instant after its call answered, is taken
 /// as a new turn when the turn ends; a note shares none of that: appended

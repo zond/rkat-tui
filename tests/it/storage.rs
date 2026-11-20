@@ -140,7 +140,7 @@ async fn a_daemon_note_reloads_the_agent_and_reaches_it() {
     rig.quit().await;
 }
 
-/// Review 7, M19: a write of the helpers' bindings that fails (a full
+/// A write of the helpers' bindings that fails (a full
 /// disk, injected) is told to the agent's client once, in plain words
 /// naming the file and what a restart would get wrong, and the audit log
 /// records it; the retry that saves it is told too. The change itself is

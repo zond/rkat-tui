@@ -724,10 +724,7 @@ async fn a_nested_helper_s_note_that_lands_before_its_parent_is_decided_goes_to_
 
 /// The other order of the same race: `scout`'s run end is decided first,
 /// while `inner`'s run has ended and its own decision is still held.
-/// Before 2026-11-18 `scout` was done then and `inner`'s note went up to
-/// the agent (before the fix of 2026-11-17 it went to the helper being
-/// retired and was lost, or refused: "mob member not found: scout"). A
-/// helper whose own helper is still at work is not done now (else it
+/// A helper whose own helper is still at work is not done now (else it
 /// would be retired with it, losing its answer): `scout` stays, is not
 /// retired, `inner`'s note reaches it once, and the agent is told once,
 /// of `scout`, never of `inner`.

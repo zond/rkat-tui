@@ -375,7 +375,7 @@ mod tests {
         assert!(matches!(&restored[1], Block::Tool { name, .. } if name == "read_file"));
     }
 
-    /// A stored call of a tool no longer offered (`reply_to_peer`, which an
+    /// A stored call of a tool not offered (`reply_to_peer`, which an
     /// earlier build offered) restores as a tool block like any call.
     #[test]
     fn a_stored_call_of_a_withdrawn_tool_restores_as_its_block() {

@@ -1,5 +1,5 @@
-//! How a helper ends and how its parent is told (the owner's decisions of
-//! 2026-11-15): an interrupt of the agent leaves its helpers running and
+//! How a helper ends and how its parent is told (the owner's decisions):
+//! an interrupt of the agent leaves its helpers running and
 //! their dialogs open; the user stops one helper on its own (the client's
 //! `/helpers` and full view, or Stop on one of its dialogs); every ending
 //! is told to the parent once. The helpers are `assign`'s: the agent's

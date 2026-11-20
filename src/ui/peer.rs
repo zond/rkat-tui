@@ -114,7 +114,7 @@ mod tests {
     use super::*;
 
     /// The run input of a peer message as the engine sends it (observed
-    /// on 0.9.11: the summary, the header twice, the body, the summary and
+    /// on the engine: the summary, the header twice, the body, the summary and
     /// the delivery id).
     const INPUT: &str = "Peer message\nPeer message from tui/main/main-gak7:\nPeer message from tui/main/main-gak7:\nI am changing src/lib.rs\nPeer message\nDelivery ID: e9633901-e3a8-425c-8217-048ed236b907";
 

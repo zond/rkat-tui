@@ -288,8 +288,8 @@ fn schedules_picker(n: usize) -> ListPicker {
 }
 
 /// The `/unwire` picker stays open after a confirmed unwire and its
-/// refresh drops the row; the `/wire` picker stays after a wire (review 5,
-/// P1: a list stays with the item gone, as `/agents` does).
+/// refresh drops the row; the `/wire` picker stays after a wire (a list
+/// stays with the item gone, as `/agents` does).
 #[test]
 fn the_wire_pickers_stay_open_after_their_act() {
     let unwire = |n: usize| {
@@ -522,8 +522,8 @@ fn mode_picker_switches_the_mode() {
 }
 
 /// `/memory` asks for the instruction-file picker; its Enter opens the
-/// file as `/memory <file>` does and the picker stays (the owner's rule
-/// of 2026-11-18), asked for again once the editor closes so its sizes
+/// file as `/memory <file>` does and the picker stays (the owner's
+/// rule), asked for again once the editor closes so its sizes
 /// are new, on the same file; Esc closes it. The typed forms (`/memory
 /// workspace|user|system`) open the files directly, and their editor's
 /// close asks for no picker.
@@ -1121,8 +1121,7 @@ fn context_command_sends_the_gauge_and_the_policy() {
     ));
 }
 
-// `/compact` used to print the policy; it now compacts like Claude
-// Code's, with `now` kept as an alias and the policy under `status`.
+// `/compact` compacts like Claude Code's, with `now` kept as an alias and the policy under `status`.
 #[test]
 fn bare_compact_compacts_and_instructions_add_a_warning() {
     let mut app = App::new(StatusInfo::default());

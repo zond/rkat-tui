@@ -774,7 +774,7 @@ fn an_approval_shows_in_in_force_and_the_dialog_stays_open() {
     assert_eq!(open(&app).section(), Some(Section::InForce.index()));
 }
 
-/// Review 7, M32: a 3 000-character shell command, its row cut at 200
+/// A 3 000-character shell command, its row cut at 200
 /// bytes and marked so, is viewable in full (Ctrl+O, scrolled to its end)
 /// before `o` approves it once; before that `o` and Enter say to read it.
 /// A call cut for its size is refused even after reading.

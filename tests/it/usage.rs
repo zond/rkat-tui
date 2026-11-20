@@ -148,8 +148,8 @@ async fn the_classifier_s_calls_are_counted_under_its_model() {
 
 /// A model call that completes right before the daemon stops is in the
 /// usage record it leaves: the stop lets each agent's event watcher count
-/// what its stream already holds before the ledger is flushed (it used to
-/// abort the watchers first). The stop follows the turn's end at once.
+/// what its stream already holds before the ledger is flushed (it does
+/// not abort the watchers first). The stop follows the turn's end at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_call_completed_just_before_the_stop_is_recorded() {
     let ws = Workspace::new();

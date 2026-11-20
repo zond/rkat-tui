@@ -159,7 +159,7 @@ async fn a_two_member_council_completes_with_its_participants_as_helpers() {
 /// A mob no session here convened keeps the owner session it was created
 /// for, which no session here has: its participants are refused, as any
 /// member of a mob made for a foreign session is. A council's own id form
-/// (`council--…`) is the engine's alone since Meerkat 0.9.15: a host's
+/// (`council--…`) is the engine's alone: a host's
 /// create under it is refused, so no ordinary mob passes for a council.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_council_mob_nobody_convened_here_gets_no_participant() {

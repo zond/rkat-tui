@@ -1,4 +1,4 @@
-//! Checkpoints of long runs (the owner's decision of 2026-11-16): a run
+//! Checkpoints of long runs (the owner's decision): a run
 //! that reaches `agent.checkpoint_steps` model calls ends at the engine's
 //! turn limit (`MaxTurns`), is asked for its status in a run of its own
 //! with its tools off, and the classifier's model (the bootstrap's own,

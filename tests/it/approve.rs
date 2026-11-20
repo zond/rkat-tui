@@ -1,6 +1,6 @@
 //! An approval from `/permissions`' Blocked section tells whoever made
 //! the blocked call at once, and an idle
-//! agent goes on by itself (the owner's decision of 2026-11-16): the note
+//! agent goes on by itself (the owner's decision): the note
 //! is steered into a running turn, or starts a run of its own that the
 //! user's act started (attended, shown under "approved: …"), also right
 //! after an interrupt; a helper's call goes to that helper while it runs,

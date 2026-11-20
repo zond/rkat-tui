@@ -434,7 +434,7 @@ fn rejected_steer_returns_to_the_editor_with_a_notice() {
     ));
 }
 
-/// Review 7, L34: a budget warning names its budget in words, not the
+/// A budget warning names its budget in words, not the
 /// engine's type name.
 #[test]
 fn a_budget_warning_is_said_in_words() {
@@ -454,7 +454,7 @@ fn a_budget_warning_is_said_in_words() {
     );
 }
 
-/// Review 7, M26: a steer nobody can say reached the agent is not put back
+/// A steer nobody can say reached the agent is not put back
 /// in the editor (sent again it could reach the agent twice); the notice
 /// says it may have reached it.
 #[test]
@@ -475,8 +475,8 @@ fn a_steer_of_unknown_fate_stays_out_of_the_editor() {
     ));
 }
 
-// Esc used to recall queued messages before interrupting; it now
-// always interrupts a running turn (Claude Code), and ↑ takes them back.
+// Esc always interrupts a running turn (Claude Code), and ↑ takes the
+// queued messages back.
 #[test]
 fn esc_interrupts_even_with_queued_messages() {
     let mut app = running_app();
@@ -659,8 +659,7 @@ fn successful_turn_sends_held_messages_as_the_next_turn() {
     );
 }
 
-// The rule of 2026-11-17 (it replaced "an interrupted turn's held
-// messages start the next turn"): an interrupt returns every message the
+// The rule: an interrupt returns every message the
 // agent did not read to the editor, in the order typed (the ones the
 // runner took back and the ones the UI held), before the draft, starts no
 // turn, and says so in one line. One the agent read stays delivered.
@@ -1607,7 +1606,7 @@ fn notices(app: &App) -> Vec<(NoticeLevel, String)> {
         .collect()
 }
 
-/// The owner's report of 2026-11-18: an agent of another workspace's
+/// The owner's report: an agent of another workspace's
 /// acknowledgement woke this agent, its model answered nothing, and the
 /// user read three retries, an error and "turn failed" with the same
 /// text. A run nobody here typed now ends in one quiet line; a run the

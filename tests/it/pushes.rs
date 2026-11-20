@@ -1,4 +1,4 @@
-//! The daemon pushes what a client used to poll for: another client's
+//! The daemon pushes what a client would otherwise poll for: another client's
 //! conversation switch (`rkat/switched`) and a mob that hosts a helper
 //! (`rkat/mob`). The rig counts the engine requests the clients send
 //! through the daemon's proxy, so a poll would show.
@@ -15,7 +15,7 @@ use meerkat_core::{AgentEvent, StreamScopeFrame};
 use rig::{Attached, Client, Running};
 use rkat_tui::ui::{Effect, Msg};
 
-/// Longer than the poll intervals the client used to have (a member status
+/// Longer than the poll intervals a polling client would have (a member status
 /// every second, a mob listing every 250 ms): a poll would be counted.
 const QUIET: Duration = Duration::from_millis(1_500);
 

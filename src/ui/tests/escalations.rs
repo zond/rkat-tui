@@ -529,7 +529,7 @@ fn ctrl_o_shows_the_whole_arguments_the_preview_cut() {
     );
 }
 
-/// Review H45: an approval that opens while the user types answers
+/// An approval that opens while the user types answers
 /// nothing with the rest of the sentence. Typing `yes please` with the
 /// dialog appearing after `ye`: every later key is dropped (not answered,
 /// not typed), each restarts the wait, the input keeps `ye`, and the

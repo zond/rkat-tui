@@ -739,8 +739,8 @@ async fn attach_by_address_refuses_a_readable_or_missing_token_file() {
     daemon.stop().await;
 }
 
-/// The workspace's daemon is the default; `attach` in a `tui.toml` (which
-/// chose the removed in-process runner) is no key any more: a file that
+/// The workspace's daemon is the default; `attach` in a `tui.toml` is no
+/// key: a file that
 /// sets it is refused naming the file, as any unknown key is.
 #[test]
 fn the_daemon_is_the_default_and_a_tui_toml_attach_key_is_refused() {
@@ -1004,7 +1004,7 @@ async fn member_send_names_the_admitted_input() {
         .unwrap();
     assert!(steer.is_some(), "a steer into a running turn is named");
     assert_ne!(prompt, steer);
-    // Review 7, M26: the daemon kept what the engine did with each keyed
+    // The daemon kept what the engine did with each keyed
     // send (a client whose answer was lost asks), and knows no other key.
     use rkat_tui::daemon::protocol::{SentFate, SentParams, method};
     for (key, fate) in [
@@ -1144,8 +1144,7 @@ async fn attach_mode_prices_the_cost_readout_and_says_the_shell_runs_as_you() {
 /// The client builds its UI from the configuration it read at start
 /// (`client::app_setup` over the `tui.toml` layers, then
 /// `workbench::build_app`): the `[ui]` and `[auto]` settings and the `!`
-/// shell's confinement reach the app. (Until P4 this compared the setup
-/// with the in-process runner's, which drifted from it once.)
+/// shell's confinement reach the app.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_client_builds_its_app_from_the_config() {
     let ws = Workspace::new();

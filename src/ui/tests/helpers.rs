@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// The owner's rule of 2026-11-18: the panel lists what is live, running
+/// The owner's rule: the panel lists what is live, running
 /// helpers first (newest first), then the seated idle ones; one that ended
 /// stays dim with its ending word for `PANEL_LINGER`, then leaves, with
 /// no turn boundary; its header stays in the transcript.
@@ -279,9 +279,7 @@ fn enter_with_text_submits_despite_a_selection() {
     assert_eq!(app.panel_selection(), Some(fork));
 }
 
-/// The owner's rule of 2026-11-17, replacing the 0.0.8 one
-/// (`esc_in_a_running_helper_s_view_asks_to_stop_it`: Esc asked whether to
-/// stop a running helper): Esc in a helper's view, running or not, goes
+/// The owner's rule: Esc in a helper's view, running or not, goes
 /// back to the transcript at once, with no question, without touching
 /// the agent's run (no interrupt) and without arming Esc-Esc; the next Esc
 /// drops the selection. A pending `/btw` takes the first Esc. The view's
@@ -368,7 +366,7 @@ fn ctrl_c_in_a_running_helper_s_view_asks_to_stop_it() {
         assert!(app.stop_confirmation().is_some());
     }
     // y: the helper is stopped (by its labels); the view stays, the
-    // question gone, until Esc (the owner's rule of 2026-11-18: what you
+    // question gone, until Esc (the owner's rule: what you
     // act in closes only when you close it).
     assert_eq!(
         app.update(key(KeyCode::Char('y'))),
@@ -491,7 +489,7 @@ fn transcript_rows(app: &mut App) -> Vec<String> {
 }
 
 /// An answer cut in the middle of a Markdown link by a helper's tool line
-/// (the event order of the owner's report of 2026-11-18, invented names)
+/// (the event order of an owner's report, invented names)
 /// draws exactly as the whole answer does, the helper's lines below it,
 /// not inside it.
 #[test]
@@ -542,7 +540,7 @@ fn an_answer_cut_by_a_helper_s_line_draws_as_the_whole_answer() {
     );
 }
 
-/// The owner's rule of 2026-11-18: the `/helpers` picker stays open
+/// The owner's rule: the `/helpers` picker stays open
 /// after its acts (`f`, `a`, `s` then `y` or `n`) and closes only on Esc,
 /// `q` or Ctrl-C. When the daemon's word of the stopped helper's ending
 /// arrives, the list shows it in place: with the ended ones shown, its

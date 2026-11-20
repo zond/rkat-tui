@@ -1,6 +1,6 @@
 //! Forks (`assign` with `context: "fork"`, which forks through the engine's
-//! own `fork_off`) wired to their parents (the owner's decision of
-//! 2026-11-16): the engine seats a fork with no edge, and the daemon wires
+//! own `fork_off`) wired to their parents (the owner's decision): the
+//! engine seats a fork with no edge, and the daemon wires
 //! it to its parent once it is seated (`mobs::follow`); its first calls wait
 //! for that edge. The engine tells the parent of the fork's first run's
 //! end; once it recorded that outcome the daemon retires a single-use fork
@@ -132,7 +132,7 @@ async fn seated(connection: &rkat_tui::client::transport::Connection, member: &s
 /// A fork and its parent while the fork works, each claim shown
 /// positively:
 ///
-/// - wired from its first call: the fork's first step is `peers`, which
+/// - wired from its first call: the fork's first step is `contacts`, which
 ///   lists its parent (its calls waited for the edge);
 /// - duplex: the fork's message is read by the parent's model, the parent's
 ///   (sent while the fork's first run is in its model call) by the fork's;
@@ -258,7 +258,7 @@ async fn a_fork_and_its_parent_talk_both_ways_while_it_works() {
 
 /// A fork whose first run completed is retired once the engine recorded
 /// its outcome for its parent (which then reaches the parent): it leaves
-/// the roster and its parent's `peers`, nothing of ours tells the parent
+/// the roster and its parent's `contacts`, nothing of ours tells the parent
 /// more, and a message to it afterwards is refused saying it finished and
 /// was retired. An agent alone in its workspace is told so, and that every
 /// peer it has is a helper.
@@ -504,7 +504,7 @@ async fn a_helper_s_fork_is_wired_to_the_helper() {
 
 /// A fork still in its first run when the daemon stops does not outlive
 /// the stop: the engine's fork supervisor takes the run the stop cancelled
-/// for a failed one and retires the fork (`meerkat-mob` 0.9.15
+/// for a failed one and retires the fork (`meerkat-mob`'s
 /// `fork_member_then_run_detached`, `retire_failed_fork_child`); the
 /// shutdown interrupts that retirement and the next start finishes it.
 /// The roster then no longer lists the fork, and the parent is told that

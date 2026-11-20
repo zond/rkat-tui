@@ -140,7 +140,7 @@ fn every_case_passes_the_deterministic_tiers_as_labelled() {
         let origin = origin(&case.tool);
         let action = Action::parse(&case.tool, &raw, Some(&origin));
         // As the engine judges a session whose shell touched git's
-        // configuration before (review 7, N35).
+        // configuration before.
         let touched = case.prior.iter().any(|prior| {
             prior.tool == "shell"
                 && prior

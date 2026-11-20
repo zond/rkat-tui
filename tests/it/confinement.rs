@@ -890,7 +890,7 @@ async fn the_confined_shell_cannot_read_the_cargo_credentials() {
 /// directory, outside every grant (the daemon refuses to start otherwise),
 /// so with this host's real paths a confined command can neither write nor
 /// list it. The `.git/` half does not hold yet, and this test says so: on
-/// Linux the workspace grant is writable whole, and meerkat-sandbox 0.9.11
+/// Linux the workspace grant is writable whole, and meerkat-sandbox
 /// can express neither a deny list nor a read-only grant nested in it
 /// (engine ask 8 in `docs/mob-split.md`). When the engine lands the bind,
 /// the `.git/` assertion fails and is turned around into the claim.

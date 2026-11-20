@@ -239,8 +239,8 @@ fn agent_calls(llm: &ScriptedLlmClient) -> usize {
         .count()
 }
 
-/// An interrupt stops the agent's run only (the owner's decision of
-/// 2026-11-15). The agent's run is held open after its `assign` (its next
+/// An interrupt stops the agent's run only (the owner's decision). The
+/// agent's run is held open after its `assign` (its next
 /// model call never answers), so the interrupt has a run to stop while the
 /// helper runs. The helper keeps running, shown by its next model call
 /// after the interrupt was confirmed; its answer is held for the agent its

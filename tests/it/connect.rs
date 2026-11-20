@@ -3,7 +3,7 @@
 //! the other's message, each was told whom it can reach, the messages
 //! between them passed the gate without review (the classifier saw
 //! nothing), the edges outlive a restart, and a retired end is gone from
-//! its peer's `peers`.
+//! its peer's `contacts`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1077,7 +1077,7 @@ async fn another_agent_s_helper_is_refused_end_to_end() {
 /// Two kept members connected, then the daemon restarts before either
 /// messages the other: the edge was kept (the engine restores the mob's
 /// wiring) and the message passes without review. Then one end is
-/// retired: it is gone from the other's `peers`.
+/// retired: it is gone from the other's `contacts`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_connection_outlives_a_restart_and_goes_with_a_retired_end() {
     let ws = Workspace::new();
@@ -1200,7 +1200,7 @@ async fn a_connection_outlives_a_restart_and_goes_with_a_retired_end() {
     daemon.stop().await;
 }
 
-/// Review 7, L22: a connection across mobs that cannot be made (here the
+/// A connection across mobs that cannot be made (here the
 /// ends' mob does not exist, so no edge can be) leaves no socket it opened
 /// for its ends, and nothing is recorded: the refusal says why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -1,11 +1,11 @@
 //! What an agent's model requests pay for tool definitions, by family
 //! (`docs/evidence.md`, "Deferrable tools" and "Search and reveal"): every
 //! declared definition rides on every request. The engine's deferred tool
-//! catalog never engages for the daemon's members (Meerkat 0.9.12 and
-//! 0.9.13: the mob operator tools and `memory_search` report no exact
-//! catalog, so the session's catalog is inexact and stays inline), so
-//! rkat-tui hides the schedule tools and the agent mob tools (the
-//! withdrawn `delegate` is never declared) until a `tool_search` reveals them
+//! catalog never engages for the daemon's members (lukacf/meerkat#2180:
+//! the mob operator tools and `memory_search` report no exact catalog, so
+//! the session's catalog is inexact and stays inline). So rkat-tui hides
+//! the schedule tools and the agent mob tools (the tools not offered are
+//! never declared) until a `tool_search` reveals them
 //! (`src/daemon/deferral`). The measurements are asserted as bounds, so a
 //! family that grows, and the engine change that would let tools be
 //! deferred natively (lukacf/meerkat#2180), both show here.

@@ -221,7 +221,7 @@ async fn join(
 
 /// Esc on the joined run, the message typed meanwhile, and a new message:
 /// the run stops at once by its id, the message comes back unread (the
-/// rule of 2026-11-17; before, it ran next), and the next one gets its
+/// owner's rule), and the next one gets its
 /// model call.
 async fn interrupt_and_go_on(daemon: &Running, client: &mut Client, llm: &ScriptedLlmClient) {
     client.send(Effect::Steer {
@@ -260,8 +260,8 @@ async fn interrupt_and_go_on(daemon: &Running, client: &mut Client, llm: &Script
         "{}",
         client.notices()
     );
-    // The message typed meanwhile came back unread (the rule of
-    // 2026-11-17); the next message gets its model call.
+    // The message typed meanwhile came back unread (the owner's
+    // rule); the next message gets its model call.
     assert!(
         client
             .seen

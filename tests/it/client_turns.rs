@@ -134,7 +134,7 @@ async fn a_prompt_queued_behind_a_running_turn_runs_next() {
     rig.quit().await;
 }
 
-/// The owner's rule (2026-11-19): what the user types during a run goes
+/// The owner's rule: what the user types during a run goes
 /// in at the next spot, the first model request that starts after it was
 /// sent. Measured through the client: a message typed (a) while the tools
 /// of step 0 run (a reviewed call whose review is held) rides request 1;
@@ -142,7 +142,7 @@ async fn a_prompt_queued_behind_a_running_turn_runs_next() {
 /// and is marked delivered while request 2 is still streaming (the mark
 /// comes when the carrying request starts, not when its answer ends); (c)
 /// typed while request 2 streams text rides request 3. (d) The engine
-/// (0.9.16) stages one steer per model request, oldest first: two typed
+/// stages one steer per model request (lukacf/meerkat#2431), oldest first: two typed
 /// while request 3 is in flight ride requests 4 and 5. Pinned: the day a
 /// release lets every waiting steer join the next request, (d) fails and
 /// the pending line's words change (`docs/evidence.md`).
@@ -493,8 +493,8 @@ async fn probe_slots(probe: Probe) -> Vec<(&'static str, Option<usize>)> {
     found
 }
 
-/// The owner's question (2026-11-19): can a withdrawn steer be replaced
-/// in the boundary slot it held? Measured on the engine (0.9.16), each
+/// The owner's question: can a withdrawn steer be replaced in the
+/// boundary slot it held? Measured on the engine, each
 /// probe on a daemon of its own (every step waits on the send's or the
 /// recall's answer, no sleep; six rounds of each gave the same outcome
 /// when it was measured): (1) a steer recalled while
@@ -879,7 +879,7 @@ async fn the_same_prompt_after_a_failed_turn_is_not_added_twice() {
     // The failed run committed the prompt.
     let session = rig.messages().await;
     assert_eq!(user_texts(&session), vec!["fix the build".to_string()]);
-    // What the retry is compared with travels alone (review 7, L27): the
+    // What the retry is compared with travels alone: the
     // last message, the prompt, not the transcript.
     let id = rig.current_session().await;
     let last = rig
@@ -1212,7 +1212,7 @@ const RAW_INTERRUPT_TEXTS: &[&str] = &[
     "from the approval dialog",
 ];
 
-/// The owner's report of 2026-11-17, in its order: the agent inside a
+/// The owner's report, in its order: the agent inside a
 /// long foreground shell call, a message typed meanwhile (admitted as a
 /// steer, waiting for the tool), then Esc three times. Before the fix the
 /// first press stopped the run, the runtime ran the typed message as a
@@ -2072,8 +2072,7 @@ async fn a_steer_the_runtime_abandoned_returns_to_the_editor() {
     rig.quit().await;
 }
 
-/// The rule of 2026-11-17 (it replaced "a steer queued behind an
-/// interrupted run runs after it"): Esc takes back a steer the agent has
+/// The owner's rule: Esc takes back a steer the agent has
 /// not read, so it starts no follow-up run; it is returned (to the editor),
 /// never delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2118,8 +2117,8 @@ fn count(messages: &[Message], text: &str) -> usize {
 /// The sequence of a user report (a model request that sends nothing): a
 /// steer typed during the stall, then an interrupt and a message sent once
 /// the turn ends. The interrupt is confirmed well within the client's
-/// deadline, the stalled run ends, the steer comes back (the rule of
-/// 2026-11-17), and sent again with the new message it reaches the
+/// deadline, the stalled run ends, the steer comes back (the owner's
+/// rule), and sent again with the new message it reaches the
 /// conversation once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_interrupt_during_a_stalled_model_request_ends_it_and_loses_nothing() {
@@ -2158,7 +2157,7 @@ async fn an_interrupt_during_a_stalled_model_request_ends_it_and_loses_nothing()
         "{:#?}",
         rig.seen
     );
-    // The steer came back (the rule of 2026-11-17); the new message goes
+    // The steer came back (the owner's rule); the new message goes
     // once the turn ended, with it as the user sends it again.
     assert!(
         rig.seen
@@ -2324,7 +2323,7 @@ async fn start_other_run(daemon: &rig::Running) -> rkat_tui::client::transport::
     connection
 }
 
-/// Review 5, TU1: a client that attached while its agent ran (so it has
+/// A client that attached while its agent ran (so it has
 /// no turn of its own for that run) interrupts it with Esc, and says what
 /// it did; before, the press did nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2365,7 +2364,7 @@ async fn esc_interrupts_a_run_the_client_did_not_start() {
     daemon.stop().await;
 }
 
-/// Review 5, TU1: Esc with nothing running says so.
+/// Esc with nothing running says so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn esc_with_nothing_running_says_so() {
     let ws = Workspace::new();
@@ -2378,7 +2377,7 @@ async fn esc_with_nothing_running_says_so() {
     rig.quit().await;
 }
 
-/// Review 5, TU1: Ctrl-X Ctrl-S with text while a run another client
+/// Ctrl-X Ctrl-S with text while a run another client
 /// started is open (the UI shows it as a remote turn) interrupts that run,
 /// then sends the text as the next turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

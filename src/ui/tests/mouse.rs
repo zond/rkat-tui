@@ -207,7 +207,7 @@ fn a_scrolled_up_view_stays_on_its_text_while_output_arrives() {
     }
     assert_eq!(transcript_rows(&mut app), before, "new blocks");
     // A peer's message and a run another client started arrive: they
-    // used to jump the view to the bottom.
+    // do not jump the view to the bottom.
     app.update(Msg::Peer {
         from: "main-cd34".into(),
         text: "I am changing src/lib.rs".into(),

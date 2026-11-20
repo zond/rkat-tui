@@ -624,8 +624,7 @@ pub fn start(id: &'static str, name: &str, task: &str, context: &str, keep: bool
     }
 }
 
-/// A kept fresh helper `name` on `task` (call `id`): what `spawn_member`
-/// started before `assign` took it over.
+/// A kept fresh helper `name` on `task` (call `id`).
 pub fn keep(id: &'static str, name: &str, task: &str) -> Step {
     start(id, name, task, "fresh", true)
 }

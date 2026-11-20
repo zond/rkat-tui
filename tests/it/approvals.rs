@@ -1519,7 +1519,7 @@ async fn engine_methods_that_make_sessions_outside_the_mob_are_refused() {
             "turn/start",
             json!({"session_id": session, "prompt": "run it"}),
         ),
-        // Served until the engine's 0.9.14 known issue: a request-scoped
+        // Not served for an engine known issue: a request-scoped
         // turn carries the cleanup that can destroy the agent's own mobs.
         // The client prompts with `mob/member_send`.
         (
@@ -1855,8 +1855,8 @@ async fn the_classifier_model_change_is_refused_for_an_unknown_endpoint() {
 }
 
 /// A mode change is in the agent's context before the prompt sent right
-/// after it starts a run (the flaky `plan_mode_refuses_a_write_and_the_model_reads_why`
-/// of 2026-11-14): the change's note is held back, the prompt is sent
+/// after it starts a run (the cause of a flaky
+/// `plan_mode_refuses_a_write_and_the_model_reads_why`): the change's note is held back, the prompt is sent
 /// meanwhile; it waits for the change to end, and the run reads the note.
 /// Before the fix the prompt went at once and its request had no note.
 #[tokio::test]

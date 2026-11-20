@@ -2789,7 +2789,7 @@ mod tests {
         );
     }
 
-    /// The event order of the owner's report of 2026-11-18 (invented
+    /// The event order of an owner's report (invented
     /// names): the agent's answer streams, a helper's tool line (its call,
     /// start and end) arrives in the middle of a Markdown link, then the
     /// rest of the answer and its `TextComplete`. The answer is one block,

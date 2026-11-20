@@ -427,7 +427,7 @@ async fn the_agent_picker_lists_retires_idle_agents_and_seats_a_new_one() {
     daemon.stop().await;
 }
 
-/// The peer id of the agent `name` in the last `peers` result of
+/// The peer id of the agent `name` in the last `contacts` result of
 /// `messages`: the id of the entry naming it.
 fn peer_id_of(messages: &[Message], name: &str) -> Option<String> {
     fn find(value: &serde_json::Value, name: &str) -> Option<String> {
@@ -457,7 +457,7 @@ fn peer_id_of(messages: &[Message], name: &str) -> Option<String> {
 }
 
 /// A sends B a message with its `send_message` tool (B's peer id from its
-/// `peers` tool, which lists the other agent and no one else): B, idle,
+/// `contacts` tool, which lists the other agent and no one else): B, idle,
 /// wakes for it, its client shows the message labelled with A's name, and
 /// B's turn sees it; the gate still judges what B does about it. Each agent
 /// was told about the other (the persona names it; a note at its join).
@@ -602,7 +602,7 @@ fn drawn_notices(
         .collect()
 }
 
-/// The owner's report of 2026-11-18: another agent's acknowledgement woke
+/// The owner's report: another agent's acknowledgement woke
 /// this one, its model answered nothing, and the engine retried the call
 /// and failed the run (an empty answer is its `llm_empty_response`
 /// error). The client of the woken agent draws one quiet line naming who
@@ -710,7 +710,7 @@ fn agent_notes(messages: &[Message]) -> (usize, usize, usize) {
     )
 }
 
-/// The owner's rule (2026-11-18): an agent's standing knowledge is a fixed
+/// The owner's rule: an agent's standing knowledge is a fixed
 /// set that does not grow. Five detaches and attaches of its own client
 /// append nothing to its conversation, and a second agent joining and
 /// leaving the workspace appends one note each (events it cannot learn of
@@ -830,7 +830,7 @@ fn is_b(messages: &[Message]) -> bool {
         .any(|text| text.contains("tell b"))
 }
 
-/// A6 (the user's decision, 2026-11-10, changed on 2026-11-14): B's client
+/// Unattended turns (the owner's decision): B's client
 /// detaches, A's message wakes B. Nobody started B's turn and nobody is
 /// with B, so its `curl` goes to the classifier, whose review fails: what
 /// would be put to the user is denied as unattended (B reads why), and its
@@ -982,7 +982,7 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
     daemon.stop().await;
 }
 
-/// The other half of A6: a turn the user started stays attended after its
+/// The other half of unattended turns: a turn the user started stays attended after its
 /// client detaches (D2: a detached agent keeps running): its `curl` goes to
 /// the classifier, not to the unattended denial. This pins that the run a
 /// tool call names is the run the daemon saw start after the user's input.
@@ -1124,8 +1124,8 @@ async fn an_agent_lost_in_a_failed_switch_is_no_ghost() {
     .unwrap();
     let lost = daemon.agent.clone();
     assert_ne!(b.agent(), lost);
-    // A file watch of the agent about to be lost (review 5, A1: a lost
-    // agent kept its watches, unlike a retired one).
+    // A file watch of the agent about to be lost (a lost agent's watches
+    // go, as a retired one's do).
     let watches = Arc::clone(&daemon.local().core().watches);
     rkat_tui::tools::WatchHost::watch(&*watches, &lost, &["*.txt".to_string()], false).unwrap();
     assert_eq!(watches.describe(&lost).len(), 1);
@@ -1424,9 +1424,9 @@ async fn an_agent_cannot_recall_another_agents_input() {
     daemon.stop().await;
 }
 
-/// What a child's `peers` lists, by route, run as the agent's helpers
+/// What a child's `contacts` lists, by route, run as the agent's helpers
 /// would (`HELPER-TASK` marks the child's conversation). Returns the
-/// child's `peers` result.
+/// child's `contacts` result.
 async fn child_peers(route: (&'static str, bool)) -> (String, String) {
     let ws = Workspace::new();
     let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
@@ -1489,7 +1489,7 @@ async fn child_peers(route: (&'static str, bool)) -> (String, String) {
 }
 
 /// Every child an agent starts is wired to it without being asked, the
-/// same for each of `assign`'s four ways: its `peers` names the agent,
+/// same for each of `assign`'s four ways: its `contacts` names the agent,
 /// from its first call. A fork too: the engine seats it without a trust
 /// edge, the daemon wires it once it is seated, and its first call waits
 /// for that edge (`forks` has the rest).

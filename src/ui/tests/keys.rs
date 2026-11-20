@@ -784,7 +784,7 @@ fn walk_history(app: &mut App, expected: &[&str], what: &str) {
     assert!(app.input.is_empty(), "{what}: back to the empty draft");
 }
 
-/// The owner's report of 2026-11-18: after a slash command that opened a
+/// The owner's report: after a slash command that opened a
 /// dialog (`/helpers`, `/model`, …), acted in and closed, ↑ stopped at
 /// that command. The cause: a recalled `/helpers` is a complete command
 /// word, so the completion menu opened over it and took ↑/↓ for its

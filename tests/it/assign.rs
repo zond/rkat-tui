@@ -1,5 +1,5 @@
-//! `assign`: a single-use helper beside its caller (the owner's decision of
-//! 2026-11-16). The call returns at once; the helper and its parent are
+//! `assign`: a single-use helper beside its caller (the owner's
+//! decision). The call returns at once; the helper and its parent are
 //! wired both ways; the parent is told when the helper finishes, with its
 //! answer, and the helper is then retired; a message from the parent before
 //! that makes it go on.
@@ -907,7 +907,7 @@ async fn a_lowered_limit_refuses_new_helpers_and_retires_none() {
     daemon.stop().await;
 }
 
-/// The owner's report of 2026-11-19: a helper's `send_message` to its own
+/// The owner's report: a helper's `send_message` to its own
 /// parent agent went to the classifier, although a message to an agent
 /// peer is tier 1. Each kind of helper sends its parent a message with
 /// the peer id `contacts` gives it: a fresh single-use one, a second one

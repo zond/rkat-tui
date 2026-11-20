@@ -356,7 +356,7 @@ async fn wired_agents_of_two_workspaces_message_both_ways_across_restarts() {
             && text.contains(&format!("/unwire {b_label} removes it")),
         "{text}"
     );
-    // The picker stays, its row now marked wired (review 5, P1).
+    // The picker stays, its row now marked wired.
     let refreshed = c
         .wait_for(|msg| {
             matches!(msg, Msg::ShowPicker { picker, refresh: true } if picker.kind == PickerKind::Wire)
@@ -504,7 +504,7 @@ async fn wired_agents_of_two_workspaces_message_both_ways_across_restarts() {
     a.idle(&a.agent).await;
 
     // `/unwire` from its picker: both sides, and the picker stays with
-    // the wire gone from it (review 5, P1).
+    // the wire gone from it.
     let mut c = client(&root, std::slice::from_ref(&b_file)).await;
     c.send(Effect::UnwireFrom {
         workspace: b_root.clone(),
@@ -622,8 +622,7 @@ async fn the_daemon_wires_unwires_and_refuses() {
             && err.contains("works in this workspace: the agents of one workspace are wired to each other already"),
         "{err}"
     );
-    // A card whose peer id is not its key's (review 5, W1: the gate
-    // compares the stored id, so it is checked once, here).
+    // A card whose peer id is not its key's (the gate compares the stored id, so it is checked once, here).
     let (mut forged, _) = stranger(&other, "main-ffff");
     forged.peer_id = unknown.to_string();
     let err = wire(forged, None).await.unwrap_err().to_string();
@@ -670,7 +669,7 @@ async fn the_daemon_wires_unwires_and_refuses() {
         "only the send to the unknown peer is reviewed: {reviewed:?}"
     );
 
-    // Review 5, AP2 (owner decision): in plan mode a message to an agent
+    // The owner's decision: in plan mode a message to an agent
     // of another workspace is put to the user (nobody answers here, so it
     // times out as a denial); auto mode above sent it without review.
     // The peer's socket must look alive, or the send is refused as
@@ -714,7 +713,7 @@ async fn the_daemon_wires_unwires_and_refuses() {
     assert_eq!(wires_of(&a).await, Vec::<String>::new());
 
     // A wire whose card cannot be saved is undone, so its error says what
-    // is (review 5, W2): the records file is a directory now.
+    // is: the records file is a directory now.
     let records = common::realm_of(&root).join(rkat_tui::daemon::wires::RECORDS_FILE);
     let _ = std::fs::remove_file(&records);
     std::fs::create_dir(&records).unwrap();
@@ -742,7 +741,7 @@ async fn the_daemon_wires_unwires_and_refuses() {
     a.stop().await;
 }
 
-/// The owner's report of 2026-11-18: `/wire` to an agent in the middle of
+/// The owner's report: `/wire` to an agent in the middle of
 /// a model call said "nothing was wired: the daemon of … did not answer"
 /// (the client's 10 s bound), while that daemon wired its side all the
 /// same: its handler awaited the note to its agent, which the engine
@@ -1034,7 +1033,7 @@ async fn first_showing(llm: &ScriptedLlmClient, text: &str) -> usize {
     .await
 }
 
-/// The owner's report of 2026-11-19 (0.0.17): a message over a wire to an
+/// The owner's report: a message over a wire to an
 /// agent that was compacting reached its runtime (the sender read it
 /// acknowledged), yet no run of the agent took it, and a run the user
 /// started after it did not carry it either; a later run carried both.
@@ -1196,13 +1195,12 @@ async fn a_wire_message_wakes_the_agent_whenever_it_arrives() {
     a.stop().await;
 }
 
-/// The owner's report of 2026-11-19 as the client sees it: a wire message
-/// that arrives during the quiet run `/compact` starts on an idle agent
-/// wakes a run of its own after it, and the client draws both, the
-/// message as the sender's block and the agent's answer, with no input of
-/// the user's; the user's next prompt runs as a turn of its own. On 0.0.17
-/// the quiet turn took that run (and every one after it until the agent
-/// went idle): neither the message nor the answer was drawn.
+/// The owner's report as the client sees it: a wire message that arrives
+/// during the quiet run `/compact` starts on an idle agent wakes a run of
+/// its own after it. The client draws both, the message as the sender's
+/// block and the agent's answer, with no input of the user's; the quiet
+/// turn does not take that run. The user's next prompt runs as a turn of
+/// its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_wire_message_during_the_compact_run_is_drawn_with_the_run_it_wakes() {
     let (ws, root) = workspace("alpha");

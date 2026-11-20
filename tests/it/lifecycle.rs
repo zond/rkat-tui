@@ -770,7 +770,7 @@ async fn a_daemon_of_another_build_is_announced() {
 /// The client plans no agent-shell confinement of its own: a client
 /// started with `--confinement=workspace` attaches to a daemon that runs
 /// the agent's shell unconfined (the daemon's command line decides the
-/// agent's shell; it used to refuse the attach as "wider").
+/// agent's shell; the attach is not refused as "wider").
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_clients_confinement_flags_do_not_refuse_a_running_daemon() {
     let ws = Workspace::new();
