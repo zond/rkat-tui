@@ -15,6 +15,7 @@ use crate::rig;
 
 use std::sync::Arc;
 
+use common::script::{Script, call, hold, make};
 use common::{ScriptedLlmClient, Step, Workspace};
 use meerkat_core::Message;
 use rig::Running;
@@ -362,22 +363,15 @@ async fn a_fork_wired_before_it_is_seated_is_wired_once_it_is() {
     // Its run ends only once the edge was seen (it is retired after).
     let done = Arc::new(tokio::sync::Notify::new());
     let gate = Arc::clone(&done);
-    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
-        if common::user_texts(messages).concat().contains("FORK-TASK") {
-            if after_peers(messages) {
-                return Step::Gated(Arc::clone(&gate), Box::new(Step::Text("FORK-DONE")));
-            }
-            return peers("fp1");
-        }
-        if tail_is_outcome(messages) {
-            return Step::Text("NOTED");
-        }
-        if matches!(messages.last(), Some(Message::ToolResults { .. })) {
-            return Step::Text("PARENT-WAITS");
-        }
-        fork("FORK-TASK: list peers")
-    }));
-    let llm = ScriptedLlmClient::new(vec![step; 12]);
+    let kid = Script::new()
+        .when(after_peers, hold(&gate, Step::Text("FORK-DONE")))
+        .otherwise(peers("fp1"));
+    let llm = Script::new()
+        .mentions("FORK-TASK", kid)
+        .when(tail_is_outcome, Step::Text("NOTED"))
+        .after_any(Step::Text("PARENT-WAITS"))
+        .otherwise(fork("FORK-TASK: list peers"))
+        .client(12);
     let daemon = Running::start(&ws.root, &llm).await;
     let registry = daemon.registry();
     registry.wire_forks_early();
@@ -440,34 +434,22 @@ async fn a_helper_s_fork_is_wired_to_the_helper() {
     let ws = Workspace::new();
     let go = Arc::new(tokio::sync::Notify::new());
     let done = Arc::new(tokio::sync::Notify::new());
-    let step = {
-        let go = Arc::clone(&go);
-        let done = Arc::clone(&done);
-        Step::Dynamic(Arc::new(move |messages: &[Message]| {
-            let user = common::user_texts(messages).concat();
-            if user.contains("FORK-TASK") {
-                if after_peers(messages) {
-                    return Step::Gated(Arc::clone(&done), Box::new(Step::Text("FORK-DONE")));
-                }
-                return peers("fp1");
-            }
-            if user.contains("HELPER-TASK") {
-                if answered(messages, "f1") {
-                    return Step::Hang;
-                }
-                return Step::Gated(Arc::clone(&go), Box::new(fork("FORK-TASK: list peers")));
-            }
-            if matches!(messages.last(), Some(Message::ToolResults { .. })) {
-                return Step::Text("assigned");
-            }
-            Step::Tool {
-                id: "a1",
-                name: "assign",
-                args: json!({"name": "scout", "task": "HELPER-TASK: fork"}),
-            }
-        }))
-    };
-    let llm = ScriptedLlmClient::new(vec![step; 20]);
+    let kid = Script::new()
+        .when(after_peers, hold(&done, Step::Text("FORK-DONE")))
+        .otherwise(peers("fp1"));
+    let scout = Script::new()
+        .after("f1", Step::Hang)
+        .otherwise(hold(&go, fork("FORK-TASK: list peers")));
+    let llm = Script::new()
+        .mentions("FORK-TASK", kid)
+        .mentions("HELPER-TASK", scout)
+        .after_any(Step::Text("assigned"))
+        .otherwise(call(
+            "a1",
+            "assign",
+            json!({"name": "scout", "task": "HELPER-TASK: fork"}),
+        ))
+        .client(20);
     let setup = rig::Setup::args(&["--set", "helpers.max_depth=2"]);
     let args = setup.command_line(&ws.root);
     let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
@@ -516,18 +498,11 @@ async fn a_helper_s_fork_is_wired_to_the_helper() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fork_stopped_in_its_first_run_is_retired_and_its_parent_told() {
     let ws = Workspace::new();
-    let first = ScriptedLlmClient::new(vec![
-        Step::Dynamic(Arc::new(|messages: &[Message]| {
-            if common::user_texts(messages).concat().contains("FORK-TASK") {
-                return Step::Hang;
-            }
-            if matches!(messages.last(), Some(Message::ToolResults { .. })) {
-                return Step::Text("PARENT-WAITS");
-            }
-            fork("FORK-TASK: wait")
-        }));
-        12
-    ]);
+    let first = Script::new()
+        .mentions("FORK-TASK", Step::Hang)
+        .after_any(Step::Text("PARENT-WAITS"))
+        .otherwise(fork("FORK-TASK: wait"))
+        .client(12);
     let daemon = Running::start(&ws.root, &first).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "go").await;
@@ -581,21 +556,12 @@ async fn a_fork_stopped_in_its_first_run_is_retired_and_its_parent_told() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restored_fork_is_wired_and_a_retired_one_is_not() {
     let ws = Workspace::new();
-    let first = ScriptedLlmClient::new(vec![
-        Step::Dynamic(Arc::new(|messages: &[Message]| {
-            if common::user_texts(messages).concat().contains("FORK-TASK") {
-                return Step::Text("FORK-FIRST");
-            }
-            if tail_is_outcome(messages) {
-                return Step::Text("OUTCOME-NOTED");
-            }
-            if matches!(messages.last(), Some(Message::ToolResults { .. })) {
-                return Step::Text("PARENT-WAITS");
-            }
-            kept_fork("FORK-TASK: wait")
-        }));
-        12
-    ]);
+    let first = Script::new()
+        .mentions("FORK-TASK", Step::Text("FORK-FIRST"))
+        .when(tail_is_outcome, Step::Text("OUTCOME-NOTED"))
+        .after_any(Step::Text("PARENT-WAITS"))
+        .otherwise(kept_fork("FORK-TASK: wait"))
+        .client(12);
     let daemon = Running::start(&ws.root, &first).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "go").await;
@@ -623,31 +589,24 @@ async fn a_restored_fork_is_wired_and_a_retired_one_is_not() {
     drop(connection);
     daemon.stop().await;
 
-    let second = ScriptedLlmClient::new(vec![
-        Step::Dynamic(Arc::new(|messages: &[Message]| {
-            let tail = last(messages);
-            if common::user_texts(messages).concat().contains("FORK-TASK") {
-                return Step::Text(if tail.contains("AFTER-RESTART") {
-                    "FORK-READ-IT"
-                } else {
-                    "FORK-OTHER"
-                });
-            }
-            // The restored fork's note can share the request with the
-            // user's words, before or after them.
-            if answered(messages, "pm1") {
-                return Step::Text("SENT");
-            }
-            if answered(messages, "pp1") {
-                return send("pm1", peer_id(messages, "kid"), "AFTER-RESTART");
-            }
-            if common::run_inputs(messages).contains("tell the kid") {
-                return peers("pp1");
-            }
-            Step::Text("NOTED")
-        }));
-        12
-    ]);
+    let kid = Script::new()
+        .when(
+            |m| last(m).contains("AFTER-RESTART"),
+            Step::Text("FORK-READ-IT"),
+        )
+        .otherwise(Step::Text("FORK-OTHER"));
+    // The restored fork's note can share the request with the user's
+    // words, before or after them.
+    let second = Script::new()
+        .mentions("FORK-TASK", kid)
+        .after("pm1", Step::Text("SENT"))
+        .after(
+            "pp1",
+            make(|m| send("pm1", peer_id(m, "kid"), "AFTER-RESTART")),
+        )
+        .input("tell the kid", peers("pp1"))
+        .otherwise(Step::Text("NOTED"))
+        .client(12);
     let daemon = Running::start(&ws.root, &second).await;
     let connection = daemon.connect_bound().await;
     assert_eq!(daemon.agent, agent);
@@ -683,21 +642,12 @@ async fn a_restored_fork_is_wired_and_a_retired_one_is_not() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restored_single_use_fork_whose_outcome_was_recorded_is_retired() {
     let ws = Workspace::new();
-    let first = ScriptedLlmClient::new(vec![
-        Step::Dynamic(Arc::new(|messages: &[Message]| {
-            if common::user_texts(messages).concat().contains("FORK-TASK") {
-                return Step::Text("FORK-FIRST");
-            }
-            if tail_is_outcome(messages) {
-                return Step::Text("OUTCOME-NOTED");
-            }
-            if matches!(messages.last(), Some(Message::ToolResults { .. })) {
-                return Step::Text("PARENT-WAITS");
-            }
-            fork("FORK-TASK: answer")
-        }));
-        12
-    ]);
+    let first = Script::new()
+        .mentions("FORK-TASK", Step::Text("FORK-FIRST"))
+        .when(tail_is_outcome, Step::Text("OUTCOME-NOTED"))
+        .after_any(Step::Text("PARENT-WAITS"))
+        .otherwise(fork("FORK-TASK: answer"))
+        .client(12);
     let daemon = Running::start(&ws.root, &first).await;
     // The retire after the outcome waits until the daemon stopped.
     let release = Arc::new(tokio::sync::watch::channel(false).0);

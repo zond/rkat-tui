@@ -183,6 +183,17 @@ from what the request answers, never from its last message alone:
 - A run a note or a peer's message started later must not replay an
   earlier step: act on a command only in the request that brings it.
 
+`common::script::Script` writes such a step as rules over those same
+readings, first match first: `.helper(marker, ..)`, `.mentions(text, ..)`,
+`.input(text, ..)`, `.after(id, ..)`, `.after_any(..)`,
+`.told_finished(..)`, `.when(test, ..)` and the fallback `.otherwise(..)`;
+a rule answers with a `Step`, another `Script` (a helper's own) or
+`make(|messages| ..)`, and `hold(&gate, step)` is a `Step::Gated`. A
+plain sequence is `.call(id, name, args).text("done")`: each step after
+the first answers the result of the call before it. `.client(n)` is the
+`ScriptedLlmClient` of `n` such steps. Scripts that count or read the
+whole history stay hand-written closures.
+
 The class was found in a4782da and f001e94; review 7 converted the rest
 (the tests in `agents`, `connect`, `forks`, `mob_destroy`, `upgrades`,
 `daemon`, `assign`, `resumed_runs` and `cross_workspace` that chose by

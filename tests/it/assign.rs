@@ -11,6 +11,7 @@ use crate::rig;
 
 use std::sync::Arc;
 
+use common::script::{Script, call, hold, make};
 use common::{ScriptedLlmClient, Step, Workspace};
 use meerkat_core::Message;
 use rig::Running;
@@ -338,26 +339,16 @@ fn not_offered(ids: [&'static str; 6]) -> Step {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_tools_not_offered_are_refused_before_the_gate() {
     let ws = Workspace::new();
-    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
-        if common::is_helper(messages, "HELPER-TASK") {
-            return if common::after(messages, "h0") {
-                Step::Text("HELPER-REFUSED")
-            } else {
-                not_offered(HELPER_IDS)
-            };
-        }
-        if common::told_finished(messages) {
-            return Step::Text("NOTED");
-        }
-        if common::after(messages, "a1") {
-            return Step::Text("waiting");
-        }
-        if common::after(messages, "n0") {
-            return assign("scout", "HELPER-TASK: try them");
-        }
-        not_offered(AGENT_IDS)
-    }));
-    let llm = ScriptedLlmClient::new(vec![step; 12]);
+    let helper = Script::new()
+        .after("h0", Step::Text("HELPER-REFUSED"))
+        .otherwise(not_offered(HELPER_IDS));
+    let llm = Script::new()
+        .helper("HELPER-TASK", helper)
+        .told_finished(Step::Text("NOTED"))
+        .after("a1", Step::Text("waiting"))
+        .after("n0", assign("scout", "HELPER-TASK: try them"))
+        .otherwise(not_offered(AGENT_IDS))
+        .client(12);
     let classifier = rig::ScriptedClassifier::allowing(Vec::new());
     let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
     let daemon =
@@ -589,60 +580,34 @@ fn kept_call(id: &'static str, name: &str) -> (&'static str, &'static str, serde
 async fn the_helper_past_the_limit_is_refused_until_one_is_retired_or_finishes() {
     let ws = Workspace::new();
     let finish = Arc::new(tokio::sync::Notify::new());
-    let step = {
-        let finish = Arc::clone(&finish);
-        Step::Dynamic(Arc::new(move |messages: &[Message]| {
-            if common::is_helper(messages, "HELPER-KEPT") {
-                return Step::Text("KEPT-ANSWER");
-            }
-            if common::is_helper(messages, "HELPER-SINGLE") {
-                return Step::Gated(Arc::clone(&finish), Box::new(Step::Text("SINGLE-ANSWER")));
-            }
-            if common::after(messages, "b3") {
-                return Step::Text("done");
-            }
-            if common::told_finished(messages) {
-                return Step::Tools(vec![kept_call("b3", "y12")]);
-            }
-            if common::after(messages, "b2") {
-                return Step::Text("waiting");
-            }
-            if common::after(messages, "b1") {
-                return Step::Tools(vec![kept_call("b2", "y11")]);
-            }
-            if common::after(messages, "r1") {
-                return Step::Tools(vec![kept_call("b1", "y10")]);
-            }
-            if common::after(messages, "a9") {
-                return Step::Tool {
-                    id: "r1",
-                    name: "retire_helper",
-                    args: json!({"name": "k0"}),
-                };
-            }
-            if common::after(messages, "p1") {
-                return Step::Tools(vec![kept_call("a9", "y9")]);
-            }
-            if common::after(messages, "c1") {
-                return peers();
-            }
-            if common::after(messages, "a0") {
-                return Step::Tools(vec![kept_call("c1", "x1"), kept_call("c2", "x2")]);
-            }
-            if common::run_inputs(messages).contains("START-LIMIT") {
-                return Step::Tools(vec![
-                    kept_call("a0", "k0"),
-                    (
-                        "a1",
-                        "assign",
-                        json!({"name": "s0", "task": "HELPER-SINGLE: answer when told"}),
-                    ),
-                ]);
-            }
-            Step::Text("noted")
-        }))
-    };
-    let llm = ScriptedLlmClient::new(vec![step; 60]);
+    let llm = Script::new()
+        .helper("HELPER-KEPT", Step::Text("KEPT-ANSWER"))
+        .helper("HELPER-SINGLE", hold(&finish, Step::Text("SINGLE-ANSWER")))
+        .after("b3", Step::Text("done"))
+        .told_finished(Step::Tools(vec![kept_call("b3", "y12")]))
+        .after("b2", Step::Text("waiting"))
+        .after("b1", Step::Tools(vec![kept_call("b2", "y11")]))
+        .after("r1", Step::Tools(vec![kept_call("b1", "y10")]))
+        .after("a9", call("r1", "retire_helper", json!({"name": "k0"})))
+        .after("p1", Step::Tools(vec![kept_call("a9", "y9")]))
+        .after("c1", peers())
+        .after(
+            "a0",
+            Step::Tools(vec![kept_call("c1", "x1"), kept_call("c2", "x2")]),
+        )
+        .input(
+            "START-LIMIT",
+            Step::Tools(vec![
+                kept_call("a0", "k0"),
+                (
+                    "a1",
+                    "assign",
+                    json!({"name": "s0", "task": "HELPER-SINGLE: answer when told"}),
+                ),
+            ]),
+        )
+        .otherwise(Step::Text("noted"))
+        .client(60);
     let setup = rig::Setup::args(&["--set", "helpers.max_live=3"]);
     let daemon =
         Running::start_with(&setup.command_line(&ws.root), setup.options(&ws.root, &llm)).await;
@@ -724,19 +689,15 @@ async fn the_helper_past_the_limit_is_refused_until_one_is_retired_or_finishes()
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_calls_for_one_name_in_one_step_seat_one() {
     let ws = Workspace::new();
-    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
-        if common::is_helper(messages, "HELPER-KEPT") {
-            return Step::Text("KEPT-ANSWER");
-        }
-        if common::after(messages, "n1") {
-            return Step::Text("done");
-        }
-        if common::run_inputs(messages).contains("START-TWINS") {
-            return Step::Tools(vec![kept_call("n1", "twin"), kept_call("n2", "twin")]);
-        }
-        Step::Text("noted")
-    }));
-    let llm = ScriptedLlmClient::new(vec![step; 12]);
+    let llm = Script::new()
+        .helper("HELPER-KEPT", Step::Text("KEPT-ANSWER"))
+        .after("n1", Step::Text("done"))
+        .input(
+            "START-TWINS",
+            Step::Tools(vec![kept_call("n1", "twin"), kept_call("n2", "twin")]),
+        )
+        .otherwise(Step::Text("noted"))
+        .client(12);
     let daemon = Running::start(&ws.root, &llm).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "START-TWINS").await;
@@ -768,40 +729,23 @@ async fn a_helper_s_limit_is_its_own() {
     // The lead finishes only once the test let it: until then it holds
     // the agent's one slot.
     let release = Arc::new(tokio::sync::Notify::new());
-    let step = {
-        let release = Arc::clone(&release);
-        Step::Dynamic(Arc::new(move |messages: &[Message]| {
-            if common::is_helper(messages, "HELPER-KEPT") {
-                return Step::Text("KEPT-ANSWER");
-            }
-            if common::is_helper(messages, "LEAD-TASK") {
-                if common::after(messages, "l2") {
-                    return Step::Gated(Arc::clone(&release), Box::new(Step::Text("LEAD-DONE")));
-                }
-                if common::after(messages, "l1") {
-                    return Step::Tools(vec![kept_call("l2", "sub2")]);
-                }
-                if common::run_inputs(messages).contains("LEAD-TASK") {
-                    return Step::Tools(vec![kept_call("l1", "sub1")]);
-                }
-                return Step::Text("lead noted");
-            }
-            if common::told_finished(messages) {
-                return Step::Text("noted the lead");
-            }
-            if common::after(messages, "g2") {
-                return Step::Text("done");
-            }
-            if common::after(messages, "g1") {
-                return Step::Tools(vec![kept_call("g2", "second")]);
-            }
-            if common::run_inputs(messages).contains("START-LEAD") {
-                return common::assign("g1", "lead", "LEAD-TASK: start helpers");
-            }
-            Step::Text("noted")
-        }))
-    };
-    let llm = ScriptedLlmClient::new(vec![step; 20]);
+    let lead = Script::new()
+        .after("l2", hold(&release, Step::Text("LEAD-DONE")))
+        .after("l1", Step::Tools(vec![kept_call("l2", "sub2")]))
+        .input("LEAD-TASK", Step::Tools(vec![kept_call("l1", "sub1")]))
+        .otherwise(Step::Text("lead noted"));
+    let llm = Script::new()
+        .helper("HELPER-KEPT", Step::Text("KEPT-ANSWER"))
+        .helper("LEAD-TASK", lead)
+        .told_finished(Step::Text("noted the lead"))
+        .after("g2", Step::Text("done"))
+        .after("g1", Step::Tools(vec![kept_call("g2", "second")]))
+        .input(
+            "START-LEAD",
+            common::assign("g1", "lead", "LEAD-TASK: start helpers"),
+        )
+        .otherwise(Step::Text("noted"))
+        .client(20);
     let setup = rig::Setup::args(&[
         "--set",
         "helpers.max_depth=2",
@@ -848,27 +792,21 @@ async fn a_helper_s_limit_is_its_own() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lowered_limit_refuses_new_helpers_and_retires_none() {
     let ws = Workspace::new();
-    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
-        if common::is_helper(messages, "HELPER-KEPT") {
-            return Step::Text("KEPT-ANSWER");
-        }
-        if common::after(messages, "z1") || common::after(messages, "h1") {
-            return Step::Text("done");
-        }
-        let inputs = common::run_inputs(messages);
-        if inputs.contains("ONE-MORE") {
-            return Step::Tools(vec![kept_call("z1", "z")]);
-        }
-        if inputs.contains("START-THREE") {
-            return Step::Tools(vec![
+    let llm = Script::new()
+        .helper("HELPER-KEPT", Step::Text("KEPT-ANSWER"))
+        .after("z1", Step::Text("done"))
+        .after("h1", Step::Text("done"))
+        .input("ONE-MORE", Step::Tools(vec![kept_call("z1", "z")]))
+        .input(
+            "START-THREE",
+            Step::Tools(vec![
                 kept_call("h1", "w1"),
                 kept_call("h2", "w2"),
                 kept_call("h3", "w3"),
-            ]);
-        }
-        Step::Text("noted")
-    }));
-    let llm = ScriptedLlmClient::new(vec![step; 20]);
+            ]),
+        )
+        .otherwise(Step::Text("noted"))
+        .client(20);
     let daemon = Running::start(&ws.root, &llm).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "START-THREE").await;
@@ -917,47 +855,27 @@ async fn a_lowered_limit_refuses_new_helpers_and_retires_none() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helper_s_message_to_its_parent_is_not_reviewed() {
     let ws = Workspace::new();
-    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
-        let user = common::user_texts(messages).concat();
-        if user.contains("HTASK") {
-            if common::answers(messages, Some("p1")) {
-                return send(peer_id(messages, "main-"), "TO-PARENT");
-            }
-            if common::answers(messages, Some("m1")) {
-                return Step::Text("HELPER-DONE");
-            }
-            return peers();
-        }
-        if common::answers(messages, Some("p9")) {
-            return Step::Tool {
-                id: "m9",
-                name: "send_message",
-                args: json!({"peer_id": peer_id(messages, "keeper").unwrap_or_default(), "body": "HTASK more", "handling_mode": "queue"}),
-            };
-        }
-        if common::answers(messages, None) {
-            return Step::Text("PARENT-OK");
-        }
-        let inputs = common::run_inputs(messages);
-        if inputs.contains("go fresh") {
-            return common::assign("a1", "scout", "HTASK fresh");
-        }
-        if inputs.contains("go kept") {
-            return common::keep("k1", "keeper", "HTASK kept");
-        }
-        if inputs.contains("go more") {
-            return Step::Tool {
-                id: "p9",
-                name: "contacts",
-                args: json!({}),
-            };
-        }
-        if inputs.contains("go fork") {
-            return common::fork("f1", "kid", "HTASK fork", false);
-        }
-        Step::Text("NOTED")
-    }));
-    let llm = ScriptedLlmClient::new(vec![step; 80]);
+    let helper = Script::new()
+        .after("p1", make(|m| send(peer_id(m, "main-"), "TO-PARENT")))
+        .after("m1", Step::Text("HELPER-DONE"))
+        .otherwise(peers());
+    let more = make(|m| {
+        call(
+            "m9",
+            "send_message",
+            json!({"peer_id": peer_id(m, "keeper").unwrap_or_default(), "body": "HTASK more", "handling_mode": "queue"}),
+        )
+    });
+    let llm = Script::new()
+        .mentions("HTASK", helper)
+        .after("p9", more)
+        .when(|m| common::answers(m, None), Step::Text("PARENT-OK"))
+        .input("go fresh", common::assign("a1", "scout", "HTASK fresh"))
+        .input("go kept", common::keep("k1", "keeper", "HTASK kept"))
+        .input("go more", call("p9", "contacts", json!({})))
+        .input("go fork", common::fork("f1", "kid", "HTASK fork", false))
+        .otherwise(Step::Text("NOTED"))
+        .client(80);
     let classifier = rig::ScriptedClassifier::allowing(vec![]);
     let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
     let daemon =

@@ -4,6 +4,8 @@
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+pub mod script;
+
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
