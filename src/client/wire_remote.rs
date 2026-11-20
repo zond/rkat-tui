@@ -45,15 +45,12 @@ pub async fn serve_stdio() -> Result<(), crate::TuiError> {
             op: Op::Hold { forward },
             ..
         }) => {
-            let reply = wait_for(&forward).await;
-            let ready = reply.error.is_none();
+            let (reply, held) = wait_for(&forward).await;
             write(&reply).await.map_err(io("writing the wire answer"))?;
-            if ready {
+            if let Some(held) = held {
                 // The connection's end closes standard input.
                 hold_until_closed(&mut stdin).await;
-                if crate::daemon::remote_wire::is_forward_path(&forward) {
-                    let _ = std::fs::remove_file(&forward);
-                }
+                held.remove();
             }
             return Ok(());
         }
@@ -113,22 +110,82 @@ async fn write(reply: &Reply) -> std::io::Result<()> {
     stdout.flush().await
 }
 
-/// Ready once `forward` exists, within [`FORWARD_WAIT`].
-async fn wait_for(forward: &Path) -> Reply {
+/// Ready once `forward` exists, within [`FORWARD_WAIT`]: the reply, and
+/// the socket held once ready.
+async fn wait_for(forward: &Path) -> (Reply, Option<HeldForward>) {
+    if !crate::daemon::remote_wire::is_forward_path(forward) {
+        return (
+            Reply::refused(format!("{} is no forwarded wire socket", forward.display())),
+            None,
+        );
+    }
     let deadline = tokio::time::Instant::now() + FORWARD_WAIT;
     loop {
-        if forward.exists() {
-            return Reply::ok(serde_json::json!({}));
+        if let Some(held) = HeldForward::seen(forward) {
+            return (Reply::ok(serde_json::json!({})), Some(held));
         }
         if tokio::time::Instant::now() >= deadline {
-            return Reply::refused(format!(
-                "the forwarded socket {} did not appear: the ssh server may not allow Unix-socket forwarding (AllowStreamLocalForwarding in its sshd_config)",
-                forward.display()
-            ));
+            return (
+                Reply::refused(format!(
+                    "the forwarded socket {} did not appear: the ssh server may not allow Unix-socket forwarding (AllowStreamLocalForwarding in its sshd_config)",
+                    forward.display()
+                )),
+                None,
+            );
         }
         tokio::time::sleep(FORWARD_POLL).await;
     }
 }
+
+/// The forwarded socket one link's hold answered for, known by its file
+/// (device, inode, change time), not only its path: a link's connection can end on
+/// this machine long after the other machine made the next link, whose ssh
+/// server bound a new socket at the same path (a dropped network is
+/// noticed only at a keepalive's timeout). The hold's end removes the
+/// socket only while it is still the one it held ([`file_of`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldForward {
+    path: PathBuf,
+    file: FileId,
+}
+
+impl HeldForward {
+    /// The socket at `path` now, when there is one and it is a forwarded
+    /// socket's path ([`crate::daemon::remote_wire::is_forward_path`]).
+    #[must_use]
+    pub fn seen(path: &Path) -> Option<Self> {
+        if !crate::daemon::remote_wire::is_forward_path(path) {
+            return None;
+        }
+        Some(Self {
+            path: path.to_path_buf(),
+            file: file_of(path)?,
+        })
+    }
+
+    /// Remove the socket, when the file at its path is still the one held
+    /// (a newer link's socket stays).
+    pub fn remove(&self) {
+        if file_of(&self.path) == Some(self.file) {
+            let _ = std::fs::remove_file(&self.path);
+        } else {
+            tracing::debug!(path = %self.path.display(), "a newer link's socket is there: it stays");
+        }
+    }
+}
+
+/// The file at `path` (not followed) as its device, inode and change time:
+/// an inode number freed by the old socket's unlink can be the new
+/// socket's, its change time (to the nanosecond) is not.
+fn file_of(path: &Path) -> Option<FileId> {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::symlink_metadata(path)
+        .ok()
+        .map(|meta| (meta.dev(), meta.ino(), meta.ctime(), meta.ctime_nsec()))
+}
+
+/// [`file_of`]'s identity of a file.
+type FileId = (u64, u64, i64, i64);
 
 /// The answer to `request` (anything but [`Op::Hold`]) on the machine
 /// whose daemons' endpoint files are `files`.
@@ -288,6 +345,29 @@ mod tests {
         );
         let list = answer(Request::new(Op::List), &[]).await;
         assert_eq!(list.ok, Some(serde_json::json!([])));
+    }
+
+    /// A hold that ends after the next link bound its socket at the same
+    /// path leaves that socket; its own it removes.
+    #[test]
+    fn a_hold_removes_only_the_socket_it_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let wire = dir.path().join("wire");
+        std::fs::create_dir(&wire).unwrap();
+        let socket = wire.join(crate::daemon::remote_wire::forward_name("k"));
+        let old = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let held_old = HeldForward::seen(&socket).unwrap();
+        // The next link's ssh server unlinks the old file and binds anew.
+        std::fs::remove_file(&socket).unwrap();
+        let new = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        drop(old);
+        held_old.remove();
+        assert!(socket.exists(), "the newer link's socket was removed");
+        let held_new = HeldForward::seen(&socket).unwrap();
+        held_new.remove();
+        assert!(!socket.exists());
+        drop(new);
+        assert_eq!(HeldForward::seen(&wire.join("main-ab12.sock")), None);
     }
 
     #[test]

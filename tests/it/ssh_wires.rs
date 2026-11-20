@@ -19,6 +19,7 @@ use crate::common::{self, ScriptedLlmClient, Step, Workspace, args_for, endpoint
 use crate::rig::{self, Client, Running};
 use futures::future::BoxFuture;
 use parking_lot::Mutex;
+use rkat_tui::client::wire_remote::HeldForward;
 use rkat_tui::daemon::protocol;
 use rkat_tui::daemon::remote_wire::{
     LinkRun, LinkSpec, RemoteError, Reply, Request, SshHost, Transport,
@@ -60,6 +61,12 @@ pub struct FakeSsh {
     up: AtomicBool,
     /// Each live link's cut.
     links: Mutex<Vec<tokio::sync::oneshot::Sender<()>>>,
+    /// Whether the remote side notices a link's end only after the next
+    /// link is up (a network that went away, noticed there at a
+    /// keepalive's timeout).
+    late: Arc<AtomicBool>,
+    /// The holds there whose link ended, still to notice it.
+    unnoticed: Arc<Mutex<Vec<HeldForward>>>,
     /// The ops called, in order.
     pub ops: Mutex<Vec<String>>,
 }
@@ -70,8 +77,16 @@ impl FakeSsh {
             remote,
             up: AtomicBool::new(true),
             links: Mutex::new(Vec::new()),
+            late: Arc::new(AtomicBool::new(false)),
+            unnoticed: Arc::new(Mutex::new(Vec::new())),
             ops: Mutex::new(Vec::new()),
         })
+    }
+
+    /// From now on the remote side notices a link's end late (`true`) or
+    /// at once.
+    pub fn notice_late(&self, late: bool) {
+        self.late.store(late, Ordering::SeqCst);
     }
 
     /// The host goes away (every link drops, none can be made) or comes
@@ -110,10 +125,16 @@ fn forward(listen: &Path, target: PathBuf) -> tokio::task::JoinHandle<()> {
     })
 }
 
+/// A link: its `-L` socket here goes with it (ssh's own), its `-R` socket
+/// there with the end of its hold there (`rkat-tui --wire-remote`'s
+/// [`HeldForward`]), at once or, `late`, after the next link is up.
 struct FakeLink {
     cut: tokio::sync::oneshot::Receiver<()>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
-    sockets: Vec<PathBuf>,
+    local: PathBuf,
+    hold: Option<HeldForward>,
+    late: Arc<AtomicBool>,
+    unnoticed: Arc<Mutex<Vec<HeldForward>>>,
 }
 
 impl LinkRun for FakeLink {
@@ -133,8 +154,13 @@ impl Drop for FakeLink {
         for task in &self.tasks {
             task.abort();
         }
-        for socket in &self.sockets {
-            let _ = std::fs::remove_file(socket);
+        let _ = std::fs::remove_file(&self.local);
+        if let Some(hold) = self.hold.take() {
+            if self.late.load(Ordering::SeqCst) {
+                self.unnoticed.lock().push(hold);
+            } else {
+                hold.remove();
+            }
         }
     }
 }
@@ -176,10 +202,23 @@ impl Transport for FakeSsh {
                 forward(&spec.local_forward, spec.remote_target.clone()),
                 forward(&spec.remote_forward, spec.local_target.clone()),
             ];
+            let hold = HeldForward::seen(&spec.remote_forward);
+            assert!(
+                hold.is_some(),
+                "no hold for {}",
+                spec.remote_forward.display()
+            );
+            // The old links' holds there notice their end now.
+            for old in self.unnoticed.lock().drain(..) {
+                old.remove();
+            }
             Ok(Box::new(FakeLink {
                 cut,
                 tasks,
-                sockets: vec![spec.local_forward, spec.remote_forward],
+                local: spec.local_forward,
+                hold,
+                late: Arc::clone(&self.late),
+                unnoticed: Arc::clone(&self.unnoticed),
             }) as Box<dyn LinkRun>)
         })
     }
@@ -213,12 +252,18 @@ fn script(to: &Arc<Mutex<String>>, tag: &'static str) -> Vec<Step> {
     vec![step; 80]
 }
 
-fn last_result(llm: &ScriptedLlmClient) -> String {
+/// The tool result of the call the prompt `prompt` made: only a request
+/// that holds that prompt counts, so a turn that ended early never reads
+/// an earlier turn's result.
+fn result_of(llm: &ScriptedLlmClient, prompt: &str) -> String {
     llm.requests()
         .iter()
         .rev()
         .find_map(|messages| {
-            messages.iter().rev().find_map(|m| match m {
+            let at = messages.iter().rposition(
+                |m| matches!(m, meerkat_core::Message::User(user) if user.text_content() == prompt),
+            )?;
+            messages[at..].iter().find_map(|m| match m {
                 meerkat_core::Message::ToolResults { results, .. } => Some(
                     results
                         .iter()
@@ -229,7 +274,7 @@ fn last_result(llm: &ScriptedLlmClient) -> String {
                 _ => None,
             })
         })
-        .unwrap_or_default()
+        .unwrap_or_else(|| format!("no tool result after {prompt:?}"))
 }
 
 /// Wait until `llm` was shown a peer message holding `text`.
@@ -244,10 +289,15 @@ async fn shown(llm: &ScriptedLlmClient, text: &str) {
     }
 }
 
-async fn turn(daemon: &Running, prompt: &str) {
+/// Prompt `daemon`'s agent (its model `llm`) and return the result of the
+/// call the prompt made ([`result_of`]). A run the agent is in already (a
+/// peer message woke it) must be waited out first: the prompt's wait ends
+/// at the first run that completes.
+async fn turn(daemon: &Running, llm: &ScriptedLlmClient, prompt: &str) -> String {
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, prompt).await;
     daemon.idle(&daemon.agent).await;
+    result_of(llm, prompt)
 }
 
 async fn peer_id(daemon: &Running) -> String {
@@ -350,35 +400,65 @@ async fn remote_side(markers: Markers) {
     let wires = wires_of(&b).await;
     assert_eq!(wires.len(), 1, "{wires:?}");
     assert_eq!(wires[0].0, format!("alpha/{a_agent}"));
+    assert_eq!(wires[0].1, None, "the remote side holds no link");
+    // It knows the wire was made over ssh, from which machine.
+    let status = b.status().await;
+    let row = &status
+        .agents
+        .iter()
+        .find(|row| row.name == b.agent)
+        .unwrap()
+        .wires[0];
+    let this_machine = rkat_tui::paths::local_host().unwrap_or_default();
+    assert_eq!(row.from.as_deref(), Some(this_machine.as_str()));
+    assert_eq!(row.link.as_deref(), Some("up"));
     assert_eq!(
-        wires[0].1, None,
-        "the remote side's wire is a plain local one"
+        row.shown(),
+        format!(
+            "alpha/{a_agent} (ssh from {}, link up)",
+            protocol::machine(&this_machine)
+        )
     );
-    turn(&b, "SEND reply").await;
-    assert!(
-        last_result(&llm).contains("\"acked\""),
-        "{}",
-        last_result(&llm)
-    );
+    let result = turn(&b, &llm, "SEND reply").await;
+    assert!(result.contains("\"acked\""), "{result}");
     markers.set("b.replied", "");
 
     markers.wait("b.send_down").await;
-    turn(&b, "SEND whiledown").await;
+    // Refused saying the link from the other machine is down, not that a
+    // daemon there is not running.
+    let result = turn(&b, &llm, "SEND whiledown").await;
     assert!(
-        !last_result(&llm).contains("\"acked\""),
-        "{}",
-        last_result(&llm)
+        result.contains(&format!(
+            "`alpha/{a_agent}` cannot get messages now: it works on {}, and the ssh link from that machine to this one is down",
+            protocol::machine(&this_machine)
+        )) && result.contains("try again later, or tell the user")
+            && !result.contains("not running"),
+        "{result}"
     );
+    assert_eq!(wires_of(&b).await[0].2.as_deref(), Some("down"));
     markers.set("b.sent_down", "");
 
+    // A's message after the link came back woke this agent: that run
+    // ends before the prompt goes in.
     markers.wait("b.again").await;
-    turn(&b, "SEND again").await;
-    assert!(
-        last_result(&llm).contains("\"acked\""),
-        "{}",
-        last_result(&llm)
-    );
+    shown(
+        &llm,
+        &format!("Peer message from alpha/{a_agent}:\\nfrom A: afterback"),
+    )
+    .await;
+    b.idle(&b.agent).await;
+    let result = turn(&b, &llm, "SEND again").await;
+    assert!(result.contains("\"acked\""), "{result}");
     markers.set("b.again_ok", "");
+
+    // The other daemon restarted, its old link noticed here only after
+    // the new one was up.
+    markers.wait("b.restarted").await;
+    shown(&llm, "from A2: afterrestart").await;
+    b.idle(&b.agent).await;
+    let result = turn(&b, &llm, "SEND afterrestart").await;
+    assert!(result.contains("\"acked\""), "{result}");
+    markers.set("b.restart_ok", "");
 
     markers.wait("unwired").await;
     assert!(wires_of(&b).await.is_empty());
@@ -390,7 +470,8 @@ async fn remote_side(markers: Markers) {
 /// the stand-in, a message each way, the link down (the user told once,
 /// a send refused with the words, the remote's send not delivered), back
 /// (told once, sends delivered), this daemon restarted (the link made
-/// again), and `/unwire` on both sides.
+/// again, the old one's end noticed on the remote side only after that:
+/// sends delivered both ways), and `/unwire` on both sides.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(clippy::disallowed_methods)] // test-only process launch: the other side
 async fn an_ssh_wire_carries_messages_both_ways_and_survives_drops_and_restarts() {
@@ -471,12 +552,8 @@ async fn an_ssh_wire_carries_messages_both_ways_and_survives_drops_and_restarts(
     };
     markers.set("a.peer", &peer_id(&a).await);
     markers.set("a.agent", &a.agent);
-    turn(&a, "SEND hello").await;
-    assert!(
-        last_result(&llm).contains("\"acked\""),
-        "{}",
-        last_result(&llm)
-    );
+    let result = turn(&a, &llm, "SEND hello").await;
+    assert!(result.contains("\"acked\""), "{result}");
     markers.wait("b.replied").await;
     shown(
         &llm,
@@ -491,8 +568,7 @@ async fn an_ssh_wire_carries_messages_both_ways_and_survives_drops_and_restarts(
     let (level, down) = notice(&mut c, "the link to box is down").await;
     assert_eq!(level, NoticeLevel::Warn, "{down}");
     link_is(&a, "down").await;
-    turn(&a, "SEND whiledown").await;
-    let refused = last_result(&llm);
+    let refused = turn(&a, &llm, "SEND whiledown").await;
     assert!(
         refused.contains(&format!(
             "`{b_label}` cannot get messages now: the link to box is down"
@@ -517,29 +593,28 @@ async fn an_ssh_wire_carries_messages_both_ways_and_survives_drops_and_restarts(
         )
         .count();
     assert_eq!(downs, 1, "told of the drop once: {}", c.notices());
-    turn(&a, "SEND afterback").await;
-    assert!(
-        last_result(&llm).contains("\"acked\""),
-        "{}",
-        last_result(&llm)
-    );
+    let result = turn(&a, &llm, "SEND afterback").await;
+    assert!(result.contains("\"acked\""), "{result}");
     markers.set("b.again", "");
     markers.wait("b.again_ok").await;
     shown(&llm, "from B: again").await;
     a.idle(&a.agent).await;
 
-    // This daemon restarts: the stored wire's link is made again.
+    // This daemon restarts: the stored wire's link is made again, and the
+    // old link's hold there notices its end only after that; both ways
+    // work after.
     c.quit().await;
+    ssh.notice_late(true);
     a.stop().await;
     let llm = ScriptedLlmClient::new(script(&to_beta, "from A2"));
     let a = start_with_ssh(&root, &llm, &ssh).await;
     link_is(&a, "up").await;
-    turn(&a, "SEND afterrestart").await;
-    assert!(
-        last_result(&llm).contains("\"acked\""),
-        "{}",
-        last_result(&llm)
-    );
+    let result = turn(&a, &llm, "SEND afterrestart").await;
+    assert!(result.contains("\"acked\""), "{result}");
+    markers.set("b.restarted", "");
+    markers.wait("b.restart_ok").await;
+    shown(&llm, "from B: afterrestart").await;
+    a.idle(&a.agent).await;
 
     // `/unwire`: both halves, through ssh for the remote one.
     let mut c = client(&root).await;
@@ -615,17 +690,56 @@ async fn real_remote_side(markers: Markers, state: PathBuf) {
     *to_alpha.lock() = markers.wait("a.peer").await;
     shown(&llm, "from A: hello").await;
     b.idle(&b.agent).await;
-    turn(&b, "SEND reply").await;
-    assert!(
-        last_result(&llm).contains("\"acked\""),
-        "{}",
-        last_result(&llm)
-    );
+    let result = turn(&b, &llm, "SEND reply").await;
+    assert!(result.contains("\"acked\""), "{result}");
     markers.set("b.replied", "");
+    // After the link was made again, while the old link's hold here ended
+    // only then.
+    markers.wait("b.again").await;
+    shown(&llm, "from A: afterback").await;
+    b.idle(&b.agent).await;
+    let result = turn(&b, &llm, "SEND again").await;
+    assert!(result.contains("\"acked\""), "{result}");
+    markers.set("b.again_ok", "");
     markers.wait("unwired").await;
     assert!(wires_of(&b).await.is_empty());
     markers.set("b.done", "");
     b.stop().await;
+}
+
+/// The processes of `program` (their first argument) whose command line
+/// holds every one of `words` (read from `/proc`, no pattern match on a
+/// process list).
+fn processes_with(program: &str, words: &[&str]) -> Vec<i32> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<String> = cmdline
+            .split(|b| *b == 0)
+            .map(|arg| String::from_utf8_lossy(arg).into_owned())
+            .collect();
+        if args.first().map(String::as_str) == Some(program)
+            && words
+                .iter()
+                .all(|word| args.iter().any(|arg| arg.contains(word)))
+        {
+            found.push(pid);
+        }
+    }
+    found
+}
+
+fn signal(pid: i32, signal: nix::sys::signal::Signal) {
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), signal).unwrap();
 }
 
 /// Run `program` with `args` to its end (key generation).
@@ -642,7 +756,8 @@ fn run(program: &str, args: &[&str]) {
 /// own host key, `authorized_keys` and client key, all in a temporary
 /// directory; `~/.ssh` is never read or written): `/wire ssh://box/…`
 /// with `--remote-rkat-tui` naming this build's binary, a message each
-/// way, `/unwire`. Ignored: it needs `/usr/sbin/sshd` and `ssh-keygen`.
+/// way, the link killed here while the other machine notices it only
+/// after the next link is up (both ways work after), `/unwire`. Ignored: it needs `/usr/sbin/sshd` and `ssh-keygen`.
 /// `cargo nextest run --all-features --test it --run-ignored only -E
 /// 'test(a_real_ssh_wire)'`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -786,16 +901,43 @@ async fn a_real_ssh_wire_carries_messages_both_ways() {
             .to_string()
     };
     markers.set("a.peer", &peer_id(&a).await);
-    turn(&a, "SEND hello").await;
-    assert!(
-        last_result(&llm).contains("\"acked\""),
-        "{}",
-        last_result(&llm)
-    );
+    let result = turn(&a, &llm, "SEND hello").await;
+    assert!(result.contains("\"acked\""), "{result}");
     markers.wait("b.replied").await;
     shown(
         &llm,
         &format!("Peer message from {b_label}:\\nfrom B: reply"),
+    )
+    .await;
+    a.idle(&a.agent).await;
+
+    // The link drops, and the other machine notices only after the next
+    // link is up (a network that went away, noticed at a keepalive's
+    // timeout there): its hold is stopped, this side's ssh killed, and the
+    // hold let go once the link is back. Both ways work after.
+    let holds = processes_with(bin, &["--wire-remote"]);
+    assert_eq!(holds.len(), 1, "the link's hold there: {holds:?}");
+    let links = processes_with("ssh", &[&path("ssh_config"), "-R"]);
+    assert_eq!(links.len(), 1, "the link's ssh: {links:?}");
+    signal(holds[0], nix::sys::signal::Signal::SIGSTOP);
+    signal(links[0], nix::sys::signal::Signal::SIGKILL);
+    notice(&mut c, "the link to box is down").await;
+    notice(&mut c, "the link to box is back").await;
+    link_is(&a, "up").await;
+    signal(holds[0], nix::sys::signal::Signal::SIGCONT);
+    let hold = PathBuf::from(format!("/proc/{}", holds[0]));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while hold.exists() {
+        assert!(Instant::now() < deadline, "the old hold never ended");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let result = turn(&a, &llm, "SEND afterback").await;
+    assert!(result.contains("\"acked\""), "{result}");
+    markers.set("b.again", "");
+    markers.wait("b.again_ok").await;
+    shown(
+        &llm,
+        &format!("Peer message from {b_label}:\\nfrom B: again"),
     )
     .await;
     a.idle(&a.agent).await;

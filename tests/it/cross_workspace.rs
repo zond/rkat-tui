@@ -555,6 +555,7 @@ fn stranger(workspace: &Path, agent: &str) -> (WireCard, meerkat_comms::Keypair)
             pubkey: public.to_pubkey_string(),
             address: format!("uds://{}", workspace.join("nothing.sock").display()),
             via: None,
+            ssh_from: None,
         },
         key,
     )

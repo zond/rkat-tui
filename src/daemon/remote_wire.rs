@@ -1026,6 +1026,17 @@ pub fn down_words(label: &str, host: &str) -> String {
     )
 }
 
+/// What a message to `label` meets on the remote half of a wire made over
+/// ssh from the machine `from` while the link is down (its forwarded
+/// socket here is gone): that machine holds the link.
+#[must_use]
+pub fn down_from_words(label: &str, from: &str) -> String {
+    format!(
+        "`{label}` cannot get messages now: it works on {}, and the ssh link from that machine to this one is down. The message was not sent and is not kept; that machine makes the link again by itself, so try again later, or tell the user.",
+        super::protocol::machine(from)
+    )
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -1254,6 +1265,19 @@ mod tests {
             words.contains("the link to box is down")
                 && words.contains("try again later, or tell the user"),
             "{words}"
+        );
+        let there = down_from_words("ws/main-ab12", "laptop");
+        assert!(
+            there.contains("it works on laptop")
+                && there.contains("the ssh link from that machine to this one is down")
+                && there.contains("not sent and is not kept")
+                && there.contains("try again later, or tell the user")
+                && !there.contains("not running"),
+            "{there}"
+        );
+        assert!(
+            down_from_words("ws/main-ab12", "").contains("it works on another machine"),
+            "unknown host"
         );
     }
 }

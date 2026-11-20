@@ -3870,9 +3870,16 @@ your daemon notices within about 45 s, tells you once ("the link to box
 is down …"), and makes it again by itself, after 1 s, then a pause that
 doubles up to a minute; when it is back you are told once more. While it
 is down a `send_message` either way fails at once (your agent reads "the
-link to box is down … try again later, or tell the user"), and nothing
-is kept for later. `/agents` and the `/unwire` picker show each such
-wire with its host and its link (`over ssh to box, link up`). The wire
+link to box is down … try again later, or tell the user"; the agent on
+the other machine reads that yours works on your machine and the ssh
+link from it is down), and nothing is kept for later. `/agents` and the
+`/unwire` picker show each such wire with its host and its link (`over
+ssh to box, link up`); on the other machine with the machine it was made
+from (`over ssh from laptop, link up`, the name your machine gives
+itself). A link made again before the other machine noticed the old
+one's end (the network went away rather than closing the connection)
+works both ways: the old link's end there removes only its own socket,
+never the new link's. The wire
 is stored (`wires.json`), so a restart of your daemon makes the link
 again; a restart of the other one needs nothing. `/unwire` removes your
 half at once and the other through ssh; when the other machine cannot

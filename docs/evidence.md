@@ -14281,3 +14281,62 @@ session's `XDG_STATE_HOME` set by `SetEnv`), run by hand and passing:
 wire, a message each way, `/unwire` on both sides. Not tested: `/unwire`
 while the link is down, a remote sshd that refuses Unix-socket
 forwarding, a key refresh over ssh after a switch.
+
+### The stand-in test's red hosted runs, and the hold that removed the next link's socket (2026-11-20)
+
+Hosted CI failed twice (on 40ef8b5 and 3865ab5) in
+`an_ssh_wire_carries_messages_both_ways_and_survives_drops_and_restarts`:
+the remote side's `SEND again`, after the link was back, read as refused
+with "the rkat-tui daemon of its workspace … is not running". Locally it
+failed 3 of 12 unloaded runs. Diagnostics in the stand-in (temporary
+lines with timestamps) showed the forwarded socket there at the moment
+of the send, so nothing had removed it. The cause, proved by holding the
+remote agent's run that A's message `afterback` woke (a gated step) and
+prompting during it, which failed the same way every time (2 of 2): the
+rig's `prompt` ends at the first `run_completed` after the send, so the
+prompt typed while that wake run ran returned at the wake run's end,
+before its own run, and the test read the last tool result, the refusal
+of the earlier `SEND whiledown` (sent while the link was down, refused
+correctly). A test fault, not the product's: the test now waits for the
+wake run to end before the prompt (the message shown, the agent idle, as
+its first exchange did), and reads only the result of the call the
+prompt made (`result_of`), never an earlier one.
+
+The question whether the product can leave the reverse direction dead
+after a reconnect found a real fault with real ssh. The remote side's
+hold (`rkat-tui --wire-remote`, the link's own command) removed its
+forwarded socket by path when its connection ended. A connection that
+ends because the network went away is noticed there only at a
+keepalive's timeout, possibly after this machine made the next link,
+whose sshd bound the new socket at the same path: the old hold's end
+then removed the new link's socket, and the remote agent's sends were
+refused while the link showed `up` here. Reproduced with the private
+sshd (`a_real_ssh_wire_carries_messages_both_ways`, extended): the old
+hold stopped (`SIGSTOP` by exact pid), this side's link ssh killed, the
+link back, the hold let go: with the removal by path, the remote agent's
+`SEND again` was refused (run by hand, failed); with the fix it passes.
+The fix: the hold keeps the socket it answered for by its file (device,
+inode and change time, since an inode number freed by the unlink can be
+reused) and removes only that file (`client::wire_remote::HeldForward`).
+The stand-in now models the hold through that type, at once or, after
+`notice_late(true)`, only once the next link is up; the stand-in test
+uses that at this daemon's restart and has the remote agent send after
+it (it fails with the removal by path: the remote side's `SEND
+afterrestart` refused). Tests: `client::wire_remote::tests::a_hold_removes_only_the_socket_it_held`,
+the two `ssh_wires` tests above.
+
+Also from the same look: the remote half was stored as a plain local
+wire, so while the link was down the agent there was told the other
+workspace's daemon "is not running … once its user starts rkat-tui
+there", naming a path on another machine. The card handed over now says
+it was made over ssh and from which machine (`WireCard::ssh_from`, its
+host name), and the refusal there says the ssh link from that machine is
+down, the message not sent and not kept, try again later or tell the
+user (`remote_wire::down_from_words`); `/agents` and `/unwire` there show
+`ssh from <machine>` and whether the link's socket is there, and
+`/unwire` and a conversation switch there say the other half is on that
+machine. Tests: `remote_wire::tests::the_down_words_say_what_the_agent_can_do`,
+`client::wires::tests::the_unwire_picker_says_whether_the_other_side_runs`,
+`daemon::wires::tests::an_ssh_wire_round_trips_and_an_older_file_opens`
+(an older file without the field opens), the stand-in test's remote
+side.

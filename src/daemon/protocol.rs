@@ -1619,6 +1619,13 @@ pub struct WireCard {
     /// ssh://…`); `None`: on this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<Via>,
+    /// On the remote half of a wire made over ssh from another machine:
+    /// that machine's host name as it calls itself (empty: unknown). Its
+    /// daemon holds the link, `address` is the link's forwarded socket
+    /// here. `None`: a wire made on this machine (and in files of builds
+    /// before 0.0.19).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_from: Option<String>,
 }
 
 /// The ssh link of a wire to an agent on another machine
@@ -1749,7 +1756,12 @@ pub struct WireRow {
     /// The ssh host it is reached through (`None`: on this machine).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
-    /// Its link's state, for one over ssh: `connecting`, `up` or `down`.
+    /// The machine the wire was made from over ssh, whose daemon holds
+    /// the link (the remote half, [`WireCard::ssh_from`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// Its link's state, for one over ssh: `connecting`, `up` or `down`
+    /// (on the remote half: `up` while the link's socket is here).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
 }
@@ -1765,14 +1777,31 @@ impl WireRow {
     /// its link's state (`api/main-ab12 (ssh box, link up)`).
     #[must_use]
     pub fn shown(&self) -> String {
-        match &self.host {
-            Some(host) => format!(
+        match (&self.host, &self.from) {
+            (Some(host), _) => format!(
                 "{} (ssh {host}, link {})",
                 self.label(),
                 self.link.as_deref().unwrap_or("down")
             ),
-            None => self.label(),
+            (None, Some(from)) => format!(
+                "{} (ssh from {}, link {})",
+                self.label(),
+                machine(from),
+                self.link.as_deref().unwrap_or("down")
+            ),
+            (None, None) => self.label(),
         }
+    }
+}
+
+/// A machine by its host name as a sentence names it (`another machine`
+/// when it is not known).
+#[must_use]
+pub fn machine(host: &str) -> &str {
+    if host.is_empty() {
+        "another machine"
+    } else {
+        host
     }
 }
 

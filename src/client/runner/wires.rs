@@ -190,6 +190,7 @@ impl Runner {
                         workspace,
                         agent,
                         host: None,
+                        from: None,
                         link: None,
                     });
                 let done = unwire_with(&say, &connection, &scene.status, &row, &others).await;

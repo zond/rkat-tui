@@ -15,9 +15,13 @@
   holds one ssh connection per wire carrying both directions as
   Unix-socket forwards; it tells you once when the link drops and once
   when it is back, makes it again by itself (also after a restart), and
-  a message sent while it is down fails with words the agent can act on.
-  `/agents` and `/unwire` show the host and the link's state; `/unwire`
-  removes both halves. The same rkat-tui must be installed there (named
+  a message sent while it is down fails with words the agent can act on,
+  on either machine (the agent over there is told the link from your
+  machine is down, not that a daemon is not running). A link made again
+  before the other machine noticed the old one's end (a network that
+  went away) keeps working both ways. `/agents` and `/unwire` show the
+  host and the link's state, on the other machine as `ssh from <your
+  machine>`; `/unwire` removes both halves. The same rkat-tui must be installed there (named
   with `--remote-rkat-tui <path>` when it is not on the `PATH`).
 
 ### Fixed

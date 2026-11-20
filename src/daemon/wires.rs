@@ -43,7 +43,7 @@ use super::MOB_ID;
 use super::protocol::{Via, WireCard, WireRow, Wired, wire_label};
 use super::remote_wire::{
     CardReply, LinkSpec, LinkState, Op, RemoteAgent, RemoteError, Request, SshHost, SshLinks,
-    Transport, down_words, forward_name, link_argv, remote_program,
+    Transport, down_from_words, down_words, forward_name, link_argv, remote_program,
 };
 
 /// The directory of the sockets under the realm.
@@ -196,6 +196,17 @@ pub fn unreachable_words(card: &WireCard) -> String {
     )
 }
 
+/// The socket `card` addresses (`uds://<path>`).
+fn socket_of(card: &WireCard) -> Option<&Path> {
+    card.address.strip_prefix("uds://").map(Path::new)
+}
+
+/// This machine as the remote half of an ssh wire names it
+/// ([`WireCard::ssh_from`]): its host name, empty when it has none.
+fn this_machine() -> String {
+    crate::paths::local_host().unwrap_or_default()
+}
+
 /// The engine's words for a send whose envelope the receiving socket took
 /// and never acknowledged (`meerkat_comms`: an ambiguous delivery, or no
 /// ack received).
@@ -220,6 +231,18 @@ pub fn unacknowledged(result: &str) -> bool {
 pub fn unacknowledged_note(label: &str) -> String {
     format!(
         "Your message to `{label}` was not delivered: the rkat-tui daemon of its workspace runs, but its agent did not acknowledge the message. Most likely that agent started a new conversation, which gives it a new key this wire does not know. Ask your user to run `/wire {label}` again, then send the message again (it is not kept)."
+    )
+}
+
+/// [`unacknowledged_note`] on the remote half of a wire made over ssh from
+/// the machine `from`: the wire is made again there, and the link may be
+/// going down.
+#[must_use]
+pub fn unacknowledged_from_note(label: &str, from: &str) -> String {
+    format!(
+        "Your message to `{label}` was not delivered: it works on {}, and the ssh link from that machine did not carry it to an agent that acknowledged it. The link may be going down (that machine makes it again by itself), or that agent started a new conversation, which gives it a new key this wire does not know. Try again later; if it keeps failing, tell your user the wire must be made again from {} (it is not kept).",
+        super::protocol::machine(from),
+        super::protocol::machine(from)
     )
 }
 
@@ -390,6 +413,7 @@ impl Wires {
             pubkey: meerkat_comms::PubKey(descriptor.pubkey).to_pubkey_string(),
             address: format!("uds://{}", path.display()),
             via: None,
+            ssh_from: None,
         })
     }
 
@@ -482,6 +506,7 @@ impl Wires {
         let there = format!("{}/{}", theirs.workspace.display(), theirs.agent);
         let ours_there = WireCard {
             address: format!("uds://{}", spec.remote_forward.display()),
+            ssh_from: Some(this_machine()),
             ..ours.clone()
         };
         let wired_there: Wired = transport
@@ -580,6 +605,7 @@ impl Wires {
             }
             let ours_there = WireCard {
                 address: format!("uds://{}", via.remote_forward.display()),
+                ssh_from: Some(this_machine()),
                 ..current.clone()
             };
             let request = Request::new(Op::Wire {
@@ -807,13 +833,25 @@ impl Wires {
                         workspace: card.workspace.clone(),
                         agent: card.agent.clone(),
                         host: card.via.as_ref().map(|via| via.host.clone()),
-                        link: card.via.as_ref().map(|_| {
-                            self.ssh
-                                .state(agent, &card.label())
-                                .unwrap_or(LinkState::Down)
-                                .as_str()
-                                .to_string()
-                        }),
+                        from: card.ssh_from.clone(),
+                        link: if card.via.is_some() {
+                            Some(
+                                self.ssh
+                                    .state(agent, &card.label())
+                                    .unwrap_or(LinkState::Down)
+                                    .as_str()
+                                    .to_string(),
+                            )
+                        } else if card.ssh_from.is_some() {
+                            let up = socket_of(card).is_some_and(Path::exists);
+                            Some(
+                                if up { LinkState::Up } else { LinkState::Down }
+                                    .as_str()
+                                    .to_string(),
+                            )
+                        } else {
+                            None
+                        },
                     })
                     .collect()
             })
@@ -840,9 +878,11 @@ impl Wires {
 
     /// Why a message from `agent` to the wired peer `peer_id` cannot
     /// arrive now: its socket is gone, so its workspace's daemon is not
-    /// running (a clean stop removes it). `None`: it may arrive, or
-    /// `peer_id` is no wired peer. The socket is only looked at, never
-    /// connected to: a connection wakes the agent there.
+    /// running (a clean stop removes it), or, on the remote half of a wire
+    /// made over ssh, the link from the other machine is down (its end
+    /// removes the forwarded socket). `None`: it may arrive, or `peer_id`
+    /// is no wired peer. The socket is only looked at, never connected to:
+    /// a connection wakes the agent there.
     #[must_use]
     pub fn unreachable(&self, agent: &str, peer_id: &str) -> Option<String> {
         let card = self.wired_card(agent, peer_id)?;
@@ -850,11 +890,13 @@ impl Wires {
             return (self.ssh.state(agent, &card.label()) != Some(LinkState::Up))
                 .then(|| down_words(&card.label(), &via.host));
         }
-        let path = Path::new(card.address.strip_prefix("uds://")?);
-        if path.exists() {
+        if socket_of(&card)?.exists() {
             return None;
         }
-        Some(unreachable_words(&card))
+        Some(match &card.ssh_from {
+            Some(from) => down_from_words(&card.label(), from),
+            None => unreachable_words(&card),
+        })
     }
 
     /// `agent`'s message to the peer `peer_id` was not acknowledged: when
@@ -869,7 +911,13 @@ impl Wires {
         }
         let label = card.label();
         tracing::info!(%agent, peer = %label, "a message over a wire was not acknowledged: the other agent's key may have changed");
-        self.note(agent, unacknowledged_note(&label));
+        self.note(
+            agent,
+            match &card.ssh_from {
+                Some(from) => unacknowledged_from_note(&label, from),
+                None => unacknowledged_note(&label),
+            },
+        );
     }
 
     /// The card of `agent`'s wire to the peer `peer_id`. A card's peer id
@@ -894,6 +942,7 @@ impl Wires {
         // card names its link (`via`), or, on the remote side, a forwarded
         // socket.
         let over_ssh = card.via.is_some()
+            || card.ssh_from.is_some()
             || card
                 .address
                 .strip_prefix("uds://")
@@ -1240,12 +1289,21 @@ mod tests {
             pubkey: "ed25519:x".into(),
             address: "uds:///r/wire/main-cd34.sock".into(),
             via: None,
+            ssh_from: None,
         })));
         let note = unacknowledged_note("other/main-cd34");
         assert!(
             note.contains("`other/main-cd34` was not delivered")
                 && note.contains("run `/wire other/main-cd34` again"),
             "{note}"
+        );
+        let there = unacknowledged_from_note("other/main-cd34", "laptop");
+        assert!(
+            there.contains("`other/main-cd34` was not delivered")
+                && there.contains("it works on laptop")
+                && there.contains("made again from laptop")
+                && !there.contains("/wire other/main-cd34"),
+            "{there}"
         );
     }
 
@@ -1264,6 +1322,7 @@ mod tests {
                 pubkey: "ed25519:x".into(),
                 address: "uds:///r/wire/main-cd34.sock".into(),
                 via: None,
+                ssh_from: None,
             }],
         );
         std::fs::write(&file, serde_json::to_vec(&records).unwrap()).unwrap();
@@ -1272,8 +1331,9 @@ mod tests {
         assert!(Records::read(&file).is_err());
     }
 
-    /// A wire over ssh is stored with its link, and a file of a build
-    /// without such wires (no `via`) still opens, as local wires.
+    /// A wire over ssh is stored with its link, its remote half with the
+    /// machine it was made from, and a file of a build without such wires
+    /// (no `via`, no `ssh_from`) still opens, as local wires.
     #[test]
     fn an_ssh_wire_round_trips_and_an_older_file_opens() {
         let dir = tempfile::tempdir().unwrap();
@@ -1285,7 +1345,17 @@ mod tests {
         .unwrap();
         let older = Records::read(&file).unwrap();
         assert_eq!(older.agents["main-ab12"][0].via, None);
+        assert_eq!(older.agents["main-ab12"][0].ssh_from, None);
         let mut records = older;
+        let mut remote_half = records.agents["main-ab12"][0].clone();
+        remote_half.agent = "main-ef56".into();
+        remote_half.address = "uds:///r/wire/s-fedcba9876543210.sock".into();
+        remote_half.ssh_from = Some("laptop".into());
+        records
+            .agents
+            .get_mut("main-ab12")
+            .unwrap()
+            .push(remote_half);
         let card = &mut records.agents.get_mut("main-ab12").unwrap()[0];
         card.address = "uds:///r/wire/s-0123456789abcdef.sock".into();
         card.via = Some(Via {

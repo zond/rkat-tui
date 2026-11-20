@@ -231,6 +231,7 @@ async fn contacts_lists_exactly_the_sendable_peers_by_what_each_is() {
         pubkey: public.to_pubkey_string(),
         address: format!("uds://{}", gamma.join("nothing.sock").display()),
         via: None,
+        ssh_from: None,
     };
     remote::call::<method::Wire>(
         &connection,

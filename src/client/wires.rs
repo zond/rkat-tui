@@ -396,6 +396,16 @@ pub async fn unwire(
         }
         return Ok(text);
     }
+    // The remote half of a wire made over ssh: the other half is on the
+    // machine that made it, which this one does not reach.
+    if let Some(from) = &row.from {
+        text.push_str(&format!(
+            "; its half on {} stays (it delivers nothing now): `/unwire {}` in that workspace there removes it",
+            crate::daemon::protocol::machine(from),
+            crate::daemon::protocol::wire_label(own_workspace, own_agent)
+        ));
+        return Ok(text);
+    }
     match others.iter().find(|o| o.status.workspace == row.workspace) {
         None => text.push_str(&format!(
             "; the daemon of {} is not running, so its side is removed when you run /unwire there or that agent retires (it can no longer reach this one either way)",
@@ -439,6 +449,13 @@ pub async fn refresh(own: &Connection, rows: &[WireRow], others: &[Other]) -> Ve
     // A wire over ssh is refreshed by the daemon that holds its link.
     for row in rows.iter().filter(|row| row.host.is_none()) {
         let label = row.label();
+        if let Some(from) = &row.from {
+            stale.push(format!(
+                "{label} does not know this agent's new conversation: the wire was made over ssh from {}, so make it again there (/wire ssh://… to this machine's agent)",
+                crate::daemon::protocol::machine(from)
+            ));
+            continue;
+        }
         let Some(other) = others.iter().find(|o| o.status.workspace == row.workspace) else {
             stale.push(format!(
                 "{label} does not know this agent's new conversation (its daemon is not running): /wire {label} again once rkat-tui runs there"
@@ -554,6 +571,11 @@ pub fn unwire_picker(wired: &[WireRow], others: &[Other]) -> crate::ui::ListPick
             let state = match (&w.host, other) {
                 (Some(host), _) => format!(
                     "over ssh to {host}, link {}",
+                    w.link.as_deref().unwrap_or("down")
+                ),
+                (None, _) if w.from.is_some() => format!(
+                    "over ssh from {}, link {}",
+                    crate::daemon::protocol::machine(w.from.as_deref().unwrap_or_default()),
                     w.link.as_deref().unwrap_or("down")
                 ),
                 (None, None) => "its daemon is not running".to_string(),
@@ -672,6 +694,7 @@ mod tests {
             workspace: "/w/web".into(),
             agent: "main-cccc".into(),
             host: None,
+            from: None,
             link: None,
         }];
         let picker = wire_picker(&all, &wired);
@@ -705,13 +728,22 @@ mod tests {
                 workspace: "/w/web".into(),
                 agent: "main-cccc".into(),
                 host: None,
+                from: None,
                 link: None,
             },
             WireRow {
                 workspace: "/w/far".into(),
                 agent: "main-eeee".into(),
                 host: Some("box".into()),
+                from: None,
                 link: Some("down".into()),
+            },
+            WireRow {
+                workspace: "/w/near".into(),
+                agent: "main-ffff".into(),
+                host: None,
+                from: Some("laptop".into()),
+                link: Some("up".into()),
             },
         ];
         let picker = unwire_picker(&wired, &[]);
@@ -723,7 +755,15 @@ mod tests {
             picker.rows[1].text,
             "far/main-eeee  over ssh to box, link down"
         );
+        assert_eq!(
+            picker.rows[2].text,
+            "near/main-ffff  over ssh from laptop, link up"
+        );
         assert_eq!(wired[1].shown(), "far/main-eeee (ssh box, link down)");
+        assert_eq!(
+            wired[2].shown(),
+            "near/main-ffff (ssh from laptop, link up)"
+        );
         assert_eq!(wired[0].shown(), "web/main-cccc");
         let wired = &wired[..1];
         assert!(matches!(
