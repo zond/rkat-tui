@@ -161,17 +161,17 @@ impl App {
             },
         );
         self.scroll.bottom();
-        if self.running || self.run_next_shell(now, fx) {
+        if self.turn.is_running() || self.run_next_shell(now, fx) {
             return;
         }
-        if self.has_held_command() && self.send_next.is_none() {
+        if self.has_held_command() && !self.delivery.has_next() {
             self.run_held(now, fx);
             return;
         }
         let held = self
             .pending
             .take_where(|p| p.state == PendingState::Deferred);
-        if !held.is_empty() || self.send_next.is_some() {
+        if !held.is_empty() || self.delivery.has_next() {
             self.next_after_turn(held, false, true, now, fx);
         }
     }

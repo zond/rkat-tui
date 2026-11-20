@@ -34,7 +34,7 @@ impl App {
         };
         fx.push(Effect::SetMode(mode));
         let prompt = PROCEED_PROMPT.to_string();
-        if self.running {
+        if self.turn.is_running() {
             self.enqueue(prompt, fx);
         } else if self.shell_busy() {
             self.hold(prompt);
@@ -49,7 +49,7 @@ impl App {
     /// quiet ([`super::Arming`]).
     pub(super) fn offer_plan(&mut self, answered: bool, now: Instant) {
         if answered
-            && !self.running
+            && !self.turn.is_running()
             && self.status.mode == Some(PermissionMode::Plan)
             && matches!(self.modal, None | Some(Modal::Keys))
         {

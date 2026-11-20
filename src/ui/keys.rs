@@ -46,9 +46,9 @@ impl App {
     /// Whether quitting now would interrupt a turn or leave messages
     /// undelivered (a quit then asks again).
     pub fn quit_is_busy(&self) -> bool {
-        self.running
+        self.turn.is_running()
             || !self.pending.is_empty()
-            || self.send_next.is_some()
+            || self.delivery.has_next()
             || self.shell.running.is_some()
     }
 
@@ -380,8 +380,9 @@ impl App {
     /// whether the agent runs a turn this UI does not show.
     pub(super) fn interrupt_and_send(&mut self, now: Instant, fx: &mut Vec<Effect>) {
         let empty = self.input.text().trim().is_empty();
-        let waiting = self.running && self.has_waiting_messages();
-        if !self.running && self.compaction_run && self.holds_messages() {
+        let running = self.turn.is_running();
+        let waiting = running && self.has_waiting_messages();
+        if !running && self.compaction.run_going() && self.holds_messages() {
             // The messages wait for the run that lets the agent compact:
             // it is stopped, and they go as soon as it ended.
             if !empty {
@@ -394,18 +395,15 @@ impl App {
             self.interrupt(now, fx);
         } else if empty && !waiting {
             self.interrupt(now, fx);
-        } else if !self.running {
+        } else if !running {
             self.submit(now, fx);
         } else {
             if !empty {
                 let text = self.input.take();
                 self.submitted.push(text.clone());
-                self.send_next = Some(match self.send_next.take() {
-                    Some(prev) => format!("{prev}\n\n{text}"),
-                    None => text,
-                });
+                self.delivery.send_after(text);
             }
-            self.send_waiting = true;
+            self.turn.push_waiting();
             fx.push(Effect::Interrupt);
         }
     }
@@ -628,7 +626,7 @@ impl App {
         // the next Esc is the usual one.
         if self.btw_pending() {
             self.cancel_btw(fx);
-        } else if self.running || self.interrupt_repeats(now) {
+        } else if self.turn.is_running() || self.interrupt_repeats(now) {
             self.interrupt(now, fx);
         } else if self.shell.running.is_some() {
             fx.push(Effect::CancelShell);
@@ -645,7 +643,7 @@ impl App {
     }
 
     pub(super) fn ctrl_c(&mut self, now: Instant, fx: &mut Vec<Effect>) {
-        if self.running || self.interrupt_repeats(now) {
+        if self.turn.is_running() || self.interrupt_repeats(now) {
             self.quit.last_ctrl_c = None;
             self.interrupt(now, fx);
         } else if self.shell.running.is_some() {
@@ -702,12 +700,13 @@ impl App {
             .iter()
             .filter(|p| p.state == PendingState::Command)
             .count();
-        let queued = self.pending.len() - commands + usize::from(self.send_next.is_some());
-        let busy = self.running || queued > 0 || commands > 0;
+        let queued = self.pending.len() - commands + usize::from(self.delivery.has_next());
+        let running = self.turn.is_running();
+        let busy = running || queued > 0 || commands > 0;
         if busy && !self.quit_confirm_armed(now) {
             self.quit.confirm = Some(now);
             let mut what = Vec::new();
-            if self.running {
+            if running {
                 what.push("a turn is running".to_string());
             }
             if queued > 0 {
@@ -809,8 +808,8 @@ impl App {
             .iter()
             .map(|p| (Some(p.id), p.text.clone()))
             .collect();
-        if let Some(next) = &self.send_next {
-            held.push((None, next.clone()));
+        if let Some(next) = self.delivery.next() {
+            held.push((None, next.to_string()));
         }
         if !held.is_empty() {
             fx.push(Effect::SaveUnsent(held));

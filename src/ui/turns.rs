@@ -13,7 +13,7 @@ use super::{
 impl App {
     /// Whether a turn is running.
     pub fn is_running(&self) -> bool {
-        self.running
+        self.turn.is_running()
     }
 
     /// Whether a message the UI holds can be recalled without the runner.
@@ -25,7 +25,7 @@ impl App {
     /// holds, one the runtime holds and the agent has not read (recalled
     /// through the runner), or a recall already on its way.
     pub fn can_take_back(&self) -> bool {
-        self.has_recallable() || self.recalling || self.has_admitted_recallable()
+        self.has_recallable() || self.delivery.recalling() || self.has_admitted_recallable()
     }
 
     pub(super) fn submit(&mut self, now: Instant, fx: &mut Vec<Effect>) {
@@ -60,9 +60,9 @@ impl App {
                     // A command waits for the turn's end: the message goes
                     // after it.
                     self.hold(prompt);
-                } else if self.running {
+                } else if self.turn.is_running() {
                     self.enqueue(prompt, fx);
-                } else if self.shell_busy() || self.compaction_run {
+                } else if self.shell_busy() || self.compaction.run_going() {
                     self.hold(prompt);
                 } else {
                     self.start_turn(prompt, now, fx);
@@ -108,14 +108,12 @@ impl App {
     ) {
         self.run_first_block = self.transcript.next_id();
         self.failures = super::failures::RunFailures::start(None, false);
-        self.woken_by = None;
-        self.streamed_text = false;
         if user_block {
             self.transcript.push(Block::User {
                 text: prompt.clone(),
             });
         }
-        self.running = true;
+        self.turn.start();
         self.status.running_since = Some(now);
         self.status.heard_at = Some(now);
         self.scroll.bottom();
@@ -141,23 +139,21 @@ impl App {
         if let Some(outcome) = &outcome {
             self.transcript.push_outcome(outcome);
         }
-        if self.running {
+        let Some(super::turn_state::Joined { woken_by }) = self.turn.join() else {
             if let Some(text) = prompt {
                 // A follow-up run of the turn: a helper's ending note is
                 // its folded line, shown once with its announcement.
                 self.transcript.remote_input(text);
             }
             return;
-        }
+        };
         self.run_first_block = self.transcript.next_id();
-        self.failures = super::failures::RunFailures::start(self.woken_by.take(), true);
-        self.streamed_text = false;
+        self.failures = super::failures::RunFailures::start(woken_by, true);
         if let Some(text) = prompt {
             // A run the daemon announced before it started is shown
             // labelled already; a helper's ending note is its folded line.
             self.transcript.remote_input(text);
         }
-        self.running = true;
         self.status.running_since = Some(now);
         self.status.heard_at = Some(now);
     }
@@ -186,9 +182,9 @@ impl App {
         fx: &mut Vec<Effect>,
     ) {
         // Session commands keep waiting while the compaction's run goes.
-        self.compacting = self.compaction_run;
+        self.compaction.answered();
         match result {
-            Ok(()) if self.compaction_run => {
+            Ok(()) if self.compaction.run_going() => {
                 self.transcript
                     .push_notice(NoticeLevel::Info, COMPACT_RUNNING);
             }
@@ -202,7 +198,7 @@ impl App {
             }
         }
         // Commands held behind the request go once nothing runs.
-        if !self.compacting && !self.running {
+        if !self.compaction.busy() && !self.turn.is_running() {
             self.run_held(now, fx);
         }
     }
@@ -210,31 +206,29 @@ impl App {
     /// [`Msg::CompactionRun`](crate::ui::Msg::CompactionRun): the run that lets the idle agent
     /// compact began or ended; at its end what the user sent meanwhile goes.
     pub(super) fn compaction_run(&mut self, running: bool, now: Instant, fx: &mut Vec<Effect>) {
-        self.compaction_run = running;
+        self.compaction.run(running);
         if running {
-            self.compacting = true;
             return;
         }
-        self.compacting = false;
         self.status.compacting_since = None;
         // The agent went on with a run of its own (a helper's note queued
         // behind the compaction): what was held for the compaction is
         // steered into it, as a message typed now would be.
-        if self.running && !self.has_held_command() && !self.shell_busy() {
+        if self.turn.is_running() && !self.has_held_command() && !self.shell_busy() {
             self.steer_held(fx);
             return;
         }
         if self.agent_busy() {
             return;
         }
-        if self.has_held_command() && self.send_next.is_none() {
+        if self.has_held_command() && !self.delivery.has_next() {
             self.run_held(now, fx);
             return;
         }
         let held = self
             .pending
             .take_where(|p| p.state == PendingState::Deferred);
-        if !held.is_empty() || self.send_next.is_some() {
+        if !held.is_empty() || self.delivery.has_next() {
             self.next_after_turn(held, false, true, now, fx);
         }
     }
@@ -357,7 +351,7 @@ impl App {
     pub(super) fn has_admitted_recallable(&self) -> bool {
         self.pending.items().iter().any(|p| {
             matches!(p.state, PendingState::Queued | PendingState::Admitted)
-                && !self.reached.contains(&p.id)
+                && !self.delivery.reached(p.id)
         })
     }
 
@@ -365,7 +359,6 @@ impl App {
     /// to the editor (oldest first, before the draft); the admitted ones
     /// left already reached the agent.
     pub(super) fn recalled(&mut self, recalled: &[PendingId], errors: &[String]) {
-        self.recalling = false;
         let back: Vec<PendingId> = self
             .pending
             .items()
@@ -384,7 +377,8 @@ impl App {
             .map(|p| p.id)
             .collect();
         let reached = left.len();
-        self.reached.extend(left);
+        self.delivery.recalled(left);
+        let running = self.turn.is_running();
         if !errors.is_empty() {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
@@ -394,12 +388,12 @@ impl App {
         let plural = crate::text::plural::<usize>;
         let text = match (returned, reached) {
             (0, 0) => return,
-            (0, _) if self.running => {
+            (0, _) if running => {
                 "your messages already reached the agent; Esc interrupts".to_string()
             }
             (0, _) => return,
             (n, 0) => format!("{n} message{} returned to the editor", plural(n)),
-            (n, m) if self.running => format!(
+            (n, m) if running => format!(
                 "{n} message{} returned to the editor; {m} already reached the agent (Esc interrupts)",
                 plural(n)
             ),
@@ -417,7 +411,7 @@ impl App {
         let Some(text) = self.pending.get(id).map(|p| p.text.clone()) else {
             return;
         };
-        self.reached.retain(|reached| *reached != id);
+        self.delivery.forget(&[id]);
         let texts = self.withdraw(&[id]);
         self.prepend_to_editor(texts);
         let why = why.map(|why| format!(" ({why})")).unwrap_or_default();
@@ -444,14 +438,13 @@ impl App {
                 taken.push((*id, text));
             }
         }
-        self.reached.retain(|reached| !ids.contains(reached));
+        self.delivery.forget(ids);
         if taken.is_empty() {
             return;
         }
-        if self.running {
-            self.returned.extend(taken);
+        let Some(mut taken) = self.turn.take_back(taken) else {
             return;
-        }
+        };
         taken.sort_by_key(|(id, _)| *id);
         let count = taken.len();
         self.prepend_to_editor(taken.into_iter().map(|(_, text)| text).collect());
@@ -468,11 +461,11 @@ impl App {
     /// editor keeps their order); otherwise pull back the newest held one.
     /// While a recall is on its way, wait for it.
     pub(super) fn take_back_queued(&mut self, fx: &mut Vec<Effect>) {
-        if self.recalling {
+        if self.delivery.recalling() {
             return;
         }
         if self.has_admitted_recallable() {
-            self.recalling = true;
+            self.delivery.ask_recall();
             fx.push(Effect::RecallQueued);
         } else {
             self.recall_newest();
@@ -494,9 +487,8 @@ impl App {
         now: Instant,
         fx: &mut Vec<Effect>,
     ) {
-        self.running = false;
-        self.recalling = false;
-        self.reached.clear();
+        let run = self.turn.finish();
+        self.delivery.turn_ended();
         self.status.running_since = None;
         self.status.model_since = None;
         self.status.classifying = false;
@@ -514,12 +506,16 @@ impl App {
         // editor, in the order typed: the ones it took back from the agent
         // and the ones the UI still held; nothing typed during the
         // interrupted turn starts a run by itself. After Ctrl-X Ctrl-S
-        // (`send_waiting`) they are sent instead, as the next run, before
-        // the editor's text it took (`send_next`), as the user asked.
+        // (the run's `push`) they are sent instead, as the next run, before
+        // the editor's text it took (the delivery's next), as the user
+        // asked.
         let mut unsent = self.pending.take_unsent();
-        let returned = std::mem::take(&mut self.returned);
-        let push = std::mem::take(&mut self.send_waiting);
-        let typed = self.send_next.is_some();
+        let super::turn_state::Run {
+            streamed_text,
+            returned,
+            push,
+        } = run;
+        let typed = self.delivery.has_next();
         let mut back = 0;
         let mut pushed = 0;
         if interrupted && !push {
@@ -538,11 +534,7 @@ impl App {
             let texts: Vec<String> = returned.into_iter().map(|(_, text)| text).collect();
             if push {
                 pushed = texts.len();
-                let texts = texts.join("\n\n");
-                self.send_next = Some(match self.send_next.take() {
-                    Some(next) => format!("{texts}\n\n{next}"),
-                    None => texts,
-                });
+                self.delivery.send_before(texts.join("\n\n"));
             } else {
                 back = texts.len();
                 self.prepend_to_editor(texts);
@@ -551,7 +543,7 @@ impl App {
         let sending = (push && (pushed > 0 || typed)).then(|| sending_line(pushed, typed));
         match result {
             Ok(summary) => {
-                if !self.streamed_text && !summary.text.is_empty() {
+                if !streamed_text && !summary.text.is_empty() {
                     self.transcript.push(Block::Assistant { md: summary.text });
                 }
             }
@@ -593,16 +585,15 @@ impl App {
                 format!("{text} (the run had ended as you interrupted it)"),
             );
         }
-        self.streamed_text = false;
         // `!` commands typed during the turn run first; what would start the
         // next turn waits for them (a failed turn's messages still go back
         // to the editor). Commands held for the turn's end then go, in
         // order with the messages typed after them.
-        if self.shell_busy() && (self.send_next.is_some() || succeeded || interrupted) {
+        if self.shell_busy() && (self.delivery.has_next() || succeeded || interrupted) {
             for item in unsent {
                 self.pending.hold_again(&mut self.transcript, item);
             }
-        } else if self.has_held_command() && self.send_next.is_none() && (succeeded || interrupted)
+        } else if self.has_held_command() && !self.delivery.has_next() && (succeeded || interrupted)
         {
             for item in unsent {
                 self.pending.hold_again(&mut self.transcript, item);
@@ -612,7 +603,7 @@ impl App {
             self.next_after_turn(unsent, interrupted, succeeded, now, fx);
             self.run_held(now, fx);
         }
-        if self.shell.running.is_none() && !self.running {
+        if self.shell.running.is_none() && !self.turn.is_running() {
             self.run_next_shell(now, fx);
         }
         self.offer_plan(answered, now);
@@ -643,7 +634,7 @@ impl App {
         now: Instant,
         fx: &mut Vec<Effect>,
     ) {
-        if let Some(next) = self.send_next.take() {
+        if let Some(next) = self.delivery.take_next() {
             let mut texts = self.unsent_as_user(unsent);
             self.transcript.push(Block::User { text: next.clone() });
             texts.push(next);

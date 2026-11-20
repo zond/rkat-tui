@@ -31,13 +31,13 @@ impl App {
     /// effects are served in order), and a `!` command does not wait for a
     /// compaction ([`Self::turn_or_shell`]).
     pub(super) fn agent_busy(&self) -> bool {
-        self.running || self.compacting || self.compaction_run || self.shell_busy()
+        self.turn.is_running() || self.compaction.busy() || self.shell_busy()
     }
 
     /// Whether a turn or a `!` command runs: what a `!` command, and a
     /// message that cannot be steered into the turn, waits for.
     pub(super) fn turn_or_shell(&self) -> bool {
-        self.running || self.shell_busy()
+        self.turn.is_running() || self.shell_busy()
     }
 
     /// Whether a command that needs the agent idle waits now instead of
@@ -45,7 +45,7 @@ impl App {
     /// command waits already (they keep their order). Never while a held
     /// command itself runs.
     pub(super) fn defers(&self) -> bool {
-        !self.draining && (self.agent_busy() || self.has_held_command())
+        !self.delivery.draining && (self.agent_busy() || self.has_held_command())
     }
 
     /// Whether a command waits for the turn's end.
@@ -107,12 +107,12 @@ impl App {
                     NoticeLevel::Info,
                     format!("{} (held until the turn ended)", item.text),
                 );
-                self.draining = true;
+                self.delivery.draining = true;
                 match work {
                     Deferred::Typed(command) => self.run_command(command, now, fx),
                     Deferred::Choice(effect) => fx.push(effect),
                 }
-                self.draining = false;
+                self.delivery.draining = false;
                 self.scroll.bottom();
                 continue;
             }

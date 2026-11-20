@@ -42,7 +42,8 @@ impl App {
         // The running turn as the screen shows it: the session's stored
         // history has a run only once it ended.
         let current_turn = self
-            .running
+            .turn
+            .is_running()
             .then(|| self.transcript.turn_text(self.run_first_block))
             .filter(|text| !text.trim().is_empty());
         let id = self.transcript.push(Block::Btw {

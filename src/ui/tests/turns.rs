@@ -781,12 +781,12 @@ fn send_next_takes_priority_over_held_messages() {
     type_str(&mut app, "urgent");
     app.update_at(ctrl('x'), t0);
     assert_eq!(app.update_at(ctrl('s'), t0), vec![Effect::Interrupt]);
-    assert_eq!(app.send_next.as_deref(), Some("urgent"));
+    assert_eq!(app.delivery.next(), Some("urgent"));
     // The queued message stays in place until the turn ends.
     assert_eq!(app.status.queued, 1);
     let fx = app.update(finished(Err(TurnFailure::Interrupted)));
     assert_eq!(fx, vec![Effect::StartTurn("two\n\nurgent".into())]);
-    assert!(app.send_next.is_none());
+    assert!(!app.delivery.has_next());
     assert!(app.is_running());
     assert!(app.input.is_empty());
     let users: Vec<&Block> = app
@@ -1182,7 +1182,7 @@ fn warn_mode_warns_once_on_crossing_then_every_turn_at_auto() {
         "repeats every turn at the auto threshold"
     );
     assert!(last_notice(&app).is_some_and(|(_, t)| t.contains("--auto-compact")));
-    assert!(!app.compacting);
+    assert!(!app.compaction.busy());
 }
 
 /// A command held while a `/compact now` request is out waits for its
@@ -1221,7 +1221,7 @@ fn prompts_during_the_request_are_queued_inputs_not_held_text() {
     let mut app = App::new(StatusInfo::default());
     app.status.context_used = Some(40_000);
     assert_eq!(submit(&mut app, "/compact now"), vec![Effect::CompactNow]);
-    assert!(app.compacting);
+    assert!(app.compaction.busy());
     assert_eq!(
         last_notice(&app),
         Some((NoticeLevel::Info, "asking the engine to compact…".into()))
@@ -1249,7 +1249,7 @@ fn prompts_during_the_request_are_queued_inputs_not_held_text() {
     assert_eq!(submit(&mut app, "/compact now"), vec![Effect::CompactNow]);
     assert_eq!(submit(&mut app, "#x"), vec![Effect::Remember("x".into())]);
     assert!(app.update(Msg::CompactRequested(Ok(()))).is_empty());
-    assert!(!app.compacting);
+    assert!(!app.compaction.busy());
     assert!(app.transcript.blocks().iter().any(
         |b| matches!(b, Block::Notice { level: NoticeLevel::Info, text } if text == COMPACT_REQUESTED)
     ));
@@ -1264,7 +1264,7 @@ fn auto_mode_neither_warns_nor_compacts_itself() {
         assert!(turn_at(&mut app, used).is_empty());
     }
     assert_eq!(warn_count(&app), 0);
-    assert!(!app.compacting);
+    assert!(!app.compaction.busy());
     // Unknown window: no warning in auto mode either.
     let mut app = App::new(StatusInfo::default()).with_compaction_policy(CompactionPolicy {
         mode: CompactMode::Auto,

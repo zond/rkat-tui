@@ -796,7 +796,7 @@ fn compact_now_goes_at_once_during_a_turn_and_waits_for_queued_messages() {
     let mut app = running_app();
     app.status.context_used = Some(10_000);
     assert_eq!(submit(&mut app, "/compact now"), vec![Effect::CompactNow]);
-    assert!(!app.compacting, "nothing waits for it");
+    assert!(!app.compaction.busy(), "nothing waits for it");
     assert_eq!(
         last_notice(&app),
         Some((
@@ -814,7 +814,7 @@ fn compact_now_goes_at_once_during_a_turn_and_waits_for_queued_messages() {
     assert!(!app.is_running());
     assert_eq!(app.status.queued, 1);
     assert!(submit(&mut app, "/compact now").is_empty());
-    assert!(!app.compacting);
+    assert!(!app.compaction.busy());
     assert_eq!(last_notice(&app).map(|(l, _)| l), Some(NoticeLevel::Warn));
 }
 
@@ -934,9 +934,11 @@ fn session_commands_share_one_idle_guard() {
     held(Busy::Shell, &|app| {
         assert_eq!(submit(app, "! sleep 5"), vec![run_shell(1, "sleep 5")]);
     });
-    blocked(Busy::Queued, &|app| app.send_next = Some("next".into()));
-    blocked(Busy::Queued, &|app| app.recalling = true);
-    held(Busy::Compacting, &|app| app.compacting = true);
+    blocked(Busy::Queued, &|app| app.delivery.send_after("next".into()));
+    blocked(Busy::Queued, &|app| {
+        app.delivery.ask_recall();
+    });
+    held(Busy::Compacting, &|app| app.compaction.ask());
     held(Busy::Turn, &|app| {
         submit(app, "one");
     });
@@ -1050,7 +1052,7 @@ fn compact_status_reports_the_policy_and_compact_needs_context() {
             "{cmd}"
         );
     }
-    assert!(!app.compacting);
+    assert!(!app.compaction.busy());
 }
 
 #[test]
@@ -1126,7 +1128,7 @@ fn bare_compact_compacts_and_instructions_add_a_warning() {
     let mut app = App::new(StatusInfo::default());
     app.status.context_used = Some(40_000);
     assert_eq!(submit(&mut app, "/compact"), vec![Effect::CompactNow]);
-    assert!(app.compacting);
+    assert!(app.compaction.busy());
     assert!(
         !app.transcript
             .blocks()
@@ -1153,7 +1155,7 @@ fn a_refused_request_is_reported() {
         "boom".into(),
     ))));
     assert!(fx.is_empty());
-    assert!(!app.compacting);
+    assert!(!app.compaction.busy());
     assert!(!app.is_running());
     assert_eq!(
         last_notice(&app),

@@ -48,16 +48,16 @@ impl App {
     /// `/resume`, `/model`, `/init`, `/compact`) from running now, if
     /// anything. One guard for all of them so they cannot drift apart.
     pub(crate) fn blocker(&self) -> Option<Busy> {
-        if self.running {
+        if self.turn.is_running() {
             Some(Busy::Turn)
-        } else if self.compacting {
+        } else if self.compaction.busy() {
             Some(Busy::Compacting)
         } else if self.shell.running.is_some() {
             Some(Busy::Shell)
-        } else if self.draining {
+        } else if self.delivery.draining {
             // A held command runs now: what was held behind it waits.
             None
-        } else if !self.pending.is_empty() || self.send_next.is_some() || self.recalling {
+        } else if !self.pending.is_empty() || self.delivery.waits() {
             Some(Busy::Queued)
         } else {
             None
@@ -204,7 +204,7 @@ impl App {
                 self.transcript.push_notice(NoticeLevel::Error, why);
             }
             Command::Compact(cmd @ (CompactCommand::Now | CompactCommand::Focused(_)))
-                if self.running =>
+                if self.turn.is_running() =>
             {
                 // During a turn the request goes now: the engine compacts
                 // before the run's next model request.
@@ -232,7 +232,7 @@ impl App {
                     self.transcript
                         .push_notice(NoticeLevel::Warn, COMPACT_FOCUS_UNSUPPORTED);
                 }
-                self.compacting = true;
+                self.compaction.ask();
                 self.transcript
                     .push_notice(NoticeLevel::Info, "asking the engine to compact…");
                 self.scroll.bottom();

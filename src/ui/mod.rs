@@ -34,6 +34,7 @@ pub mod search;
 pub mod selection;
 mod shell;
 pub mod transcript;
+mod turn_state;
 mod turns;
 
 use crate::approval::escalation::RecordedPrompt;
@@ -1500,34 +1501,21 @@ pub struct App {
     /// What each held [`PendingState::Command`] item does once the agent
     /// is idle ([`deferred`]).
     deferred: std::collections::HashMap<PendingId, deferred::Deferred>,
-    /// A held command runs now ([`App::run_held`]): what queues behind it
-    /// does not keep it from running.
-    draining: bool,
-    /// Prompt to send once the interrupted turn ends (Ctrl-X Ctrl-S).
-    send_next: Option<String>,
-    /// Ctrl-X Ctrl-S interrupted the turn: the user's messages its
-    /// interrupt hands back go as the next run (before `send_next`), not
-    /// to the editor.
-    send_waiting: bool,
+    /// The agent's turn as this client shows it ([`turn_state::Turn`]).
+    turn: turn_state::Turn,
+    /// What the user typed beside the pending queue
+    /// ([`turn_state::Delivery`]).
+    delivery: turn_state::Delivery,
+    /// A compaction of the agent's context ([`turn_state::Compaction`]).
+    compaction: turn_state::Compaction,
     /// Sequence number of the last primary-stream event processed.
     last_seq: u64,
     /// Normal editing or history search.
     mode: InputMode,
     /// When Ctrl-X was pressed, while a chord is pending.
     chord: Option<Instant>,
-    /// Whether `/compact now` is asking for a compaction ([`Effect::CompactNow`]
-    /// sent, no [`Msg::CompactRequested`] yet). A prompt sent meanwhile is
-    /// admitted as an ordinary `Queue` input once the request is answered
-    /// (the runner serves effects in order); session switches wait.
-    compacting: bool,
-    /// Whether the run `/compact` started on the idle agent is going
-    /// ([`Msg::CompactionRun`]): what the user sends meanwhile is held.
-    compaction_run: bool,
     /// Context-gauge policy: warn about a filling context (warn mode).
     gauge: CompactionGauge,
-    /// Whether assistant text streamed during the current turn (the turn
-    /// summary is shown only when nothing did).
-    streamed_text: bool,
     /// Global (cross-workspace) prompt history, oldest first; searched after the
     /// workspace history.
     global_history: Vec<String>,
@@ -1542,22 +1530,14 @@ pub struct App {
     /// takes no answer yet ([`Arming`]).
     arming: Option<Arming>,
     submitted: Vec<String>,
-    running: bool,
     run_first_block: BlockId,
     /// What the current run's failures said, and who started it.
     failures: failures::RunFailures,
-    /// Who woke the idle agent for the run about to start (another
-    /// agent's message, which arrives just before the run's start).
-    woken_by: Option<String>,
     /// When an Esc on an idle input with text armed the draft clear.
     last_esc: Option<Instant>,
     /// The last Esc (or Ctrl+C) that interrupted, while it belongs to that
     /// interrupt ([`INTERRUPT_REPEAT`]).
     last_interrupt: Option<Instant>,
-    /// Messages the turn's interrupt took back so far ([`Msg::Returned`]),
-    /// kept until its end puts them in the editor in the order they were
-    /// typed, counted in its one line.
-    returned: Vec<(PendingId, String)>,
     /// The pending `/btw`'s block and question (one at a time).
     btw: Option<(BlockId, String)>,
     viewport_height: usize,
@@ -1582,11 +1562,6 @@ pub struct App {
     helpers_all: bool,
     /// The helper whose full view replaces the transcript, if one is open.
     helper_view: Option<OpenHelperView>,
-    /// An [`Effect::RecallQueued`] is waiting for its [`Msg::Recalled`].
-    recalling: bool,
-    /// Admitted messages a recall found already with the agent: ↑ no
-    /// longer tries to recall them (it recalls history).
-    reached: Vec<PendingId>,
     /// Ring the bell when a turn ends or an approval prompt opens while the
     /// terminal is unfocused (`[ui] bell`).
     bell: bool,
@@ -1635,29 +1610,23 @@ impl App {
             modal: None,
             pending: PendingQueue::new(),
             deferred: std::collections::HashMap::new(),
-            draining: false,
-            send_next: None,
-            send_waiting: false,
+            turn: turn_state::Turn::default(),
+            delivery: turn_state::Delivery::default(),
+            compaction: turn_state::Compaction::default(),
             last_seq: 0,
             mode: InputMode::Normal,
             chord: None,
-            compacting: false,
-            compaction_run: false,
             gauge: CompactionGauge::default(),
-            streamed_text: false,
             global_history: Vec::new(),
             search_corpus: Vec::new(),
             pending_escalations: VecDeque::new(),
             parked: None,
             arming: None,
             submitted: Vec::new(),
-            running: false,
             run_first_block: BlockId(0),
             failures: failures::RunFailures::default(),
-            woken_by: None,
             last_esc: None,
             last_interrupt: None,
-            returned: Vec::new(),
             btw: None,
             viewport_height: 20,
             clipboard: None,
@@ -1667,8 +1636,6 @@ impl App {
             panel_rows: Vec::new(),
             helpers_all: false,
             helper_view: None,
-            recalling: false,
-            reached: Vec::new(),
             bell: true,
             focused: true,
             ring: false,
@@ -1948,10 +1915,10 @@ impl App {
                 self.last_seq = env.seq;
                 match &env.payload {
                     AgentEvent::TextDelta { delta, .. } if !delta.is_empty() => {
-                        self.streamed_text = true;
+                        self.turn.streamed();
                     }
                     AgentEvent::TextComplete { content, .. } if !content.is_empty() => {
-                        self.streamed_text = true;
+                        self.turn.streamed();
                     }
                     // The gauge's reading is the daemon's (`rkat/cost`); a
                     // compaction re-arms its warning.
@@ -2024,7 +1991,7 @@ impl App {
             Msg::TurnFinished(outcome) => {
                 self.turn_finished(outcome, now, &mut fx);
                 // Not when the queued messages started the next turn.
-                if !self.running {
+                if !self.turn.is_running() {
                     self.notify();
                 }
             }
@@ -2146,13 +2113,12 @@ impl App {
                 // its run starts: that run is not the user's.
                 // (Or just after it, when the client joined the run on
                 // the daemon's word first.)
-                if !text.is_empty() {
-                    let origin = Some(format!(" to {from}'s message"));
-                    if !self.running {
-                        self.woken_by = origin;
-                    } else if self.failures.remote && self.failures.origin.is_none() {
-                        self.failures.origin = origin;
-                    }
+                if !text.is_empty()
+                    && let Some(origin) = self.turn.wake(format!(" to {from}'s message"))
+                    && self.failures.remote
+                    && self.failures.origin.is_none()
+                {
+                    self.failures.origin = Some(origin);
                 }
                 self.transcript
                     .peer_message(self.run_first_block, from, text);
@@ -2239,7 +2205,7 @@ impl App {
             }
         }
         self.status.queued = self.pending.len();
-        self.status.send_now = self.running && self.has_waiting_messages();
+        self.status.send_now = self.turn.is_running() && self.has_waiting_messages();
         let asking = matches!(self.modal, Some(Modal::Escalation { .. }))
             || !self.pending_escalations.is_empty();
         self.status.asking_since = if asking {

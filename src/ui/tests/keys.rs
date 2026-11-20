@@ -1046,12 +1046,12 @@ fn chord_ctrl_x_ctrl_s_interrupt_and_send_when_running() {
         vec!["first".to_string(), "next".into()]
     );
     assert_eq!(app.input.history().last().map(String::as_str), Some("next"));
-    assert_eq!(app.send_next.as_deref(), Some("next"));
+    assert_eq!(app.delivery.next(), Some("next"));
     // A trailing backslash does not turn the chord into a newline.
     type_str(&mut app, "x\\");
     app.update_at(ctrl('x'), t0);
     assert_eq!(app.update_at(ctrl('s'), t0), vec![Effect::Interrupt]);
-    assert_eq!(app.send_next.as_deref(), Some("next\n\nx\\"));
+    assert_eq!(app.delivery.next(), Some("next\n\nx\\"));
     // Running with an empty editor and nothing waiting: plain interrupt.
     app.update_at(ctrl('x'), t0);
     assert_eq!(app.update_at(ctrl('s'), t0), vec![Effect::Interrupt]);

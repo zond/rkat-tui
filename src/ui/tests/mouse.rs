@@ -538,7 +538,7 @@ fn esc_and_other_keys_clear_the_selection() {
     app.update(drag(1, 6));
     app.update(up(1, 6));
     assert!(app.selection().is_some());
-    app.running = true;
+    app.turn = crate::ui::turn_state::Turn::running();
     // Esc only dismisses the selection; it does not interrupt.
     assert!(app.update(key(KeyCode::Esc)).is_empty());
     assert!(app.selection().is_none());

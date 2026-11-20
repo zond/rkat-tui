@@ -290,7 +290,7 @@ fn enter_with_text_submits_despite_a_selection() {
 fn esc_in_a_helper_s_view_goes_back_at_once() {
     let (mut app, _, fork) = helper_app();
     // The agent's turn runs: an Esc that reached it would interrupt it.
-    app.running = true;
+    app.turn = crate::ui::turn_state::Turn::running();
     app.update(ctrl_key(KeyCode::Down));
     app.update(key(KeyCode::Enter));
     assert_eq!(app.helper_view(), Some(fork));
@@ -335,7 +335,7 @@ fn esc_in_a_helper_s_view_goes_back_at_once() {
 #[test]
 fn ctrl_c_in_a_running_helper_s_view_asks_to_stop_it() {
     let (mut app, _, fork) = helper_app();
-    app.running = true;
+    app.turn = crate::ui::turn_state::Turn::running();
     app.update(ctrl_key(KeyCode::Down));
     app.update(key(KeyCode::Enter));
     assert_eq!(app.helper_view(), Some(fork));
@@ -377,7 +377,7 @@ fn ctrl_c_in_a_running_helper_s_view_asks_to_stop_it() {
     assert_eq!(app.helper_view(), None);
     // The Ctrl-C presses armed no quit: idle on the transcript, one
     // Ctrl-C only arms it, as always.
-    app.running = false;
+    app.turn = crate::ui::turn_state::Turn::default();
     assert!(app.update(ctrl('c')).is_empty());
     assert!(!app.update(ctrl('c')).is_empty(), "the second quits");
     // A finished helper's view: Ctrl-C asks nothing and says why.
