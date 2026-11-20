@@ -84,11 +84,28 @@ impl Runner {
                 .then_some(session)
             });
         let number = self.turns.next();
-        self.turn = Turn::prompt(number, text.clone());
+        match &mut self.turn {
+            // A run this client did not start goes (a helper's or a peer's
+            // message, a note of the daemon's, begun as the UI sent this):
+            // the prompt joins it at its next model request, and the turn
+            // keeps the runs it saw (their ends end it, an interrupt stops
+            // them). Its own run, when it gets one, is the one that carries
+            // it ([`Turn::run_start`]).
+            Turn::Open(open) if !matches!(open.kind, Kind::Compaction { .. }) => {
+                open.kind = Kind::Prompt {
+                    id: number,
+                    text: text.clone(),
+                    started: false,
+                    steered: false,
+                };
+            }
+            _ => self.turn = Turn::prompt(number, text.clone()),
+        }
         self.outbound(Outbound {
             connection,
             text,
             steer: None,
+            queue: false,
             retry,
             turn: number,
             reports: self.reporter(),
@@ -121,6 +138,7 @@ impl Runner {
             connection,
             text,
             steer: Some(id),
+            queue: false,
             retry: None,
             turn,
             reports: self.reporter(),
@@ -156,10 +174,13 @@ impl Runner {
         let Some(connection) = self.connection() else {
             return;
         };
+        // The quiet compaction run's prompt stays a run of its own.
+        let queue = steer.is_none() && self.turn.is_quiet();
         self.outbound(Outbound {
             connection,
             text,
             steer,
+            queue,
             retry: None,
             turn,
             reports: self.reporter(),
@@ -613,7 +634,7 @@ impl Runner {
             // next boundary, which a resumed run's long call holds off).
             AgentEvent::RunResumed { run_id, .. } => {
                 if let Some(turn) = self.turn.open_mut() {
-                    turn.run_seen(Some(run_id));
+                    turn.run_seen(Some(run_id), true);
                 }
             }
             AgentEvent::ToolExecutionCompleted { name, .. }
@@ -708,7 +729,7 @@ impl Runner {
         let prompt = input.prompt_text();
         let start = self
             .turn
-            .run_start(prompt.as_deref() == Some(COMPACT_PROMPT));
+            .run_start(prompt.as_deref() == Some(COMPACT_PROMPT), prompt.as_deref());
         match start {
             // Another client's `/compact` run: quiet here too.
             RunStart::OpenQuiet => {
@@ -726,7 +747,7 @@ impl Runner {
         if matches!(start, RunStart::OpenQuiet | RunStart::Quiet) {
             // Its prompt and reply are not shown.
             if let Some(turn) = self.turn.open_mut() {
-                turn.run_seen(run.as_ref());
+                turn.run_seen(run.as_ref(), false);
             }
             return;
         }
@@ -735,7 +756,7 @@ impl Runner {
         }
         self.show_run_input(start, prompt);
         if let Some(turn) = self.turn.open_mut() {
-            turn.run_seen(run.as_ref());
+            turn.run_seen(run.as_ref(), start == RunStart::First);
         }
         self.send(Msg::Agent(envelope));
         // Told after the run's turn opened, so what the UI held for the
@@ -1315,6 +1336,7 @@ impl Runner {
                 connection,
                 text: COMPACT_PROMPT.to_string(),
                 steer: None,
+                queue: true,
                 retry: None,
                 turn: number,
                 reports: self.reporter(),
@@ -1431,6 +1453,7 @@ pub(super) async fn send_outbound(outbound: Outbound) {
         connection,
         text,
         steer,
+        queue,
         retry,
         turn,
         reports,
@@ -1448,11 +1471,7 @@ pub(super) async fn send_outbound(outbound: Outbound) {
         sent = RETRY_INPUT;
     }
     let key = send_key();
-    let result = bounded(
-        CALL_TIMEOUT,
-        remote::send(&connection, sent, steer.is_some(), &key),
-    )
-    .await;
+    let result = bounded(CALL_TIMEOUT, remote::send(&connection, sent, !queue, &key)).await;
     // The daemon reloaded the agent after a storage failure; the input was
     // not taken and goes once more when the agent's stream is open again.
     if let Err(CallFailure::Failed(crate::client::ClientError::Rpc { code, .. })) = &result

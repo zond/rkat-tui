@@ -193,7 +193,14 @@ shows *goes in at the agent's next step*: it joins the first model
 request that starts after it was sent (one already under way does not
 take it), and the engine takes one waiting message per request, oldest
 first, so a second message typed meanwhile (or a note the daemon sent
-just before) goes in one request later. One the agent
+just before) goes in one request later. Everything you send is such a
+message to the engine, a prompt typed while the agent looks idle too: it
+goes into the next model request of whatever run the agent has by then,
+or starts a run when it has none, and never waits behind a run that
+began meanwhile (a helper's or another agent's message, a note of the
+daemon's) or for a turn's end. A message sent just as one such run ended
+and the next began shows as sent and rides the new run's next request.
+Only `/compact`'s own quiet run is sent to run on its own. One the agent
 has not read when the turn ends (the runtime started no run for it within
 10 s; a notice says so) stays shown so, is marked when the
 agent reads it, and ↑ can still take it back. When the daemon reports the
@@ -2800,7 +2807,8 @@ same call `/remember` uses: the model reads it on its next call, and no
 turn starts for it. While the agent works, a `!` command waits as a queued
 `$ <cmd>` line and runs when the turn ends, before the queued messages are
 sent (several run in order); messages typed while a command runs wait for
-it the same way, and ↑ takes a waiting command back into the editor. `!!`
+it the same way (when a run of the agent's began meanwhile, they go into
+that run as the command ends), and ↑ takes a waiting command back into the editor. `!!`
 at the start is sent as text, and `\!` sends a literal `!`.
 
 The keys, as `?` on an empty input lists them (the keys part of `/help`;

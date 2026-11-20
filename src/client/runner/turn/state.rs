@@ -12,9 +12,11 @@
 //!   other run's start, or an event only a running run publishes, opens a
 //!   [`Kind::Joined`] turn. An event of a run the last turn saw end opens
 //!   nothing.
-//! - **Prompt**: this client's prompt; its first run start shows nothing
-//!   of its own (the UI showed the prompt), later ones show what joined
-//!   the turn ([`RunStart::Later`]).
+//! - **Prompt**: this client's prompt; the start of the run that carries
+//!   it shows nothing of its own (the UI showed the prompt), any other
+//!   run's shows what joined the turn ([`RunStart::Later`]). A prompt
+//!   sent while a run this client did not start goes (Noted, Joined)
+//!   takes that turn over: the runs it saw stay the turn's.
 //! - **Compaction**: the quiet run `/compact` starts. Only its compaction
 //!   events reach the UI. A run that is not the compaction's (a helper's
 //!   note or a peer message queued behind it, or ahead of it) ends it and
@@ -296,9 +298,17 @@ impl Turn {
         }
     }
 
-    /// A run started, whose prompt is the compaction's (`compaction`) or
-    /// not: what that means for the turn.
-    pub(in crate::client::runner) fn run_start(&self, compaction: bool) -> RunStart {
+    /// A run started whose input is `input` (its text, when it has one),
+    /// the compaction's prompt (`compaction`) or not: what that means for
+    /// the turn. The prompt's first run is the one that carries it: a run
+    /// that does not (a helper's message that started a run before the
+    /// prompt, which then joins it at a model request) is a later run of
+    /// the turn, shown as what joined it.
+    pub(in crate::client::runner) fn run_start(
+        &self,
+        compaction: bool,
+        input: Option<&str>,
+    ) -> RunStart {
         let Self::Open(open) = self else {
             return if compaction {
                 RunStart::OpenQuiet
@@ -310,10 +320,21 @@ impl Turn {
             Kind::Compaction { .. } if compaction => RunStart::Quiet,
             Kind::Compaction { .. } => RunStart::LeaveQuiet,
             Kind::Noted => RunStart::Join,
-            Kind::Prompt { started: false, .. } => RunStart::First,
+            Kind::Prompt {
+                started: false,
+                ref text,
+                ..
+            } if input.is_none_or(|input| carries(input, text)) => RunStart::First,
             Kind::Prompt { .. } | Kind::Joined => RunStart::Later,
         }
     }
+}
+
+/// Whether a run's input carries the prompt `text`: the prompt itself
+/// (the daemon may have put its notes before it), or the retry that
+/// stands for it.
+fn carries(input: &str, text: &str) -> bool {
+    input.contains(text.trim()) || input.contains(crate::client::runner::RETRY_INPUT)
 }
 
 impl Open {
@@ -322,11 +343,11 @@ impl Open {
     }
 
     /// A run of the turn started or resumed (`run`, when named): the
-    /// prompt's turn has its first run, the noted turn is joined, and the
-    /// run is the one to stop.
-    pub(in crate::client::runner) fn run_seen(&mut self, run: Option<&RunId>) {
+    /// prompt's turn has its first run when this one is the prompt's
+    /// (`own`), the noted turn is joined, and the run is the one to stop.
+    pub(in crate::client::runner) fn run_seen(&mut self, run: Option<&RunId>, own: bool) {
         match &mut self.kind {
-            Kind::Prompt { started, .. } => *started = true,
+            Kind::Prompt { started, .. } => *started |= own,
             kind @ Kind::Noted => *kind = Kind::Joined,
             Kind::Compaction { .. } | Kind::Joined => {}
         }
@@ -546,15 +567,49 @@ mod tests {
             (Turn::open(Kind::Joined), false, RunStart::Later),
         ];
         for (turn, compaction, start) in cases {
-            assert_eq!(turn.run_start(compaction), start, "{turn:?} {compaction}");
+            assert_eq!(
+                turn.run_start(compaction, None),
+                start,
+                "{turn:?} {compaction}"
+            );
         }
         let mut turn = Turn::prompt(1, "x".into());
         let run = RunId::new();
-        turn.open_mut().unwrap().run_seen(Some(&run));
-        assert_eq!(turn.run_start(false), RunStart::Later);
+        // A run that is not the prompt's leaves the prompt's run to come.
+        turn.open_mut()
+            .unwrap()
+            .run_seen(Some(&RunId::new()), false);
+        assert_eq!(turn.run_start(false, Some("x")), RunStart::First);
+        turn.open_mut().unwrap().run_seen(Some(&run), true);
+        assert_eq!(turn.run_start(false, Some("x")), RunStart::Later);
         let mut noted = Turn::open(Kind::Noted);
-        noted.open_mut().unwrap().run_seen(None);
+        noted.open_mut().unwrap().run_seen(None, false);
         assert_eq!(noted.open_ref().unwrap().kind, Kind::Joined);
+    }
+
+    /// A prompt's first run is the one that carries it (behind the
+    /// daemon's notes, or as the retry that stands for it); a run that
+    /// started before it (a helper's message, which the prompt then joins
+    /// at a model request) is a later run of the turn.
+    #[test]
+    fn a_prompt_s_first_run_is_the_one_that_carries_it() {
+        let turn = Turn::prompt(1, "fix the build\n".into());
+        let cases = [
+            (None, RunStart::First),
+            (Some("fix the build"), RunStart::First),
+            (
+                Some("Your helper `scout` finished its task.\n\nfix the build"),
+                RunStart::First,
+            ),
+            (Some(crate::client::runner::RETRY_INPUT), RunStart::First),
+            (
+                Some("Peer message\nPeer message from tui/main/scout:\nfound it"),
+                RunStart::Later,
+            ),
+        ];
+        for (input, start) in cases {
+            assert_eq!(turn.run_start(false, input), start, "{input:?}");
+        }
     }
 
     /// The interrupt's presses: within the grace it waits, after it a

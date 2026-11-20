@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A message typed just as one run the agent did not start for you ended
+  (a helper's message, say) and the next began went in only after that
+  whole next run: the client's turn had ended, so the message went as a
+  prompt queued behind the run that started meanwhile, and with helpers'
+  messages starting run after run the agent did several model steps
+  without it. Everything you send now goes in at the agent's next model
+  request, or starts a run when it has none; only `/compact`'s own run
+  still runs on its own. A message typed while your `!` command runs
+  goes into a run that began meanwhile as the command ends, instead of
+  waiting for that run's end, and one typed while a prompt of yours
+  waits for the connection waits behind it rather than for the end of
+  its turn.
+
 ### Changed
 
 - Two or more messages in a row from the agent's own helpers fold into

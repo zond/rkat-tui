@@ -121,7 +121,7 @@ impl App {
 
     /// [`Msg::ShellFinished`](crate::ui::Msg::ShellFinished): show the result, then run the next held
     /// command, or (with none left and no turn running) send the messages
-    /// held behind them.
+    /// held behind them; with a turn running they are steered into it.
     pub(super) fn shell_finished(
         &mut self,
         id: ShellRunId,
@@ -161,7 +161,17 @@ impl App {
             },
         );
         self.scroll.bottom();
-        if self.turn.is_running() || self.run_next_shell(now, fx) {
+        if self.turn.is_running() {
+            // The agent runs meanwhile (a helper's message started a run):
+            // what waited for this command goes into that run now, not at
+            // its end. Held `!` commands still wait for the turn's end;
+            // messages held behind a held slash command keep its order.
+            if !self.has_held_command() {
+                self.steer_held(fx);
+            }
+            return;
+        }
+        if self.run_next_shell(now, fx) {
             return;
         }
         if self.has_held_command() && !self.delivery.has_next() {

@@ -311,11 +311,17 @@ impl App {
                     .set_state(&mut self.transcript, id, PendingState::Admitted);
             }
             // The turn ended before the message reached the runtime: hold it
-            // for the turn's end (the runner's `TurnFinished` follows).
+            // for the turn's end (the runner's `TurnFinished` follows: it
+            // refuses a steer only with no turn open and none on its way,
+            // a held prompt's steers wait behind it there).
             Err(SteerFailure::NotRunning) if self.turn_or_shell() => {
                 self.pending
                     .set_state(&mut self.transcript, id, PendingState::Deferred);
             }
+            // Its end came first, as it does when the steer missed the
+            // runner's turn: sent now as a prompt, which goes in at the
+            // agent's next model request (a run that began meanwhile, a
+            // helper's message say, takes it at its next step).
             Err(SteerFailure::NotRunning) => {
                 self.pending.send_now(&mut self.transcript, id);
                 self.begin_turn(text, false, now, fx);

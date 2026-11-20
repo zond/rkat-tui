@@ -13904,3 +13904,51 @@ lifecycle input outside the driver's lock that a stop holds.
 Tests: `daemon::tests::only_a_stop_that_met_the_engine_s_own_retire_counts_as_clean`
 (the known refusal counts only with our retires settled; another step,
 target or commit, or another error type, stands).
+
+## A message typed between two runs no client started (owner, 2026-11-20)
+
+The owner, on 0.0.18: six helpers messaging the agent, its work a chain
+of short runs each started by a helper's message; a typed message showed
+*will send after this turn* and the agent went on for several model
+steps without it.
+
+Reproduced on the rig with the daemon's notes starting the runs (a note
+to an idle agent is a steer that starts a run, as a helper's message
+does): the UI still showed run 1, the runner had ended its turn on the
+idle notice, Enter steered, the runner refused it (`NotRunning`, the
+runner's own answer: no turn open). Run 2 began (its first model request
+held) before the UI read the turn's end and the refusal; the UI, idle by
+then, sent the message as a prompt. A prompt was a `queue` input: it
+waited behind the whole of run 2. Measured: request 2 (run 2's next)
+did not carry it; it ran as a fourth request of its own.
+
+The `Deferred` label of the report is not this sequence: by the
+runner's order the refusal reaches the UI after the turn's end, so the
+UI is idle and sends it. The one order that held it (`Deferred`, sent at
+the end of a turn a chain of runs may never end) is a steer served while
+the prompt that starts its turn was held by the runner (before the first
+link, during a switch); a message held for the user's `!` command also
+waited for the end of a run that began meanwhile. Neither was
+reproduced as the owner's; both are closed.
+
+What changed: every input of the user's goes as `handling_mode: steer`
+(`Outbound::queue` is set for `/compact`'s quiet run only). A steer goes
+in at the next model request of the run going, or starts a run when
+none goes, so no ordering of ours can leave it behind a run that began
+meanwhile. A prompt sent while a run this client did not start goes
+takes that turn over and keeps its runs; the prompt's own run is the
+one whose input carries it (`state::Turn::run_start`), so the run it
+joined is not taken for it. The runner holds a steer behind a held
+prompt (`Runner::unless_held`); `shell_finished` steers what waited for
+the command into a run that began meanwhile.
+
+The engine still stages one steer per request, oldest first
+(lukacf/meerkat#2431): a helper's message staged just before the user's
+goes in one request ahead of it.
+
+Tests: `client_turns::a_message_typed_as_a_run_ends_rides_the_next_run_s_next_request`
+(fails on the old `queue` prompt: request 2 without the message),
+`client::runner::tests::a_run_that_does_not_carry_the_prompt_is_not_taken_for_its_own`,
+`client::runner::tests::a_steer_waits_behind_a_held_prompt`,
+`client::runner::turn::state::tests::a_prompt_s_first_run_is_the_one_that_carries_it`,
+`ui::tests::shell::a_message_held_for_a_command_is_steered_into_a_run_that_began_meanwhile`.

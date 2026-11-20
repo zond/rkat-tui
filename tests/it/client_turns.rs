@@ -2401,6 +2401,132 @@ async fn send_now_interrupts_another_clients_run_then_sends() {
     rig.quit().await;
 }
 
+/// Feed `app` every message of `rig.seen` from `fed` on, forwarding the
+/// effects it answers with; returns the new count fed.
+fn feed(rig: &Attached, app: &mut rkat_tui::ui::App, fed: usize) -> usize {
+    let msgs: Vec<Msg> = rig.seen[fed..].to_vec();
+    for msg in msgs {
+        for effect in app.update(msg) {
+            rig.send(effect);
+        }
+    }
+    rig.seen.len()
+}
+
+/// The labels of `app`'s pending placeholders, in order.
+fn pending_labels(app: &rkat_tui::ui::App) -> Vec<rkat_tui::ui::transcript::QueuedLabel> {
+    app.transcript
+        .blocks()
+        .iter()
+        .filter_map(|block| match block {
+            Block::Queued { label, .. } => Some(*label),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The owner's report: runs no client started came one after another (a
+/// helper's message each, here the daemon's notes, which start runs the
+/// same way), and the user's Enter landed between two of them: the UI
+/// still showed the first run, the runner had ended its turn, so the
+/// steer was refused (`NotRunning`) and went again as a prompt. That
+/// prompt was a `queue` input, and the next run had begun meanwhile: it
+/// waited behind that whole run (measured before: request 2, the next
+/// one after it, did not carry it; it ran as a fourth request of its
+/// own). Every input of the user's is a steer now: it rides the next
+/// model request of the run that began, and the UI shows it sent, never
+/// held for a turn's end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_message_typed_as_a_run_ends_rides_the_next_run_s_next_request() {
+    use common::script::{Script, call, hold, make};
+    let ws = Workspace::new();
+    let g1 = Arc::new(Notify::new());
+    let g2 = Arc::new(Notify::new());
+    let llm = Script::new()
+        .after("c2", make(|_| Step::Text("r2 done")))
+        .input("TYPED", Step::Text("typed answered"))
+        .input("NOTE-2", hold(&g2, call("c2", "contacts", json!({}))))
+        .input("NOTE-1", hold(&g1, Step::Text("r1 done")))
+        .otherwise(Step::Text("other"))
+        .client(12);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    let mut app = rkat_tui::ui::App::new(rkat_tui::ui::StatusInfo::default());
+    let mut fed = feed(&rig, &mut app, 0);
+    let agent = rig.agent().await;
+    let local = rig.daemon.local();
+    let note = |text: &'static str| {
+        let (local, agent) = (Arc::clone(&local), agent.clone());
+        tokio::spawn(async move { local.steer_for_test(&agent, text).await })
+    };
+    let n1 = note("NOTE-1");
+    llm.wait_call(0).await;
+    rig.wait_for(|msg| matches!(msg, Msg::RemoteTurn { .. }))
+        .await;
+    fed = feed(&rig, &mut app, fed);
+    assert!(app.is_running());
+    g1.notify_one();
+    n1.await.unwrap().unwrap();
+    rig.wait_for(|msg| matches!(msg, Msg::TurnFinished(_)))
+        .await;
+    // The UI has not drawn the turn's end yet: Enter steers, and the
+    // runner, its turn over, refuses the steer.
+    type_into(&rig, &mut app, "TYPED");
+    let ack = rig
+        .wait_for(|msg| matches!(msg, Msg::SteerAck { .. }))
+        .await;
+    assert!(
+        matches!(
+            ack,
+            Msg::SteerAck {
+                result: Err(rkat_tui::ui::delivery::SteerFailure::NotRunning),
+                ..
+            }
+        ),
+        "{ack:?}"
+    );
+    // The next run begins (its first model request held) before the UI
+    // reads the turn's end and the refusal.
+    let n2 = note("NOTE-2");
+    llm.wait_call(1).await;
+    rig.wait_for(|msg| matches!(msg, Msg::RemoteTurn { .. }))
+        .await;
+    let sends = rig.daemon.forwarded("mob/member_send");
+    feed(&rig, &mut app, fed);
+    assert!(
+        pending_labels(&app).is_empty(),
+        "sent, not held: {:?}",
+        pending_labels(&app)
+    );
+    assert!(
+        app.transcript
+            .blocks()
+            .iter()
+            .any(|block| matches!(block, Block::User { text } if text == "TYPED"))
+    );
+    assert!(app.is_running());
+    common::until(|| rig.daemon.forwarded("mob/member_send") > sends).await;
+    g2.notify_one();
+    n2.await.unwrap().unwrap();
+    // The run's next request carries it.
+    llm.wait_call(2).await;
+    assert!(
+        common::run_inputs(&llm.requests()[2]).contains("TYPED"),
+        "{:?}",
+        llm.requests()[2]
+    );
+    let finished = pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::TurnFinished(_))
+    })
+    .await;
+    assert!(
+        matches!(&finished, Msg::TurnFinished(Ok(summary)) if summary.text == "r2 done"),
+        "{finished:?}"
+    );
+    assert_eq!(llm.requests().len(), 3, "no run of its own after it");
+    assert!(!app.is_running());
+    rig.quit().await;
+}
+
 /// Type `text` into `app` and press Enter, forwarding its effects.
 fn type_into(rig: &Attached, app: &mut rkat_tui::ui::App, text: &str) {
     use ratatui::crossterm::event::{KeyCode, KeyEvent};

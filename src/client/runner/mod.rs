@@ -457,6 +457,13 @@ struct Outbound {
     text: String,
     /// `Some`: a steer.
     steer: Option<PendingId>,
+    /// Sent behind the agent's runs (the engine's `queue`): only the quiet
+    /// run `/compact` starts, which must be a run of its own. Everything
+    /// the user sends is a `steer`, a prompt too: it goes in at the
+    /// agent's next model request, or starts a run when none goes, and
+    /// never waits behind a run that started meanwhile (a helper's or a
+    /// peer's message, a note of the daemon's).
+    queue: bool,
     /// The conversation of the turn that just failed with this prompt: it
     /// is sent as [`RETRY_INPUT`] when that prompt is still its last
     /// message.
@@ -775,14 +782,11 @@ impl Runner {
             tokio::select! {
                 effect = self.effect_rx.recv() => match effect {
                     None | Some(Effect::Quit) => break,
-                    // Held while a switch runs too: the prompt goes to the
-                    // conversation the switch ends on, over its stream.
-                    Some(effect @ Effect::StartTurn(_))
-                        if self.held.is_some() || self.switches.running || self.models.switching =>
-                    {
-                        self.held.get_or_insert_with(Vec::new).push(effect);
+                    Some(effect) => {
+                        if let Some(effect) = self.unless_held(effect) {
+                            self.handle_effect(effect);
+                        }
                     }
-                    Some(effect) => self.handle_effect(effect),
                 },
                 event = self.conn.next() => match event {
                     ConnEvent::Note(note) => self.on_notification(note),
@@ -808,6 +812,30 @@ impl Runner {
 
     fn send(&self, msg: Msg) {
         let _ = self.ui_tx.send(msg);
+    }
+
+    /// `effect` to serve now, or `None` when it waits ([`Self::releasable`]
+    /// lets it go, in the order it came): a prompt until the first link
+    /// is up, and while a switch runs (it goes to the conversation the
+    /// switch ends on, over its stream); a steer while a prompt waits so,
+    /// since it steers that prompt's turn (served now it would find no
+    /// turn and be refused, and the UI would hold it for that turn's end).
+    fn unless_held(&mut self, effect: Effect) -> Option<Effect> {
+        let hold = match &effect {
+            Effect::StartTurn(_) => {
+                self.held.is_some() || self.switches.running || self.models.switching
+            }
+            Effect::Steer { .. } => self
+                .held
+                .as_ref()
+                .is_some_and(|held| held.iter().any(|e| matches!(e, Effect::StartTurn(_)))),
+            _ => false,
+        };
+        if hold {
+            self.held.get_or_insert_with(Vec::new).push(effect);
+            return None;
+        }
+        Some(effect)
     }
 
     /// The held prompts, once they may go: the first link is up and no
@@ -1994,6 +2022,36 @@ mod tests {
         }
     }
 
+    /// A steer typed while the prompt that starts its turn waits for the
+    /// first link waits behind it, so it steers that turn instead of being
+    /// refused for want of one (and held by the UI until that turn ends);
+    /// with no prompt waiting it goes at once.
+    #[tokio::test]
+    async fn a_steer_waits_behind_a_held_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, _ui_rx) = runner(dir.path());
+        let steer = Effect::Steer {
+            id: PendingId(1),
+            text: "and this".into(),
+        };
+        assert!(
+            runner
+                .unless_held(Effect::StartTurn("hello".into()))
+                .is_none()
+        );
+        assert!(runner.unless_held(steer.clone()).is_none());
+        assert_eq!(
+            runner.unless_held(Effect::StatusReport),
+            Some(Effect::StatusReport)
+        );
+        runner.conn = up(link("live", SessionId::new()).await);
+        assert_eq!(
+            runner.releasable(),
+            vec![Effect::StartTurn("hello".into()), steer.clone()]
+        );
+        assert_eq!(runner.unless_held(steer.clone()), Some(steer));
+    }
+
     /// A refused `/resume` ends the switch; nothing else that reports a
     /// notice does.
     #[tokio::test]
@@ -2565,6 +2623,34 @@ mod tests {
             "{msgs:?}"
         );
         assert!(!runner.steering.steers.holds(PendingId(7)));
+    }
+
+    /// A prompt sent as a helper's message started a run: that run's
+    /// start, which does not carry the prompt, is shown as what joined the
+    /// turn (the message), and the run that carries the prompt shows
+    /// nothing of its own (the UI showed it).
+    #[tokio::test]
+    async fn a_run_that_does_not_carry_the_prompt_is_not_taken_for_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut rx) = runner(dir.path());
+        let mut feed = Feed {
+            session: SessionId::new(),
+            seq: 0,
+        };
+        let (note, own) = (RunId::new(), RunId::new());
+        runner.turn = Turn::prompt(1, "fix the build".into());
+        runner.on_event(
+            feed.started_with(&note, "rkat-tui note: helper `scout` finished"),
+            None,
+        );
+        assert_eq!(
+            remote_turns(&drain(&mut rx)),
+            vec![Some("rkat-tui note: helper `scout` finished".to_string())]
+        );
+        runner.on_event(feed.completed(&note), None);
+        runner.on_event(feed.started_with(&own, "fix the build"), None);
+        assert!(remote_turns(&drain(&mut rx)).is_empty());
+        assert!(runner.turn.is_open());
     }
 
     /// An idle notice with nothing held while this client still follows

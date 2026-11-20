@@ -95,6 +95,36 @@ fn commands_typed_during_a_turn_run_after_it_before_the_queued_messages() {
     assert!(app.pending.is_empty());
 }
 
+/// A message typed while the user's own `!` command runs waits for that
+/// command; when a run of the agent's began meanwhile (a helper's message
+/// started it), the message goes into that run as the command ends, not
+/// at the run's end, which a chain of such runs may never reach. Behind a
+/// held slash command it keeps its place.
+#[test]
+fn a_message_held_for_a_command_is_steered_into_a_run_that_began_meanwhile() {
+    let mut app = App::new(StatusInfo::default());
+    assert_eq!(submit(&mut app, "!make"), vec![run_shell(1, "make")]);
+    assert!(submit(&mut app, "two").is_empty());
+    assert_eq!(
+        app.transcript.block(BlockId(1)),
+        Some(&queued_block(1, "two", QueuedLabel::Deferred))
+    );
+    app.update(Msg::RemoteTurn { prompt: None });
+    assert!(app.is_running());
+    assert_eq!(app.update(shell_done(1, "ok\n")), vec![steer(1, "two")]);
+    assert_eq!(
+        app.transcript.block(BlockId(1)),
+        Some(&queued_block(1, "two", QueuedLabel::Queued))
+    );
+    // Behind a held command it waits with it.
+    let mut app = App::new(StatusInfo::default());
+    submit(&mut app, "!make");
+    app.update(Msg::RemoteTurn { prompt: None });
+    submit(&mut app, "/init");
+    submit(&mut app, "three");
+    assert!(app.update(shell_done(1, "ok\n")).is_empty());
+}
+
 #[test]
 fn up_takes_a_held_command_back() {
     let mut app = running_app();
