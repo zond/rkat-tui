@@ -918,7 +918,7 @@ impl Conversations {
     /// starts after the check (a peer's message, another client's prompt,
     /// a daemon note) is not held off, and the engine then refuses a
     /// reconfigure of the running session itself; each caller says so in
-    /// plain words (review 7, L38).
+    /// plain words.
     ///
     /// A member the daemon restored at start is seated but dormant until
     /// something reaches it: the runtime has no state for its session, and

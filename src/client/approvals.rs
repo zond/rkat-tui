@@ -1,15 +1,15 @@
 //! The approval dialogs of the client.
 //!
 //! The daemon (its `initialize` lists `decision/notice`; a daemon
-//! without it is refused at attach) holds every escalation as a durable decision and pushes it to every
-//! attached client: this client shows each `decision/notice` for the
-//! agent's session as the approval dialog ([`Msg::Escalation`];
-//! the notice's rendering is the dialog, [`DialogRendering`]), answers with
-//! `decision/decide` ([`decision_params`]: the answer, the digest of what
-//! was shown, the comment as the reason, and the dialog's answer for the
-//! daemon), and closes a dialog another client answered, or that ended
-//! unanswered, on the daemon's `rkat/decision_ended`
-//! ([`Msg::EscalationResolved`]). A late decision of this client is refused
+//! without it is refused at attach) holds every escalation as a durable
+//! decision and pushes it to every attached client. This client shows
+//! each `decision/notice` for the agent's session as the approval dialog
+//! ([`Msg::Escalation`]; the notice's rendering is the dialog,
+//! [`DialogRendering`]). It answers with `decision/decide`
+//! ([`decision_params`]: the answer, the digest of what was shown, the
+//! comment as the reason, and the dialog's answer for the daemon). It
+//! closes a dialog another client answered, or that ended unanswered, on
+//! the daemon's `rkat/decision_ended` ([`Msg::EscalationResolved`]). A late decision of this client is refused
 //! by the engine (`not_open`) and dropped.
 
 use std::collections::HashMap;

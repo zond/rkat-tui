@@ -19,7 +19,7 @@ pub enum ToolFamily {
     Files,
     /// The engine's semantic memory.
     Memory,
-    /// The engine's mob tools (`fork_off`, `mob_*`, councils).
+    /// The engine's mob tools (`mob_*`, councils).
     Mob,
     /// rkat-tui's note tools.
     Notes,

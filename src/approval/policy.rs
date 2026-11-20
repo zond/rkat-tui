@@ -36,7 +36,7 @@
 //! workspace, the realm and the config directory wherever they lie), and
 //! the engine's own file tools refuse `.rkat` at any depth and the state
 //! `bootstrap` declares to the factory a second time, whatever the gate
-//! decided (Meerkat 0.9.12).
+//! decided.
 
 use super::catalog::{ToolFamily, ToolOrigin};
 use super::rules::{RuleId, RuleSet};
@@ -219,8 +219,8 @@ pub const REVIEWED_BUILTINS: &[&str] = &[
     "web_search",
     "generate_image",
     "send_message",
-    // Mob tools beyond `delegate`: a temporary council of helpers, and a
-    // member concluding its kickoff objective.
+    // Mob tools: a temporary council of helpers, and a member concluding
+    // its kickoff objective.
     "council",
     "conclude_objective",
     // The member-scoped mob tools a daemon member is offered that act on
@@ -256,8 +256,8 @@ pub const AGENT_SEND_TOOLS: &[&str] = &["send_message"];
 /// one before any dispatch, this gate's included ("Tool '…' is not allowed
 /// by policy", or "Tool not found" where the tool's family is off).
 ///
-/// - `delegate` blocked its caller until its helper was done; `fork_off`,
-///   `spawn_member` and `spawn_many_members` started helpers that differed
+/// - `delegate` blocks its caller until its helper is done; `fork_off`,
+///   `spawn_member` and `spawn_many_members` start helpers that differ
 ///   by accident. `assign` (`crate::tools::assign`) starts every helper,
 ///   fresh or forked, single-use or kept; it forks through the engine's own
 ///   `fork_off` (`crate::daemon::deferral::ForkRoutes`).
@@ -273,7 +273,7 @@ pub const AGENT_SEND_TOOLS: &[&str] = &["send_message"];
 ///   message, what each is and the `peer_id` `send_message` takes. A mob
 ///   an agent made with `mob_create` is listed with `mob_list_members`,
 ///   which stays.
-/// - `reply_to_peer` (the owner's decision of 2026-11-19): one way to
+/// - `reply_to_peer` (the owner's decision): one way to
 ///   answer is enough. Agents and helpers answer a message with
 ///   `send_message` to the sender's `peer_id` (`contacts`), a send the gate
 ///   can attribute to its recipient.
@@ -651,7 +651,7 @@ pub const GIT_AFTER_CONFIG: &str = "git runs what its configuration names (an fs
 /// under `.git/`, …: [`shell::touches_git_config`]). The allowlisted git
 /// reads execute what `.git/config` names; a clone cannot ship that file
 /// and the file tools seal `.git`, so the one way in is the agent's own
-/// shell, and after it the reads are reviewed (review 7, N35).
+/// shell, and after it the reads are reviewed.
 #[must_use]
 pub fn after_git_config(
     decision: TierDecision,
@@ -1138,7 +1138,7 @@ mod tests {
         );
         // Its protected paths are protected as the project's are, and its
         // git hooks, git config and `.rkat` are sealed as the project's
-        // (the owner's decision of 2026-11-14).
+        // (the owner's decision).
         for (file, tier) in [
             (".env", Tier::AskUser),
             ("sub/build.rs", Tier::AskUser),
@@ -1214,7 +1214,7 @@ mod tests {
     fn file_tool_verdicts_by_target_and_precedence() {
         const SEALED: &str = "Sealed: `.rkat/x` is sealed: file tools never write the gate's \
              own state (`.rkat/`, the realm and user config directories) or the git directories";
-        // `.env` is protected for its content (2026-11-14): auto mode's
+        // `.env` is protected for its content: auto mode's
         // classifier reviews it; `.envrc`, which runs later, always asks.
         const ASK_ENV: &str = "AskUser: protected path: `.env` (secrets); auto mode's \
              classifier reviews these (and asks you when it blocks); the other modes ask";

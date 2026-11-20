@@ -18,7 +18,7 @@
 //! becomes `T`, and a schema without `type` gets the one its
 //! `properties`, `items` or literals imply. What the model sees changes
 //! only in form: no argument a tool accepts is refused by it (the tools
-//! validate their own arguments), the model is only no longer offered an
+//! validate their own arguments). The model is only not offered an
 //! explicit `null` for an optional field, which it can leave out.
 //!
 //! One case stays as it was: a recursive type keeps its `$ref` past

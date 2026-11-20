@@ -896,7 +896,7 @@ impl ApprovalEngine {
     /// review is denied, without asking anyone, until a new run starts
     /// ([`Self::new_run_started`]). Its helpers' calls are not: a Stop stops
     /// the agent's run only, and its helpers keep working (the owner's
-    /// decision of 2026-11-15). A Stop the user's interrupt already gave
+    /// decision). A Stop the user's interrupt already gave
     /// ([`Self::interrupted`]) stays as it is: the interrupt answers the
     /// open dialogs with Stop, and its denials say it was the interrupt.
     pub fn stop(&self, session_id: &SessionId) {
@@ -1592,8 +1592,8 @@ impl ApprovalEngine {
         if let Some(stopped) = self.stop_denial(&caller) {
             return deny3(stopped).into();
         }
-        // A turn no user started with nobody attached (the owner's decision
-        // of 2026-11-14): the classifier still judges, and its allow runs
+        // A turn no user started with nobody attached (the owner's
+        // decision): the classifier still judges, and its allow runs
         // the call; whatever would ask the user (a pause, an action too
         // large to review, a failed review) is denied, and the user is told
         // when they attach.
@@ -3030,7 +3030,7 @@ mod tests {
         assert!(task.await.unwrap().is_allowed());
     }
 
-    /// Review 7, N35: the allowlisted git reads run what `.git/config`
+    /// The allowlisted git reads run what `.git/config`
     /// names, so once the session's shell touched that configuration they
     /// are reviewed: `git status` is tier 1, then a `git config` call (the
     /// classifier allows it), then `git status` goes to the classifier; a
@@ -3083,7 +3083,7 @@ mod tests {
         );
     }
 
-    /// The owner's decision (review 5, AP2 and AP3): a message to an agent
+    /// The owner's decision: a message to an agent
     /// of another workspace is tier 1 except in plan mode, where it is put
     /// to the user (an unattended turn is denied, saying why and what to
     /// do); one to this workspace's agents stays tier 1 in every mode. The
@@ -3194,7 +3194,7 @@ mod tests {
         }
     }
 
-    /// A6, as the owner changed it on 2026-11-14: in a run no user started,
+    /// In a run no user started,
     /// with no client attached, the classifier still judges what auto mode
     /// reviews. Its allow runs the call, its block denies it (counted like
     /// any block); what would ask the user (a protected write, a failed
@@ -3870,8 +3870,8 @@ mod tests {
 
     /// The interrupt's Stop is bound to its run and says the user
     /// interrupted the turn (not "from the approval dialog"); one for a run
-    /// that a newer run replaced marks nothing (the owner's report of
-    /// 2026-11-17: a late press denied the next run's shell call).
+    /// that a newer run replaced marks nothing (a late press must not deny
+    /// the next run's shell call).
     #[tokio::test]
     async fn an_interrupt_stops_its_own_run_only_and_says_so() {
         let rig = rig(
@@ -3927,8 +3927,7 @@ mod tests {
     /// The Stop of an interrupt marks the agent's own calls only: a helper
     /// working for the stopped session is still asked about (its dialog
     /// opens), and a Stop answer to the helper's dialog denies that call
-    /// without stopping the session its owner runs (the owner's decision of
-    /// 2026-11-15; before, both were denied as stopped).
+    /// without stopping the session its owner runs (the owner's decision).
     #[tokio::test]
     async fn a_stop_marks_the_agent_s_own_calls_not_its_helpers() {
         let mut rig = rig(
@@ -4427,8 +4426,7 @@ mod tests {
     /// With the shell contained (rkat-tui's sandbox or a declared one) and
     /// `trust_project_builds` unset, a cargo build is tier 1, also after a
     /// build-defining file or manifest changed in the session (the owner's
-    /// decision of 2026-11-14; this replaced "reviewed once a build file
-    /// changes"): the first such build shows one notice and leaves an
+    /// decision). The first such build shows one notice and leaves an
     /// audit line. Uncontained, builds are reviewed; after such a change a
     /// build is put to the user (the dialog's "for this session" allows
     /// such builds for the session), never a bare classifier block, and
@@ -5196,7 +5194,7 @@ mod tests {
         );
     }
 
-    /// Review 7, M32: a blocked call keeps the whole call an approval once
+    /// A blocked call keeps the whole call an approval once
     /// approves (a 3 000-character command whole, though its row's summary
     /// is cut at 200 bytes), and the audit line of the approval is as it
     /// was (the summary). A call cut for its size cannot be approved once.
@@ -6140,8 +6138,7 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
 
-    /// A1 of the security review: a shell command padded past the old
-    /// 1 KiB argument cut, its payload at the end, reaches the classifier
+    /// A shell command padded past 1 KiB, its payload at the end, reaches the classifier
     /// whole.
     #[tokio::test]
     async fn a_padded_command_reaches_the_classifier_whole() {

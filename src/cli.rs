@@ -573,7 +573,7 @@ mod tests {
             mode(&["rkat-tui", "--attach=existing"]),
             Some(AttachTarget::Existing)
         );
-        // `--no-attach` went with the removed in-process runner.
+        // There is no `--no-attach`: the TUI is always the daemon's client.
         assert!(Args::try_parse_from(["rkat-tui", "--no-attach"]).is_err());
         // A prompt after a bare --attach is still the prompt.
         let args = Args::try_parse_from(["rkat-tui", "--attach", "fix it"]).unwrap();

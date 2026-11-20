@@ -428,8 +428,8 @@ pub async fn ensure_endpoint_model(
 /// Refuse `model` on `endpoint` when it is not self-hosted and the engine's
 /// model registry (the catalog, and any `[models.<id>]` entry the realm
 /// config holds) does not know it on the endpoint's provider: the engine
-/// would refuse the build, and rkat-tui no longer writes profiles for
-/// models only an endpoint knows.
+/// would refuse the build, and rkat-tui writes no profiles for models
+/// only an endpoint knows.
 ///
 /// # Errors
 ///

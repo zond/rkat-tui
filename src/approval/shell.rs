@@ -1074,7 +1074,7 @@ pub fn runs_git(command: &str) -> bool {
 
 /// Whether `command` may change what git runs: `git config`, anything
 /// under `.git/`, a git config file, git's config environment, or the
-/// keys that name programs (review 7, N35). Conservative: a read of them
+/// keys that name programs. Conservative: a read of them
 /// counts too.
 #[must_use]
 pub fn touches_git_config(command: &str) -> bool {
@@ -1942,7 +1942,7 @@ mod tests {
         assert_eq!(words("ls\t-la\nls"), ["ls", "-la", "ls"]);
     }
 
-    /// Review 7, N35: what counts as touching git's configuration, and as
+    /// What counts as touching git's configuration, and as
     /// running git.
     #[test]
     fn git_config_touches_and_git_runs_are_recognised() {

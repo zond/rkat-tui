@@ -135,8 +135,8 @@ impl HelperKind {
 /// [`HelperKind`] as `tui_helpers.json` stores it. The words of earlier
 /// builds still open and mean what they meant: `assigned` (`assign`) is a
 /// fresh single-use helper, `member` (`spawn_member`, `mob_spawn_member`) a
-/// fresh kept one, `fork` (`fork_off`, kept seated after its outcome by
-/// 0.0.15) a kept fork.
+/// fresh kept one, `fork` (`fork_off`, kept seated after its outcome) a
+/// kept fork.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum StoredKind {
@@ -802,7 +802,7 @@ impl HelperRegistry {
 
     /// The host-root member `key` runs as `session` on `model` through
     /// `auth_binding` and is an owner itself: helpers it spawns into its
-    /// own mob, and helpers its session delegates to, work for
+    /// own mob, and helpers its session starts otherwise, work for
     /// `session` (see [`Self::owner_for_spawn`]).
     pub fn register_root(
         &self,
@@ -1031,8 +1031,8 @@ impl HelperRegistry {
         }
     }
 
-    /// The helper `key` runs as `session`: helpers it delegates to
-    /// inherit its owner.
+    /// The helper `key` runs as `session`: helpers it starts inherit its
+    /// owner.
     pub fn bind_session(&self, key: &HelperKey, tag: &HelperTag, session: &SessionId) {
         if let Err(err) = self.bindings.set_member_session(key, tag, session) {
             tracing::warn!(helper = %key, error = %err, "cannot record the helper's session");

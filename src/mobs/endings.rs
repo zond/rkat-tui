@@ -922,7 +922,7 @@ async fn retire_all(
 /// `remember` first remembers `key`'s own peer id (a finished `assign`
 /// helper: a message to it from now on is refused saying it finished).
 /// Every retire of a seated helper goes through here: a stop, a finish and
-/// `retire_helper` (review 7, L8).
+/// `retire_helper`.
 ///
 /// # Errors
 ///
@@ -1141,7 +1141,7 @@ impl HelperEndings {
                 Some(Ending::Followed(followed)) if followed.idle_after(runs)
             );
             // A restored fork's runtime holds an input of the restore
-            // itself that no run takes (probed 2026-11-18: still held
+            // itself that no run takes (probed: still held
             // 30 s after the start), so only a live fork is asked.
             let queued = match &probe {
                 Some(probe) if !restored => matches!(probe(key.clone()).await, Some(n) if n > 0),
@@ -1867,8 +1867,8 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
-    /// Review 7, M5: a settled helper is remembered however many end after
-    /// it (the 512 kept before forgot it), so its late event tells nothing.
+    /// A settled helper is remembered however many end after it, so its
+    /// late event tells nothing.
     #[test]
     fn a_helper_settled_long_ago_is_not_told_again() {
         let (endings, mut rx) = endings();

@@ -545,8 +545,11 @@ pub struct Transcript {
     /// Notes for tool calls whose block has not arrived yet, by tool-use id
     /// (at most [`MAX_PENDING_NOTES`], oldest dropped first).
     pending_notes: IndexMap<String, String>,
-    /// Peers' names by peer id, from the `peers` results the transcript
-    /// showed: a `send_message` block names its recipient with them.
+    /// The name of each peer this conversation's agent or its helpers can
+    /// message, by peer id. Learnt from the `contacts` results this
+    /// transcript showed (and a stored `peers` result of an earlier build).
+    /// A `send_message` block, the agent's or a helper's, names its
+    /// recipient with them.
     peer_names: IndexMap<String, String>,
     /// Runs nobody here typed that one of their two reports showed (the
     /// daemon's note of the run, [`Self::label_triggered`], or the run's
@@ -2074,7 +2077,7 @@ impl Transcript {
         args
     }
 
-    /// What a finished call's result tells the transcript: a `peers`
+    /// What a finished call's result tells the transcript: a `contacts`
     /// result names the peers; a `send_message` that was sent folds to
     /// `sent to <name>` (its receipt behind the toggle), one that failed
     /// shows its error unfolded.
@@ -2271,7 +2274,7 @@ impl Transcript {
     }
 }
 
-/// A tool block's tool name without a helper's tag (`[scout] peers`).
+/// A tool block's tool name without a helper's tag (`[scout] contacts`).
 fn tool_base(name: &str) -> &str {
     name.rsplit(' ').next().unwrap_or(name)
 }
@@ -3868,7 +3871,7 @@ mod tests {
     }
 
     /// A `send_message` block names its recipient first (by the name a
-    /// `peers` result gave it), folds a successful receipt to `sent to
+    /// `contacts` result gave it), folds a successful receipt to `sent to
     /// <name>` with the raw JSON behind the toggle, and shows a failed
     /// send's error unfolded.
     #[test]

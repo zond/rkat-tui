@@ -2,20 +2,24 @@
 //!
 //! Mirrors `rkat-rpc`'s assembly (`SessionRuntime::new_with_config_store`,
 //! `set_realm_context`, `set_config_runtime`, `require_hosting_mode`, the
-//! mob state set before any `MethodRouter`), with these differences: the
-//! factory, config store and confinement come from
-//! [`crate::bootstrap::assemble`], so the realm is configured as the
-//! client reads it; the mob state is this crate's own (not
-//! `compose_rpc_mob_state`), carrying rkat-tui's spawn customizer with the
-//! agent as its [`RootMember`]; and the connection callback-tool
-//! routes `compose_rpc_mob_state` installs are left out (their builders are
-//! crate-private, and the daemon's members get their tools from the
-//! customizer); and the approval engine the bootstrap built gates every
-//! member ([`super::approvals`]), its escalations answered through the
-//! runtime's approval service, its deny rules installed as the members'
-//! application tool policy ([`super::policy`]); and its escalations are
-//! held as the runtime's durable decisions, which every attached client is
-//! offered and decides through the daemon ([`super::decisions`]).
+//! mob state set before any `MethodRouter`), with these differences:
+//!
+//! - The factory, config store and confinement come from
+//!   [`crate::bootstrap::assemble`], so the realm is configured as the
+//!   client reads it.
+//! - The mob state is this crate's own (not `compose_rpc_mob_state`). It
+//!   carries rkat-tui's spawn customizer with the agent as its
+//!   [`RootMember`].
+//! - The connection callback-tool routes `compose_rpc_mob_state` installs
+//!   are left out. Their builders are crate-private, and the daemon's
+//!   members get their tools from the customizer.
+//! - The approval engine the bootstrap built gates every member
+//!   ([`super::approvals`]). Its escalations are answered through the
+//!   runtime's approval service, and its deny rules are installed as the
+//!   members' application tool policy ([`super::policy`]).
+//! - Its escalations are held as the runtime's durable decisions, which
+//!   every attached client is offered and decides through the daemon
+//!   ([`super::decisions`]).
 
 use super::protocol::StartupNotice;
 use std::sync::Arc;
@@ -352,7 +356,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     });
     // The daemon follows its helpers: the
     // registry's running set (and how each ends), and each helper's
-    // session bound for the helpers it delegates to in turn. Clients see
+    // session bound for the helpers it starts in turn. Clients see
     // the helpers' events on the mobs' own streams.
     let (spawning, spawning_rx) = mpsc::unbounded_channel();
     let profiles = Arc::new(crate::mobs::profiles::MobProfiles::default());
@@ -408,11 +412,11 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     registry.on_gone(gone_tx);
     let links_task = links.follow(gone_rx);
     assigner.bind(&state, &links);
-    // The agent-facing mob tools (`fork_off`, `mob_*`, …) reach a session
+    // The agent-facing mob tools (`mob_*`, `council`, …) reach a session
     // build through the builder's mob-tools slot. `MethodRouter::new` fills
     // it on the first connection, which is after the agent's spawn:
     // without this its build mounts only the operator family
-    // (`spawn_member`, …).
+    // (`retire_member`, …).
     //
     // The daemon's factory: an agent's build also gets its schedule tools
     // there, and both families are hidden until its conversation reveals

@@ -192,8 +192,8 @@ async fn follow(
                         match event.map(|event| left(&event.kind, &key.member)) {
                         Some(Some(gone)) => {
                             // Deliver what it published before it left,
-                            // each event as the loop above does (review 7,
-                            // M9: only run ends were read here).
+                            // each event as the loop above does, not only
+                            // its run ends.
                             while let Some(Some(envelope)) = futures::FutureExt::now_or_never(stream.next()) {
                                 follower.on_event(&mut seen, &envelope).await;
                             }
@@ -675,10 +675,9 @@ mod tests {
         fn retired(&self, _tag: &HelperTag) {}
     }
 
-    /// Review 7, M9: an event read while draining a helper that left its
-    /// mob means what it means in the live loop: a run's start marks it
-    /// running and a run's end idle again (the drain read run ends only, so
-    /// a start drained there was never counted), and the observer hears
+    /// An event read while draining a helper that left its mob means what
+    /// it means in the live loop: a run's start marks it running and a
+    /// run's end idle again, and the observer hears
     /// the end.
     #[tokio::test]
     async fn every_event_a_follower_reads_is_handled_alike() {

@@ -138,7 +138,7 @@ fn bad_changes_are_refused_and_nothing_is_written() {
 }
 
 /// The mode is written in place, the file's comments kept; a file that
-/// still has `enabled` (the mode's spelling before 0.0.7) is not written.
+/// still has `enabled` (an earlier spelling of the mode) is not written.
 #[test]
 fn the_mode_is_written_in_place_and_a_file_with_enabled_is_not_written() {
     let tmp = tempfile::tempdir().unwrap();

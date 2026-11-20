@@ -2,8 +2,8 @@
 //! (`[helper · model]` headers, their progress and result, the running
 //! count, per-helper cost) from the mobs' own event streams.
 //!
-//! The daemon hosts every helper the agent starts: `assign`, `fork_off`
-//! and `spawn_member` helpers in the agent's own mob, the helpers of
+//! The daemon hosts every helper the agent starts: `assign`'s helpers
+//! in the agent's own mob, the helpers of
 //! helpers in theirs, a council's in its mob, and the `delegate` helpers
 //! an earlier build left in the agent session's implicit mob
 //! (`implicit-<session>`). A mob-wide `mob/stream_open

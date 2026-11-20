@@ -2,7 +2,7 @@
 //! ([`super::GlobalDirs::skills_dir`]): a skill source of every agent of
 //! every workspace, ahead of the project's `.rkat/skills`.
 //!
-//! The engine (Meerkat 0.9.13, `meerkat_skills::resolve`) reads skills
+//! The engine (`meerkat_skills::resolve`) reads skills
 //! from its embedded ones, the realm config's `[skills] repositories` in
 //! order, and last the project's `<workspace>/.rkat/skills`; it has no
 //! user-level directory. [`apply_user_skills`] is a load-time default of

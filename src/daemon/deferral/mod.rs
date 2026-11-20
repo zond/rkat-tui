@@ -1,8 +1,7 @@
 //! Tools an agent's model requests leave out until the agent asks for them.
 //!
-//! Every tool definition an agent has rides on every model request: on
-//! Meerkat 0.9.13 a main agent's request carries about 122 KB of them, the
-//! eight schedule tools 38.5 KB and the agent mob tools 33 KB
+//! Every tool definition an agent has rides on every model request: a
+//! main agent's request carries about 122 KB of them, the eight schedule tools 38.5 KB and the agent mob tools 33 KB
 //! (`tests/it/tool_costs.rs`). The engine's own deferred catalog never
 //! engages for a mob member (lukacf/meerkat#2180), so rkat-tui defers
 //! those two families itself: every tool stays enabled, but a deferrable
@@ -44,8 +43,7 @@ use super::{AGENT_PROFILE, MOB_ID};
 use crate::daemon::context::{FamilySize, family_sizes};
 
 /// The agent mob tools that are never deferred: the ones rkat-tui does not
-/// offer ([`crate::approval::policy::NOT_OFFERED`]: `delegate`, `fork_off`),
-/// which every agent's tool access policy denies, so no search may offer
+/// offer ([`crate::approval::policy::NOT_OFFERED`]), which every agent's tool access policy denies, so no search may offer
 /// them.
 pub const DIRECT_MOB_TOOLS: [&str; 9] = crate::approval::policy::NOT_OFFERED;
 

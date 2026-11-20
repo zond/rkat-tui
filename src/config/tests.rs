@@ -109,7 +109,7 @@ fn rules_file_round_trip() {
     )
     .unwrap();
     assert_eq!(parsed.allow.len(), 1);
-    // `enabled`, the mode's spelling before 0.0.7, is gone: a file that
+    // `enabled`, an earlier spelling of the mode, is gone: a file that
     // still has it does not read (it is never ignored: ignoring
     // `enabled = false` would start in auto mode).
     let gone = toml::from_str::<RulesFile>("[auto]\nenabled = false\n").unwrap_err();
@@ -395,7 +395,7 @@ fn trust_defaults_off_and_project_can_only_lower_it() {
     );
 }
 
-/// A4 of the security review: a project file cannot pick the classifier's
+/// A project file cannot pick the classifier's
 /// model; the user's layers keep theirs and the default stays the default.
 #[test]
 fn a_project_file_cannot_pick_the_classifier_model() {

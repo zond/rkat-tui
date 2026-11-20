@@ -403,7 +403,7 @@ fn reconfigure_refusal(running: bool, err: &impl std::fmt::Display) -> Refusal {
 mod tests {
     use super::*;
 
-    /// Review 7, L38: the engine's refusal of a reconfigure because a run
+    /// The engine's refusal of a reconfigure because a run
     /// started after the idle check reads as the busy refusal, not as the
     /// engine's words; any other refusal says what failed.
     #[test]

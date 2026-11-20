@@ -8,7 +8,7 @@
 //!   address) and keeps it in the mob's record, but each mob's members
 //!   listen on the in-process transport in a namespace of their own
 //!   (`mob.<id>`, the realm of the member's build): an edge addressed at
-//!   the other's `inproc://` name is listed by `peers` and every send on it
+//!   the other's `inproc://` name is listed as a peer and every send on it
 //!   fails `peer_not_found_or_not_trusted` (`docs/evidence.md`, "Helpers
 //!   connected across mobs").
 //! - **How.** So each end is served on a Unix socket of the daemon's own
@@ -23,7 +23,7 @@
 //!   `<realm>/helper-links.json` ([`Records`]): the engine keeps the edges
 //!   across a restart, but not the sockets, and nothing of the engine drops
 //!   an external edge when its far member retires or its mob is destroyed
-//!   (the edge then stays in `peers`, and a send on it fails "peer delivery
+//!   (the edge then stays among the peers, and a send on it fails "peer delivery
 //!   outcome is ambiguous").
 //! - **Life.** When either end retires (an `assign` helper when it
 //!   finishes, any helper stopped or retired) or its mob is destroyed
@@ -68,7 +68,7 @@ const SEAT_RECHECK_MAX: Duration = Duration::from_millis(500);
 pub struct End {
     /// Its mob and member id.
     pub key: HelperKey,
-    /// Its comms name (`<mob>/<role>/<member>`): how `peers` lists it to
+    /// Its comms name (`<mob>/<role>/<member>`): how `contacts` lists it to
     /// the other end, and the name of the other end's edge to it.
     pub peer: String,
     /// The name its parent knows it by.
@@ -243,7 +243,7 @@ impl Links {
             return Ok(true);
         }
         let made = self.make(&state, &a, &b, (recorded, a_to_b, b_to_a)).await;
-        // A pair not made leaves no socket it opened (review 7, L22): only
+        // A pair not made leaves no socket it opened: only
         // the recorded pairs' ends stay served.
         if made.is_err() {
             self.close_unused();

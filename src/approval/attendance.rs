@@ -1,5 +1,4 @@
-//! Unattended turns (A6 of the security review, the user's decision of
-//! 2026-11-10, changed by the owner on 2026-11-14).
+//! Unattended turns (the owner's decision after the security review).
 //!
 //! A turn no human started (another agent's message woke the agent, a
 //! schedule or a file watch) runs unattended unless a client is attached

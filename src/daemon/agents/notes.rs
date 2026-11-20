@@ -1,13 +1,16 @@
-//! What the daemon tells an agent about the others: one note when an
-//! agent joins or leaves the workspace (an event it cannot learn of
-//! otherwise; who is here and what each is doing is `contacts`' to give,
-//! always current, so nothing that restates it is appended and nothing
-//! grows with attaches and detaches), and how every note reaches an agent:
-//! appended to its system context, read at its next turn and waking
-//! nobody ([`append_note`], [`Agents::send_notes`]), or steered into its
-//! run, which starts one when it is idle ([`steer_member`],
-//! [`Agents::steer`]): a helper's ending and an approval from `/permissions`
-//! ([`Agents::approved`]).
+//! What the daemon tells an agent about the others, and how every note
+//! reaches an agent.
+//!
+//! An agent gets one note when an agent joins or leaves the workspace, an
+//! event it cannot learn of otherwise. Who is here and what each is doing
+//! is `contacts`' to give, always current, so nothing that restates it is
+//! appended and nothing grows with attaches and detaches.
+//!
+//! A note is either appended to the agent's system context, read at its
+//! next turn and waking nobody ([`append_note`], [`Agents::send_notes`]),
+//! or steered into its run, which starts one when it is idle
+//! ([`steer_member`], [`Agents::steer`]). Steered are a helper's ending
+//! and an approval from `/permissions` ([`Agents::approved`]).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -397,9 +400,7 @@ impl Agents {
     /// tell the agent that runs `session` at once, so it goes on.
     ///
     /// - **Who.** The agent, for its own calls and its helpers' alike (a
-    ///   helper's is named as that helper's in the note). The engine
-    ///   admitted no message from the daemon into a helper of its
-    ///   withdrawn `delegate` (probed, `docs/evidence.md`), and the approval
+    ///   helper's is named as that helper's in the note). The approval
     ///   holds for the agent and its helpers, so the agent makes the call
     ///   again itself or through a helper.
     /// - **How.** Steered ([`Self::steer`]): into the agent's running

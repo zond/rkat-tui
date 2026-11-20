@@ -2,14 +2,14 @@
 //! `tui.toml`, the workspace's realm `tui.toml` and the project's
 //! `.rkat/tui.toml` are watched (the `notify` crate, each file's directory,
 //! or its nearest existing ancestor until it appears, without recursion;
-//! only events naming the file count), and a change is read again after a
+//! only events naming the file count). A change is read again after a
 //! short quiet time ([`DEBOUNCE`], at most [`MAX_WAIT`]) and synced
-//! ([`super::local::Local::sync_settings`]): each setting whose value in
+//! ([`super::local::Local::sync_settings`]). Each setting whose value in
 //! force changed runs its hook, the clients get one notice per setting,
-//! and an audit line records it; the rules, statements and named
+//! and an audit line records it. The rules, statements and named
 //! directories of the user's and the workspace's file are held again as
-//! at start (`Local::hold_permissions`). The daemon's own writes find the file as
-//! it holds it already and change nothing (compared by content, not by
+//! at start (`Local::hold_permissions`). The daemon's own writes find the
+//! file as it holds it already and change nothing (compared by content, not by
 //! timing); a file that does not parse is reported once and its last good
 //! values stay in force.
 

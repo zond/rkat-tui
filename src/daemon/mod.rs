@@ -1419,8 +1419,7 @@ async fn stop_mobs(state: &Arc<MobMcpState>) {
     // suspended there and resumes at the next start. A helper's mob shut
     // down first ended the helper's turn while the agent's run still went
     // on, and the agent read that end during the shutdown (so the next
-    // start had nothing to resume, or resumed past the call: seen with
-    // `delegate`, which waited for its helper).
+    // start had nothing to resume, or resumed past the call).
     handles.sort_by_key(|(mob, _)| mob.as_str() != MOB_ID);
     for (mob, handle) in handles {
         match tokio::time::timeout(MOB_SHUTDOWN, handle.shutdown()).await {

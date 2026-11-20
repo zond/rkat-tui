@@ -33,7 +33,7 @@
 //! follower's one subscription to each ([`crate::mobs::follow`]): their
 //! model calls are counted to their owner's conversation, and a helper's
 //! catalog is read after its first run; a helper that stays seated
-//! (`spawn_member`) is judged by its own catalog from its second run on,
+//! (a kept one) is judged by its own catalog from its second run on,
 //! one retired after its run (`assign`'s, when it finished then) never is.
 
 use std::collections::HashMap;

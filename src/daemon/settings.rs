@@ -6,7 +6,7 @@
 //! mode switch) is checked by its setting ([`Setting::parse`]), written to
 //! the user's or the workspace's file through the one writer
 //! ([`crate::config::write::SettingsFile`]), and the layered value
-//! recomputed from every layer ([`Setting::resolve`]); when the value in
+//! recomputed from every layer ([`Setting::resolve`]). When the value in
 //! force changed, the local methods run the setting's hook
 //! (`super::local`'s `apply_setting`: the mode, the classifier model,
 //! `trust_project_builds`, the prepare instruction and threshold, the

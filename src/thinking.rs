@@ -468,7 +468,7 @@ mod tests {
         );
     }
 
-    /// Claude Fable 5.2 (in the catalog from Meerkat 0.9.12) thinks
+    /// Claude Fable 5.2 (in the engine's catalog) thinks
     /// adaptively only: a budget is refused at start with the engine's
     /// reason, `adaptive` is kept.
     #[test]

@@ -17,8 +17,7 @@
 //!   before the spawn, so two calls of one step cannot both take the last
 //!   one or one name, and a failed or cancelled call lets both go.
 //! - **Fresh.** Through the mob host's spawn, wired to its spawner both
-//!   ways (`auto_wire_parent`), exactly as the engine's `spawn_member`
-//!   seats a member.
+//!   ways (`auto_wire_parent`), exactly as the engine seats any member.
 //! - **Fork.** Through the engine's own `fork_off` of the caller's mob tool
 //!   surface ([`super::deferral::ForkRoutes`]), with this call's dispatch
 //!   context: the engine forks the caller's committed transcript, runs the

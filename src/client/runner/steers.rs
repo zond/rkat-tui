@@ -5,7 +5,7 @@
 //! that carries it, arrives.
 //!
 //! `mob/member_send` answers the input the member's runtime admitted for a
-//! steer (`admission.input_id`, Meerkat 0.9.12); the agent's
+//! steer (`admission.input_id`); the agent's
 //! `BoundaryAppendApplied` names the input it wrote into the running turn.
 //! A steer is delivered when the event names its input, so with two
 //! clients steering one turn each marks only its own. The event can come
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(steers.applied(&first), Some(PendingId(1)));
     }
 
-    /// Review 7, M30: a run takes only the steers its content holds; a run
+    /// A run takes only the steers its content holds; a run
     /// of something else (a daemon's note) takes none, and they stay
     /// followed. A failed send is forgotten.
     #[test]

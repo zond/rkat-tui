@@ -208,7 +208,7 @@ impl Local {
             return RunInterrupt::Ended;
         }
         // Its helpers keep running, and their endings are held for the
-        // user's next message (the owner's decision of 2026-11-15).
+        // user's next message (the owner's decision).
         self.agents.interrupted(agent);
         if self.core.engine.interrupted(session, Some(run)) {
             self.parts.desk.stop(session);

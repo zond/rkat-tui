@@ -2,7 +2,7 @@
 //! helpers to each other, both ways.
 //!
 //! - **Whose.** Only the caller's own helpers: the members its own spawns
-//!   seated (`assign`, `fork_off`, `spawn_member` in the workspace's mob,
+//!   seated (`assign` in the workspace's mob,
 //!   `mob_spawn_member` in a mob it created), by the names those spawns
 //!   gave them, as the helper bindings hold them ([`own_helpers`]): another
 //!   agent's helper, a helper's helper, the workspace's agents and the

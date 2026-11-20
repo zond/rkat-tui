@@ -565,8 +565,8 @@ pub mod engine {
     /// `session/fork_at`, `turn/start`, `mob/create`, `mob/spawn`, …)
     /// would build a session outside the daemon's mob, which no
     /// application gate admits, so the proxy refuses it with
-    /// [`super::NOT_SERVED`]. So is `mob/turn_start`: on Meerkat 0.9.14
-    /// a request-scoped turn carries the runtime's cleanup that destroys
+    /// [`super::NOT_SERVED`]. So is `mob/turn_start`: the engine's
+    /// request-scoped turn carries the runtime's cleanup that destroys
     /// the mobs its session owns when the turn cannot be applied, is
     /// cancelled or its member retired (prompts are [`MEMBER_SEND`],
     /// admitted by the mob with no such cleanup; a model switch is

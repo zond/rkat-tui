@@ -1,7 +1,7 @@
 //! `skill_read`: the agent opens a skill of its `<available_skills>`
 //! inventory, or lists them all.
 //!
-//! The engine (Meerkat 0.9.13) puts the inventory in the system prompt
+//! The engine puts the inventory in the system prompt
 //! but its own `browse_skills` and `load_skill` are `default_enabled:
 //! false` builtins the factory offers no host switch for, so without this
 //! tool an agent sees what skills exist and cannot read one

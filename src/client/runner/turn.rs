@@ -1427,8 +1427,8 @@ pub(super) async fn repeats_the_last_prompt(
     session: &SessionId,
     text: &str,
 ) -> bool {
-    // Only the last message travels (review 7, L27: the whole transcript
-    // did, on every retry).
+    // Only the last message travels, not the whole transcript on every
+    // retry.
     let Ok(last) = bounded(CALL_TIMEOUT, remote::last_message(connection, session)).await else {
         return false;
     };

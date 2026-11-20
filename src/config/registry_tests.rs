@@ -281,7 +281,7 @@ fn the_registry_s_defaults_read_as_the_typed_views() {
     assert_eq!(defaults.daemon_principal, None);
 }
 
-/// `auto.enabled`, the mode's spelling before 0.0.7, is gone: a file that
+/// `auto.enabled`, an earlier spelling of the mode, is gone: a file that
 /// still has it in any layer is a load error naming it (ignoring
 /// `enabled = false` would start in auto mode).
 #[test]

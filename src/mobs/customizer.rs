@@ -105,9 +105,8 @@ pub enum RootThinking {
 
 /// The host-root members that are owners themselves, not helpers: the mob
 /// daemon's agents (its agents), every member of one mob whose
-/// identity [`RootMember::is_root`] accepts. A member an agent seats
-/// itself (`spawn_member`) under such a name is refused: the names are
-/// the daemon's.
+/// identity [`RootMember::is_root`] accepts. A member anything but the
+/// daemon seats under such a name is refused: the names are the daemon's.
 pub struct RootMember {
     /// Their mob.
     pub mob: MobId,
@@ -494,7 +493,7 @@ fn own_endpoint<'a>(
 /// comes from when the spawn names none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Asked {
-    /// Any spawn (`delegate`, `spawn_member`, `mob_spawn_member`, a batch):
+    /// Any spawn (`assign`'s fresh helper, `mob_spawn_member`, a batch):
     /// the model it names, else `helpers.model`, else its owner's.
     Spawn,
     /// A `fork_off` child: it continues its source's conversation, so it
@@ -951,7 +950,7 @@ impl HelperCustomizer {
             self.registry.bind_session(&key, &tag, session);
         }
         // A fresh fork's first steps wait for its edge to its parent: its
-        // tools then find the parent in `peers` from its first call.
+        // tools then find the parent in `contacts` from its first call.
         let wired =
             (fresh && kind.is_fork()).then(|| Arc::new(tokio::sync::watch::channel(false).0));
         shape(
@@ -1126,7 +1125,7 @@ fn kind_of(
     use super::{HelperContext, HelperKind, HelperLife};
     // A `fork_off` child's seat asks with `PersistedForkResume` (its fork
     // is committed first), a prompt-context fork's with `Fork` (both
-    // probed 2026-11-16).
+    // probed).
     let fork = matches!(
         ctx.spawn_source,
         SpawnSource::Fork | SpawnSource::PersistedForkResume

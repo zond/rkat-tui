@@ -116,7 +116,7 @@ impl ApprovalGate {
     /// Hold every call until `wired` reads true or its sender is gone, at
     /// most [`WIRE_WAIT`] (`None`: no wait). A fork child's: the engine
     /// seats it with no edge to its parent, and the follower wires it a
-    /// moment after; its first call (often `peers` or `send_message`) then
+    /// moment after; its first call (often `contacts` or `send_message`) then
     /// finds the parent.
     #[must_use]
     pub fn waiting_for(mut self, wired: Option<tokio::sync::watch::Receiver<bool>>) -> Self {

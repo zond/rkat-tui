@@ -195,7 +195,7 @@ pub const SEALED_PATTERNS: &[&str] = &[
     ".rkat",
     ".rkat/**",
     // A nested `.rkat` too, as the engine's own file tools refuse one at
-    // any depth (Meerkat 0.9.12).
+    // any depth.
     "**/.rkat",
     "**/.rkat/**",
     ".git",

@@ -15,11 +15,11 @@
 //! - **The approval gate.** [`customizer::HelperCustomizer`] (the state's
 //!   child spawn-member customizer, asked for every member of every mob the
 //!   state creates or restores) puts an [`crate::approval::ApprovalGate`] for
-//!   the helper's owner on the spawn spec's `tool_dispatch_admission`: the
+//!   the helper's owner on the spawn spec's `tool_dispatch_admission`. The
 //!   helper's calls are judged against the owner's transcript of the user's
 //!   words (the helper's task is assistant-authored and never recorded as
-//!   user intent), share its allow cache and the denial counters (not its
-//!   Stop: an interrupt stops the agent's own calls only), and the
+//!   user intent). They share its allow cache and the denial counters (not
+//!   its Stop: an interrupt stops the agent's own calls only). The
 //!   escalation dialog names the helper; Stop on that dialog stops the
 //!   helper.
 //! - **The model.** The customizer chooses a fresh helper's model (the
@@ -46,7 +46,7 @@
 //!   ([`crate::approval::ApprovalEngine::forget_session`]) is dropped from
 //!   memory.
 //! - **Interrupts.** An interrupt stops the agent's own run only: its
-//!   helpers keep running (the owner's decision of 2026-11-15). Leaving a
+//!   helpers keep running (the owner's decision). Leaving a
 //!   conversation ([`cancel_helpers`]) and the daemon's stop still end them;
 //!   the user stops one helper on its own ([`endings::HelperEndings::stop`]).
 //! - **No orphans.** However a helper is retired, its own helpers (theirs

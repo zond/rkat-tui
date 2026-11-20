@@ -1,4 +1,4 @@
-//! Checkpoints of long runs (the owner's decision of 2026-11-16).
+//! Checkpoints of long runs (the owner's decision).
 //!
 //! The engine ends a run after `[agent] max_turns` model calls
 //! (`TurnLimitReached`, error class `MaxTurns`) at a clean boundary: the
@@ -7,7 +7,7 @@
 //! rkat-tui sets that limit from `agent.checkpoint_steps`
 //! ([`crate::bootstrap::RealmConfigStore::set_turn_limit`]) and makes the
 //! limit a checkpoint instead of a failure. When a run of an agent or of
-//! a helper (`assign`, `spawn_member`, a fork) ends there, and only then:
+//! a helper (fresh or forked) ends there, and only then:
 //!
 //! 1. the agent is asked for its status in a run of its own, with tools
 //!    off ([`status_request`]: one model call, `ToolChoice::None`);

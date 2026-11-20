@@ -209,8 +209,8 @@ impl Builds {
     /// sees (its file tools, or the files' digest).
     ///
     /// When something contains the shell a build stays trusted after such
-    /// a change too (the sandbox is the boundary; the owner's decision of
-    /// 2026-11-14): the first one shows a notice ([`Self::notice`]).
+    /// a change too (the sandbox is the boundary; the owner's decision):
+    /// the first one shows a notice ([`Self::notice`]).
     /// Uncontained, a build after a change is put to the user.
     pub(super) fn trusted(&self, session: &SessionId, action: &Action<'_>) -> bool {
         let trusted = self.trust().unwrap_or(self.contained);

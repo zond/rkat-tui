@@ -2293,7 +2293,7 @@ mod tests {
         assert_eq!(turn_ends(&drain(&mut rx)), 1);
     }
 
-    /// The owner's report on 0.0.17 (2026-11-19): while the agent worked,
+    /// The owner's report: while the agent worked,
     /// his messages were held by the UI (↑ took them back, Esc sent them),
     /// never steered. The cause: the quiet turn of `/compact`'s run took
     /// every run that followed it before the agent went idle (a helper's
@@ -2572,7 +2572,7 @@ mod tests {
         }
     }
 
-    /// Review 7, M30: a later run of the turn started by a daemon's note,
+    /// A later run of the turn started by a daemon's note,
     /// while this client's steer is still queued behind it, does not mark
     /// the steer delivered (before, every steer was taken as carried by
     /// whatever run came next); the steer is marked when its own run
@@ -2865,7 +2865,7 @@ mod tests {
             .collect()
     }
 
-    /// The owner's report (2026-11-17): the first press stopped the run,
+    /// The owner's report: the first press stopped the run,
     /// a typed message started a follow-up run, and the next presses (and
     /// the hard cancel at the deadline) hit that run. Now, once the
     /// interrupted run has ended, presses in quick succession send nothing
@@ -3045,7 +3045,7 @@ mod tests {
         (link, sends)
     }
 
-    /// Review 7, M26: a steer whose answer is lost after the daemon
+    /// A steer whose answer is lost after the daemon
     /// admitted it is not told as refused. The client asks the daemon by
     /// the send's key: admitted, it is acknowledged and followed as any
     /// steer (nothing returns to the editor, so nothing is sent twice);
@@ -3146,7 +3146,7 @@ mod tests {
         }
     }
 
-    /// Review 7, M29: Esc while the daemon is slow to answer; the run ends
+    /// Esc while the daemon is slow to answer; the run ends
     /// by itself; after a pause Esc again opens a new interrupt of the
     /// turn. The first call's late answer (or its timeout) still counts as
     /// this turn's: once both are answered, in either order, the turn ends

@@ -929,7 +929,7 @@ impl Agents {
             }
         }
         // A member seated in a mob no session created (the workspace's
-        // own, where `assign` and `spawn_member` seat helpers): the helper
+        // own, where `assign` seats helpers): the helper
         // above it on its path, which seated it, while it runs.
         if !tag.parent_path().is_empty()
             && let Some((key, tag)) = registry.live_by_path(&tag.owner, tag.parent_path())
@@ -1180,9 +1180,9 @@ impl Agents {
         );
     }
 
-    /// The `delegate` helpers the last daemon left (`delegate` is withdrawn
-    /// since: they are a realm of an earlier build's, `crate::mobs::delegates`):
-    /// their calls ended with it. One its mob still seats was restored by
+    /// The `delegate` helpers the last daemon left (a realm of an earlier
+    /// build holds them, `crate::mobs::delegates`): their calls ended with
+    /// it. One its mob still seats was restored by
     /// the engine, which resumes its run, and its answer comes to its
     /// parent when it finishes. One its mob no longer seats is gone: its
     /// parent is told so ([`crate::mobs::endings::HelperEndings::lost`]).

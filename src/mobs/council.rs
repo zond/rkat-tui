@@ -6,7 +6,7 @@
 //! of its own, a fresh id no session of this daemon has, with
 //! `SpawnSource::AttachedForkedParticipant` and no spawner
 //! (`docs/evidence.md`, "Councils"). Its create request names the session
-//! that convened it (`MobCreateRequest::council`, Meerkat 0.9.15), and the
+//! that convened it (`MobCreateRequest::council`), and the
 //! create hook records that session as the mob's owner
 //! ([`super::install_mob_hooks`]). The participants are then helpers of the
 //! convener like any other: gated for its owner, followed, their catalogs

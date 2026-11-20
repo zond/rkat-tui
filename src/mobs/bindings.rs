@@ -789,7 +789,7 @@ mod tests {
         assert!(bindings.mob_owner(&MobId::from("team")).is_none());
     }
 
-    /// Review 7, M19: on a full disk a change is kept, not lost. Two writes
+    /// On a full disk a change is kept, not lost. Two writes
     /// fail (ENOSPC): the owed retire and the task are in memory, not in
     /// the file, the failure is told once; a lookup that reads the file
     /// (its owner forgotten from memory) still sees them; a flush once the

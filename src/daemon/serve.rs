@@ -69,7 +69,7 @@ impl Outgoing {
 /// The lines one client's queue holds before the client counts as not
 /// reading: it is dropped (a detach, as a hangup is), and it catches up
 /// from its cursor when it reconnects. A stopped TUI (Ctrl+Z) or a
-/// stalled tunnel no longer makes the daemon buffer a whole event stream.
+/// stalled tunnel does not make the daemon buffer a whole event stream.
 pub const CLIENT_QUEUE: usize = 4096;
 /// How long the engine's next line for a client waits for room in its
 /// full queue before the client is dropped (a burst the client drains in

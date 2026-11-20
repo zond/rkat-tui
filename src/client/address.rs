@@ -7,12 +7,12 @@
 //! When that workspace is provably on this machine (an endpoint file here
 //! names the daemon by the token presented, for that workspace, and the
 //! directory exists; a matching host name and path are not enough, two
-//! machines can share both) the client runs on it as `--attach=DIRECTORY`
-//! does; otherwise the features that edit or read local files (`!`, `@`
+//! machines can share both), the client runs on it as `--attach=DIRECTORY`
+//! does. Otherwise the features that edit or read local files (`!`, `@`
 //! mentions, `/remember`, `/memory`, `/export` to a path) are refused with
-//! the reason ([`Reached::remote`]), and everything that goes over the
-//! wire (prompts, approvals, modes, rules, `/cost`, `/context`, the
-//! pickers) works.
+//! the reason ([`Reached::remote`]). Everything that goes over the wire
+//! (prompts, approvals, modes, rules, `/cost`, `/context`, the pickers)
+//! works.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

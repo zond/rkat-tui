@@ -724,7 +724,7 @@ mod tests {
     }
 
     /// Endpoint files whose daemons never answer cost one probe bound in
-    /// all, not one each (review 5, CW2): each listener takes the
+    /// all, not one each: each listener takes the
     /// connection and says nothing.
     #[tokio::test]
     async fn the_other_daemons_are_probed_at_once() {

@@ -451,7 +451,7 @@ impl Agents {
             }
             // A restored agent registered itself in its customizer's
             // resume; one that did not is registered here, before its
-            // first turn can delegate.
+            // first turn can start a helper.
             let session = match self.core.conversations.current(&name) {
                 Some(session) => Some(session),
                 None => {

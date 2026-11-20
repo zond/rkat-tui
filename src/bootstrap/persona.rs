@@ -235,8 +235,8 @@ mod tests {
     /// Announcements go to the agents `contacts` shows working, once per
     /// task; an idle agent is left alone (a message would start a run of
     /// it). The states are `contacts`' to give (always current), not a
-    /// note's: no rule leans on a roster note (the owner's rule of
-    /// 2026-11-18: standing knowledge that does not grow).
+    /// note's: no rule leans on a roster note (the owner's rule: standing
+    /// knowledge that does not grow).
     #[test]
     fn announcements_go_to_working_agents_once_per_task() {
         let section = agents_persona("main-ab12");
@@ -282,8 +282,8 @@ mod tests {
         }
     }
 
-    /// The section's size, measured (review 7, the roster note's rules
-    /// pointed at `contacts`: 4,850 bytes): it does not creep.
+    /// The section's size, measured (4,850 bytes with the roster note's
+    /// rules pointed at `contacts`): it does not creep.
     #[test]
     fn the_agents_section_stays_bounded() {
         let len = agents_persona("main-ab12").len();
@@ -291,8 +291,8 @@ mod tests {
     }
 
     /// The agent is told that `contacts` says who is who (the owner's
-    /// decision of 2026-11-18: no telling agents from helpers by the shape
-    /// of their names), and no announcement rule points at a helper:
+    /// decision: no telling agents from helpers by the shape of their
+    /// names), and no announcement rule points at a helper:
     /// helpers are messaged for work only.
     #[test]
     fn helpers_are_told_apart_from_agents_and_get_no_announcements() {
@@ -463,8 +463,8 @@ mod tests {
         assert!(helper.contains("your final message is still your result"));
         assert!(helper.contains("If you started helpers, call `contacts`"));
         assert!(compaction_persona(true, true).contains("`memory_search` finds them"));
-        // Said once: the helper paragraph of the agents' section no longer
-        // says it.
+        // Said once: the helper paragraph of the agents' section does not
+        // say it.
         assert!(!agents_persona("main-ab12").contains("After a compaction"));
     }
 }

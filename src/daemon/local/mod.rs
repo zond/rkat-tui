@@ -20,17 +20,18 @@
 //! any read; anything else is answered with [`protocol::NOT_YOURS`] and
 //! never forwarded.
 //!
-//! What the forwarded methods tell the daemon ([`Local::observe`]): a
-//! prompt or steer for the agent (`mob/member_send`) is the human's words, recorded in the classifier's
-//! transcript (the connection proved it holds the daemon's token), and the
-//! run that takes it is one a user started (attended, see
-//! [`crate::approval::attendance`]); an
-//! interrupt
-//! (`mob/stop_member_run`, `mob/force_cancel`) stops the review of the
-//! agent's own calls and answers the open escalations of its own calls with
-//! Stop; its helpers keep running, and the endings of its helpers are held
-//! until the user's next message to it ([`super::agents::endings`]). A
-//! helper is stopped on its own ([`method::StopHelper`]).
+//! What the forwarded methods tell the daemon ([`Local::observe`]):
+//!
+//! - A prompt or steer for the agent (`mob/member_send`) is the human's
+//!   words, recorded in the classifier's transcript (the connection proved
+//!   it holds the daemon's token). The run that takes it is one a user
+//!   started (attended, see [`crate::approval::attendance`]).
+//! - An interrupt (`mob/stop_member_run`, `mob/force_cancel`) stops the
+//!   review of the agent's own calls and answers the open escalations of
+//!   its own calls with Stop. Its helpers keep running, and their endings
+//!   are held until the user's next message to it
+//!   ([`super::agents::endings`]). A helper is stopped on its own
+//!   ([`method::StopHelper`]).
 //!
 //! [`Local::call`] is the dispatch table, one line per method; the
 //! handlers live in files by concern: an agent's conversations and its
@@ -622,7 +623,7 @@ impl Local {
             engine::STOP_MEMBER_RUN | engine::FORCE_CANCEL | engine::HARD_CANCEL_MEMBER => {
                 tracing::info!(%method, %agent, "the client interrupts the agent");
                 // The agent's own run only: its helpers keep running (the
-                // owner's decision of 2026-11-15), their calls are not
+                // owner's decision), their calls are not
                 // denied by its Stop, their dialogs stay open, and their
                 // endings are held for the user's next message.
                 self.agents.interrupted(&agent);

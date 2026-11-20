@@ -884,8 +884,8 @@ mod tests {
         }
     }
 
-    /// The policy judges effects, not location (the owner's decision of
-    /// 2026-11-14): no rule makes leaving the project root a violation in
+    /// The policy judges effects, not location (the owner's decision): no
+    /// rule makes leaving the project root a violation in
     /// itself, D1 and T3 are narrowed to what existed and what lasts, the
     /// effect rules that guard what this opens are there, and the routine
     /// development effects are explicit allow exceptions.
@@ -984,8 +984,8 @@ mod tests {
         assert_eq!(parse_stage1("I think ALLOW"), Stage1::Unclear);
         assert_eq!(parse_stage1(""), Stage1::Unclear);
         assert_eq!(parse_stage1("ALLOWED"), Stage1::Unclear);
-        // Review 7, N36: the first line is the word alone, or unclear
-        // (before, its first word decided: "ALLOW? no: block it" allowed).
+        // The first line is the word alone, or unclear (its first word
+        // alone does not decide: "ALLOW? no: block it" is no allow).
         assert_eq!(parse_stage1("ALLOW? no: block it"), Stage1::Unclear);
         assert_eq!(parse_stage1("Block - risky"), Stage1::Unclear);
         assert_eq!(parse_stage1("allow block"), Stage1::Unclear);

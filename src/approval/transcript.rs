@@ -606,7 +606,7 @@ mod tests {
         assert!(!r.contains("</transcript>"));
     }
 
-    /// A2 of the security review: what an `@` mention attached is data.
+    /// What an `@` mention attached is data.
     #[test]
     fn a_prompt_records_what_was_typed_and_names_the_attached_files() {
         let mut t = ApprovalTranscript::default();
