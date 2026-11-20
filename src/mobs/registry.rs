@@ -25,6 +25,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::mobs::bindings::{BindingsError, HelperBindings};
 
+#[cfg(any(test, feature = "test-support"))]
+mod probe;
+
 /// What a helper is and whom it works for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelperTag {
@@ -464,23 +467,12 @@ pub struct HelperRegistry {
     /// How many helpers each parent (an owner session and the parent's
     /// path) had retire since the daemon started.
     ended: Mutex<HashMap<(SessionId, Vec<String>), usize>>,
-    /// Tests: forks are wired as their spawn is announced
-    /// ([`Self::wire_forks_early`]).
+    /// Tests: their switches and counts ([`probe::RegistryProbe`]).
     #[cfg(any(test, feature = "test-support"))]
-    forks_early: std::sync::atomic::AtomicBool,
-    /// Tests: how often a fork's wire found it not seated yet.
-    #[cfg(any(test, feature = "test-support"))]
-    forks_not_seated: std::sync::atomic::AtomicUsize,
+    probe: probe::RegistryProbe,
 }
 
 impl HelperRegistry {
-    /// An empty registry, its bindings in memory only.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn in_memory() -> Self {
-        Self::with_bindings(HelperBindings::in_memory())
-    }
-
     /// A registry whose bindings persist under `realm_root` (an
     /// unreadable bindings file is logged and replaced).
     #[must_use]
@@ -509,41 +501,8 @@ impl HelperRegistry {
             activity: Mutex::new(HashMap::new()),
             ended: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "test-support"))]
-            forks_early: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(any(test, feature = "test-support"))]
-            forks_not_seated: std::sync::atomic::AtomicUsize::new(0),
+            probe: probe::RegistryProbe::default(),
         }
-    }
-
-    /// Tests: wire every fork as its spawn is announced, before the
-    /// follower opens its stream (so before its spawn is built and it is
-    /// seated): what a slow spawn does to the order.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn wire_forks_early(&self) {
-        self.forks_early
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// Tests: whether forks are wired early ([`Self::wire_forks_early`]).
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn wires_forks_early(&self) -> bool {
-        self.forks_early.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    /// Tests: a fork's wire found it not seated yet.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn fork_not_seated(&self) {
-        self.forks_not_seated
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Tests: how often a fork's wire found it not seated yet.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn forks_not_seated(&self) -> usize {
-        self.forks_not_seated
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// How each helper ends ([`super::endings`]).
@@ -1145,21 +1104,6 @@ impl HelperRegistry {
             .iter()
             .filter(|(_, tag)| &tag.owner == owner)
             .map(|(key, _)| key.clone())
-            .collect()
-    }
-
-    /// Running helpers.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn live(&self) -> Vec<HelperStatus> {
-        self.live
-            .lock()
-            .values()
-            .map(|tag| HelperStatus {
-                label: tag.label().to_string(),
-                model: tag.model.clone(),
-                depth: tag.depth(),
-            })
             .collect()
     }
 

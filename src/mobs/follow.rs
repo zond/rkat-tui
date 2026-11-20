@@ -105,10 +105,9 @@ async fn follow(
     } = helper;
     // Tests: the fork's wire is made as its spawn is announced, before it
     // is seated (what a slow spawn does to the normal order).
-    #[cfg(any(test, feature = "test-support"))]
-    let wiring_early = tag.kind.is_fork() && registry.wires_forks_early();
-    #[cfg(not(any(test, feature = "test-support")))]
     let wiring_early = false;
+    #[cfg(any(test, feature = "test-support"))]
+    let wiring_early = wiring_early || (tag.kind.is_fork() && registry.wires_forks_early());
     if wiring_early {
         tokio::spawn(wire_fork(
             Weak::clone(&state),

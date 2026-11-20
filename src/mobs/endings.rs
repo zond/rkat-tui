@@ -110,6 +110,11 @@
 //! whether a run messaged its parent while it is idle; a helper both
 //! settled and followed.
 
+#[cfg(any(test, feature = "test-support"))]
+mod probe;
+#[cfg(any(test, feature = "test-support"))]
+pub use probe::DecidingHookFn;
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, OnceLock, Weak};
 
@@ -681,16 +686,9 @@ pub struct HelperEndings {
     /// before the decision (unfinished input: the helper goes on) or finds
     /// the helper settled (it goes further up), never in between.
     deciding: tokio::sync::Mutex<()>,
-    /// Tests: awaited before a helper's going idle is decided.
+    /// Tests: what they hold ([`probe::EndingsProbe`]).
     #[cfg(any(test, feature = "test-support"))]
-    before_deciding: OnceLock<DecidingHook>,
-    /// Tests: awaited before a finished `assign` helper is retired.
-    #[cfg(any(test, feature = "test-support"))]
-    before_retiring: OnceLock<DecidingHook>,
-    /// Tests: the daemon's delivery holds every batch of endings open
-    /// until the daemon stops ([`Self::hold_batches`]).
-    #[cfg(any(test, feature = "test-support"))]
-    batches_held: std::sync::atomic::AtomicBool,
+    test_probe: probe::EndingsProbe,
     /// The retirements under way, and whether one may still start
     /// ([`Retirements`]).
     retirements: Arc<Retirements>,
@@ -712,12 +710,9 @@ pub struct HelperEndings {
 pub struct Retirements {
     /// Closed, and how many are under way.
     gate: tokio::sync::watch::Sender<(bool, usize)>,
-    /// Tests: awaited inside a retire, just before it reaches the engine.
+    /// Tests: what they hold and refuse ([`probe::RetirementsProbe`]).
     #[cfg(any(test, feature = "test-support"))]
-    before_engine: OnceLock<DecidingHook>,
-    /// Tests: the helpers whose retire is refused, with the refusal.
-    #[cfg(any(test, feature = "test-support"))]
-    refuse: Mutex<HashMap<HelperKey, String>>,
+    probe: probe::RetirementsProbe,
 }
 
 impl Default for Retirements {
@@ -725,9 +720,7 @@ impl Default for Retirements {
         Self {
             gate: tokio::sync::watch::channel((false, 0)).0,
             #[cfg(any(test, feature = "test-support"))]
-            before_engine: OnceLock::new(),
-            #[cfg(any(test, feature = "test-support"))]
-            refuse: Mutex::new(HashMap::new()),
+            probe: probe::RetirementsProbe::default(),
         }
     }
 }
@@ -776,13 +769,6 @@ impl Retirements {
         settled
     }
 
-    /// Tests: whether the daemon is stopping (no retire starts).
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn closed(&self) -> bool {
-        self.gate.borrow().0
-    }
-
     /// Retire `key` in `handle`'s mob ([`super::stop_helper`]) unless the
     /// daemon is stopping.
     ///
@@ -801,55 +787,8 @@ impl Retirements {
             return Err("the daemon is stopping".to_string());
         };
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(hook) = self.before_engine.get() {
-            (hook.0)(key.clone()).await;
-        }
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(refusal) = self.refuse.lock().get(key) {
-            return Err(refusal.clone());
-        }
+        self.probe.reaching_engine(key).await?;
         super::stop_helper(handle, key).await
-    }
-
-    /// Tests: refuse every retire of `key` with `refusal`, as an engine
-    /// that keeps refusing would (`None`: let them through again).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn refuse(&self, key: &HelperKey, refusal: Option<&str>) {
-        let mut refused = self.refuse.lock();
-        match refusal {
-            Some(refusal) => {
-                refused.insert(key.clone(), refusal.to_string());
-            }
-            None => {
-                refused.remove(key);
-            }
-        }
-    }
-
-    /// Tests: await `hook` (with the helper's key) inside each retire, just
-    /// before it reaches the engine (once).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn before_engine(&self, hook: DecidingHookFn) {
-        let _ = self.before_engine.set(DecidingHook(hook));
-    }
-}
-
-/// Tests: what [`HelperEndings::before_deciding`] awaits for a helper.
-#[cfg(any(test, feature = "test-support"))]
-pub type DecidingHookFn = Arc<
-    dyn Fn(HelperKey) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-        + Send
-        + Sync,
->;
-
-/// [`DecidingHookFn`], held.
-#[cfg(any(test, feature = "test-support"))]
-struct DecidingHook(DecidingHookFn);
-
-#[cfg(any(test, feature = "test-support"))]
-impl std::fmt::Debug for DecidingHook {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("DecidingHook")
     }
 }
 
@@ -1250,9 +1189,7 @@ impl HelperEndings {
                 runtime.spawn(async move {
                     endings.settle_idle(&key, runs, &probe).await;
                     #[cfg(any(test, feature = "test-support"))]
-                    if let Some(hook) = endings.before_deciding.get() {
-                        (hook.0)(key.clone()).await;
-                    }
+                    endings.test_probe.deciding(&key).await;
                     endings.decide_idle(&key, runs, terminal, &probe).await;
                 });
             }
@@ -1326,20 +1263,6 @@ impl HelperEndings {
             return None;
         }
         Some(send.await)
-    }
-
-    /// Tests: await `hook` (with the helper's key) before each decision
-    /// of a helper's going idle (once).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn before_deciding(&self, hook: DecidingHookFn) {
-        let _ = self.before_deciding.set(DecidingHook(hook));
-    }
-
-    /// Tests: await `hook` (with the helper's key) before a finished
-    /// `assign` helper is retired (once).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn before_retiring(&self, hook: DecidingHookFn) {
-        let _ = self.before_retiring.set(DecidingHook(hook));
     }
 
     /// The helper `key`, restored from the last daemon's, was woken with
@@ -1642,12 +1565,10 @@ impl HelperEndings {
         let retired = Arc::clone(&self.retired_peers);
         let retirements = Arc::clone(&self.retirements);
         #[cfg(any(test, feature = "test-support"))]
-        let hook = self.before_retiring.get().map(|hook| Arc::clone(&hook.0));
+        let hook = self.test_probe.retiring();
         runtime.spawn(async move {
             #[cfg(any(test, feature = "test-support"))]
-            if let Some(hook) = hook {
-                hook(key.clone()).await;
-            }
+            probe::run(hook, &key).await;
             if let Err(err) = retire_seated(&state, &retirements, &retired, &key, &below, true).await
             {
                 tracing::warn!(helper = %key, error = %err, "a finished helper stays seated: it is retired at the next start");
@@ -1721,66 +1642,6 @@ impl HelperEndings {
                     "helper `{name}` was retired with its parent `{parent}`; start another helper for more work"
                 ),
             })
-    }
-
-    /// Tests: the daemon's delivery holds every batch of endings open
-    /// until the daemon stops, as if each stop came within its window.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn hold_batches(&self) {
-        self.batches_held
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// Tests: whether the delivery holds its batches
-    /// ([`Self::hold_batches`]).
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn batches_held(&self) -> bool {
-        self.batches_held.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    /// Tests: how many retires these endings started so far.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn retires(&self) -> usize {
-        self.retires.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Tests: whether `key` is followed and not ended yet.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn is_tracked(&self, key: &HelperKey) -> bool {
-        self.is_live(key)
-    }
-
-    /// Tests: whether `key`'s ending was settled (told or not).
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn settled(&self, key: &HelperKey) -> bool {
-        self.is_settled(key)
-    }
-
-    /// Tests: how many fork outcomes on record were reported so far (each
-    /// fork's own once: the follower's live event or its look at start).
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn outcomes_reported(&self) -> usize {
-        self.outcomes_reported
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Tests: how many runs' ends were decided as a helper's going idle.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn idle_decided(&self) -> usize {
-        self.idle_decided.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Tests: how many endings were told so far.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn told(&self) -> usize {
-        self.told.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
