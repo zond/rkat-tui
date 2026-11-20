@@ -8,6 +8,7 @@ use meerkat_core::SessionId;
 
 use super::Agents;
 use super::notes::{Delivery, hold_or_steer, note_agent};
+use super::sent::Kind;
 
 /// The label of a run a note of helpers' endings started.
 pub const HELPER_ENDED_LABEL: &str = "a helper ended";
@@ -46,15 +47,7 @@ impl Agents {
         prompt: &str,
     ) {
         // The watch event the daemon sent it: positive by construction.
-        let from_watch = {
-            let mut sent = self.watch_sent.lock();
-            if sent.get(name).is_some_and(|text| text == prompt) {
-                sent.remove(name);
-                true
-            } else {
-                false
-            }
-        };
+        let from_watch = self.sent.take_if(name, Kind::Watch, |text| text == prompt);
         if from_watch {
             self.audit_run(
                 name,
@@ -65,15 +58,9 @@ impl Agents {
             return;
         }
         // The note of a helper's ending the daemon sent it.
-        let from_helper = {
-            let mut sent = self.helper_sent.lock();
-            if sent.get(name).is_some_and(|text| text == prompt) {
-                sent.remove(name);
-                true
-            } else {
-                false
-            }
-        };
+        let from_helper = self
+            .sent
+            .take_if(name, Kind::HelperEnding, |text| text == prompt);
         if from_helper {
             // It reached the agent: one held after its steer failed (the
             // engine took it before it answered the error) goes.
@@ -82,7 +69,7 @@ impl Agents {
             }
             // Its folded line, made from the items when the daemon sent
             // it, else read from its header.
-            let summary = match self.helper_summaries.lock().remove(name) {
+            let summary = match self.sent.take_summary(name) {
                 Some((text, summary)) if text == prompt => Some(summary),
                 _ => super::endings::note_summary(prompt),
             };
@@ -231,7 +218,7 @@ impl Agents {
             return;
         }
         let text = batch.text();
-        self.watch_sent.lock().insert(name.clone(), text.clone());
+        self.sent.record(&name, Kind::Watch, text.clone());
         let _sending = self.core.activity.sending(&name);
         let later = {
             let name = name.clone();
@@ -244,7 +231,7 @@ impl Agents {
             .accepted(later);
         if let Err(err) = sent {
             tracing::warn!(agent = %name, error = %err, "a watch event did not reach the agent");
-            self.watch_sent.lock().remove(&name);
+            self.sent.forget(&name, Kind::Watch);
             return;
         }
         self.audit_run(&name, None, "watch_event", text.clone());

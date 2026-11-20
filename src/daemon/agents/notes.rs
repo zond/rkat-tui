@@ -20,6 +20,7 @@ use super::super::MOB_ID;
 use super::super::conversations::RunState;
 use super::super::core::Core;
 use super::Agents;
+use super::sent::Kind;
 
 /// The source the daemon's notes about the other agents carry.
 const NOTE_SOURCE: &str = "rkat-tui-agents";
@@ -327,11 +328,11 @@ impl Agents {
         wake: Wake,
         failed: impl FnOnce(String) + Send + 'static,
     ) -> Result<(), String> {
-        let sent = match wake {
-            Wake::HelperEnded => &self.helper_sent,
-            Wake::Approved => &self.approval_sent,
+        let kind = match wake {
+            Wake::HelperEnded => Kind::HelperEnding,
+            Wake::Approved => Kind::Approval,
         };
-        sent.lock().insert(name.to_string(), text.clone());
+        self.sent.record(name, kind, text.clone());
         if wake == Wake::Approved
             && !self.core.activity.running(name)
             && let Some(session) = self.core.conversations.current(name)
@@ -367,7 +368,7 @@ impl Agents {
         // ([`super::endings::HeldNotes::delivered`]).
         steered.inspect_err(|_| {
             if wake == Wake::Approved {
-                sent.lock().remove(name);
+                self.sent.forget(name, Kind::Approval);
             }
         })
     }
@@ -382,15 +383,12 @@ impl Agents {
         run: &meerkat_core::RunId,
         prompt: &str,
     ) -> bool {
-        let mut sent = self.approval_sent.lock();
-        if sent
-            .get(name)
-            .is_none_or(|text| !prompt.contains(text.as_str()))
+        if !self
+            .sent
+            .take_if(name, Kind::Approval, |text| prompt.contains(text))
         {
             return false;
         }
-        sent.remove(name);
-        drop(sent);
         self.core.engine.user_started(session, run);
         true
     }
@@ -430,7 +428,7 @@ impl Agents {
         let later = {
             let (agents, name) = (Arc::clone(self), name.clone());
             move |err: String| {
-                agents.approval_sent.lock().remove(&name);
+                agents.sent.forget(&name, Kind::Approval);
                 agents.approval_not_told(name, &err);
             }
         };

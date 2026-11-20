@@ -27,6 +27,7 @@ mod checkpoint;
 pub mod endings;
 mod names;
 mod notes;
+mod sent;
 mod triggers;
 
 pub use names::is_agent;
@@ -128,20 +129,10 @@ const MISSED_KEPT: usize = 32;
 pub struct Agents {
     /// What the agents share with the local methods.
     core: Arc<Core>,
-    /// The last watch event sent to each agent: a run it starts is the
-    /// watch's.
-    watch_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
-    /// The last note of a helper's ending sent to each agent: a run it
-    /// starts is that ending's.
-    helper_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
-    /// The folded line of each note of helpers' endings steered into an
-    /// agent, by agent and the note's words: the run it starts is
-    /// announced with it ([`endings::summary_of`]).
-    helper_summaries:
-        parking_lot::Mutex<std::collections::HashMap<String, (String, endings::NoteSummary)>>,
-    /// The last note of an approval (`/permissions`) sent to each agent: a run it starts
-    /// is the user's ([`notes`]).
-    approval_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
+    /// What the daemon last sent each agent (a watch event, a note of a
+    /// helper's ending with its folded line, an approval's note): the run
+    /// it starts is attributed to it ([`sent`]).
+    sent: sent::SentNotes,
     /// The agents whose last run the user interrupted ([`endings`]).
     interrupted: endings::Interrupted,
     /// The notes of helpers' endings held for them ([`endings`]).
@@ -207,10 +198,7 @@ impl Agents {
     fn built(core: Arc<Core>, held: endings::HeldNotes) -> Arc<Self> {
         Arc::new(Self {
             core,
-            watch_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
-            helper_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
-            helper_summaries: parking_lot::Mutex::new(std::collections::HashMap::new()),
-            approval_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            sent: sent::SentNotes::default(),
             interrupted: endings::Interrupted::default(),
             held,
             table: parking_lot::Mutex::new(BTreeMap::new()),
@@ -1129,10 +1117,7 @@ impl Agents {
         self.table.lock().remove(name);
         self.core.activity.forget(name);
         self.core.watches.forget(name);
-        self.watch_sent.lock().remove(name);
-        self.helper_sent.lock().remove(name);
-        self.helper_summaries.lock().remove(name);
-        self.approval_sent.lock().remove(name);
+        self.sent.drop_agent(name);
         self.core.wires.forget(name);
         if let Some(session) = session {
             self.core.engine.forget_session(session);

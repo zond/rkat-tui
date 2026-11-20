@@ -963,9 +963,8 @@ impl Agents {
                     } else {
                         // The run it may start is announced with its
                         // folded line, made from the items.
-                        self.helper_summaries
-                            .lock()
-                            .insert(name.clone(), (text.clone(), summary_of(&items)));
+                        self.sent
+                            .record_summary(&name, text.clone(), summary_of(&items));
                         match self.steer_or_hold(&name, &session, text).await {
                             Ok(()) => format!("{name} was told"),
                             Err(reason) => {
