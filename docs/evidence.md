@@ -13836,3 +13836,71 @@ Tests: `daemon::comms_text::tests::*`;
 agent, a fresh helper, a fork and a member of a mob the agent created:
 no request names the four, every one still names `send_message` and
 `contacts` and carries the `contacts` tool).
+
+## A stop that met the engine's own retire (hosted CI on c7d4de7, 2026-11-20)
+
+**Seen**: `client_turns::an_interrupt_during_a_stalled_request_is_confirmed_while_a_fork_runs`
+failed once at the rig's stop with the error of "A stop that met a
+retire" above: `Shutdown(Store(RecoveryRepairBlocked { reason:
+"durability reload required after lifecycle_target_validation: stop
+durable persist target Stopped from live Stopped disagreed with generated
+lifecycle commit Retired" }))`. In the test a fork's first model call
+hangs for the whole test, so the daemon stops with the fork in its first
+run. c7d4de7 moved test accessors only; neither it nor c402f1b or 38738ae
+changes what happens at the stop.
+
+**Reproduction**: 0 of 40 runs alone, 0 of 15 rounds of `client_turns`,
+`forks` and `helper_endings` together (60 tests a round, 6 threads).
+Not reproduced; the cause is read from a log of a passing run and the
+engine's source.
+
+**What the engine does**: the log of a passing run (the rig's log dumped
+at the stop) shows, all inside `MobHandle::shutdown` of the agents' mob:
+"mob shutdown admitted", the teardown unregistering both sessions off the
+actor loop, the fork's run "suspended by a requeueing stop", and then
+"member retirement stage started … agent_identity=forky" through
+`retire-session-archive`, which the shutdown interrupts ("interrupting
+in-flight member retirement for shutdown"). The retire is the engine's
+fork supervisor (`meerkat-mob` `seat_and_start_detached_fork_child`: a
+`wait_bounded` that ends in an error calls `retire_failed_fork_child`),
+admitted after the shutdown was. No retire of ours is logged: ours are
+closed before the mobs stop (`Retirements::close`). The retire's archive
+step (`meerkat-runtime` `meerkat_machine/traits.rs`, retire through the
+archive lease) stages `Retire` on the session's shared lifecycle authority
+before it takes the driver's lock; the stop
+(`driver/persistent.rs` `finalize_runtime_executor_exit`) holds the
+driver's lock but reads that shared authority twice, once for its target
+and once for its commit. A retire staged between the two reads fails the
+check: the driver is marked "durability reload required", the stop is not
+written, the retire then fails on the same mark (`require_durability_ready`
+in `realize_retire_lifecycle`), and the runtime shutdown's later teardown
+of the fork's registration reports the mark. In the passing run the
+retire's archive came after the unregister; the window is the two reads.
+
+**What is left**: the stop's row is not written and the retire's is not
+either, so the realm holds what it holds for the passing run's
+interrupted retire (the mob's retirement durably started), which the next
+start finishes (`forks::a_fork_stopped_in_its_first_run_is_retired_and_its_parent_told`:
+the fork leaves the roster and the parent is told "finished (failed)").
+That is read from the source, not seen: the interleaving was not made
+here. A real daemon logged "session runtime shutdown was incomplete" and
+exited with status 1; nothing waits on that status (the client starts
+the daemon detached), so a user saw nothing but the log line.
+
+**Fix**: `daemon::past_the_engines_own_retire`: the runtime shutdown's
+refusal of exactly this kind (a `RuntimeDriverError::RecoveryRepairBlocked`
+whose reason is a `stop` target `Stopped` against a generated commit
+`Retired`) counts as a clean stop with a warning, and only when every
+retire of ours had settled before the mobs stopped (else the retire may
+be ours, the case of the entry above, and the refusal stands). Ordering
+it away on our side was not taken: the only way to keep the engine's
+retire out of the mobs' stop is to end the fork's first run before it
+and wait for the retire, which delivers the fork's outcome to its parent
+during the shutdown (a parent run woken at the stop, and the slow stop of
+lukacf/meerkat#2374). Upstream draft (not filed): the mob's shutdown
+admits the fork supervisor's retire, and the runtime's retire stages its
+lifecycle input outside the driver's lock that a stop holds.
+
+Tests: `daemon::tests::only_a_stop_that_met_the_engine_s_own_retire_counts_as_clean`
+(the known refusal counts only with our retires settled; another step,
+target or commit, or another error type, stands).

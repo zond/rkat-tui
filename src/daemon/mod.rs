@@ -838,7 +838,8 @@ impl Daemon {
         // No helper's retire meets its mob's stop: none starts from now on,
         // and the ones under way end first (`mobs::endings::Retirements`).
         // A helper left seated so is retired at the next start.
-        self.local
+        let ours_settled = self
+            .local
             .core()
             .registry
             .endings()
@@ -846,7 +847,7 @@ impl Daemon {
             .close(RETIRE_SETTLE)
             .await;
         stop_mobs(&self.state).await;
-        let shutdown = self.runtime.try_shutdown().await;
+        let shutdown = past_the_engines_own_retire(self.runtime.try_shutdown().await, ours_settled);
         connections.abort_all();
         while connections.join_next().await.is_some() {}
         if let Some(lease) = self.lease.take() {
@@ -1408,6 +1409,55 @@ async fn stop_mobs(state: &Arc<MobMcpState>) {
     }
 }
 
+/// The runtime's shutdown `result`, but for the one refusal a retire the
+/// engine starts itself inside the mobs' stop causes, which leaves nothing
+/// the next start does not finish (`docs/evidence.md`, "A stop that met the
+/// engine's own retire").
+///
+/// A fork still in its first run has that run suspended by its mob's
+/// shutdown; the engine's fork supervisor takes it for a failed run and
+/// retires the fork, while the same shutdown stops the fork's runtime. When
+/// the retire moves the member's lifecycle to `Retired` between the two
+/// reads of the stop's commit, the stop is refused ("`stop` durable persist
+/// target Stopped … disagreed with generated lifecycle commit Retired")
+/// and the member is marked for a reload; the retire then fails on that
+/// mark, so the mob's retirement record stays started and the next start
+/// finishes it, as it does for a retirement the shutdown interrupted.
+/// That refusal is logged and the stop counts as clean.
+///
+/// It counts only when `ours_settled` (every retire the daemon made had
+/// reached the engine before the mobs stopped, [`crate::mobs::endings::Retirements`]):
+/// else the retire may be ours, and the refusal stands.
+fn past_the_engines_own_retire(
+    result: Result<(), meerkat_core::SessionError>,
+    ours_settled: bool,
+) -> Result<(), meerkat_core::SessionError> {
+    let Err(err) = result else {
+        return Ok(());
+    };
+    let met_a_retire = ours_settled
+        && match &err {
+            meerkat_core::SessionError::Store(source) => matches!(
+                source.downcast_ref::<meerkat_runtime::RuntimeDriverError>(),
+                Some(meerkat_runtime::RuntimeDriverError::RecoveryRepairBlocked { reason, .. })
+                    if is_a_stop_that_met_a_retire(reason)
+            ),
+            _ => false,
+        };
+    if met_a_retire {
+        tracing::warn!(error = %err, "a member's stop met the engine's own retire of it; the next start finishes the retire");
+        return Ok(());
+    }
+    Err(err)
+}
+
+/// Whether `reason` is the engine's refusal of a member's stop whose
+/// lifecycle a retire moved to `Retired` mid-way.
+fn is_a_stop_that_met_a_retire(reason: &str) -> bool {
+    reason.contains("`lifecycle_target_validation`: stop durable persist target Stopped ")
+        && reason.ends_with("disagreed with generated lifecycle commit Retired")
+}
+
 /// Run the daemon in the foreground until SIGTERM or an interrupt.
 ///
 /// # Errors
@@ -1538,6 +1588,46 @@ fn init_logging(realm_root: &Path) {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// The runtime shutdown's refusal of a stop that met a retire, with
+    /// the engine's own wording.
+    fn refused(reason: &str) -> Result<(), meerkat_core::SessionError> {
+        Err(meerkat_core::SessionError::Store(Box::new(
+            meerkat_runtime::RuntimeDriverError::RecoveryRepairBlocked {
+                evidence_digest: None,
+                reason: reason.to_string(),
+            },
+        )))
+    }
+
+    const STOP_MET_RETIRE: &str = "durability reload required after `lifecycle_target_validation`: stop durable persist target Stopped from live Stopped disagreed with generated lifecycle commit Retired";
+
+    /// The refusal a retire of the engine's own causes in the mobs' stop
+    /// counts as a clean stop once every retire of ours had settled, and
+    /// only then: a retire of ours still under way, another lifecycle
+    /// target, another step or another error keeps the refusal.
+    #[test]
+    fn only_a_stop_that_met_the_engine_s_own_retire_counts_as_clean() {
+        assert!(past_the_engines_own_retire(Ok(()), true).is_ok());
+        assert!(past_the_engines_own_retire(Ok(()), false).is_ok());
+        assert!(past_the_engines_own_retire(refused(STOP_MET_RETIRE), true).is_ok());
+        // The retire may be ours.
+        assert!(past_the_engines_own_retire(refused(STOP_MET_RETIRE), false).is_err());
+        // Another step, another commit, another target.
+        for reason in [
+            "durability reload required after `lifecycle_target_validation`: retire durable persist target Retired from live Retired disagreed with generated lifecycle commit Stopped",
+            "durability reload required after `lifecycle_target_validation`: stop durable persist target Stopped from live Stopped disagreed with generated lifecycle commit Destroyed",
+            "durability reload required after `lifecycle_commit`: stop persist failed: disk I/O error",
+        ] {
+            assert!(
+                past_the_engines_own_retire(refused(reason), true).is_err(),
+                "{reason}"
+            );
+        }
+        let other =
+            meerkat_core::SessionError::Store(Box::new(std::io::Error::other(STOP_MET_RETIRE)));
+        assert!(past_the_engines_own_retire(Err(other), true).is_err());
+    }
 
     /// A database file this process holds open is listed, its lock files
     /// are not, and the settle waits for the close (the negative case: an

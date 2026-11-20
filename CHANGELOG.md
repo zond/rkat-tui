@@ -193,6 +193,16 @@
   after a pause. The first interrupt's late answer (or its timeout) was
   no longer counted as the turn's, so the turn waited for it forever. Every
   interrupt call of a turn now counts until it is answered.
+- A helper's ending, or a helper's run reaching its limit, reported while
+  the daemon was still starting was dropped instead of told; it is now
+  delivered once the daemon is up.
+- The daemon could exit with "session runtime shutdown was incomplete …
+  disagreed with generated lifecycle commit Retired" (exit status 1, in
+  the realm's log) when it stopped while a fork was still in its first
+  run: the engine retires such a fork itself during the stop, and that
+  retire could meet the stop of the same fork. The next start already
+  finished the retire; the stop now counts as clean and logs a warning
+  instead.
 
 ## [0.0.17] - 2026-11-19
 

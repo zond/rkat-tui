@@ -508,6 +508,19 @@ output now says why; report it rather than retrying silently:
   lowered-limit test read its result before its run ended), 0 of 20 with
   them. The original hang at the stop was read from the hosted log, not
   reproduced here.
+- `an_interrupt_during_a_stalled_request_is_confirmed_while_a_fork_runs`
+  (`tests/it/client_turns.rs`): failed once on hosted CI (c7d4de7) at the
+  rig's stop with the engine's "stop durable persist target Stopped …
+  disagreed with generated lifecycle commit Retired". The fork is still in
+  its first run at the stop, and the engine's fork supervisor retires it
+  inside the mobs' stop, racing the stop of the same fork in the engine.
+  The product's: the daemon exited with status 1. That refusal now counts
+  as a clean stop when no retire of ours was under way
+  (`daemon::past_the_engines_own_retire`, `docs/evidence.md`, "A stop
+  that met the engine's own retire"). 0 of 40 runs alone and 0 of 15
+  rounds with `client_turns`, `forks` and `helper_endings` did not
+  reproduce it; the cause is read from a passing run's log and the
+  engine's source. No timeout was raised.
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a
