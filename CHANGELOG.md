@@ -14,6 +14,16 @@
   and messages from other agents of the workspace or from `/wire` peers
   stay their own lines. The same in a helper's view and in a resumed
   conversation; nothing stored changes.
+- Two or more finished, successful calls of one tool in a row fold into
+  one line in the tool line's own style: `✓ read 5 files: a.rs, b.rs,
+  c.rs and 2 more ▸`, `✓ edit 2 files: a.rs, b.rs  +31 −7 ▸`, `✓ edit
+  PLAN.md ×3  +7 −3 ▸`, `✓ run cargo test ×3 ▸` (commands only when the
+  command is the same), `✓ find ×4: *.rs, *.md, *.toml and 1 more ▸`. A
+  failed, denied, waiting or running call is never folded and parts the
+  run, so a failure is always its own line; a call you opened stays its
+  own line. The run's line grows as calls finish, opens and folds by
+  click as the message runs do, and folds the same in a helper's view
+  and a resumed conversation.
 
 ## [0.0.18] - 2026-11-20
 

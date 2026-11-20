@@ -254,6 +254,30 @@ written, other arguments pretty-printed, after `┊`), the output (after
 `│`) or the diff, and a denial's whole reason (with how to approve
 it in `/permissions`). `/export` writes the same lines.
 
+Two or more finished, successful calls of one tool in a row, with
+nothing else drawn between them, show as one line in the same style:
+
+```
+✓ read 5 files: src/a.rs, src/b.rs, src/c.rs and 2 more ▸
+✓ edit 2 files: a.rs, b.rs  +31 −7 ▸
+✓ edit PLAN.md ×3  +7 −3 ▸
+✓ run cargo test ×3 ▸
+✓ find ×4: *.rs, *.md, *.toml and 1 more ▸
+```
+
+Reads, writes and edits count their files, the same call again is `×N`,
+any other tool shows its verb, the count and what the calls acted on,
+and edits sum their numbers. Commands fold only when the command is the
+same: each different command is its own line. A call that failed, was
+denied, waits for your approval or still runs is never in such a run
+and parts it, so a failure is always its own line; the running call
+shows below the run's line, which counts it in once it is done. A call
+you opened stays its own line. A click on the run's line opens it: the
+line (`▾`), then each call's own line, each opened by its own click; a
+click on the line folds them again, and Ctrl-O shows every call in full.
+A helper's view and a resumed conversation fold the same way, and
+`/export` still writes every call's line.
+
 **Scrolling.** At the bottom the transcript follows new output. Scrolled
 up (PgUp, Shift+↑, the wheel), what you are reading stays where it is
 on screen while output arrives: an answer streaming below, new blocks, a

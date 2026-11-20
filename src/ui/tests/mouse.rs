@@ -6,15 +6,16 @@ use super::*;
 fn a_click_toggles_one_call_and_ctrl_o_all_of_them() {
     let mut app = App::new(StatusInfo::default());
     app.transcript.push(user("look"));
-    for id in ["t1", "t2"] {
+    // Two tools: two calls of one would fold into a run's line.
+    for (id, name) in [("t1", "read_file"), ("t2", "glob")] {
         app.update(agent(AgentEvent::ToolCallRequested {
             id: id.into(),
-            name: "read_file".into(),
+            name: name.into(),
             args: test_args(json!({"path": "a.rs"})),
         }));
         app.update(agent(AgentEvent::ToolExecutionCompleted {
             id: id.into(),
-            name: "read_file".into(),
+            name: name.into(),
             is_error: false,
             duration_ms: 1,
         }));
@@ -97,23 +98,36 @@ fn a_click_toggles_one_call_and_ctrl_o_all_of_them() {
     assert!(!tool_collapsed(&app, t1), "and all open again");
 }
 
-/// Thirty read calls, each with a two-line result.
+/// The agent's finished call `t{i}` of `f{i}.rs` with `result`: a read
+/// (`read f{i}.rs`) for an even `i`, a search (`find f{i}.rs`) for an odd
+/// one, so no two calls in a row fold into one run's line.
+fn call_of(app: &mut App, i: usize, result: &str) {
+    let id = format!("t{i}");
+    let file = format!("f{i}.rs");
+    let (name, args) = if i.is_multiple_of(2) {
+        ("read_file", json!({ "path": file }))
+    } else {
+        ("glob", json!({ "pattern": file }))
+    };
+    app.update(agent(AgentEvent::ToolCallRequested {
+        id: id.clone(),
+        name: name.into(),
+        args: test_args(args),
+    }));
+    app.update(agent(AgentEvent::ToolExecutionCompleted {
+        id: id.clone(),
+        name: name.into(),
+        is_error: false,
+        duration_ms: 1,
+    }));
+    app.update(agent(test_tool_result(&id, result)));
+}
+
+/// Thirty calls, each with a two-line result.
 fn thirty_reads() -> App {
     let mut app = App::new(StatusInfo::default());
     for i in 0..30 {
-        let id = format!("t{i}");
-        app.update(agent(AgentEvent::ToolCallRequested {
-            id: id.clone(),
-            name: "read_file".into(),
-            args: test_args(json!({"path": format!("f{i}.rs")})),
-        }));
-        app.update(agent(AgentEvent::ToolExecutionCompleted {
-            id: id.clone(),
-            name: "read_file".into(),
-            is_error: false,
-            duration_ms: 1,
-        }));
-        app.update(agent(test_tool_result(&id, "     1\tx\n     2\ty\n")));
+        call_of(&mut app, i, "     1\tx\n     2\ty\n");
     }
     app
 }
@@ -332,19 +346,7 @@ fn the_last_message_above_the_view_is_pinned_on_the_top_row() {
     );
     app.update(key(KeyCode::Enter));
     for i in 0..30 {
-        let id = format!("t{i}");
-        app.update(agent(AgentEvent::ToolCallRequested {
-            id: id.clone(),
-            name: "read_file".into(),
-            args: test_args(json!({"path": format!("f{i}.rs")})),
-        }));
-        app.update(agent(AgentEvent::ToolExecutionCompleted {
-            id: id.clone(),
-            name: "read_file".into(),
-            is_error: false,
-            duration_ms: 1,
-        }));
-        app.update(agent(test_tool_result(&id, "     1\tx\n")));
+        call_of(&mut app, i, "     1\tx\n");
     }
     let rows = transcript_rows(&mut app);
     assert_eq!(
@@ -385,19 +387,7 @@ fn the_last_message_above_the_view_is_pinned_on_the_top_row() {
 /// Read calls enough to push the start of the transcript off the view.
 fn many_calls(app: &mut App, from: usize) {
     for i in from..from + 15 {
-        let id = format!("t{i}");
-        app.update(agent(AgentEvent::ToolCallRequested {
-            id: id.clone(),
-            name: "read_file".into(),
-            args: test_args(json!({"path": format!("f{i}.rs")})),
-        }));
-        app.update(agent(AgentEvent::ToolExecutionCompleted {
-            id: id.clone(),
-            name: "read_file".into(),
-            is_error: false,
-            duration_ms: 1,
-        }));
-        app.update(agent(test_tool_result(&id, "     1\tx\n")));
+        call_of(app, i, "     1\tx\n");
     }
 }
 
@@ -701,15 +691,32 @@ fn a_middle_click_with_nothing_copied_says_so_and_folds_nothing() {
     assert_eq!(app.input.text(), "");
 }
 
-/// `fork-1`'s finished call `id` (a `read_file` of `id`, its output two
-/// lines), folded as every call comes.
+/// `fork-1`'s finished call `id` (`f<n>`: a `read_file` of `id` for an
+/// even `n`, a `glob` of it for an odd one, so no two in a row fold into
+/// one run's line; its output two lines), folded as every call comes.
 fn fork_call_done(app: &mut App, id: &str) {
-    app.update(fork_call(id));
+    let odd = id
+        .trim_start_matches('f')
+        .parse::<usize>()
+        .is_ok_and(|n| n % 2 == 1);
+    let name = if odd { "glob" } else { "read_file" };
+    if odd {
+        app.update(helper_msg(
+            "fork-1",
+            AgentEvent::ToolCallRequested {
+                id: id.into(),
+                name: name.into(),
+                args: test_args(json!({"pattern": id, "path": id})),
+            },
+        ));
+    } else {
+        app.update(fork_call(id));
+    }
     app.update(helper_msg(
         "fork-1",
         AgentEvent::ToolExecutionCompleted {
             id: id.into(),
-            name: "read_file".into(),
+            name: name.into(),
             is_error: false,
             duration_ms: 1,
         },
@@ -741,7 +748,8 @@ fn view_app(calls: usize) -> (App, BlockId) {
     (app, fork)
 }
 
-/// The screen row showing the call of `id` (`read <id>`, whole).
+/// The screen row showing the call of `id` (`read <id>` or `find <id>`,
+/// whole).
 fn row_of(rows: &[String], id: &str) -> u16 {
     u16::try_from(
         rows.iter()
@@ -755,7 +763,7 @@ fn row_of(rows: &[String], id: &str) -> u16 {
 fn shown_calls(rows: &[String]) -> Vec<String> {
     rows.iter()
         .filter_map(|r| {
-            let at = r.find("read f")?;
+            let at = r.find("read f").or_else(|| r.find("find f"))?;
             r[at + 5..].split_whitespace().next().map(str::to_string)
         })
         .collect()
@@ -820,7 +828,7 @@ fn a_drag_in_a_helper_s_view_copies_the_view_s_text() {
     app.update(up(to, 40));
     let copied = app.take_clipboard_text().unwrap();
     assert!(
-        copied.contains("read f0") && copied.contains("read f1"),
+        copied.contains("read f0") && copied.contains("find f1"),
         "{copied:?}"
     );
     assert!(

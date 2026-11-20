@@ -361,3 +361,288 @@ fn a_helper_s_view_folds_the_messages_of_its_helpers() {
     click_on(&mut app, "✉ [scout · m] 2 messages");
     assert_eq!(mail_rows(&mut app).len(), 2);
 }
+
+/// The agent's call `id` of `name` with `args`, started; finished
+/// (`Some(ok)`) or still running (`None`).
+fn call(app: &mut App, id: &str, name: &str, args: serde_json::Value, done: Option<bool>) {
+    app.update(agent(AgentEvent::ToolCallRequested {
+        id: id.into(),
+        name: name.into(),
+        args: test_args(args),
+    }));
+    app.update(agent(AgentEvent::ToolExecutionStarted {
+        id: id.into(),
+        name: name.into(),
+    }));
+    if let Some(ok) = done {
+        app.update(agent(AgentEvent::ToolExecutionCompleted {
+            id: id.into(),
+            name: name.into(),
+            is_error: !ok,
+            duration_ms: 1,
+        }));
+    }
+}
+
+/// A finished edit of `path` whose diff adds `added` and removes
+/// `removed` lines.
+fn edit(app: &mut App, id: &str, path: &str, added: usize, removed: usize) {
+    call(app, id, "edit_file", json!({ "path": path }), Some(true));
+    assert!(app.transcript.attach_diff(
+        id,
+        crate::ui::transcript::DiffView {
+            path: path.into(),
+            unified: String::new(),
+            added,
+            removed,
+        }
+    ));
+}
+
+/// The tool lines of the screen (`✓ ✗ ◐ ○`).
+fn tool_rows(app: &mut App) -> Vec<String> {
+    screen(app, 40)
+        .into_iter()
+        .filter(|row| row.trim_start().starts_with(['✓', '✗', '◐', '○']))
+        .collect()
+}
+
+/// Finished calls of one tool in a row are one line, worded from their
+/// own lines: reads count the files, edits sum their numbers, the same
+/// edit or command again is `×N`, any other tool its verb `×N` and what
+/// each call acted on.
+#[test]
+fn a_run_of_one_tool_s_calls_draws_as_one_line() {
+    let mut app = app_with(&[]);
+    for i in 0..5 {
+        call(
+            &mut app,
+            &format!("r{i}"),
+            "read_file",
+            json!({"path": format!("f{i}.rs")}),
+            Some(true),
+        );
+    }
+    assert_eq!(
+        tool_rows(&mut app),
+        ["✓ read 5 files: f0.rs, f1.rs, f2.rs and 2 more ▸"]
+    );
+
+    let mut app = app_with(&[]);
+    edit(&mut app, "e1", "a.rs", 20, 4);
+    edit(&mut app, "e2", "b.rs", 11, 3);
+    assert_eq!(
+        tool_rows(&mut app),
+        ["✓ edit 2 files: a.rs, b.rs  +31 −7 ▸"]
+    );
+
+    let mut app = app_with(&[]);
+    for (i, (added, removed)) in [(3, 1), (2, 2), (2, 0)].into_iter().enumerate() {
+        edit(&mut app, &format!("e{i}"), "PLAN.md", added, removed);
+    }
+    assert_eq!(tool_rows(&mut app), ["✓ edit PLAN.md ×3  +7 −3 ▸"]);
+
+    let mut app = app_with(&[]);
+    for i in 0..3 {
+        call(
+            &mut app,
+            &format!("s{i}"),
+            "shell",
+            json!({"command": "cargo test"}),
+            Some(true),
+        );
+    }
+    assert_eq!(tool_rows(&mut app), ["✓ run cargo test ×3 ▸"]);
+
+    let mut app = app_with(&[]);
+    for (i, pattern) in ["*.rs", "*.md", "*.toml", "*.lock"].into_iter().enumerate() {
+        call(
+            &mut app,
+            &format!("g{i}"),
+            "glob",
+            json!({ "pattern": pattern }),
+            Some(true),
+        );
+    }
+    assert_eq!(
+        tool_rows(&mut app),
+        ["✓ find ×4: *.rs, *.md, *.toml and 1 more ▸"]
+    );
+    // One call per block still.
+    let calls = app
+        .transcript
+        .iter()
+        .filter(|(_, block)| matches!(block, Block::Tool { .. }))
+        .count();
+    assert_eq!(calls, 4);
+}
+
+/// Shell calls fold only with the same command: each other command is
+/// its own line.
+#[test]
+fn shell_calls_with_different_commands_do_not_fold() {
+    let mut app = app_with(&[]);
+    for (i, command) in ["cargo build", "cargo test", "cargo test", "git status"]
+        .into_iter()
+        .enumerate()
+    {
+        call(
+            &mut app,
+            &format!("s{i}"),
+            "shell",
+            json!({ "command": command }),
+            Some(true),
+        );
+    }
+    assert_eq!(
+        tool_rows(&mut app),
+        [
+            "✓ run cargo build ▸",
+            "✓ run cargo test ×2 ▸",
+            "✓ run git status ▸",
+        ]
+    );
+}
+
+/// A failed call is its own line and parts a run; a call still running
+/// stays visible below the run's line, which grows in place as calls
+/// finish; a call the user opened is not folded.
+#[test]
+fn a_failure_parts_a_run_and_a_running_call_stays_below_it() {
+    let read = |i: usize| json!({ "path": format!("f{i}.rs") });
+    let mut app = app_with(&[]);
+    call(&mut app, "r0", "read_file", read(0), Some(true));
+    call(&mut app, "r1", "read_file", read(1), Some(true));
+    call(&mut app, "r2", "read_file", read(2), Some(false));
+    call(&mut app, "r3", "read_file", read(3), Some(true));
+    let rows = tool_rows(&mut app);
+    assert_eq!(rows[0], "✓ read 2 files: f0.rs, f1.rs ▸", "{rows:#?}");
+    assert!(rows[1].starts_with("✗ read f2.rs"), "{rows:#?}");
+    assert!(rows[2].starts_with("✓ read f3.rs"), "{rows:#?}");
+    assert_eq!(rows.len(), 3, "{rows:#?}");
+
+    let mut app = app_with(&[]);
+    call(&mut app, "r0", "read_file", read(0), Some(true));
+    call(&mut app, "r1", "read_file", read(1), Some(true));
+    call(&mut app, "r2", "read_file", read(2), None);
+    let rows = tool_rows(&mut app);
+    assert_eq!(rows[0], "✓ read 2 files: f0.rs, f1.rs ▸", "{rows:#?}");
+    assert!(rows[1].starts_with("◐ read f2.rs"), "{rows:#?}");
+    app.update(agent(AgentEvent::ToolExecutionCompleted {
+        id: "r2".into(),
+        name: "read_file".into(),
+        is_error: false,
+        duration_ms: 1,
+    }));
+    assert_eq!(
+        tool_rows(&mut app),
+        ["✓ read 3 files: f0.rs, f1.rs, f2.rs ▸"]
+    );
+
+    // Opened by the user before the next call came: it stays its line.
+    let mut app = app_with(&[]);
+    call(&mut app, "r0", "read_file", read(0), Some(true));
+    click_on(&mut app, "✓ read f0.rs");
+    call(&mut app, "r1", "read_file", read(1), Some(true));
+    call(&mut app, "r2", "read_file", read(2), Some(true));
+    let rows = tool_rows(&mut app);
+    assert_eq!(
+        rows,
+        ["✓ read f0.rs ▾", "✓ read 2 files: f1.rs, f2.rs ▸"],
+        "{rows:#?}"
+    );
+}
+
+/// A click on a run of calls opens it into the calls' own lines, each
+/// opened by its own click; a click on its line folds it; Ctrl-O shows
+/// every call in full and folds them back. A resumed conversation's
+/// calls fold the same way, and so do a helper's calls in its view.
+#[test]
+fn a_run_of_calls_opens_and_folds_live_restored_and_in_a_helper_s_view() {
+    let mut app = app_with(&[]);
+    for i in 0..3 {
+        call(
+            &mut app,
+            &format!("r{i}"),
+            "read_file",
+            json!({"path": format!("f{i}.rs")}),
+            Some(true),
+        );
+        app.update(agent(test_tool_result(
+            &format!("r{i}"),
+            &format!("body {i}"),
+        )));
+    }
+    let folded = tool_rows(&mut app);
+    assert_eq!(folded.len(), 1, "{folded:#?}");
+    assert!(
+        folded[0].starts_with("✓ read 3 files: f0.rs, f1.rs, f2.rs"),
+        "{folded:#?}"
+    );
+    click_on(&mut app, "✓ read 3 files");
+    let open = tool_rows(&mut app);
+    assert_eq!(open.len(), 4, "{open:#?}");
+    assert!(
+        open[0].ends_with('▾') && open[1].starts_with("✓ read f0.rs"),
+        "{open:#?}"
+    );
+    click_on(&mut app, "✓ read f1.rs");
+    assert!(screen(&mut app, 40).iter().any(|r| r.contains("body 1")));
+    click_on(&mut app, "✓ read f1.rs");
+    click_on(&mut app, "✓ read 3 files");
+    assert_eq!(tool_rows(&mut app), folded);
+    app.update(ctrl('o'));
+    assert_eq!(tool_rows(&mut app).len(), 3);
+    app.update(ctrl('o'));
+    assert_eq!(tool_rows(&mut app), folded);
+
+    // Restored.
+    use meerkat_core::{BlockAssistantMessage, Message, StopReason, types::AssistantBlock};
+    let read = |id: &str, path: &str| AssistantBlock::ToolUse {
+        id: id.into(),
+        name: "read_file".into(),
+        args: serde_json::value::RawValue::from_string(format!(r#"{{"path":"{path}"}}"#)).unwrap(),
+        meta: None,
+    };
+    let messages = [Message::BlockAssistant(BlockAssistantMessage::new(
+        vec![read("c1", "a.rs"), read("c2", "b.rs")],
+        StopReason::ToolUse,
+    ))];
+    let mut app = App::new(StatusInfo::default());
+    app.transcript
+        .reset(crate::ui::transcript::blocks_from_messages(&messages));
+    assert_eq!(tool_rows(&mut app), ["✓ read 2 files: a.rs, b.rs ▸"]);
+    click_on(&mut app, "✓ read 2 files");
+    assert_eq!(tool_rows(&mut app).len(), 3);
+
+    // A helper's view: its calls fold as its lines.
+    let (mut app, _, fork) = helper_app();
+    for i in 1..4 {
+        let id = format!("f{i}");
+        app.update(fork_call(&id));
+        app.update(helper_msg(
+            "fork-1",
+            AgentEvent::ToolExecutionCompleted {
+                id: id.clone(),
+                name: "read_file".into(),
+                is_error: false,
+                duration_ms: 1,
+            },
+        ));
+    }
+    app.update(ctrl_key(KeyCode::Down));
+    app.update(key(KeyCode::Enter));
+    assert_eq!(app.helper_view(), Some(fork));
+    let rows = tool_rows(&mut app);
+    assert!(
+        rows.contains(&"  ✓ [fork-1 · m] read 3 files: f1, f2, f3 ▸".to_string()),
+        "{rows:#?}"
+    );
+    click_on(&mut app, "✓ [fork-1 · m] read 3 files");
+    let rows = tool_rows(&mut app);
+    assert!(
+        rows.contains(&"  ✓ [fork-1 · m] read 3 files: f1, f2, f3 ▾".to_string())
+            && rows.iter().any(|r| r.contains("read f2")),
+        "{rows:#?}"
+    );
+}

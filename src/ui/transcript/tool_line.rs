@@ -699,7 +699,7 @@ fn json_count(result: &str) -> Option<usize> {
 }
 
 /// The tool's own name, without a helper's tag (`[scout · m] glob`).
-fn base(name: &str) -> &str {
+pub(super) fn base(name: &str) -> &str {
     name.rsplit(' ').next().unwrap_or(name)
 }
 

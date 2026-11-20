@@ -11,7 +11,13 @@
 //!   started it, the daemon's seated list), folded to its line, of the
 //!   same scope (the agent's, or the helper that received it). A message
 //!   from another agent of the workspace or from an agent wired with
-//!   `/wire` stays its own line and parts a run.
+//!   `/wire` stays its own line and parts a run;
+//! - a finished, successful call of one tool of one scope, folded to its
+//!   line (`✓ read 5 files: a.rs, b.rs, c.rs and 2 more ▸`): a call that
+//!   failed, was denied, waits for approval or still runs is its own line
+//!   and parts a run, and so does one the user opened. Shell calls join
+//!   only with the same command line (each other command is what the
+//!   user wants to see).
 //!
 //! The run draws as one line in the style of its blocks' own line,
 //! folded (`▸`); a click on it opens it: the line, `▾`, then each block's
@@ -26,7 +32,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::{Block, BlockId, Transcript};
+use super::{Block, BlockId, ToolState, Transcript, tool_line};
 use crate::ui::markdown::{display_width, sanitize, truncate_to_width};
 use crate::ui::render::block_lines;
 
@@ -77,6 +83,16 @@ pub(crate) enum RunLine {
         /// The latest message, on one line.
         latest: String,
     },
+    /// Finished calls of one tool.
+    Tools {
+        /// The indent depth (a helper's calls: its depth).
+        depth: usize,
+        /// What the calls did (`read 5 files: a.rs, b.rs, c.rs and 2
+        /// more`, `run cargo test ×3`).
+        text: String,
+        /// Their diffs' summed numbers (`+31 −7`), when every call has one.
+        numbers: Option<String>,
+    },
 }
 
 /// Which blocks join one run: blocks of equal keys next to each other.
@@ -87,7 +103,21 @@ enum RunKey {
         owner: Option<BlockId>,
         to: Option<String>,
     },
+    /// Finished calls of one tool (its name with a helper's tag), of one
+    /// scope; a shell call's with its command line.
+    Tools {
+        owner: Option<BlockId>,
+        name: String,
+        command: Option<String>,
+    },
 }
+
+/// The tools whose calls act on one file each: a run of them counts the
+/// files.
+const FILE_TOOLS: &[&str] = &["read_file", "edit_file", "write_file"];
+
+/// The shell tool: its calls join a run only with the same command.
+const SHELL_TOOL: &str = "shell";
 
 impl Transcript {
     /// The key of the block at `index`, when it may join a run.
@@ -106,11 +136,31 @@ impl Transcript {
                     to: to.as_ref().map(|to| to.tag.clone()),
                 })
             }
+            Block::Tool {
+                name,
+                args,
+                outcome,
+                state: ToolState::Done {
+                    is_error: false, ..
+                },
+                collapsed,
+                ..
+            } if (*collapsed || open) && !outcome.failed => Some(RunKey::Tools {
+                owner: entry.owner,
+                name: name.clone(),
+                command: (tool_line::base(name) == SHELL_TOOL).then(|| {
+                    args.get("command")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string()
+                }),
+            }),
             _ => None,
         }
     }
 
-    /// Whether the block at `index` draws nothing (so parts no run).
+    /// Whether the block at `index` draws nothing (it parts no run).
     fn draws_nothing(&self, index: usize) -> bool {
         matches!(
             self.entries.get(index).map(|entry| &entry.block),
@@ -165,6 +215,13 @@ impl Transcript {
 
     /// The line of the run of the blocks at `indices`.
     fn run_line(&self, indices: &[usize]) -> RunLine {
+        let blocks: Vec<&Block> = indices
+            .iter()
+            .filter_map(|index| self.entries.get(*index).map(|entry| &entry.block))
+            .collect();
+        if let Some(Block::Tool { .. }) = blocks.first() {
+            return tools_line(&blocks);
+        }
         let mut senders: Vec<String> = Vec::new();
         let mut latest = String::new();
         let mut depth = 0;
@@ -270,6 +327,68 @@ pub(super) fn role_lines(block: &Block, role: &RunRole, width: u16) -> Vec<Line<
     }
 }
 
+/// The line of a run of finished calls of one tool, worded from their
+/// own lines' heads: one head made by all of them is that head `×N`
+/// (`run cargo test ×3`, `edit PLAN.md ×3`); calls of a file tool count
+/// the files (`read 5 files: a.rs, b.rs, c.rs and 2 more`, `×N` when
+/// some file was read twice); any other tool's are its verb `×N` and
+/// the objects. The diffs' numbers are summed when every call has one.
+fn tools_line(blocks: &[&Block]) -> RunLine {
+    let mut heads: Vec<&tool_line::Head> = Vec::new();
+    let mut name = "";
+    let mut depth = 0;
+    let (mut added, mut removed, mut diffs) = (0, 0, 0);
+    for block in blocks {
+        if let Block::Tool {
+            name: tool,
+            head,
+            diff,
+            depth: at,
+            ..
+        } = block
+        {
+            heads.push(head);
+            name = tool;
+            depth = *at;
+            if let Some(diff) = diff {
+                added += diff.added;
+                removed += diff.removed;
+                diffs += 1;
+            }
+        }
+    }
+    let count = heads.len();
+    let verb = heads.first().map_or("", |head| head.verb.as_str());
+    let mut objects: Vec<String> = Vec::new();
+    for head in &heads {
+        if !head.object.is_empty() && !objects.contains(&head.object) {
+            objects.push(head.object.clone());
+        }
+    }
+    let same = heads.windows(2).all(|pair| pair[0] == pair[1]);
+    let text = if same {
+        let head = heads.first().map(|head| head.text()).unwrap_or_default();
+        format!("{head} ×{count}")
+    } else if FILE_TOOLS.contains(&tool_line::base(name)) {
+        let files = crate::text::count(objects.len(), "file");
+        let times = if objects.len() < count {
+            format!(" ×{count}")
+        } else {
+            String::new()
+        };
+        format!("{verb} {files}{times}: {}", names(&objects))
+    } else if objects.is_empty() {
+        format!("{verb} ×{count}")
+    } else {
+        format!("{verb} ×{count}: {}", names(&objects))
+    };
+    RunLine::Tools {
+        depth,
+        text,
+        numbers: (diffs == count).then(|| format!("+{added} −{removed}")),
+    }
+}
+
 /// `a, b, c and 2 more`.
 fn names(all: &[String]) -> String {
     let shown: Vec<&str> = all.iter().take(MAX_RUN_NAMES).map(String::as_str).collect();
@@ -317,6 +436,29 @@ fn run_line(line: &RunLine, open: bool, w: usize) -> Line<'static> {
                 ));
             }
             spans.push(Span::styled(" ▸", dim));
+            Line::from(spans)
+        }
+        RunLine::Tools {
+            depth,
+            text,
+            numbers,
+        } => {
+            // As a finished call's own line: the marker and the head in
+            // its colour, the numbers plain, the fold marker dim.
+            let lead = format!("{}{} ", "  ".repeat(*depth), tool_line::Mark::Done.glyph());
+            let numbers = numbers.as_ref().map(|n| format!("  {n}"));
+            let fixed = display_width(&lead) + numbers.as_ref().map_or(0, |n| display_width(n)) + 2;
+            let text = truncate_to_width(&sanitize(text), w.saturating_sub(fixed).max(1));
+            let mut spans = vec![Span::styled(
+                format!("{lead}{text}"),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            if let Some(numbers) = numbers {
+                spans.push(Span::raw(numbers));
+            }
+            spans.push(Span::styled(if open { " ▾" } else { " ▸" }, dim));
             Line::from(spans)
         }
     }
