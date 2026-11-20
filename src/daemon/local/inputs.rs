@@ -10,8 +10,9 @@ impl Local {
         &self,
         caller: &Caller,
         inputs: &[meerkat_core::lifecycle::InputId],
+        held_only: bool,
     ) -> Result<protocol::Recalled, Refusal> {
-        let recalled = self.take_back(caller, inputs).await;
+        let recalled = self.take_back(caller, inputs, held_only).await;
         if let Some(agent) = &caller.agent {
             self.core.activity.changed(agent, false);
         }
@@ -34,11 +35,13 @@ impl Local {
     /// taken back from the hold, at no cost; one it sent with others is
     /// recalled as the input they went as, only when all of them are
     /// named (else it counts as reached). A message in flight that is
-    /// taken back lets the held ones go.
+    /// taken back lets the held ones go. With `held_only` nothing is
+    /// recalled from the engine: what is no longer held is reached.
     async fn take_back(
         &self,
         caller: &Caller,
         inputs: &[meerkat_core::lifecycle::InputId],
+        held_only: bool,
     ) -> Result<protocol::Recalled, Refusal> {
         let session = self.caller_session(caller, "rkat/recall takes back")?;
         let agent = caller.agent.clone().unwrap_or_default();
@@ -48,6 +51,13 @@ impl Local {
             reached,
             ..protocol::Recalled::default()
         };
+        if held_only {
+            answer.reached.extend(taken.other);
+            answer
+                .reached
+                .extend(taken.sent.into_iter().flat_map(|(_, named)| named));
+            return Ok(answer);
+        }
         let engine_inputs = taken
             .other
             .into_iter()

@@ -306,7 +306,10 @@ impl Runner {
         let reports = self.reporter();
         let input_ids = self.steering.steers.outstanding_inputs();
         tokio::spawn(async move {
-            let params = protocol::RecallParams { input_ids };
+            let params = protocol::RecallParams {
+                input_ids,
+                held_only: false,
+            };
             let result = bounded(
                 CALL_TIMEOUT,
                 remote::call::<protocol::method::Recall>(&connection, &params),
@@ -315,6 +318,65 @@ impl Runner {
             .map_err(|err| err.to_string());
             reports.send(Report::Recalled(result));
         });
+    }
+
+    /// ↑ with a message the daemon holds behind the one in flight: take
+    /// that one back, and only while it is still held (`held_only`: one
+    /// the daemon sent meanwhile is not recalled from the engine, which
+    /// would cost it its request); answered with [`Msg::HeldTakenBack`].
+    pub(super) fn recall_held(&mut self, id: PendingId) {
+        let input = self
+            .steering
+            .steers
+            .outstanding()
+            .into_iter()
+            .find(|(steer, _)| *steer == id)
+            .map(|(_, input)| input);
+        let (Some(input), Some(connection)) = (input, self.connection()) else {
+            let errors = if self.connection().is_none() {
+                vec![self.unattached()]
+            } else {
+                Vec::new()
+            };
+            self.send(Msg::HeldTakenBack {
+                id,
+                taken: false,
+                errors,
+            });
+            return;
+        };
+        let reports = self.reporter();
+        tokio::spawn(async move {
+            let params = protocol::RecallParams {
+                input_ids: vec![input.clone()],
+                held_only: true,
+            };
+            let result = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Recall>(&connection, &params),
+            )
+            .await
+            .map_err(|err| err.to_string());
+            reports.send(Report::HeldRecalled { id, input, result });
+        });
+    }
+
+    /// The daemon's answer to [`Self::recall_held`].
+    pub(super) fn held_recalled(
+        &mut self,
+        id: PendingId,
+        input: &meerkat_core::lifecycle::InputId,
+        result: Result<protocol::Recalled, String>,
+    ) {
+        let (taken, errors) = match result {
+            Ok(answer) => (answer.recalled.contains(input), answer.errors),
+            Err(why) => (false, vec![why]),
+        };
+        if taken {
+            self.steering.steers.recalled(std::slice::from_ref(input));
+            self.steering.admitted.retain(|admitted| *admitted != id);
+        }
+        self.send(Msg::HeldTakenBack { id, taken, errors });
     }
 
     /// The daemon's answer to [`Self::recall`]: the steers it took back
@@ -989,7 +1051,10 @@ impl Runner {
         let reports = self.reporter();
         let input_ids = self.steering.steers.outstanding_inputs();
         tokio::spawn(async move {
-            let params = protocol::RecallParams { input_ids };
+            let params = protocol::RecallParams {
+                input_ids,
+                held_only: false,
+            };
             let result = bounded(
                 CALL_TIMEOUT,
                 remote::call::<protocol::method::Inputs>(&connection, &params),

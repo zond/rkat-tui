@@ -14094,3 +14094,17 @@ Tests: `daemon::activity::steers::tests::*`,
 `held_steers::held_messages_outlive_their_client_s_detach`,
 `held_steers::held_messages_come_back_when_the_daemon_stops`, the render
 rows in `render.rs`.
+
+Taking held messages back (step 2 of the same change): ↑ on an empty
+editor takes back the newest held message first, one per press
+(`Effect::RecallHeld`, `rkat/recall` with `held_only`: a message the
+daemon sent meanwhile is answered as reached and never recalled from the
+engine, which would leave its request empty, "A recalled steer's slot").
+Only with nothing held does ↑ take back the one in flight, as before. An
+edited message sent again is a new message, held at the end. Tests:
+`ui::tests::turns::up_takes_back_the_held_messages_first_newest_first`
+(fails with the held-first branch removed: ↑ asked `RecallQueued`),
+`held_steers::a_held_message_taken_back_and_sent_again_is_held_at_the_end`
+(the held two after the take-back ride request 2 as `BACK-TWO`,
+`EDITED-THREE`; the taken-back text reaches no request),
+`held_steers::the_one_in_flight_is_taken_back_only_once_nothing_is_held`.

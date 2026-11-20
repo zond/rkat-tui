@@ -427,6 +427,112 @@ async fn held_messages_come_back_when_the_daemon_stops() {
     client.quit().await;
 }
 
+/// ↑ takes back a held message for free: it leaves the hold, the one in
+/// flight is untouched; edited and sent again it is held again at the
+/// end, and goes with the other held one, in that order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_held_message_taken_back_and_sent_again_is_held_at_the_end() {
+    let ws = Workspace::new();
+    let first = Arc::new(Notify::new());
+    let second = Arc::new(Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Gated(Arc::clone(&first), Box::new(contacts("c0"))),
+        Step::Gated(Arc::clone(&second), Box::new(contacts("c1"))),
+        contacts("c2"),
+        Step::Text("done"),
+    ]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    let agent = rig.agent().await;
+    let local = rig.daemon.local();
+    rig.send(Effect::StartTurn("go".into()));
+    llm.wait_call(0).await;
+    typed(&mut rig, 1, "BACK-ONE").await;
+    typed(&mut rig, 2, "BACK-TWO").await;
+    typed(&mut rig, 3, "BACK-THREE").await;
+    rig.send(Effect::RecallHeld(PendingId(3)));
+    rig.saw(|msg| {
+        matches!(msg, Msg::HeldTakenBack { id: PendingId(3), taken: true, errors } if errors.is_empty())
+    })
+    .await;
+    assert_eq!(
+        local.held_user_for_test(&agent),
+        vec!["BACK-TWO".to_string()]
+    );
+    typed(&mut rig, 4, "EDITED-THREE").await;
+    rig.saw(|msg| matches!(msg, Msg::SteerHeld(PendingId(4))))
+        .await;
+    assert_eq!(
+        local.held_user_for_test(&agent),
+        vec!["BACK-TWO".to_string(), "EDITED-THREE".to_string()]
+    );
+    first.notify_one();
+    llm.wait_call(1).await;
+    assert_eq!(added(&llm, 1), vec!["BACK-ONE".to_string()]);
+    rig.saw(|msg| matches!(msg, Msg::SteerReleased(ids) if *ids == [PendingId(2), PendingId(4)]))
+        .await;
+    second.notify_one();
+    llm.wait_call(2).await;
+    assert_eq!(added(&llm, 2), vec!["BACK-TWO\n\nEDITED-THREE".to_string()]);
+    let outcome = rig.turn_finished().await;
+    assert_eq!(outcome.expect("turn succeeds").text, "done");
+    assert!(
+        !llm.requests()
+            .iter()
+            .any(|messages| format!("{messages:?}").contains("BACK-THREE")),
+        "the message taken back reached the model"
+    );
+    rig.quit().await;
+}
+
+/// With nothing held, ↑ takes back the one in flight from the engine, as
+/// before; a held one taken back first leaves it alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_one_in_flight_is_taken_back_only_once_nothing_is_held() {
+    let ws = Workspace::new();
+    let first = Arc::new(Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Gated(Arc::clone(&first), Box::new(contacts("c0"))),
+        contacts("c1"),
+        Step::Text("done"),
+    ]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    rig.send(Effect::StartTurn("go".into()));
+    llm.wait_call(0).await;
+    typed(&mut rig, 1, "LAST-ONE").await;
+    typed(&mut rig, 2, "LAST-TWO").await;
+    rig.send(Effect::RecallHeld(PendingId(2)));
+    rig.saw(|msg| {
+        matches!(
+            msg,
+            Msg::HeldTakenBack {
+                id: PendingId(2),
+                taken: true,
+                ..
+            }
+        )
+    })
+    .await;
+    assert!(
+        !rig.seen
+            .iter()
+            .any(|msg| matches!(msg, Msg::Recalled { .. })),
+        "the one in flight is untouched"
+    );
+    rig.send(Effect::RecallQueued);
+    rig.saw(|msg| matches!(msg, Msg::Recalled { recalled, .. } if *recalled == [PendingId(1)]))
+        .await;
+    first.notify_one();
+    let outcome = rig.turn_finished().await;
+    assert_eq!(outcome.expect("turn succeeds").text, "done");
+    assert!(
+        !llm.requests()
+            .iter()
+            .any(|messages| format!("{messages:?}").contains("LAST-")),
+        "a message taken back reached the model"
+    );
+    rig.quit().await;
+}
+
 /// Three messages typed while request 0 is in flight: the first rides
 /// request 1; the second and third are held in the daemon (each told so)
 /// and ride request 2 together, in order, as one user message, sent once

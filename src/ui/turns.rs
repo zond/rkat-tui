@@ -473,16 +473,47 @@ impl App {
     /// take them back (the answer also brings back the held ones, so the
     /// editor keeps their order); otherwise pull back the newest held one.
     /// While a recall is on its way, wait for it.
+    ///
+    /// A message the daemon holds behind the one in flight comes back
+    /// first, newest first, one per press, for free
+    /// ([`Effect::RecallHeld`]); the one in flight is taken back only when
+    /// none is held (which costs it its model request).
     pub(super) fn take_back_queued(&mut self, fx: &mut Vec<Effect>) {
         if self.delivery.recalling() {
             return;
         }
-        if self.has_admitted_recallable() {
+        if let Some(id) = self.pending.newest_held().map(|p| p.id) {
+            self.delivery.ask_recall();
+            fx.push(Effect::RecallHeld(id));
+        } else if self.has_admitted_recallable() {
             self.delivery.ask_recall();
             fx.push(Effect::RecallQueued);
         } else {
             self.recall_newest();
         }
+    }
+
+    /// [`Msg::HeldTakenBack`](crate::ui::Msg::HeldTakenBack): a held
+    /// message the daemon gave back goes to the editor alone; one it had
+    /// sent meanwhile stays (the next ↑ takes back what is still waiting).
+    pub(super) fn held_taken_back(&mut self, id: PendingId, taken: bool, errors: &[String]) {
+        self.delivery.recalled(Vec::new());
+        if !errors.is_empty() {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                format!("could not take it back: {}", errors.join("; ")),
+            );
+        }
+        if taken {
+            let texts = self.withdraw(&[id]);
+            self.prepend_to_editor(texts);
+        } else if errors.is_empty() {
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                "that message was just sent to the agent; ↑ again takes back what has not gone in yet",
+            );
+        }
+        self.scroll.bottom();
     }
 
     /// ↑ on an empty editor with held messages: pull back the newest one.

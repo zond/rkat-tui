@@ -439,6 +439,7 @@ async fn probe_slots(probe: Probe) -> Vec<(&'static str, Option<usize>)> {
         async move {
             let params = RecallParams {
                 input_ids: vec![input],
+                held_only: false,
             };
             let answer = remote::call::<method::Recall>(agent, &params)
                 .await

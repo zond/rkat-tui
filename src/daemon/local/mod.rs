@@ -385,8 +385,8 @@ impl Local {
             method::RetireAgent, protocol::AgentParams { name } => self.retire_other(&caller, &name).await;
             method::StopHelper, protocol::StopHelperParams { path } => self.stop_helper(&caller, &path);
             method::Seated, protocol::SessionParams { session_id } => Ok(self.seated(&session_id).await);
-            method::Recall, protocol::RecallParams { input_ids } => self.recall(&caller, &input_ids).await;
-            method::Inputs, protocol::RecallParams { input_ids } => self.input_fates(&caller, &input_ids).await;
+            method::Recall, protocol::RecallParams { input_ids, held_only } => self.recall(&caller, &input_ids, held_only).await;
+            method::Inputs, protocol::RecallParams { input_ids, .. } => self.input_fates(&caller, &input_ids).await;
             method::Sent, protocol::SentParams { key } => Ok(self.sent_fate(&key).await);
             method::Interrupt, params => self.interrupt(&caller, params).await;
             method::Btw, params => self.btw(&caller, params).await;

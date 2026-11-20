@@ -394,6 +394,13 @@ enum Report {
     },
     /// `rkat/recall` answered (or failed, in words).
     Recalled(Result<protocol::Recalled, String>),
+    /// `rkat/recall` of the held message `id`, followed by `input`,
+    /// answered (or failed, in words).
+    HeldRecalled {
+        id: PendingId,
+        input: meerkat_core::lifecycle::InputId,
+        result: Result<protocol::Recalled, String>,
+    },
     /// `rkat/inputs` answered for the steers this client still followed
     /// (or failed, in words).
     InputFates(Result<protocol::InputFates, String>),
@@ -903,6 +910,7 @@ impl Runner {
                 again: None,
             } => self.sent(turn, steer, result),
             Report::Recalled(result) => self.recalled(result),
+            Report::HeldRecalled { id, input, result } => self.held_recalled(id, &input, result),
             Report::InputFates(result) => self.input_fates(result),
             Report::AgentsRead { name, status } => self.agents_read(name, status),
             Report::StopAsked(Ok(text)) => {
@@ -1128,6 +1136,7 @@ impl Runner {
             Effect::Steer { id, text } => self.steer(id, &text),
             Effect::Interrupt => self.interrupt(),
             Effect::RecallQueued => self.recall(),
+            Effect::RecallHeld(id) => self.recall_held(id),
             Effect::RunShell { id, command } => match &self.config.remote {
                 Some(why) => self.send(Msg::ShellFinished {
                     id,

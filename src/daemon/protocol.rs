@@ -1069,10 +1069,15 @@ pub struct GrantParams {
 
 /// [`method::Recall`]'s and [`method::Inputs`]'s parameters: the inputs
 /// `mob/member_send` admitted (`admission.input_id`), oldest first.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecallParams {
     /// The inputs to take back, or to read.
     pub input_ids: Vec<meerkat_core::lifecycle::InputId>,
+    /// A recall of messages the daemon still holds only
+    /// (`super::activity::steers`): one sent meanwhile is left with the
+    /// agent (reached), never recalled from the engine.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held_only: bool,
 }
 
 /// [`method::Recall`]'s result, each list in the order asked.

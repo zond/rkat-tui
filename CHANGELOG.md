@@ -34,8 +34,11 @@
   at once and the ones typed after it, before it went in, are held by the
   daemon (*goes in at the step after the next*) and go together, as one
   message, when the first is written: three quick messages ride the next
-  two requests. A message held so has not reached the agent yet: Esc
-  takes it back with the others; another client attached to the same
+  two requests. A message held so has not reached the agent yet: ↑ on an
+  empty editor takes the held ones back first, newest first, one per
+  press, at no cost and without touching the one in flight (sent again,
+  a message is held again at the end); Esc takes them back with the
+  others; another client attached to the same
   agent never loses or doubles one. When the daemon stops with messages
   held, they come back to your editor as not sent and are saved in the
   realm's `tui_unsent.txt`.

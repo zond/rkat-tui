@@ -292,9 +292,8 @@ impl PendingQueue {
         }
     }
 
-    /// The newest item the daemon holds.
+    /// The newest item the daemon holds (↑ takes it back first, for free).
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn newest_held(&self) -> Option<&Pending> {
         self.items
             .iter()

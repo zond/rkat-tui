@@ -175,9 +175,16 @@ show, for example one that was going when the client attached. The client
 asks the daemon; when the agent runs, its run is cancelled and a notice
 says so; when it does not, the notice says "nothing is running".
 
-*↑ on an empty editor* takes back the messages the UI still holds (not yet
+*↑ on an empty editor* first takes back the messages the daemon holds
+behind the one in flight (*goes in at the step after the next*), newest
+first, one per press, into the editor: they have not reached the agent,
+so this costs nothing, and the one in flight is not touched. Edited and
+sent again, such a message is held again, after the others. When none is
+held, ↑ takes back the messages the UI still holds (not yet
 sent) and the ones sent to the daemon that the agent has not read yet
-(the runtime still holds them queued, as while a tool runs); a message
+(the runtime still holds them queued, as while a tool runs; taking back
+the one waiting for the next request leaves that request without it, so
+what you send instead goes in one request later); a message
 the agent already took stays, the transcript says so, and only Esc stops
 the turn. Typing alone never interrupts: a message sent while a
 tool runs waits for that tool's result and joins the turn after it.
