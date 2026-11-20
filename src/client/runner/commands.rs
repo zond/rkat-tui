@@ -615,8 +615,14 @@ impl Runner {
 
     /// The UI answered an approval dialog: decide its decision.
     pub(super) fn respond_escalation(&mut self, id: EscalationId, answer: &EscalationAnswer) {
-        if let Some((decision, digest, helper)) = self.approvals.answer_decision(id) {
-            self.decide(id, &decision, &digest, answer, helper);
+        if let Some(answered) = self.approvals.answer_decision(id) {
+            self.decide(
+                id,
+                &answered.decision,
+                &answered.digest,
+                answer,
+                answered.helper,
+            );
         }
     }
 

@@ -111,6 +111,17 @@ pub enum Crossing {
     Nothing,
 }
 
+/// A steer held for the agent's next run ([`Prepare::run_started`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldSteer {
+    /// The steer.
+    pub text: String,
+    /// The context that crossed.
+    pub tokens: u64,
+    /// It is the crossing's one reminder.
+    pub reminder: bool,
+}
+
 /// What `compact_ready` does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Ready {
@@ -343,13 +354,16 @@ impl Prepare {
         }
     }
 
-    /// `agent`'s run started: a held steer goes now, when there is one
-    /// (`(text, tokens, reminder)`).
-    pub fn run_started(&self, agent: &str) -> Option<(String, u64, bool)> {
+    /// `agent`'s run started: a held steer goes now, when there is one.
+    pub fn run_started(&self, agent: &str) -> Option<HeldSteer> {
         let mut agents = self.agents.lock();
         let trigger = agents.get_mut(agent)?;
         let (text, reminder) = trigger.held.take()?;
-        Some((text, trigger.tokens.unwrap_or(0), reminder))
+        Some(HeldSteer {
+            text,
+            tokens: trigger.tokens.unwrap_or(0),
+            reminder,
+        })
     }
 
     /// The request: the context, leeway to finish the step in hand, the
@@ -703,7 +717,11 @@ mod tests {
         assert_eq!(w.reminder_at(300_000), 400_000);
         w.reading("main-a", 310_000, true);
         assert_eq!(w.reading("main-a", 410_000, false), Crossing::Nothing);
-        let (text, tokens, reminder) = w.run_started("main-a").unwrap();
+        let HeldSteer {
+            text,
+            tokens,
+            reminder,
+        } = w.run_started("main-a").unwrap();
         assert!(reminder && tokens == 410_000, "{text}");
         assert!(
             text.contains("still growing: do it now: update PLAN.md"),
@@ -720,7 +738,11 @@ mod tests {
             p.status(Some("main-a"), &Sourced::new(None, Level::Default))
                 .contains("next turn")
         );
-        let (text, tokens, reminder) = p.run_started("main-a").unwrap();
+        let HeldSteer {
+            text,
+            tokens,
+            reminder,
+        } = p.run_started("main-a").unwrap();
         assert_eq!(tokens, 310_000);
         assert!(!reminder);
         assert!(text.contains("update PLAN.md"));

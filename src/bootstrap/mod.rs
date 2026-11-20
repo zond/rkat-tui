@@ -1090,7 +1090,7 @@ mod tests {
         );
         assert_eq!(extra.file.extra_write, vec![flag_dir.clone()]);
         // The flag wins over the file's write grant of the same directory.
-        let (write, read, _) =
+        let confinement::Grants { write, read, .. } =
             confinement::grants_with(&ws, &HostPaths::default(), &extra).unwrap();
         assert!(
             read.contains(&flag_dir) && !write.contains(&flag_dir),

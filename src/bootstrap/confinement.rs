@@ -520,13 +520,13 @@ impl ConfinementSection {
     }
 }
 
-/// The filesystem grants of a confined shell: `(read-write directories,
-/// read-only directories, read-only files)`, every path existing, canonical
+/// The filesystem grants of a confined shell: read-write directories,
+/// read-only directories and read-only files, every path existing, canonical
 /// (not through a symbolic link), each once, none overlapping another or the
 /// baseline. The workspace comes first among the writable directories (or
 /// the writable directory containing it).
 #[must_use]
-pub fn grants(workspace: &Path, host: &HostPaths) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
+pub fn grants(workspace: &Path, host: &HostPaths) -> Grants {
     let on_baseline = |path: &Path| BASELINE.iter().any(|base| overlaps(path, Path::new(base)));
     let mut write: Vec<PathBuf> = Vec::new();
     for path in std::iter::once(workspace).chain(host.write.iter().map(PathBuf::as_path)) {
@@ -562,7 +562,18 @@ pub fn grants(workspace: &Path, host: &HostPaths) -> (Vec<PathBuf>, Vec<PathBuf>
         }
         files.push(path);
     }
-    (write, read, files)
+    Grants { write, read, files }
+}
+
+/// The filesystem grants of a confined shell ([`grants`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Grants {
+    /// The read-write directories, the workspace's first.
+    pub write: Vec<PathBuf>,
+    /// The read-only directories.
+    pub read: Vec<PathBuf>,
+    /// The read-only files.
+    pub files: Vec<PathBuf>,
 }
 
 /// [`grants`] with the user's `extra` directories (see the module docs).
@@ -576,8 +587,12 @@ pub fn grants_with(
     workspace: &Path,
     host: &HostPaths,
     extra: &ExtraGrants,
-) -> Result<(Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>), ConfinementError> {
-    plan_grants(workspace, host, extra).map(|planned| (planned.write, planned.read, planned.files))
+) -> Result<Grants, ConfinementError> {
+    plan_grants(workspace, host, extra).map(|planned| Grants {
+        write: planned.write,
+        read: planned.read,
+        files: planned.files,
+    })
 }
 
 /// What [`plan_grants`] decides: the sandbox's grants and the directories
@@ -676,7 +691,11 @@ pub fn plan_grants(
     host: &HostPaths,
     extra: &ExtraGrants,
 ) -> Result<PlannedGrants, ConfinementError> {
-    let (mut write, mut read, mut files) = grants(workspace, host);
+    let Grants {
+        mut write,
+        mut read,
+        mut files,
+    } = grants(workspace, host);
     let (accepted, refused) = accept_extra(workspace, &write, &read, extra);
     if let Some(first) = refused.into_iter().next() {
         return Err(first);
@@ -1532,7 +1551,7 @@ mod tests {
             ],
             read_files: vec![f.file.clone(), PathBuf::from("/etc/ld.so.cache")],
         };
-        let (write, read, files) = grants(&f.ws, &host);
+        let Grants { write, read, files } = grants(&f.ws, &host);
         // The workspace's parent contains every fixture path: it is the only
         // writable grant, and nothing inside it is granted again. `/usr`
         // overlaps the baseline; the link and the missing path are not
@@ -1541,7 +1560,7 @@ mod tests {
         assert!(read.is_empty(), "{read:?}");
         assert!(files.is_empty(), "{files:?}");
         // Detected paths always satisfy the same rules.
-        let (write, read, files) = grants(&f.ws, &HostPaths::detect());
+        let Grants { write, read, files } = grants(&f.ws, &HostPaths::detect());
         let all: Vec<&PathBuf> = write.iter().chain(&read).chain(&files).collect();
         for (i, path) in all.iter().enumerate() {
             // A file grant may be a final link; its directory is canonical.
@@ -1612,7 +1631,7 @@ mod tests {
             read: vec![],
             read_files: vec![link.clone()],
         };
-        let (write, read, files) = grants(&f.ws, &host);
+        let Grants { write, read, files } = grants(&f.ws, &host);
         assert_eq!(write, vec![f.ws.clone()]);
         assert!(read.is_empty(), "{read:?}");
         assert_eq!(files, if linux { vec![link] } else { vec![] });
@@ -1620,7 +1639,7 @@ mod tests {
             write: vec![root.clone()],
             ..host
         };
-        let (write, read, files) = grants(&f.ws, &host);
+        let Grants { write, read, files } = grants(&f.ws, &host);
         assert_eq!(write, vec![root]);
         assert!(read.is_empty() && files.is_empty(), "{read:?} {files:?}");
     }
@@ -1797,14 +1816,14 @@ mod tests {
             write: vec![extra_dir.clone()],
             ..ExtraGrants::default()
         };
-        let (write, read, files) = grants_with(&f.ws, &f.host, &extra).unwrap();
+        let Grants { write, read, files } = grants_with(&f.ws, &f.host, &extra).unwrap();
         assert_eq!(write, vec![f.ws.clone(), f.cache.clone(), extra_dir]);
         assert_eq!(read, vec![f.tools.clone(), data.clone()]);
         assert_eq!(files, vec![f.file.clone()]);
         // A detected read grant overlapping a write grant yields to it.
         let inner = f.tools.join("inner");
         std::fs::create_dir_all(&inner).unwrap();
-        let (_, read, _) = grants_with(
+        let Grants { read, .. } = grants_with(
             &f.ws,
             &f.host,
             &ExtraGrants {
@@ -1864,6 +1883,7 @@ mod tests {
         // the sandbox as it is and is kept as the user's, for the gate; a
         // write grant inside a read grant upgrades that part (above).
         let plain = grants(&f.ws, &f.host);
+        let plain = (plain.write, plain.read, plain.files);
         for (read, write) in [
             (vec![inner], Vec::new()),
             (vec![f.tools.clone()], Vec::new()),
@@ -2021,7 +2041,7 @@ mod tests {
             file: file(vec![data.clone()], vec![other.clone()]),
             ..ExtraGrants::default()
         };
-        let (write, read, _) = grants_with(&f.ws, &f.host, &extra).unwrap();
+        let Grants { write, read, .. } = grants_with(&f.ws, &f.host, &extra).unwrap();
         assert!(write.contains(&other), "{write:?}");
         assert!(read.contains(&data), "{read:?}");
         // A flag wins over an overlapping file grant, in either direction
@@ -2031,7 +2051,7 @@ mod tests {
             file: file(vec![data.clone(), inner.clone()], Vec::new()),
             ..ExtraGrants::default()
         };
-        let (write, read, _) = grants_with(&f.ws, &f.host, &extra).unwrap();
+        let Grants { write, read, .. } = grants_with(&f.ws, &f.host, &extra).unwrap();
         assert!(write.contains(&data), "{write:?}");
         assert!(!read.contains(&data) && !read.contains(&inner), "{read:?}");
         let extra = ExtraGrants {
@@ -2039,7 +2059,7 @@ mod tests {
             file: file(Vec::new(), vec![data.clone()]),
             ..ExtraGrants::default()
         };
-        let (write, read, _) = grants_with(&f.ws, &f.host, &extra).unwrap();
+        let Grants { write, read, .. } = grants_with(&f.ws, &f.host, &extra).unwrap();
         assert!(
             read.contains(&inner) && !write.contains(&data),
             "{write:?} {read:?}"
@@ -2050,7 +2070,7 @@ mod tests {
             file: file(vec![data.clone(), data.clone()], vec![data.clone()]),
             ..ExtraGrants::default()
         };
-        let (write, read, _) = grants_with(&f.ws, &f.host, &extra).unwrap();
+        let Grants { write, read, .. } = grants_with(&f.ws, &f.host, &extra).unwrap();
         assert_eq!(write.iter().filter(|d| **d == data).count(), 1);
         assert!(!read.contains(&data));
         // Overlapping file grants and invalid ones are typed errors naming

@@ -124,13 +124,25 @@ pub fn low_space_line(realm: &Path, free: u64) -> String {
     )
 }
 
+/// What a reading of the free space says ([`crossed_low`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LowSpace {
+    /// Whether the space is below [`LOW_SPACE`] now.
+    pub low: bool,
+    /// Whether this reading crossed below it (the warning goes).
+    pub crossed: bool,
+}
+
 /// Whether a reading of `free` bytes crosses below [`LOW_SPACE`] (it was
 /// not low at the last reading, `was_low`): the warning goes once per
-/// crossing. Returns whether it is low now.
+/// crossing.
 #[must_use]
-pub fn crossed_low(was_low: bool, free: Option<u64>) -> (bool, bool) {
+pub fn crossed_low(was_low: bool, free: Option<u64>) -> LowSpace {
     let low = free.is_some_and(|free| free < LOW_SPACE);
-    (low, low && !was_low)
+    LowSpace {
+        low,
+        crossed: low && !was_low,
+    }
 }
 
 /// What the agents' clients are told when the helpers' bindings file
@@ -235,9 +247,11 @@ pub fn watch_free_space(
             .ok()
             .flatten();
             flush_bindings(&live).await;
-            let (now_low, crossed) = crossed_low(low, free);
-            low = now_low;
-            if crossed && let Some(free) = free {
+            let reading = crossed_low(low, free);
+            low = reading.low;
+            if reading.crossed
+                && let Some(free) = free
+            {
                 tracing::warn!(realm = %realm.display(), free, "the realm's filesystem is nearly full");
                 let text = low_space_line(&realm, free);
                 for agent in live.names() {
@@ -410,9 +424,9 @@ mod tests {
             Some(500 * mb),
             Some(10 * mb),
         ] {
-            let (now, crossed) = crossed_low(low, free);
-            low = now;
-            told.push(crossed);
+            let reading = crossed_low(low, free);
+            low = reading.low;
+            told.push(reading.crossed);
         }
         assert_eq!(told, [false, true, false, false, false, true]);
         assert!(free_bytes(Path::new("/")).is_some_and(|free| free > 0));

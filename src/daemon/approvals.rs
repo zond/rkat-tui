@@ -755,10 +755,9 @@ impl Watcher {
                     .await;
                 // A prepare instruction held for this run goes now.
                 if let Some(agents) = self.watched.agents.upgrade()
-                    && let Some((text, tokens, reminder)) =
-                        agents.core().prepare.run_started(&self.name)
+                    && let Some(held) = agents.core().prepare.run_started(&self.name)
                 {
-                    agents.prepare_compaction(&self.name, text, tokens, reminder);
+                    agents.prepare_compaction(&self.name, held.text, held.tokens, held.reminder);
                 }
             }
             // A run the engine resumed at this daemon's start (it was open

@@ -159,6 +159,17 @@ impl Change {
     }
 }
 
+/// A decision whose dialog the UI answered ([`Approvals::answer_decision`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnsweredDecision {
+    /// The decision's id.
+    pub decision: String,
+    /// The digest of the rendering the dialog showed.
+    pub digest: String,
+    /// Whether a helper's call asked.
+    pub helper: bool,
+}
+
 /// The dialogs this client shows.
 #[derive(Debug, Default)]
 pub struct Approvals {
@@ -231,10 +242,14 @@ impl Approvals {
     /// The UI answered dialog `id` of a decision: the decision, the
     /// digest of what was shown, and whether a helper's call asked (the
     /// dialog is closed from now on).
-    pub fn answer_decision(&mut self, id: EscalationId) -> Option<(String, String, bool)> {
+    pub fn answer_decision(&mut self, id: EscalationId) -> Option<AnsweredDecision> {
         let decision = self.decision_by_local.remove(&id.0)?;
         let (_, digest, helper) = self.decisions.remove(&decision)?;
-        Some((decision, digest, helper))
+        Some(AnsweredDecision {
+            decision,
+            digest,
+            helper,
+        })
     }
 
     /// Forget every dialog (the connection is gone; the daemon pushes what
@@ -357,7 +372,11 @@ mod tests {
         };
         assert_eq!(
             approvals.answer_decision(id),
-            Some(("d2".to_string(), "sha256:abc".to_string(), false))
+            Some(AnsweredDecision {
+                decision: "d2".to_string(),
+                digest: "sha256:abc".to_string(),
+                helper: false,
+            })
         );
         assert!(approvals.decision_ended(&ended("d2", "approved")).is_none());
         let params = decision_params(
