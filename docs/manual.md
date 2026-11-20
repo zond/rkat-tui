@@ -191,9 +191,23 @@ A steered message counts as delivered only when the stream shows it
 written at a boundary or the run that carries it starts. Until then it
 shows *goes in at the agent's next step*: it joins the first model
 request that starts after it was sent (one already under way does not
-take it), and the engine takes one waiting message per request, oldest
-first, so a second message typed meanwhile (or a note the daemon sent
-just before) goes in one request later. Everything you send is such a
+take it). The engine takes one waiting message per request, oldest
+first, so the daemon keeps one of your messages waiting in the engine at
+a time: the ones you type after it, before it went in, are held by the
+daemon and show *goes in at the step after the next*; when the first is
+written into a request, they all go as one message (in the order typed,
+a blank line between) and ride the request after it together. Three
+quick messages ride the next two requests, not the next three. A held
+message has not reached the agent, so ↑ takes it back for free (see
+below); the daemon's own notes held meanwhile go with it, in front of
+your words. Another agent's message that arrives meanwhile can take the
+one request between the first and the held ones, no more. When the run
+ends before the first went in, the held ones go at once with it, as the
+next run's input. When the daemon stops with messages held, they are not
+sent (the engine would not deliver them after the restart): they come
+back to your editor as not sent and are saved in the realm's
+`tui_unsent.txt`, which the next start announces. A client that detaches
+leaves them with the daemon, which sends them as usual. Everything you send is such a
 message to the engine, a prompt typed while the agent looks idle too: it
 goes into the next model request of whatever run the agent has by then,
 or starts a run when it has none, and never waits behind a run that

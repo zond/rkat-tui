@@ -1261,6 +1261,54 @@ pub enum SentFate {
         /// Why.
         why: String,
     },
+    /// The daemon holds it behind the user's message in flight
+    /// ([`HELD_ANSWER`]), under the id it names.
+    Held {
+        /// The id the client follows it by.
+        input_id: meerkat_core::lifecycle::InputId,
+    },
+}
+
+/// The field of the daemon's own answer to a `mob/member_send` it held
+/// (`super::activity::steers`): the id it is followed by from now on (it is
+/// no engine input). The engine's answer is never so: a client reads this
+/// field before it reads the engine's.
+pub const HELD_ANSWER: &str = "rkat_held";
+
+/// The notification that held messages moved on ([`HeldChange`],
+/// `super::activity::steers`): sent to the engine, written into a request,
+/// or dropped. Pushed to every client; one knows the ids of its own.
+pub const HELD: &str = "rkat/held";
+
+/// [`HELD`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldChange {
+    /// The agent.
+    pub agent: String,
+    /// The held messages, by the ids their clients know them by.
+    pub ids: Vec<meerkat_core::lifecycle::InputId>,
+    /// What became of them.
+    pub now: HeldNow,
+}
+
+/// What became of held messages ([`HeldChange`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HeldNow {
+    /// Sent to the engine as one steer, the input it names: it goes in at
+    /// the agent's next step, and its client follows it by that input
+    /// from now on (it outlives the daemon, the held id does not).
+    Released {
+        /// The input they went as.
+        input_id: meerkat_core::lifecycle::InputId,
+    },
+    /// Written into the request that started now.
+    Applied,
+    /// Never sent (why, in words): its client takes it back.
+    Dropped {
+        /// Why.
+        why: String,
+    },
 }
 
 /// [`method::Inputs`]'s result, in the order asked.

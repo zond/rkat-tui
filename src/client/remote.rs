@@ -199,7 +199,7 @@ pub async fn send(
     text: &str,
     steer: bool,
     key: &str,
-) -> Result<Option<InputId>, ClientError> {
+) -> Result<Option<Admitted>, ClientError> {
     let answer = connection
         .call(
             engine::MEMBER_SEND,
@@ -213,12 +213,24 @@ pub async fn send(
             ),
         )
         .await?;
+    // A message the daemon holds behind the user's one in flight.
+    if let Some(held) = answer.get(crate::daemon::protocol::HELD_ANSWER) {
+        let input: InputId =
+            serde_json::from_value(held.clone()).map_err(|source| ClientError::Decode {
+                what: "mob/member_send",
+                source,
+            })?;
+        return Ok(Some(Admitted { input, held: true }));
+    }
     let answer: MobMemberSendResult = decode("mob/member_send", answer)?;
     answer
         .admission
         .map(|admission| {
             uuid::Uuid::parse_str(&admission.input_id)
-                .map(InputId::from_uuid)
+                .map(|id| Admitted {
+                    input: InputId::from_uuid(id),
+                    held: false,
+                })
                 .map_err(|_| {
                     ClientError::Protocol(format!(
                         "mob/member_send named the input `{}`, which is not an input id",
@@ -227,6 +239,18 @@ pub async fn send(
                 })
         })
         .transpose()
+}
+
+/// What a send was admitted as ([`send`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Admitted {
+    /// The input it is followed by: the engine's, or, `held`, the
+    /// daemon's id for it until it is sent
+    /// ([`crate::daemon::protocol::HeldChange`]).
+    pub input: InputId,
+    /// The daemon holds it behind the user's message in flight
+    /// (`crate::daemon::activity::steers`).
+    pub held: bool,
 }
 
 /// A model switch: the model, its provider and the endpoint's auth binding

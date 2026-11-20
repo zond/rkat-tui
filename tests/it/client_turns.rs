@@ -431,6 +431,7 @@ async fn probe_slots(probe: Probe) -> Vec<(&'static str, Option<usize>)> {
                 .await
                 .unwrap()
                 .expect("the daemon names the steer's input")
+                .input
         }
     };
     let recall = |input| {

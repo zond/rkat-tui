@@ -396,6 +396,13 @@ pub enum Msg {
     /// The runtime wrote a steered message into the conversation (at a model
     /// boundary of the running turn, or as a follow-up turn).
     SteerDelivered(PendingId),
+    /// The daemon holds an admitted message behind the user's one in
+    /// flight (`crate::daemon::activity::steers`): it goes in one step
+    /// after the next, with the others held, and taking it back is free.
+    SteerHeld(PendingId),
+    /// The daemon sent these held messages (as one): they go in at the
+    /// agent's next step.
+    SteerReleased(Vec<PendingId>),
     /// The runner's answer to [`Effect::RecallQueued`]: the steered
     /// messages the runtime abandoned before they joined the run (oldest
     /// first; back to the editor), and the cancels that failed. Admitted
@@ -1937,6 +1944,12 @@ impl App {
             }
             Msg::SteerAck { id, result } => self.steer_ack(id, result, now, &mut fx),
             Msg::SteerDelivered(id) => self.pending.show_delivered(&mut self.transcript, id),
+            Msg::SteerHeld(id) => self.pending.hold(&mut self.transcript, id),
+            Msg::SteerReleased(ids) => {
+                for id in ids {
+                    self.pending.release(&mut self.transcript, id);
+                }
+            }
             Msg::Recalled { recalled, errors } => self.recalled(&recalled, &errors),
             Msg::Returned(ids) => self.returned(&ids),
             Msg::BtwAnswered(answer) => self.btw_answered(answer),

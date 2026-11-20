@@ -13996,3 +13996,101 @@ Tests: `transcript::tests::the_thought_line_is_exact`,
 `transcript::tests::a_leaked_thought_streams_as_reasoning_in_any_cut`,
 `transcript::tests::near_misses_of_the_thought_line_stay_prose`,
 `transcript::restore::tests::a_stored_leaked_thought_restores_as_reasoning`.
+
+## One message of the user's in flight, the rest held and sent as one (owner, 2026-11-20)
+
+The engine stages one steer per model request, oldest first ("When a
+typed message goes in"; lukacf/meerkat#2431 open): three messages typed
+during one model call rode requests N+1, N+2, N+3. The Meta console
+sidesteps the limit by queueing in the browser and steering one row at a
+time (`.handover/meta-console-queue.md`); nothing on the engine's wire
+lets several steers join one boundary or replaces a staged one.
+
+What we do (`daemon::activity::steers`, the state machine with its states
+and transitions in the module doc; under the lock of the open runs):
+per agent `NoneInFlight` / `InFlight { owner, input, seen, text, held }`.
+The first message of the user's sent into an open run goes to the engine
+at once and is in flight; one sent while one is in flight is held, and
+the proxy answers its `mob/member_send` itself (`{"rkat_held": <id>}`,
+`protocol::HELD_ANSWER`; `rkat/sent` knows it as `held`). When the one in
+flight is written into a request (its `BoundaryAppendApplied`, the event
+the delivered mark uses), or a run starts with it in its input, or its
+send is refused, or it is taken back, the held ones go as one steer
+(texts in order, a blank line between; the daemon's held notes and the
+helpers' endings held since an interrupt in front, under the held-note
+separator, as with any message of the user's). When the run ends with
+messages held they go at once as the next run's input. The daemon's
+notes go on their own at a tool request only while nothing of the user's
+is in flight or held (`Activity::take_quiet_notes`). Each held message
+keeps its own id to its client; the daemon pushes `rkat/held`
+(`Released { input_id }`, `Applied`, `Dropped { why }`) to every client,
+and the client follows the sent ones by the engine's input from then on
+(`Steers::rekey`; it outlives the daemon, the held id does not). The
+daemon still knows a held id as the input it went as, for `rkat/recall`,
+`rkat/inputs` and `rkat/interrupt`; a recall by held ids takes back a
+merged input only when every message of it is named (else it counts as
+reached: another client's words may be in it). A second client attached
+to the same agent sees no line of the other's held messages (it sees the
+other's steers no more today); nothing is lost or doubled: each held
+message is in exactly one engine input, and each client marks only its
+own ids.
+
+"Running" is the daemon's reading of the agent's event stream, which can
+lag the engine. The first loaded round failed 19 of 20: the prompt's run
+was in its first model call before the watcher read its start, so the
+first typed message was not taken as in flight, the second was, and the
+third rode a request later (`["go","FAST-ONE"]`, then `FAST-TWO`, then
+`FAST-THREE`). An input of the user's forwarded while no run is read open
+now counts as starting one (`State::starting`, cleared by a run's start
+or end, an idle conclusion or a refusal), and a run that starts with the
+message in flight in its input lets the held ones go (they ride its next
+request).
+
+Measured (`tests/it/held_steers.rs`, the module's seven tests 10 rounds
+unloaded and 20 rounds on two cores beside two busy loops, `taskset -c
+0,1`, all passed after the change above; the instant-request test also
+20 rounds alone): three messages typed while request 0
+is held ride request 1 (the first) and request 2 (the other two, one user
+message, in order), each marked delivered; the same with request 1 and
+its tool instant (nothing of the rig holds request 1 for the release);
+the run ending before the first went in: the first runs as the follow-up
+run and the held two join its batch (request 1, 3 of 3 runs; request 2 is
+allowed); Esc returns all three (the held two from the hold, the first
+recalled), none reaches the model; another agent's `send_message`
+admitted after the three: the first rides 1, the peer's 2, the held two
+3 (unheld they would ride 2 and 3, the peer's 4: it gets one slot ahead,
+no more); a client that detaches leaves them with the daemon, which sends
+them as usual. With the hold disabled 6 of the 7 tests fail; the
+interrupt one passes either way (a guard).
+
+The release is a late handover of the kind "Our notes never go ahead of
+the user's message" describes (the engine registers a steer at its
+boundary in a task of its own after the send answers, and nothing says
+when that is done). Sent when request N+1 starts, it must be registered
+before the boundary of N+2, a whole model call and its tools later; not
+seen to miss in the rounds above. If it does, the held ones ride one
+request later, behind nothing of the user's.
+
+A finding about the engine at a daemon stop: a steer admitted into a run
+that the stop catches in a model call is not delivered after the restart
+(the engine logs "durable live-boundary attachment could not be
+revalidated; the input stays queued"; the resumed run made four requests
+without it, and a later prompt's run did not carry it either; measured
+with one message, so it is not the hold's). Held messages are therefore
+not sent at the stop: their clients get them back as not sent (to the
+editor), and the daemon saves them in the realm's `tui_unsent.txt`,
+which the next start announces (for a user whose client is gone).
+
+Tests: `daemon::activity::steers::tests::*`,
+`daemon::activity::tests::the_user_s_held_messages_take_the_notes_with_them`,
+`client::runner::steers::tests::held_steers_sent_as_one_are_followed_by_that_input`,
+`client::runner::tests::the_daemon_s_word_on_held_messages_moves_them_on`,
+`ui::transcript::restore::tests::held_messages_sent_as_one_restore_once`,
+`held_steers::three_quick_messages_ride_the_next_two_requests`,
+`held_steers::held_messages_ride_the_request_after_an_instant_one`,
+`held_steers::held_messages_go_at_the_run_s_end_as_one`,
+`held_steers::an_interrupt_returns_the_held_messages_too`,
+`held_steers::a_peer_s_message_gets_at_most_one_slot_ahead_of_the_held_ones`,
+`held_steers::held_messages_outlive_their_client_s_detach`,
+`held_steers::held_messages_come_back_when_the_daemon_stops`, the render
+rows in `render.rs`.

@@ -28,6 +28,17 @@
 
 ### Changed
 
+- Several messages typed while the agent works no longer go in one model
+  request apart. The engine takes one waiting message per request, so
+  three quick messages rode the next three requests; now the first goes
+  at once and the ones typed after it, before it went in, are held by the
+  daemon (*goes in at the step after the next*) and go together, as one
+  message, when the first is written: three quick messages ride the next
+  two requests. A message held so has not reached the agent yet: Esc
+  takes it back with the others; another client attached to the same
+  agent never loses or doubles one. When the daemon stops with messages
+  held, they come back to your editor as not sent and are saved in the
+  realm's `tui_unsent.txt`.
 - Two or more messages in a row from the agent's own helpers fold into
   one line, `✉ 7 messages from capture-api, capture-source,
   capture-camera and 2 more ▸` (the latest message's first words after

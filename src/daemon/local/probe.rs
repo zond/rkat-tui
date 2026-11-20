@@ -135,4 +135,11 @@ impl Local {
     pub fn held_notes_for_test(&self, agent: &str) -> usize {
         self.core.activity.held_notes(agent)
     }
+
+    /// Tests: the user's messages held for `agent`'s open run behind the
+    /// one in flight ([`crate::daemon::activity::steers`]), oldest first.
+    #[must_use]
+    pub fn held_user_for_test(&self, agent: &str) -> Vec<String> {
+        self.core.activity.held_user(agent)
+    }
 }

@@ -17,6 +17,13 @@
 //! unfinished input is asked again after a short wait that doubles, until
 //! a run starts or [`SETTLE_WAIT`] has passed; the agent is then reported
 //! idle with what it still holds ([`IdleNote::held`]).
+//!
+//! The same record holds what waits for an agent's open run: the daemon's
+//! own notes ([`HeldNote`]) and the user's messages behind the one in
+//! flight ([`steers`]), under the one lock with the open runs, so a run's
+//! end cannot strand either.
+
+pub mod steers;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
@@ -25,8 +32,11 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use meerkat_core::{RunId, SessionId};
 
+use meerkat_core::lifecycle::InputId;
+
 use super::conversations::RunState;
-use super::protocol::IdleNote;
+use super::protocol::{HeldChange, HeldNow, IdleNote};
+use steers::{Admit, Owner, Release, Steers, TakenBack};
 
 /// The longest the daemon re-asks the runtime after a run ended while it
 /// still holds unfinished input and starts no run for it.
@@ -54,6 +64,9 @@ pub type Probe = Box<dyn Fn(String) -> BoxFuture<'static, Option<Probed>> + Send
 /// Tells the clients an agent is idle.
 pub type Announce = Box<dyn Fn(&IdleNote) + Send + Sync>;
 
+/// Tells the clients what became of held messages of the user's.
+pub type Told = Box<dyn Fn(&HeldChange) + Send + Sync>;
+
 /// Told of a run's start once: the conversation and the run
 /// ([`Activity::when_running`]).
 pub type OnRun = Box<dyn FnOnce(&SessionId, &RunId) + Send>;
@@ -80,6 +93,12 @@ struct State {
     checking: bool,
     /// The daemon's own notes held for the open run ([`Activity::hold_note`]).
     notes: Vec<HeldNote>,
+    /// The user's messages into the open run ([`steers`]).
+    steers: Steers,
+    /// An input of the user's went to the agent while no run of it was
+    /// read open: it starts a run, whose start may not be read yet (open
+    /// for the user's next message, [`Activity::user_steer`]).
+    starting: bool,
 }
 
 /// A note of the daemon's own (a helper's ending, an approval, a watch's
@@ -136,6 +155,43 @@ impl TakenNotes {
     }
 }
 
+/// The user's held messages to send now as one steer
+/// ([`steers::Release`]), with the daemon's notes held then (they ride in
+/// front of the user's words): the agent counts as busy until this is
+/// dropped.
+#[derive(Debug)]
+pub struct Releasing {
+    /// The agent.
+    pub agent: String,
+    /// The messages.
+    pub release: Release,
+    /// The daemon's notes that go with them.
+    pub notes: Option<TakenNotes>,
+    /// Keeps the agent busy while they are sent.
+    _sending: Sending,
+}
+
+/// Where a message the user sent is, as the daemon knows it
+/// ([`Activity::held_where`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeldWhere {
+    /// Held behind the one in flight: not in the engine yet.
+    Held,
+    /// Held, then sent with others as this engine input.
+    Sent(InputId),
+    /// No message the daemon held: an engine input, as named.
+    NotHeld,
+}
+
+/// What goes to an agent when its run ended ([`Activity::run_ended`]).
+#[derive(Debug)]
+pub enum Outgo {
+    /// The daemon's notes alone.
+    Notes(TakenNotes),
+    /// The user's held messages (and the notes with them).
+    User(Releasing),
+}
+
 impl State {
     fn busy(&self) -> bool {
         !self.open.is_empty() || self.sending > 0
@@ -172,6 +228,7 @@ pub struct Activity {
     agents: parking_lot::Mutex<HashMap<String, State>>,
     probe: Probe,
     announce: Announce,
+    told: Told,
     this: Weak<Self>,
     /// `true` once the daemon stopped ([`Self::stop`]).
     stopped: tokio::sync::watch::Sender<bool>,
@@ -187,13 +244,14 @@ impl std::fmt::Debug for Activity {
 
 impl Activity {
     /// Asking the runtime with `probe`, telling the clients with
-    /// `announce`.
+    /// `announce` (idle) and `told` (held messages).
     #[must_use]
-    pub fn new(probe: Probe, announce: Announce) -> Arc<Self> {
+    pub fn new(probe: Probe, announce: Announce, told: Told) -> Arc<Self> {
         Arc::new_cyclic(|this| Self {
             agents: parking_lot::Mutex::new(HashMap::new()),
             probe,
             announce,
+            told,
             this: this.clone(),
             stopped: tokio::sync::watch::channel(false).0,
         })
@@ -208,15 +266,243 @@ impl Activity {
     /// [`SETTLE_WAIT`].
     pub fn stop(&self) {
         self.stopped.send_replace(true);
-        let held: Vec<HeldNote> = self
-            .agents
-            .lock()
-            .values_mut()
-            .flat_map(|state| std::mem::take(&mut state.notes))
-            .collect();
+        let (held, user): (Vec<HeldNote>, Vec<_>) = {
+            let mut agents = self.agents.lock();
+            let notes = agents
+                .values_mut()
+                .flat_map(|state| std::mem::take(&mut state.notes))
+                .collect();
+            let user = agents
+                .iter_mut()
+                .map(|(agent, state)| (agent.clone(), state.steers.drop_all()))
+                .collect();
+            (notes, user)
+        };
         for note in held {
             let _ = note.done.send(Err("the daemon stopped first".to_string()));
         }
+        for (agent, dropped) in user {
+            self.dropped(&agent, &dropped, "the daemon stopped before it sent it");
+        }
+    }
+
+    /// The daemon stops: every message of the user's still held is taken
+    /// (never sent: the engine does not deliver even a sent one that a
+    /// stop catches in a run), its client told why (`why`: it goes back
+    /// to the editor); the texts, oldest first, for the caller to save.
+    #[must_use]
+    pub fn drop_for_stop(&self, why: &str) -> Vec<String> {
+        let dropped: Vec<(String, Vec<steers::Held>)> = self
+            .agents
+            .lock()
+            .iter_mut()
+            .map(|(agent, state)| (agent.clone(), state.steers.drop_all()))
+            .filter(|(_, held)| !held.is_empty())
+            .collect();
+        let mut texts = Vec::new();
+        for (agent, held) in dropped {
+            self.dropped(&agent, &held, why);
+            texts.extend(held.into_iter().map(|held| held.text));
+        }
+        texts
+    }
+
+    /// Tell the clients that `dropped` of `agent` were never sent, and why.
+    fn dropped(&self, agent: &str, dropped: &[steers::Held], why: &str) {
+        if dropped.is_empty() {
+            return;
+        }
+        (self.told)(&HeldChange {
+            agent: agent.to_string(),
+            ids: dropped.iter().map(|held| held.id.clone()).collect(),
+            now: HeldNow::Dropped {
+                why: why.to_string(),
+            },
+        });
+    }
+
+    /// `release` of `agent`, with the notes held then, ready to be sent
+    /// (under the lock): the agent is busy until it is.
+    fn releasing(this: &Weak<Self>, agent: &str, state: &mut State, release: Release) -> Releasing {
+        let notes = Self::taken(this, agent, state);
+        state.change();
+        state.sending += 1;
+        Releasing {
+            agent: agent.to_string(),
+            release,
+            notes,
+            _sending: Sending {
+                activity: this.clone(),
+                agent: agent.to_string(),
+            },
+        }
+    }
+
+    /// A client's steer `text` (sent with `key`) for `agent`: forwarded
+    /// (in flight from now on when a run of it is open) or held
+    /// ([`steers`]). Never held after the stop.
+    ///
+    /// A run is open when its start was read and its end was not, or when
+    /// an input of the user's went to the idle agent since: the engine
+    /// may be running the run it started before its start is read here
+    /// (the agent's events come on a stream of their own), and a message
+    /// sent then joins that run, not a new one.
+    pub fn user_steer(&self, agent: &str, key: &str, text: &str) -> Admit {
+        if *self.stopped.borrow() {
+            return Admit::Forward;
+        }
+        let mut agents = self.agents.lock();
+        let state = agents.entry(agent.to_string()).or_default();
+        let running = !state.open.is_empty() || state.starting;
+        if !running {
+            state.starting = true;
+        }
+        state.steers.admit(running, key, text)
+    }
+
+    /// `agent`'s run started with `prompt` as its input: when that holds
+    /// the user's message in flight, the held ones go now (they ride the
+    /// run's next request).
+    pub fn run_carries(&self, agent: &str, prompt: &str) -> Option<Releasing> {
+        let mut agents = self.agents.lock();
+        let state = agents.get_mut(agent)?;
+        let release = state.steers.run_started(prompt)?;
+        Some(Self::releasing(&self.this, agent, state, release))
+    }
+
+    /// The engine answered the client's send `key` (`Ok`: the input it
+    /// admitted): the held messages to send now, if that answer lets them
+    /// go.
+    pub fn user_answered(&self, key: &str, input: Result<InputId, ()>) -> Option<Releasing> {
+        let owner = Owner::Send(key.to_string());
+        let mut agents = self.agents.lock();
+        let (agent, state) = agents.iter_mut().find(|(_, state)| {
+            matches!(&state.steers.now, steers::UserSteers::InFlight(flight) if flight.owner == owner)
+        })?;
+        if input.is_err() {
+            state.starting = false;
+        }
+        let release = state.steers.answered(&owner, input)?;
+        Some(Self::releasing(&self.this, agent, state, release))
+    }
+
+    /// The daemon's send of `release` went as `input` (`Ok(None)`: the
+    /// engine named none, so it is not followed) or failed (why): the
+    /// clients are told, and what that lets go next.
+    pub fn released(
+        &self,
+        agent: &str,
+        release: &Release,
+        input: Result<Option<InputId>, String>,
+    ) -> Option<Releasing> {
+        let ids = release.ids();
+        let (written, next) = {
+            let mut agents = self.agents.lock();
+            let state = agents.entry(agent.to_string()).or_default();
+            let (written, next) = match &input {
+                Ok(Some(input)) => state
+                    .steers
+                    .released(release.serial, &ids, Ok(input.clone())),
+                Ok(None) | Err(_) => (false, state.steers.release_failed(release.serial)),
+            };
+            (
+                written,
+                next.map(|next| Self::releasing(&self.this, agent, state, next)),
+            )
+        };
+        match input {
+            // Not followed: its client is not told it went, and keeps
+            // following it by its held id (a run that carries its text
+            // delivers it).
+            Ok(None) => {}
+            Ok(Some(input_id)) => {
+                (self.told)(&HeldChange {
+                    agent: agent.to_string(),
+                    ids: ids.clone(),
+                    now: HeldNow::Released { input_id },
+                });
+                if written {
+                    (self.told)(&HeldChange {
+                        agent: agent.to_string(),
+                        ids,
+                        now: HeldNow::Applied,
+                    });
+                }
+            }
+            Err(why) => self.dropped(agent, &release.held, &why),
+        }
+        next
+    }
+
+    /// `agent`'s run wrote `input` into the request that starts now: the
+    /// held messages sent as it are delivered (the clients are told), and
+    /// what that lets go next.
+    pub fn boundary_applied(&self, agent: &str, input: &InputId) -> Option<Releasing> {
+        let (delivered, next) = {
+            let mut agents = self.agents.lock();
+            let state = agents.get_mut(agent)?;
+            let (delivered, release) = state.steers.applied(input);
+            (
+                delivered,
+                release.map(|release| Self::releasing(&self.this, agent, state, release)),
+            )
+        };
+        if !delivered.is_empty() {
+            (self.told)(&HeldChange {
+                agent: agent.to_string(),
+                ids: delivered,
+                now: HeldNow::Applied,
+            });
+        }
+        next
+    }
+
+    /// `inputs` of `agent` were taken back or ended (a recall, an
+    /// interrupt: `hold` keeps what is held for the run's end): what that
+    /// lets go next.
+    pub fn user_settled(&self, agent: &str, inputs: &[InputId], hold: bool) -> Option<Releasing> {
+        let mut agents = self.agents.lock();
+        let state = agents.get_mut(agent)?;
+        let release = state.steers.settled(inputs, hold)?;
+        Some(Self::releasing(&self.this, agent, state, release))
+    }
+
+    /// A client of `agent` takes back `ids` ([`Steers::take_back`]); the
+    /// ones sent with others and not all named count as reached.
+    #[must_use]
+    pub fn take_back(&self, agent: &str, ids: &[InputId]) -> (TakenBack, Vec<InputId>) {
+        let mut agents = self.agents.lock();
+        let state = agents.entry(agent.to_string()).or_default();
+        let taken = state.steers.take_back(ids);
+        state.change();
+        taken
+    }
+
+    /// Where `agent`'s message `id` is ([`HeldWhere`]).
+    #[must_use]
+    pub fn held_where(&self, agent: &str, id: &InputId) -> HeldWhere {
+        let agents = self.agents.lock();
+        let Some(state) = agents.get(agent) else {
+            return HeldWhere::NotHeld;
+        };
+        if state.steers.holds(id) {
+            return HeldWhere::Held;
+        }
+        state
+            .steers
+            .sent_as(id)
+            .map_or(HeldWhere::NotHeld, HeldWhere::Sent)
+    }
+
+    /// Tests: the texts of `agent`'s held messages of the user's.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn held_user(&self, agent: &str) -> Vec<String> {
+        self.agents
+            .lock()
+            .get(agent)
+            .map(|state| state.steers.held_texts())
+            .unwrap_or_default()
     }
 
     /// Hold `note` for `agent`'s open run ([`HeldNote`]); `Err` gives it
@@ -245,6 +531,19 @@ impl Activity {
     pub fn take_notes(&self, agent: &str) -> Option<TakenNotes> {
         let mut agents = self.agents.lock();
         let state = agents.get_mut(agent)?;
+        Self::taken(&self.this, agent, state)
+    }
+
+    /// The notes held for `agent`, taken to go on their own at a tool
+    /// request: only while no message of the user's is in flight or held
+    /// (else they wait to go with the user's, [`steers`]).
+    #[must_use]
+    pub fn take_quiet_notes(&self, agent: &str) -> Option<TakenNotes> {
+        let mut agents = self.agents.lock();
+        let state = agents.get_mut(agent)?;
+        if !state.steers.is_quiet() {
+            return None;
+        }
         Self::taken(&self.this, agent, state)
     }
 
@@ -281,6 +580,7 @@ impl Activity {
             let mut agents = self.agents.lock();
             let state = agents.entry(agent.to_string()).or_default();
             state.change();
+            state.starting = false;
             let Some(run) = run else {
                 return;
             };
@@ -320,25 +620,32 @@ impl Activity {
         told(&open.0, &open.1);
     }
 
-    /// `agent`'s run `run` ended: the notes held for it, when no run of it
-    /// is open any more (they go as an idle agent's would).
-    pub fn run_ended(&self, agent: &str, run: Option<&RunId>) -> Option<TakenNotes> {
-        let notes = {
+    /// `agent`'s run `run` ended: what was held for it, when no run of it
+    /// is open any more (it goes as an idle agent's would: it starts the
+    /// next run): the user's held messages with the notes, else the notes.
+    pub fn run_ended(&self, agent: &str, run: Option<&RunId>) -> Option<Outgo> {
+        let outgo = {
             let mut agents = self.agents.lock();
             let state = agents.entry(agent.to_string()).or_default();
             state.change();
+            state.starting = false;
             if let Some(run) = run {
                 state.open.remove(run);
                 state.last_ended = Some(run.clone());
             }
             if state.open.is_empty() {
-                Self::taken(&self.this, agent, state)
+                match state.steers.run_ended() {
+                    Some(release) => Some(Outgo::User(Self::releasing(
+                        &self.this, agent, state, release,
+                    ))),
+                    None => Self::taken(&self.this, agent, state).map(Outgo::Notes),
+                }
             } else {
                 None
             }
         };
         self.settle(agent);
-        notes
+        outgo
     }
 
     /// An input for `agent` is on its way to the engine until the guard is
@@ -359,15 +666,16 @@ impl Activity {
     /// never come) or its inputs changed outside the stream (a recall):
     /// decide again.
     pub fn changed(&self, agent: &str, reseated: bool) {
-        let dropped = {
+        let (dropped, user) = {
             let mut agents = self.agents.lock();
             let state = agents.entry(agent.to_string()).or_default();
             state.change();
             if reseated {
                 state.open.clear();
-                std::mem::take(&mut state.notes)
+                state.starting = false;
+                (std::mem::take(&mut state.notes), state.steers.drop_all())
             } else {
-                Vec::new()
+                (Vec::new(), Vec::new())
             }
         };
         for note in dropped {
@@ -375,15 +683,26 @@ impl Activity {
                 .done
                 .send(Err("the agent was seated again first".to_string()));
         }
+        self.dropped(
+            agent,
+            &user,
+            "the agent was seated again before it was sent",
+        );
         self.settle(agent);
     }
 
-    /// `agent` retired (a note held for it is answered as not sent).
+    /// `agent` retired (a note held for it is answered as not sent, and a
+    /// message of the user's held for it goes back to its client).
     pub fn forget(&self, agent: &str) {
         let state = self.agents.lock().remove(agent);
-        for note in state.map(|state| state.notes).unwrap_or_default() {
+        let Some(mut state) = state else {
+            return;
+        };
+        for note in std::mem::take(&mut state.notes) {
             let _ = note.done.send(Err("the agent retired first".to_string()));
         }
+        let user = state.steers.drop_all();
+        self.dropped(agent, &user, "the agent retired before it was sent");
     }
 
     /// Whether a run of `agent` the daemon saw start has not ended yet.
@@ -489,6 +808,8 @@ impl Activity {
             let Some(probed) = probed.filter(|_| !state.busy()) else {
                 return Next::Done;
             };
+            // Idle: what a user's input started has ended (or never ran).
+            state.starting = false;
             let note = IdleNote {
                 agent: agent.to_string(),
                 session_id: probed.session,
@@ -526,7 +847,7 @@ impl Drop for Sending {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -537,6 +858,7 @@ mod tests {
         run: Option<RunState>,
         asked: usize,
         told: Vec<IdleNote>,
+        held: Vec<HeldChange>,
     }
 
     fn activity(session: &SessionId) -> (Arc<Activity>, Arc<parking_lot::Mutex<World>>) {
@@ -559,7 +881,11 @@ mod tests {
             let world = Arc::clone(&world);
             Box::new(move |note: &IdleNote| world.lock().told.push(note.clone()))
         };
-        (Activity::new(probe, announce), world)
+        let told = {
+            let world = Arc::clone(&world);
+            Box::new(move |change: &HeldChange| world.lock().held.push(change.clone()))
+        };
+        (Activity::new(probe, announce, told), world)
     }
 
     /// Let the spawned questions run (the clock is paused: sleeps end at
@@ -758,6 +1084,86 @@ mod tests {
         )
     }
 
+    /// The user's messages behind the one in flight are held with the
+    /// daemon's notes: the notes do not go on their own at a tool request
+    /// meanwhile, they go with the held messages once the one in flight
+    /// is written; the clients hear each step; a run's end sends what is
+    /// held; the stop drops what is left, told.
+    #[tokio::test(start_paused = true)]
+    async fn the_user_s_held_messages_take_the_notes_with_them() {
+        let session = SessionId::new();
+        let (activity, world) = activity(&session);
+        let run = RunId::new();
+        activity.run_started("a", &session, Some(&run));
+        assert_eq!(activity.user_steer("a", "k1", "one"), Admit::Forward);
+        let Admit::Held(two) = activity.user_steer("a", "k2", "two") else {
+            panic!("held behind the one in flight");
+        };
+        let (note, note_told) = note("NOTE");
+        activity.hold_note("a", note).unwrap();
+        assert!(
+            activity.take_quiet_notes("a").is_none(),
+            "a user message waits"
+        );
+        let first = InputId::new();
+        assert!(activity.user_answered("k1", Ok(first.clone())).is_none());
+        let releasing = activity.boundary_applied("a", &first).expect("they go");
+        assert_eq!(releasing.release.text(), "two");
+        assert_eq!(
+            releasing.notes.as_ref().map(TakenNotes::text).as_deref(),
+            Some("NOTE")
+        );
+        let merged = InputId::new();
+        let Releasing { release, notes, .. } = releasing;
+        notes.unwrap().answer(&Ok(()));
+        assert_eq!(note_told.await.unwrap(), Ok(()));
+        assert!(
+            activity
+                .released("a", &release, Ok(Some(merged.clone())))
+                .is_none()
+        );
+        assert_eq!(
+            activity.held_where("a", &two),
+            HeldWhere::Sent(merged.clone())
+        );
+        assert!(activity.boundary_applied("a", &merged).is_none());
+        let held = world.lock().held.clone();
+        assert_eq!(
+            held.iter().map(|c| (&c.ids, &c.now)).collect::<Vec<_>>(),
+            vec![
+                (
+                    &vec![two.clone()],
+                    &HeldNow::Released {
+                        input_id: merged.clone()
+                    }
+                ),
+                (&vec![two.clone()], &HeldNow::Applied)
+            ]
+        );
+        // Held at the run's end: they start the next run.
+        activity.user_steer("a", "k3", "three");
+        activity.user_steer("a", "k4", "four");
+        let Some(Outgo::User(ended)) = activity.run_ended("a", Some(&run)) else {
+            panic!("the held one goes at the run's end");
+        };
+        assert_eq!(
+            (ended.release.serial, ended.release.text()),
+            (None, "four".to_string())
+        );
+        // Not running: forwarded. Held at the stop: dropped, told.
+        assert_eq!(activity.user_steer("a", "k5", "five"), Admit::Forward);
+        activity.run_started("a", &session, Some(&RunId::new()));
+        activity.user_steer("a", "k6", "six");
+        let Admit::Held(seven) = activity.user_steer("a", "k7", "seven") else {
+            panic!("held");
+        };
+        activity.stop();
+        assert!(matches!(
+            &world.lock().held.last().unwrap(),
+            HeldChange { ids, now: HeldNow::Dropped { .. }, .. } if *ids == vec![seven]
+        ));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn notes_are_held_only_for_an_open_run_and_go_together() {
         let session = SessionId::new();
@@ -786,7 +1192,9 @@ mod tests {
         activity.run_started("a", &session, Some(&run));
         let (late, _) = note("late");
         activity.hold_note("a", late).unwrap();
-        let ended = activity.run_ended("a", Some(&run)).unwrap();
+        let Some(Outgo::Notes(ended)) = activity.run_ended("a", Some(&run)) else {
+            panic!("the notes go at the run's end");
+        };
         assert_eq!(ended.text(), "late");
         activity.run_started("a", &session, Some(&RunId::new()));
         let (stopped, stopped_told) = note("stopped");

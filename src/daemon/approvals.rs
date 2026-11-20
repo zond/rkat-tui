@@ -736,6 +736,16 @@ impl Watcher {
             // call's `TurnCompleted` comes once its tools are done, right
             // before the next request: too late to be sure of it.)
             AgentEvent::ToolCallRequested { .. } => self.send_held(),
+            // A request started with an input written into it: a message
+            // of the user's in flight lets the held ones go (they ride
+            // the request after it), held ones sent as it are delivered.
+            AgentEvent::BoundaryAppendApplied { input_id, .. } => {
+                if let Some(releasing) =
+                    self.watched.activity.boundary_applied(&self.name, input_id)
+                {
+                    self.release_user(releasing);
+                }
+            }
             _ => {}
         }
         match &envelope.payload {
@@ -967,6 +977,14 @@ impl Watcher {
         } = &self.watched;
         let new = engine.new_run_started(session, run);
         activity.run_started(&self.name, session, run);
+        // A run that took the user's message in flight as its input: the
+        // held ones go (they ride its next request).
+        if let Some(releasing) = prompt
+            .as_deref()
+            .and_then(|prompt| activity.run_carries(&self.name, prompt))
+        {
+            self.release_user(releasing);
+        }
         let Some(agents) = agents.upgrade() else {
             return;
         };
@@ -1022,17 +1040,28 @@ impl Watcher {
     /// run's schedule bookkeeping end, the counts are written behind and
     /// the session's tool catalog is read again.
     /// The notes held for the agent's open run, sent as one steer.
+    /// Not while a message of the user's is in flight or held: the notes
+    /// then go with it ([`super::activity::steers`]).
     fn send_held(&self) {
         let Some(agents) = self.watched.agents.upgrade() else {
             return;
         };
-        let Some(held) = self.watched.activity.take_notes(&self.name) else {
+        let Some(held) = self.watched.activity.take_quiet_notes(&self.name) else {
             return;
         };
         let name = self.name.clone();
         tokio::spawn(async move {
             crate::daemon::agents::send_taken(agents.core(), &name, held).await;
         });
+    }
+
+    /// Send the user's held messages `releasing` as one steer, on a task
+    /// of its own.
+    fn release_user(&self, releasing: super::activity::Releasing) {
+        let Some(agents) = self.watched.agents.upgrade() else {
+            return;
+        };
+        tokio::spawn(async move { agents.release_user(releasing).await });
     }
 
     fn run_ended(&self, session: &SessionId, run: Option<&meerkat_core::RunId>) {
@@ -1045,14 +1074,22 @@ impl Watcher {
         } = &self.watched;
         let held = activity.run_ended(&self.name, run);
         if let Some(agents) = agents.upgrade() {
-            // Notes held for the run go as an idle agent's do: they start
-            // its next run.
-            if let Some(held) = held {
-                let agents = Arc::clone(&agents);
-                let name = self.name.clone();
-                tokio::spawn(async move {
-                    crate::daemon::agents::send_taken(agents.core(), &name, held).await;
-                });
+            // What was held for the run goes as an idle agent's does: it
+            // starts its next run (the user's held messages with the
+            // notes, else the notes).
+            match held {
+                Some(super::activity::Outgo::Notes(held)) => {
+                    let agents = Arc::clone(&agents);
+                    let name = self.name.clone();
+                    tokio::spawn(async move {
+                        crate::daemon::agents::send_taken(agents.core(), &name, held).await;
+                    });
+                }
+                Some(super::activity::Outgo::User(releasing)) => {
+                    let agents = Arc::clone(&agents);
+                    tokio::spawn(async move { agents.release_user(releasing).await });
+                }
+                None => {}
             }
             agents.run_ended(&self.name);
             if let Some(run) = run {

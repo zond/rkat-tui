@@ -473,6 +473,15 @@ impl Local {
         let mut wait = None;
         match method.as_str() {
             engine::MEMBER_SEND => {
+                // A message of the user's while one is in flight in the
+                // agent's open run is held here and answered at once
+                // (`super::activity::steers`).
+                if let Some(held) = self.hold_user_steer(&agent, params, send_key.as_deref()) {
+                    return Ok(Observed {
+                        answered: Some(held),
+                        ..Observed::plain(request)
+                    });
+                }
                 // A prompt to an idle agent starts a run: a mode change
                 // the client sent before it is in the agent's context
                 // first. A steer into a running turn does not wait (that
@@ -564,13 +573,62 @@ impl Local {
             input,
             wait,
             send_key,
+            answered: None,
         })
     }
 
+    /// The user's steer `params` to `agent` (sent with `key`), when the
+    /// daemon holds it behind the one in flight: its answer to the client
+    /// (the id it is followed by, [`protocol::HELD_ANSWER`]). It is the
+    /// user's input as a forwarded one is (the next run is attended, the
+    /// classifier's transcript has the words); the notes held for the run
+    /// go with it when it is sent. `None`: it is forwarded (a prompt, a
+    /// message with blocks, one sent without a key, one to an agent with
+    /// nothing in flight).
+    fn hold_user_steer(&self, agent: &str, params: &Value, key: Option<&str>) -> Option<Value> {
+        let key = key?;
+        if params.get("handling_mode").and_then(Value::as_str) != Some("steer") {
+            return None;
+        }
+        let text = params.get("content").and_then(Value::as_str)?;
+        if text.trim().is_empty() {
+            return None;
+        }
+        let session = self.core.conversations.current(agent)?;
+        let crate::daemon::activity::steers::Admit::Held(id) =
+            self.core.activity.user_steer(agent, key, text)
+        else {
+            return None;
+        };
+        tracing::info!(%agent, held = %id, "held a message of the user's behind the one in flight");
+        self.agents.touch(agent);
+        self.agents.user_acted(agent, true);
+        self.core.engine.human_input(&session);
+        self.core.conversations.touch(&session, agent);
+        let n = self.inputs.fetch_add(1, Ordering::Relaxed);
+        let input_key = InputKey::new(format!("rkat-attach:{}:{n}", std::process::id()));
+        self.core
+            .engine
+            .record_user_input(&session, input_key, text);
+        self.sent.held(key, &id);
+        Some(serde_json::json!({ protocol::HELD_ANSWER: id }))
+    }
+
     /// The engine answered the send the client keyed `key` with `answer`
-    /// (`rkat/sent` tells it from now on).
+    /// (`rkat/sent` tells it from now on). When it is the user's message
+    /// in flight, the messages held behind it may go now.
     pub fn sent_answered(&self, key: &str, answer: &Value) {
         self.sent.answered(key, answer);
+        let input = answer
+            .pointer("/result/admission/input_id")
+            .and_then(Value::as_str)
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+            .map(meerkat_core::lifecycle::InputId::from_uuid)
+            .ok_or(());
+        if let Some(releasing) = self.core.activity.user_answered(key, input) {
+            let agents = Arc::clone(&self.agents);
+            tokio::spawn(async move { agents.release_user(releasing).await });
+        }
     }
 
     /// Whether `caller` may send the engine request `method` with

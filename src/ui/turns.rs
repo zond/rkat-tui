@@ -356,8 +356,10 @@ impl App {
     /// that no recall has found with the agent.
     pub(super) fn has_admitted_recallable(&self) -> bool {
         self.pending.items().iter().any(|p| {
-            matches!(p.state, PendingState::Queued | PendingState::Admitted)
-                && !self.delivery.reached(p.id)
+            matches!(
+                p.state,
+                PendingState::Queued | PendingState::Admitted | PendingState::Held
+            ) && !self.delivery.reached(p.id)
         })
     }
 
@@ -379,7 +381,12 @@ impl App {
             .pending
             .items()
             .iter()
-            .filter(|p| matches!(p.state, PendingState::Queued | PendingState::Admitted))
+            .filter(|p| {
+                matches!(
+                    p.state,
+                    PendingState::Queued | PendingState::Admitted | PendingState::Held
+                )
+            })
             .map(|p| p.id)
             .collect();
         let reached = left.len();

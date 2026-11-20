@@ -1396,7 +1396,8 @@ async fn an_agent_cannot_recall_another_agents_input() {
     let steer = remote::send(&a, "steer of agent a", true, "k2")
         .await
         .unwrap()
-        .expect("the daemon names the steer's input");
+        .expect("the daemon names the steer's input")
+        .input;
     let unknown = InputId::new();
     let params = RecallParams {
         input_ids: vec![steer.clone(), unknown.clone()],

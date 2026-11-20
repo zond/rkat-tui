@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use meerkat_core::lifecycle::{InputId, RunId};
+use meerkat_core::lifecycle::RunId;
 use meerkat_core::{AgentErrorClass, AgentEvent, EventEnvelope, Message, SessionId};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -386,7 +386,7 @@ enum Report {
     Sent {
         turn: u64,
         steer: Option<PendingId>,
-        result: Result<Option<InputId>, SendFailure>,
+        result: Result<Option<remote::Admitted>, SendFailure>,
         /// The text to send once more: the daemon reloaded the agent
         /// after a storage failure and the input was not taken
         /// ([`protocol::AGENT_RELOADED`]).
@@ -1343,6 +1343,12 @@ mod tests {
     use super::turn::model_switch;
     use super::turn::state::{Deadline, Interrupt, Kind, Open};
     use super::*;
+    use meerkat_core::lifecycle::InputId;
+
+    /// A send admitted by the engine as `input`.
+    fn engine(input: InputId) -> Option<remote::Admitted> {
+        Some(remote::Admitted { input, held: false })
+    }
 
     /// The runner's open turn.
     fn open(runner: &Runner) -> &Open {
@@ -2100,9 +2106,9 @@ mod tests {
             runner.steering.steers.sending(PendingId(id));
         }
         // 2's input joined the run before its send answered.
-        assert_eq!(runner.steering.steers.applied(&early), None);
-        runner.sent(1, Some(PendingId(1)), Ok(Some(InputId::new())));
-        runner.sent(1, Some(PendingId(2)), Ok(Some(early)));
+        assert!(runner.steering.steers.applied(&early).is_empty());
+        runner.sent(1, Some(PendingId(1)), Ok(engine(InputId::new())));
+        runner.sent(1, Some(PendingId(2)), Ok(engine(early)));
         runner.sent(1, Some(PendingId(3)), Ok(None));
         let mut seen = Vec::new();
         while let Ok(msg) = ui_rx.try_recv() {
@@ -2129,6 +2135,64 @@ mod tests {
         // 1 waits for its own input; 3 is not followed any more.
         assert!(runner.steering.steers.holds(PendingId(1)));
         assert!(!runner.steering.steers.holds(PendingId(3)));
+    }
+
+    /// A held send is acknowledged and told held; the daemon's word moves
+    /// it on: sent (told so, followed by the engine's input, whose boundary
+    /// event delivers it), or dropped (back to the editor, with why).
+    #[tokio::test]
+    async fn the_daemon_s_word_on_held_messages_moves_them_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut ui_rx) = runner(dir.path());
+        runner.turn = prompted(1);
+        let (two, three, merged) = (InputId::new(), InputId::new(), InputId::new());
+        for (id, held) in [(2, &two), (3, &three)] {
+            runner.steering.steers.sending(PendingId(id));
+            runner.sent(
+                1,
+                Some(PendingId(id)),
+                Ok(Some(remote::Admitted {
+                    input: held.clone(),
+                    held: true,
+                })),
+            );
+        }
+        let held: Vec<PendingId> = drain(&mut ui_rx)
+            .into_iter()
+            .filter_map(|m| match m {
+                Msg::SteerHeld(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(held, [PendingId(2), PendingId(3)]);
+        let agent = String::new();
+        runner.held_changed(protocol::HeldChange {
+            agent: agent.clone(),
+            ids: vec![two],
+            now: protocol::HeldNow::Released {
+                input_id: merged.clone(),
+            },
+        });
+        runner.held_changed(protocol::HeldChange {
+            agent,
+            ids: vec![three],
+            now: protocol::HeldNow::Dropped { why: "gone".into() },
+        });
+        let msgs = drain(&mut ui_rx);
+        assert!(
+            msgs.iter()
+                .any(|m| matches!(m, Msg::SteerReleased(ids) if *ids == [PendingId(2)])),
+            "{msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| matches!(m, Msg::NotDelivered { id: PendingId(3), why: Some(why) } if why == "gone")),
+            "{msgs:?}"
+        );
+        assert_eq!(
+            runner.steering.steers.outstanding_inputs(),
+            vec![merged.clone()]
+        );
+        assert_eq!(runner.steering.steers.applied(&merged), vec![PendingId(2)]);
     }
 
     #[test]
@@ -2538,7 +2602,7 @@ mod tests {
             runner.on_event(feed.completed(&run), None);
             runner.idle_reported(feed.idle(&run, 0));
             assert!(runner.turn.is_open(), "its send is unanswered");
-            runner.sent(0, Some(PendingId(7)), Ok(Some(input.clone())));
+            runner.sent(0, Some(PendingId(7)), Ok(engine(input.clone())));
             // The daemon decided before the steer arrived; it holds it now.
             assert!(!runner.turn.is_open(), "nothing on its way any more");
             let msgs = drain(&mut rx);
@@ -2599,7 +2663,7 @@ mod tests {
             .steering
             .steers
             .sent_text(PendingId(7), "also update the docs");
-        runner.sent(0, Some(PendingId(7)), Ok(Some(InputId::new())));
+        runner.sent(0, Some(PendingId(7)), Ok(engine(InputId::new())));
         runner.on_event(feed.completed(&first), None);
         drain(&mut rx);
         runner.on_event(
@@ -2669,7 +2733,7 @@ mod tests {
         let inputs: Vec<InputId> = (0..4).map(|_| InputId::new()).collect();
         for (n, input) in (1..).zip(&inputs) {
             runner.steering.steers.sending(PendingId(n));
-            runner.sent(0, Some(PendingId(n)), Ok(Some(input.clone())));
+            runner.sent(0, Some(PendingId(n)), Ok(engine(input.clone())));
         }
         drain(&mut rx);
         let run = RunId::new();
@@ -3129,7 +3193,13 @@ mod tests {
                 "{expect}"
             );
             match expect {
-                "admitted" => assert_eq!(report, Ok(Some(input.clone()))),
+                "admitted" => assert_eq!(
+                    report,
+                    Ok(Some(remote::Admitted {
+                        input: input.clone(),
+                        held: false
+                    }))
+                ),
                 "refused" => assert!(matches!(report, Err(SendFailure::NotSent(_))), "{report:?}"),
                 _ => assert!(matches!(report, Err(SendFailure::Unknown(_))), "{report:?}"),
             }

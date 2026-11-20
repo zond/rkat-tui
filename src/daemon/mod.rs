@@ -791,6 +791,9 @@ impl Daemon {
         // Nor an agent's socket, nor a connected helper's.
         self.local.core().wires.close();
         self.local.core().links.close();
+        // The user's messages held for an open run go back to their
+        // clients and are saved, not lost (`activity::steers`).
+        self.local.save_held_at_stop();
         // No more idle questions: one left asking about a conversation the
         // shutdown unregisters would keep the runtime and the mobs' handles
         // past the daemon's end (`activity::Activity::stop`).
@@ -1184,11 +1187,15 @@ fn idle_activity(
             }) as futures::future::BoxFuture<'static, Option<activity::Probed>>
         })
     };
+    let told = Arc::clone(decisions);
     let decisions = Arc::clone(decisions);
     activity::Activity::new(
         probe,
         Box::new(move |note: &protocol::IdleNote| {
             decisions.broadcast(protocol::IDLE, note);
+        }),
+        Box::new(move |change: &protocol::HeldChange| {
+            told.broadcast(protocol::HELD, change);
         }),
     )
 }

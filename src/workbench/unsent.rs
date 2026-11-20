@@ -45,6 +45,26 @@ pub(super) fn save_unsent(
     }
 }
 
+/// Append `texts` (messages of the user's never sent, oldest first) to the
+/// realm's [`UNSENT_FILE`]: the daemon's own, for what it held when it
+/// stopped. Where, when there were any and the write went.
+pub(crate) fn save_texts(realm_root: &Path, texts: &[String]) -> Option<SavedUnsent> {
+    if texts.is_empty() {
+        return None;
+    }
+    let path = realm_root.join(UNSENT_FILE);
+    match append_unsent(&path, texts) {
+        Ok(()) => Some(SavedUnsent {
+            count: texts.len(),
+            path,
+        }),
+        Err(err) => {
+            tracing::warn!(error = %err, path = %path.display(), "could not save unsent messages");
+            None
+        }
+    }
+}
+
 /// Texts of the held messages the runtime did not deliver, oldest first
 /// (the Ctrl-X Ctrl-S prompt, which has no id, last).
 fn unsent_texts(

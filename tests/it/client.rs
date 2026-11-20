@@ -996,12 +996,14 @@ async fn member_send_names_the_admitted_input() {
     let connection = daemon.connect_bound().await;
     let prompt = rkat_tui::client::remote::send(&connection, "hello", false, "k-prompt")
         .await
-        .unwrap();
+        .unwrap()
+        .map(|sent| sent.input);
     assert!(prompt.is_some(), "a prompt into an idle agent is named");
     llm.wait_call(0).await;
     let steer = rkat_tui::client::remote::send(&connection, "and this", true, "k-steer")
         .await
-        .unwrap();
+        .unwrap()
+        .map(|sent| sent.input);
     assert!(steer.is_some(), "a steer into a running turn is named");
     assert_ne!(prompt, steer);
     // The daemon kept what the engine did with each keyed

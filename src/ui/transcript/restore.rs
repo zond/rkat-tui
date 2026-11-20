@@ -516,6 +516,33 @@ mod tests {
         );
     }
 
+    /// Messages the daemon held and sent as one (a blank line between, the
+    /// held notes in front) restore as one message of the user's with
+    /// each text once.
+    #[test]
+    fn held_messages_sent_as_one_restore_once() {
+        let held = format!(
+            "a note of the daemon's\n\n{}\n\nfirst held\n\nsecond held",
+            crate::daemon::local::HELD_NOTE_SEPARATOR
+        );
+        let restored = blocks_from_messages(&[
+            Message::User(UserMessage::text("in flight".to_string())),
+            Message::User(UserMessage::text(held)),
+        ]);
+        let users: Vec<&str> = restored
+            .iter()
+            .filter_map(|block| match block {
+                Block::User { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            users,
+            ["in flight", "first held\n\nsecond held"],
+            "{restored:?}"
+        );
+    }
+
     /// Each input the daemon composed restores as its one dim line, never
     /// as the user's message; the user's own words around them stay his.
     #[test]

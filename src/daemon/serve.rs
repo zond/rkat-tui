@@ -525,6 +525,9 @@ pub struct Observed {
     /// the request: the engine's answer is recorded under it
     /// ([`LocalMethods::sent_answered`]).
     pub send_key: Option<String>,
+    /// The daemon's own answer, in place of forwarding the request (a
+    /// message of the user's it holds, [`super::activity::steers`]).
+    pub answered: Option<Value>,
 }
 
 /// What a forwarded request waits for before it goes ([`Observed::wait`]).
@@ -545,6 +548,7 @@ impl Observed {
             input: None,
             wait: None,
             send_key: None,
+            answered: None,
         }
     }
 }
@@ -971,6 +975,11 @@ async fn proxy_with<R, W, E, L>(
                     )));
                 }
             }
+            Routed::Answered { id, result } => {
+                if id.is_some() {
+                    let _ = out_tx.send(Outgoing::line(protocol::result_line(id, result)));
+                }
+            }
             Routed::Denied { id, refusal } => {
                 tracing::warn!(message = %refusal.message, "refused an engine request for another agent");
                 if id.is_some() {
@@ -1224,6 +1233,14 @@ pub enum Routed {
         /// Its params (`Null` when absent).
         params: Value,
     },
+    /// A served engine request the daemon answers itself (see
+    /// [`Observed::answered`]): never forwarded.
+    Answered {
+        /// The request id (`None`: a notification, which gets no answer).
+        id: Option<RpcId>,
+        /// The answer's result.
+        result: Value,
+    },
     /// A served engine request the caller may not send (see
     /// [`LocalMethods::observe`]): answered with the refusal (a request)
     /// or dropped (a notification), never forwarded.
@@ -1322,10 +1339,15 @@ pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L, caller: &Caller) -
             let id = id();
             match local.observe(caller, request) {
                 Ok(Observed {
+                    answered: Some(result),
+                    ..
+                }) => Routed::Answered { id, result },
+                Ok(Observed {
                     request,
                     input,
                     wait,
                     send_key,
+                    answered: None,
                 }) => Routed::Forward {
                     line: format!("{request}\n"),
                     awaits: awaits(&request, &method, input, send_key),

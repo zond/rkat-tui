@@ -212,7 +212,7 @@ impl Runner {
         &mut self,
         turn: u64,
         steer: Option<PendingId>,
-        result: Result<Option<InputId>, SendFailure>,
+        result: Result<Option<remote::Admitted>, SendFailure>,
     ) {
         let current = self.turn.id() == Some(turn);
         match (steer, result) {
@@ -222,8 +222,13 @@ impl Runner {
                 }
                 self.steering.admitted.push(id);
                 self.send(Msg::SteerAck { id, result: Ok(()) });
+                // Held by the daemon behind the message in flight: its
+                // line says it goes in one step later.
+                if input.as_ref().is_some_and(|input| input.held) {
+                    self.send(Msg::SteerHeld(id));
+                }
                 let delivered = match input {
-                    Some(input) => self.steering.steers.admitted(id, input),
+                    Some(input) => self.steering.steers.admitted(id, input.input),
                     None => {
                         self.steering.steers.forget(id);
                         self.notice(NoticeLevel::Warn, UNNAMED_INPUT);
@@ -299,10 +304,9 @@ impl Runner {
             return;
         };
         let reports = self.reporter();
+        let input_ids = self.steering.steers.outstanding_inputs();
         tokio::spawn(async move {
-            let params = protocol::RecallParams {
-                input_ids: outstanding.into_iter().map(|(_, input)| input).collect(),
-            };
+            let params = protocol::RecallParams { input_ids };
             let result = bounded(
                 CALL_TIMEOUT,
                 remote::call::<protocol::method::Recall>(&connection, &params),
@@ -451,13 +455,7 @@ impl Runner {
         let epoch = Some(epoch);
         let params = protocol::InterruptParams {
             target,
-            input_ids: self
-                .steering
-                .steers
-                .outstanding()
-                .into_iter()
-                .map(|(_, input)| input)
-                .collect(),
+            input_ids: self.steering.steers.outstanding_inputs(),
             hard,
         };
         let reports = self.reporter();
@@ -502,7 +500,7 @@ impl Runner {
                     self.send(Msg::Returned(returned));
                 }
                 for input in &answer.read {
-                    if let Some(id) = self.steering.steers.settled(input) {
+                    for id in self.steering.steers.settled(input) {
                         self.send(Msg::SteerDelivered(id));
                     }
                 }
@@ -645,7 +643,7 @@ impl Runner {
             // This client's steer only: another client's input marks
             // nothing here.
             AgentEvent::BoundaryAppendApplied { input_id, .. } => {
-                if let Some(id) = self.steering.steers.applied(input_id) {
+                for id in self.steering.steers.applied(input_id) {
                     self.send(Msg::SteerDelivered(id));
                 }
             }
@@ -922,6 +920,38 @@ impl Runner {
         }
     }
 
+    /// The daemon's held messages moved on ([`protocol::HELD`]): this
+    /// client's among them are sent (followed by the engine's input from
+    /// now on, their lines say they go in at the next step), written
+    /// into a request (delivered), or dropped unsent (back to the editor,
+    /// [`Msg::NotDelivered`]).
+    pub(super) fn held_changed(&mut self, change: protocol::HeldChange) {
+        match change.now {
+            protocol::HeldNow::Released { input_id } => {
+                let moved = self.steering.steers.rekey(&change.ids, &input_id);
+                if !moved.is_empty() {
+                    self.send(Msg::SteerReleased(moved));
+                }
+            }
+            protocol::HeldNow::Applied => {
+                for id in self.steering.steers.applied_held(&change.ids) {
+                    self.send(Msg::SteerDelivered(id));
+                }
+            }
+            protocol::HeldNow::Dropped { why } => {
+                for held in &change.ids {
+                    for id in self.steering.steers.settled(held) {
+                        self.steering.admitted.retain(|admitted| *admitted != id);
+                        self.send(Msg::NotDelivered {
+                            id,
+                            why: Some(why.clone()),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     /// The daemon says the agent is idle (`rkat/idle`): no run open and
     /// no input of the conversation unfinished.
     pub(super) fn idle_reported(&mut self, note: protocol::IdleNote) {
@@ -957,10 +987,9 @@ impl Runner {
         };
         self.steering.fates = FatesAsk::Asking;
         let reports = self.reporter();
+        let input_ids = self.steering.steers.outstanding_inputs();
         tokio::spawn(async move {
-            let params = protocol::RecallParams {
-                input_ids: outstanding.into_iter().map(|(_, input)| input).collect(),
-            };
+            let params = protocol::RecallParams { input_ids };
             let result = bounded(
                 CALL_TIMEOUT,
                 remote::call::<protocol::method::Inputs>(&connection, &params),
@@ -982,14 +1011,17 @@ impl Runner {
                 for row in answer.inputs {
                     match row.fate {
                         protocol::InputFate::Taken => {
-                            if let Some(id) = self.steering.steers.settled(&row.input_id) {
+                            for id in self.steering.steers.settled(&row.input_id) {
                                 self.send(Msg::SteerDelivered(id));
                             }
                         }
                         protocol::InputFate::Dropped { why } => {
-                            if let Some(id) = self.steering.steers.settled(&row.input_id) {
+                            for id in self.steering.steers.settled(&row.input_id) {
                                 self.steering.admitted.retain(|admitted| *admitted != id);
-                                self.send(Msg::NotDelivered { id, why });
+                                self.send(Msg::NotDelivered {
+                                    id,
+                                    why: why.clone(),
+                                });
                             }
                         }
                         protocol::InputFate::Pending | protocol::InputFate::Unknown => {}
@@ -1412,7 +1444,7 @@ async fn ask_fate(
     connection: &Connection,
     key: &str,
     err: &CallFailure,
-) -> Result<Option<InputId>, SendFailure> {
+) -> Result<Option<remote::Admitted>, SendFailure> {
     let asked = bounded(
         CALL_TIMEOUT,
         remote::call::<protocol::method::Sent>(
@@ -1426,7 +1458,14 @@ async fn ask_fate(
     match asked {
         Ok(protocol::SentFate::Admitted { input_id }) => {
             tracing::info!(%err, "a send's answer was lost; the daemon says the agent has it");
-            Ok(input_id)
+            Ok(input_id.map(|input| remote::Admitted { input, held: false }))
+        }
+        Ok(protocol::SentFate::Held { input_id }) => {
+            tracing::info!(%err, "a send's answer was lost; the daemon says it holds it");
+            Ok(Some(remote::Admitted {
+                input: input_id,
+                held: true,
+            }))
         }
         Ok(protocol::SentFate::Refused { why }) => Err(SendFailure::NotSent(why)),
         Ok(protocol::SentFate::NotReceived) => Err(SendFailure::NotSent(format!(

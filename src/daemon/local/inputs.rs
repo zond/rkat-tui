@@ -29,25 +29,50 @@ impl Local {
     ///
     /// [`protocol::NO_AGENT`] when the connection is bound to no agent or
     /// its agent has no conversation.
+    ///
+    /// A message the daemon holds (`crate::daemon::activity::steers`) is
+    /// taken back from the hold, at no cost; one it sent with others is
+    /// recalled as the input they went as, only when all of them are
+    /// named (else it counts as reached). A message in flight that is
+    /// taken back lets the held ones go.
     async fn take_back(
         &self,
         caller: &Caller,
         inputs: &[meerkat_core::lifecycle::InputId],
     ) -> Result<protocol::Recalled, Refusal> {
         let session = self.caller_session(caller, "rkat/recall takes back")?;
-        let mut answer = protocol::Recalled::default();
-        for input in inputs {
+        let agent = caller.agent.clone().unwrap_or_default();
+        let (taken, reached) = self.core.activity.take_back(&agent, inputs);
+        let mut answer = protocol::Recalled {
+            recalled: taken.held,
+            reached,
+            ..protocol::Recalled::default()
+        };
+        let engine_inputs = taken
+            .other
+            .into_iter()
+            .map(|input| (input.clone(), vec![input]))
+            .chain(taken.sent);
+        let mut withdrawn = Vec::new();
+        for (input, named) in engine_inputs {
             match self
                 .parts
                 .machine
-                .recall_queued_input(&session, input)
+                .recall_queued_input(&session, &input)
                 .await
             {
-                Ok(Some(recall)) if recall.abandoned() => answer.recalled.push(input.clone()),
-                Ok(Some(_)) => answer.reached.push(input.clone()),
-                Ok(None) => answer.foreign.push(input.clone()),
+                Ok(Some(recall)) if recall.abandoned() => {
+                    withdrawn.push(input);
+                    answer.recalled.extend(named);
+                }
+                Ok(Some(_)) => answer.reached.extend(named),
+                Ok(None) => answer.foreign.extend(named),
                 Err(err) => answer.errors.push(format!("input {input}: {err}")),
             }
+        }
+        if let Some(releasing) = self.core.activity.user_settled(&agent, &withdrawn, false) {
+            let agents = Arc::clone(&self.agents);
+            tokio::spawn(async move { agents.release_user(releasing).await });
         }
         if !answer.recalled.is_empty() {
             tracing::info!(recalled = answer.recalled.len(), %session, "rkat/recall");
@@ -86,8 +111,24 @@ impl Local {
         use meerkat_runtime::SessionServiceRuntimeExt as _;
 
         let session = self.caller_session(caller, "rkat/inputs reads")?;
+        let agent = caller.agent.clone().unwrap_or_default();
         let mut answer = protocol::InputFates::default();
-        for input in inputs {
+        for asked in inputs {
+            // A held message is pending; one sent with others is the input
+            // they went as.
+            use crate::daemon::activity::HeldWhere;
+            let input = match self.core.activity.held_where(&agent, asked) {
+                HeldWhere::Held => {
+                    answer.inputs.push(protocol::InputRow {
+                        input_id: asked.clone(),
+                        fate: protocol::InputFate::Pending,
+                    });
+                    continue;
+                }
+                HeldWhere::Sent(sent) => sent,
+                HeldWhere::NotHeld => asked.clone(),
+            };
+            let input = &input;
             let fate = match self.parts.machine.input_state(&session, input).await {
                 Ok(Some(stored)) => input_fate(&stored.seed),
                 Ok(None) => protocol::InputFate::Unknown,
@@ -97,7 +138,7 @@ impl Local {
                 }
             };
             answer.inputs.push(protocol::InputRow {
-                input_id: input.clone(),
+                input_id: asked.clone(),
                 fate,
             });
         }
@@ -210,6 +251,23 @@ impl SentLog {
         self.changed.notify_waiters();
     }
 
+    /// The send `key` is held in the daemon, as `id`.
+    pub fn held(&self, key: &str, id: &meerkat_core::lifecycle::InputId) {
+        let mut sends = self.sends.lock();
+        sends.retain(|(sent, _)| sent != key);
+        if sends.len() >= SENT_KEPT {
+            sends.pop_front();
+        }
+        sends.push_back((
+            key.to_string(),
+            protocol::SentFate::Held {
+                input_id: id.clone(),
+            },
+        ));
+        drop(sends);
+        self.changed.notify_waiters();
+    }
+
     /// What became of the send `key` now.
     #[must_use]
     pub fn fate(&self, key: &str) -> protocol::SentFate {
@@ -239,6 +297,24 @@ impl SentLog {
 }
 
 impl Local {
+    /// The daemon stops: the user's messages it still holds are not sent
+    /// (the engine does not deliver even a sent message that a stop catches
+    /// in a run, `docs/evidence.md`), their clients get them back in the
+    /// editor, and they are saved in the realm's unsent file, which the
+    /// next start announces, for a user whose client is gone.
+    pub fn save_held_at_stop(&self) {
+        let realm = &self.parts.report.realm;
+        let file = realm.join(crate::workbench::unsent::UNSENT_FILE);
+        let why = format!(
+            "the daemon stopped before it sent it; it is also saved in {}",
+            file.display()
+        );
+        let texts = self.core.activity.drop_for_stop(&why);
+        if let Some(saved) = crate::workbench::unsent::save_texts(realm, &texts) {
+            tracing::info!(count = saved.count, path = %saved.path.display(), "saved the user's held messages as the daemon stops");
+        }
+    }
+
     /// `rkat/sent`: what became of the send `key` (waiting a little for
     /// the engine's answer to one it has not answered yet).
     pub(super) async fn sent_fate(&self, key: &str) -> protocol::SentFate {

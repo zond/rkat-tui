@@ -38,6 +38,9 @@ pub enum Push {
     Idle(protocol::IdleNote),
     /// A run of an agent is open ([`protocol::RUNNING`]).
     Running(protocol::RunningNote),
+    /// The daemon's held messages of the user's moved on
+    /// ([`protocol::HELD`]).
+    Held(protocol::HeldChange),
     /// A notice for one agent's clients ([`protocol::AGENT_NOTICE`]).
     AgentNotice(protocol::AgentNotice),
     /// A helper ended ([`protocol::HELPER_ENDED`]).
@@ -92,6 +95,7 @@ impl Push {
             protocol::MOB => Self::Mob(read(note)?),
             protocol::IDLE => Self::Idle(read(note)?),
             protocol::RUNNING => Self::Running(read(note)?),
+            protocol::HELD => Self::Held(read(note)?),
             protocol::AGENT_NOTICE => Self::AgentNotice(read(note)?),
             protocol::HELPER_ENDED => Self::HelperEnded(read(note)?),
             protocol::SEATED => Self::Seated(read(note)?),
@@ -176,6 +180,18 @@ mod tests {
         assert!(
             matches!(running, Some(Push::Running(r)) if r.agent == "main-a" && r.run_id == run)
         );
+        let (held, input) = (
+            meerkat_core::lifecycle::InputId::new(),
+            meerkat_core::lifecycle::InputId::new(),
+        );
+        let released = Push::decode(note(
+            protocol::HELD,
+            json!({"agent": "main-a", "ids": [held], "now": {"kind": "released", "input_id": input}}),
+        ));
+        assert!(matches!(
+            released,
+            Some(Push::Held(c)) if c.ids == [held] && c.now == protocol::HeldNow::Released { input_id: input }
+        ));
         // Unreadable parameters and unknown methods are not acted on.
         assert!(Push::decode(note(protocol::COST, json!({"nope": true}))).is_none());
         assert!(Push::decode(note("rkat/unknown", json!({}))).is_none());

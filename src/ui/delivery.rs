@@ -73,6 +73,10 @@ pub enum PendingState {
     /// Admitted to the runtime as a durable steer: written into the running
     /// turn at its next model boundary, or run as a follow-up turn.
     Admitted,
+    /// Admitted, and held by the daemon behind the user's message in
+    /// flight: it goes, with the others held, once that one is written
+    /// (one step after the next). Taking it back is free.
+    Held,
     /// Held by the UI (compaction is running, or no turn was running to
     /// steer into); sent as a new turn when the current work ends.
     Deferred,
@@ -92,6 +96,7 @@ impl PendingState {
         match self {
             Self::Queued => QueuedLabel::Queued,
             Self::Admitted => QueuedLabel::Delivering,
+            Self::Held => QueuedLabel::Held,
             Self::Deferred => QueuedLabel::Deferred,
             Self::Shell => QueuedLabel::Shell,
             Self::Command => QueuedLabel::Command,
@@ -270,6 +275,33 @@ impl PendingQueue {
         }
     }
 
+    /// The daemon holds admitted item `id` behind the message in flight.
+    pub fn hold(&mut self, transcript: &mut Transcript, id: PendingId) {
+        if self
+            .get(id)
+            .is_some_and(|p| p.state == PendingState::Admitted)
+        {
+            self.set_state(transcript, id, PendingState::Held);
+        }
+    }
+
+    /// The daemon sent held item `id`: it goes in at the next step.
+    pub fn release(&mut self, transcript: &mut Transcript, id: PendingId) {
+        if self.get(id).is_some_and(|p| p.state == PendingState::Held) {
+            self.set_state(transcript, id, PendingState::Admitted);
+        }
+    }
+
+    /// The newest item the daemon holds.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn newest_held(&self) -> Option<&Pending> {
+        self.items
+            .iter()
+            .rev()
+            .find(|p| p.state == PendingState::Held)
+    }
+
     /// Show item `id` as delivered: its placeholder becomes a user block in
     /// place. The text is kept until the turn ends, in case the runtime
     /// discards the application again.
@@ -367,6 +399,17 @@ mod tests {
         assert_eq!(label(&transcript), Some(QueuedLabel::Queued));
         q.set_state(&mut transcript, id, PendingState::Admitted);
         assert_eq!(label(&transcript), Some(QueuedLabel::Delivering));
+        // Held by the daemon, then sent: only an admitted item is held,
+        // only a held one released.
+        q.hold(&mut transcript, id);
+        assert_eq!(label(&transcript), Some(QueuedLabel::Held));
+        assert_eq!(q.newest_held().map(|p| p.id), Some(id));
+        q.hold(&mut transcript, id);
+        q.release(&mut transcript, id);
+        assert_eq!(label(&transcript), Some(QueuedLabel::Delivering));
+        q.release(&mut transcript, id);
+        assert_eq!(label(&transcript), Some(QueuedLabel::Delivering));
+        assert!(q.newest_held().is_none());
         q.show_delivered(&mut transcript, id);
         assert!(q.is_empty());
         assert_eq!(
@@ -478,6 +521,12 @@ mod tests {
     fn labels_follow_states() {
         assert_eq!(PendingState::Queued.label(), QueuedLabel::Queued);
         assert_eq!(PendingState::Admitted.label(), QueuedLabel::Delivering);
+        assert_eq!(PendingState::Held.label(), QueuedLabel::Held);
+        assert_eq!(
+            QueuedLabel::Held.text(),
+            "goes in at the step after the next"
+        );
+        assert!(!PendingState::Held.recallable());
         assert_eq!(PendingState::Deferred.label(), QueuedLabel::Deferred);
         assert!(PendingState::Deferred.recallable());
         assert!(!PendingState::Admitted.recallable());

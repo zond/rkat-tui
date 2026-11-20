@@ -78,24 +78,52 @@ impl Local {
             returned: Vec::new(),
             read: Vec::new(),
         };
-        let mut open: Vec<InputId> = Vec::new();
+        // Each engine input with the ids the client named of it: a message
+        // the daemon held comes back at once (the engine never had it);
+        // held ones it sent together are the input they went as.
+        let mut open: Vec<(InputId, Vec<InputId>)> = Vec::new();
         let mut follow_ups: Vec<RunId> = Vec::new();
+        let mut settled: Vec<InputId> = Vec::new();
         let run = match &target {
             InterruptTarget::Run { run_id } => Some(run_id.clone()),
             InterruptTarget::Current => machine.current_run(&session).await,
             InterruptTarget::Inputs => None,
         };
-        for input in &input_ids {
-            match self.take_back_one(&session, input).await {
-                Fate::Returned => answer.returned.push(input.clone()),
-                Fate::Read => answer.read.push(input.clone()),
+        let (taken, reached) = self.core.activity.take_back(&agent, &input_ids);
+        answer.returned.extend(taken.held);
+        let mut named: Vec<(InputId, Vec<InputId>)> = taken
+            .other
+            .into_iter()
+            .map(|input| (input.clone(), vec![input]))
+            .chain(taken.sent)
+            .collect();
+        for id in reached {
+            if let crate::daemon::activity::HeldWhere::Sent(input) =
+                self.core.activity.held_where(&agent, &id)
+            {
+                match named.iter_mut().find(|(sent, _)| *sent == input) {
+                    Some((_, ids)) => ids.push(id),
+                    None => named.push((input, vec![id])),
+                }
+            }
+        }
+        for (input, ids) in named {
+            match self.take_back_one(&session, &input).await {
+                Fate::Returned => {
+                    settled.push(input);
+                    answer.returned.extend(ids);
+                }
+                Fate::Read => {
+                    settled.push(input);
+                    answer.read.extend(ids);
+                }
                 Fate::HeldBy(holder) if run.as_ref() != Some(&holder) => {
                     if !follow_ups.contains(&holder) {
                         follow_ups.push(holder);
                     }
-                    open.push(input.clone());
+                    open.push((input, ids));
                 }
-                Fate::HeldBy(_) | Fate::Open => open.push(input.clone()),
+                Fate::HeldBy(_) | Fate::Open => open.push((input, ids)),
             }
         }
 
@@ -119,10 +147,16 @@ impl Local {
                 break;
             }
             let mut still = Vec::new();
-            for input in open {
+            for (input, ids) in open {
                 match self.take_back_one(&session, &input).await {
-                    Fate::Returned => answer.returned.push(input),
-                    Fate::Read => answer.read.push(input),
+                    Fate::Returned => {
+                        settled.push(input);
+                        answer.returned.extend(ids);
+                    }
+                    Fate::Read => {
+                        settled.push(input);
+                        answer.read.extend(ids);
+                    }
                     Fate::HeldBy(holder) => {
                         // Taken by a run after the stop (or not settled yet):
                         // stop that one too, then read again.
@@ -134,9 +168,9 @@ impl Local {
                         {
                             answer.follow_ups += 1;
                         }
-                        still.push(input);
+                        still.push((input, ids));
                     }
-                    Fate::Open => still.push(input),
+                    Fate::Open => still.push((input, ids)),
                 }
             }
             open = still;
@@ -146,6 +180,12 @@ impl Local {
                 left = open.len(),
                 "rkat/interrupt: messages not settled yet"
             );
+        }
+        // The message in flight came back or was read: what another
+        // client has held goes at the run's end.
+        if let Some(releasing) = self.core.activity.user_settled(&agent, &settled, true) {
+            let agents = Arc::clone(&self.agents);
+            tokio::spawn(async move { agents.release_user(releasing).await });
         }
         self.core.activity.changed(&agent, false);
         #[cfg(any(test, feature = "test-support"))]

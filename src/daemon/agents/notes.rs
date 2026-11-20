@@ -173,6 +173,17 @@ pub(crate) async fn steer_member(
     member: AgentIdentity,
     text: String,
 ) -> Result<(), meerkat_mob::MobError> {
+    steer_member_as(core, mob, member, text).await.map(drop)
+}
+
+/// [`steer_member`], answering the input the member's runtime admitted
+/// the steer as (`None`: it named none).
+pub(crate) async fn steer_member_as(
+    core: &Core,
+    mob: &MobId,
+    member: AgentIdentity,
+    text: String,
+) -> Result<Option<meerkat_core::lifecycle::InputId>, meerkat_mob::MobError> {
     let send = |text: String| {
         core.state.mob_member_send(
             mob,
@@ -182,12 +193,73 @@ pub(crate) async fn steer_member(
             None,
         )
     };
-    match send(text.clone()).await {
+    let receipt = match send(text.clone()).await {
         Err(meerkat_mob::MobError::MemberReloadRequired { reason, .. }) => {
             crate::daemon::storage::reload(core, mob, &member, &reason, true).await?;
-            send(text).await.map(drop)
+            send(text).await?
         }
-        other => other.map(drop),
+        other => other?,
+    };
+    Ok(receipt.admission.map(|admission| admission.input_id))
+}
+
+impl Agents {
+    /// Send the user's held messages `releasing` to `agent` as one steer
+    /// ([`crate::daemon::activity::steers`]): the helpers' endings held
+    /// since an interrupt and the daemon's notes held for the run go in
+    /// front of the user's words, as with any message of the user's
+    /// ([`crate::daemon::local::HELD_NOTE_SEPARATOR`]); what the send lets
+    /// go next is sent after it, in order. A release at the run's end
+    /// starts the next run, the user's.
+    pub(crate) async fn release_user(&self, releasing: crate::daemon::activity::Releasing) {
+        let mut next = Some(releasing);
+        while let Some(releasing) = next.take() {
+            let crate::daemon::activity::Releasing {
+                agent,
+                release,
+                notes,
+                ..
+            } = &releasing;
+            let session = self.core.conversations.current(agent);
+            let mut lead = Vec::new();
+            if let Some(session) = &session
+                && let Some(endings) = self.take_held(agent, session)
+            {
+                lead.push(endings);
+            }
+            if let Some(notes) = notes {
+                lead.push(notes.text());
+            }
+            let words = release.text();
+            let text = if lead.is_empty() {
+                words
+            } else {
+                format!(
+                    "{}\n\n{}\n\n{words}",
+                    lead.join("\n\n"),
+                    crate::daemon::local::HELD_NOTE_SEPARATOR
+                )
+            };
+            if let Some(session) = &session {
+                self.core.engine.human_input(session);
+            }
+            let sent = steer_member_as(
+                &self.core,
+                &MobId::from(MOB_ID),
+                AgentIdentity::from(agent.as_str()),
+                text,
+            )
+            .await
+            .map_err(|err| err.to_string());
+            if let Err(err) = &sent {
+                tracing::warn!(%agent, error = %err, held = release.held.len(), "the user's held messages did not reach the agent");
+            }
+            next = self.core.activity.released(agent, release, sent.clone());
+            let crate::daemon::activity::Releasing { notes, .. } = releasing;
+            if let Some(notes) = notes {
+                notes.answer(&sent.map(drop));
+            }
+        }
     }
 }
 
