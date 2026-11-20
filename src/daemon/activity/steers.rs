@@ -213,6 +213,45 @@ impl Steers {
         }
     }
 
+    /// Measurement only (`docs/evidence.md`, "Holding the first message
+    /// too"): hold `text` even with nothing in flight, to go at the run's
+    /// next tool request ([`Self::tool_requested`]) or its end.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hold_first(&mut self, text: &str) -> InputId {
+        let id = InputId::new();
+        let held = Held {
+            id: id.clone(),
+            text: text.to_string(),
+        };
+        match &mut self.now {
+            UserSteers::InFlight(flight) => flight.held.push(held),
+            UserSteers::NoneInFlight => {
+                self.now = UserSteers::InFlight(InFlight {
+                    owner: Owner::Gone,
+                    input: None,
+                    seen: Vec::new(),
+                    text: String::new(),
+                    held: vec![held],
+                });
+            }
+        }
+        id
+    }
+
+    /// Measurement only: the run's model call asked for tools; what
+    /// [`Self::hold_first`] held goes now.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn tool_requested(&mut self) -> Option<Release> {
+        match &self.now {
+            UserSteers::InFlight(flight)
+                if flight.owner == Owner::Gone && !flight.held.is_empty() =>
+            {
+                self.next()
+            }
+            _ => None,
+        }
+    }
+
     /// The engine answered the send `owner` (`Ok`: the input it admitted
     /// it as; `Err`: refused): when it is the one in flight, it is
     /// followed by its input, or, refused, what is held goes now.

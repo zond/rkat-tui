@@ -533,6 +533,81 @@ async fn the_one_in_flight_is_taken_back_only_once_nothing_is_held() {
     rig.quit().await;
 }
 
+/// How request 0 of a hold-first round answers once released.
+#[derive(Debug, Clone, Copy)]
+enum FirstCall {
+    /// One instant tool.
+    OneTool,
+    /// Three instant tools in parallel.
+    ParallelTools,
+    /// Text: the run ends.
+    Text,
+}
+
+/// One round of the hold-first measurement: the daemon holds even the
+/// first message typed while request 0 streams, and sends it at that
+/// call's first tool request (or the run's end); the request that first
+/// carries it.
+async fn hold_first_round(call: FirstCall) -> Option<usize> {
+    let ws = Workspace::new();
+    let gate = Arc::new(Notify::new());
+    let answer = match call {
+        FirstCall::OneTool => contacts("c0"),
+        FirstCall::ParallelTools => Step::Tools(vec![
+            ("p0", "contacts", json!({})),
+            ("p1", "contacts", json!({})),
+            ("p2", "contacts", json!({})),
+        ]),
+        FirstCall::Text => Step::Text("first answer"),
+    };
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Streaming("part", Arc::clone(&gate), Box::new(answer)),
+        contacts("c1"),
+        Step::Text("done"),
+        Step::Text("done"),
+    ]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    rig.daemon.local().hold_first_for_test(true);
+    rig.send(Effect::StartTurn("go".into()));
+    rig.saw(|msg| {
+        matches!(msg, Msg::Agent(env) if matches!(&env.payload, meerkat_core::AgentEvent::TextDelta { delta, .. } if delta == "part"))
+    })
+    .await;
+    typed(&mut rig, 1, "FIRST-HELD").await;
+    rig.saw(|msg| matches!(msg, Msg::SteerHeld(PendingId(1))))
+        .await;
+    gate.notify_one();
+    rig.saw(|msg| matches!(msg, Msg::SteerDelivered(PendingId(1))))
+        .await;
+    let at = llm
+        .requests()
+        .iter()
+        .position(|messages| format!("{messages:?}").contains("FIRST-HELD"));
+    rig.quit().await;
+    at
+}
+
+/// The measurement of holding the first message too (not shipped:
+/// `docs/evidence.md`, "Holding the first message too"): 20 rounds of
+/// each kind of first call, the request that carried the message.
+/// `--run-ignored only -E 'test(hold_first)' --no-capture`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a measurement, not a test of shipped behaviour"]
+async fn hold_first_measurement() {
+    for call in [
+        FirstCall::OneTool,
+        FirstCall::ParallelTools,
+        FirstCall::Text,
+    ] {
+        let mut rides = std::collections::BTreeMap::<String, usize>::new();
+        for _ in 0..20 {
+            let at = hold_first_round(call).await;
+            *rides.entry(format!("{at:?}")).or_default() += 1;
+        }
+        eprintln!("HOLD-FIRST {call:?}: {rides:?}");
+    }
+}
+
 /// Three messages typed while request 0 is in flight: the first rides
 /// request 1; the second and third are held in the daemon (each told so)
 /// and ride request 2 together, in order, as one user message, sent once

@@ -14108,3 +14108,32 @@ edited message sent again is a new message, held at the end. Tests:
 (the held two after the take-back ride request 2 as `BACK-TWO`,
 `EDITED-THREE`; the taken-back text reaches no request),
 `held_steers::the_one_in_flight_is_taken_back_only_once_nothing_is_held`.
+
+## Holding the first message too (measured, not shipped, 2026-11-20)
+
+Asked: could the daemon hold even the first message typed while a model
+request streams and send everything held at that request's first
+`ToolCallRequested` (as `send_held` does for its notes), so that all of
+them ride N+1? Measured with a test-only switch
+(`Local::hold_first_for_test`, `Steers::hold_first`,
+`Activity::tool_requested`; compiled only with `test-support`) in
+`held_steers::hold_first_measurement` (ignored; run it with
+`--run-ignored only -E 'test(hold_first)' --no-capture`): request 0
+streams a text delta and is held, the message is typed then (held, its
+client told so), request 0 is released answering with one instant tool
+(`contacts`), with three in parallel, or with text (the run ends; the
+message then starts the next run). 20 rounds of each unloaded and 20 of
+each on two cores beside two busy loops: the message rode request 1 in
+all 120.
+
+Not enabled: every round passed, but nothing explains why it cannot
+race. The steer is registered for the next boundary by a task the
+engine spawns after `mob/member_send` answers, and no event or state
+says when that is done; with instant tools the runner reaches the next
+boundary after the tool results with no step that waits for it (the
+reason recorded in "Our notes never go ahead of the user's message").
+A route that might make it provable, not verified: the spawned task
+holds the session's mutation gate until it registered the delivery; if
+the runner must take that gate before the next boundary, a tool
+admission of ours that waits for the send's answer would order it. The
+shipped rule stays: the first message goes at once.

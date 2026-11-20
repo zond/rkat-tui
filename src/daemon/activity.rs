@@ -232,6 +232,10 @@ pub struct Activity {
     this: Weak<Self>,
     /// `true` once the daemon stopped ([`Self::stop`]).
     stopped: tokio::sync::watch::Sender<bool>,
+    /// Measurement only: hold even the first message of a run's model
+    /// call ([`Steers::hold_first`]).
+    #[cfg(any(test, feature = "test-support"))]
+    hold_first: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for Activity {
@@ -254,6 +258,8 @@ impl Activity {
             told,
             this: this.clone(),
             stopped: tokio::sync::watch::channel(false).0,
+            #[cfg(any(test, feature = "test-support"))]
+            hold_first: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -357,7 +363,29 @@ impl Activity {
         if !running {
             state.starting = true;
         }
+        #[cfg(any(test, feature = "test-support"))]
+        if running && self.hold_first.load(std::sync::atomic::Ordering::SeqCst) {
+            return Admit::Held(state.steers.hold_first(text));
+        }
         state.steers.admit(running, key, text)
+    }
+
+    /// Measurement only: hold even the first message of a model call, to
+    /// go at its first tool request ([`Self::tool_requested`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_hold_first(&self, on: bool) {
+        self.hold_first
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Measurement only: `agent`'s model call asked for tools; what
+    /// [`Self::set_hold_first`] held goes now.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn tool_requested(&self, agent: &str) -> Option<Releasing> {
+        let mut agents = self.agents.lock();
+        let state = agents.get_mut(agent)?;
+        let release = state.steers.tool_requested()?;
+        Some(Self::releasing(&self.this, agent, state, release))
     }
 
     /// `agent`'s run started with `prompt` as its input: when that holds

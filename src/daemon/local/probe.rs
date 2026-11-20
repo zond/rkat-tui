@@ -142,4 +142,11 @@ impl Local {
     pub fn held_user_for_test(&self, agent: &str) -> Vec<String> {
         self.core.activity.held_user(agent)
     }
+
+    /// Measurements: hold even the first message of a model call, to go
+    /// at its first tool request (`docs/evidence.md`, "Holding the first
+    /// message too").
+    pub fn hold_first_for_test(&self, on: bool) {
+        self.core.activity.set_hold_first(on);
+    }
 }

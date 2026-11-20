@@ -735,7 +735,14 @@ impl Watcher {
             // go now, as one steer the agent reads after those tools. (The
             // call's `TurnCompleted` comes once its tools are done, right
             // before the next request: too late to be sure of it.)
-            AgentEvent::ToolCallRequested { .. } => self.send_held(),
+            AgentEvent::ToolCallRequested { .. } => {
+                // Measurement only: the first message held too goes now.
+                #[cfg(any(test, feature = "test-support"))]
+                if let Some(releasing) = self.watched.activity.tool_requested(&self.name) {
+                    self.release_user(releasing);
+                }
+                self.send_held();
+            }
             // A request started with an input written into it: a message
             // of the user's in flight lets the held ones go (they ride
             // the request after it), held ones sent as it are delivered.
