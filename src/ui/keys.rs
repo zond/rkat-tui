@@ -7,40 +7,34 @@ use std::time::Instant;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{
-    Action, App, CHORD_WINDOW, Command, DOUBLE_CTRL_C_WINDOW, DOUBLE_ESC_WINDOW, Departure,
-    EditAction, EditorClosed, EditorTarget, Effect, HistorySearch, INTERRUPT_REPEAT, InputMode,
-    LocalEffect, Modal, ModalKey, ModelCommand, NoticeLevel, PathIndex, PendingId, PendingState,
-    QUIT_CONFIRM_WINDOW, QuitChoice, QuitDecision, QuitDialog, SearchOutcome, StashOutcome,
-    complete, keymap, search,
+    Action, App, Command, Departure, EditAction, EditorClosed, EditorTarget, Effect, HistorySearch,
+    INTERRUPT_REPEAT, InputMode, LocalEffect, Modal, ModalKey, ModelCommand, NoticeLevel,
+    PathIndex, PendingId, PendingState, Pressed, QUIT_CONFIRM_WINDOW, QuitChoice, QuitDecision,
+    QuitDialog, SearchOutcome, StashOutcome, complete, keymap, search,
 };
 
 impl App {
     /// The active history search and its corpus, if searching.
     pub fn search(&self) -> Option<(&HistorySearch, &[String])> {
-        match &self.mode {
-            InputMode::Search(s) => Some((s, &self.search_corpus)),
-            InputMode::Normal => None,
-        }
+        self.mode
+            .searching()
+            .map(|searching| (&searching.search, searching.corpus.as_slice()))
     }
 
     /// Whether a Ctrl-X chord is pending at `now` (used for the input hint).
     pub fn chord_pending(&self, now: Instant) -> bool {
-        self.chord
-            .is_some_and(|t| now.saturating_duration_since(t) < CHORD_WINDOW)
+        self.mode.chord_pending(now)
     }
 
     /// Whether a second Ctrl-C at `now` would quit (used for the input hint).
     pub fn quit_armed(&self, now: Instant) -> bool {
-        self.quit
-            .last_ctrl_c
-            .is_some_and(|t| now.saturating_duration_since(t) < DOUBLE_CTRL_C_WINDOW)
+        self.mode.ctrl_c_armed(now)
     }
 
     /// Whether a second Esc at `now` would clear the input (used for the
     /// input hint).
     pub fn esc_clear_armed(&self, now: Instant) -> bool {
-        self.last_esc
-            .is_some_and(|t| now.saturating_duration_since(t) < DOUBLE_ESC_WINDOW)
+        self.mode.esc_armed(now)
     }
 
     /// Whether quitting now would interrupt a turn or leave messages
@@ -75,10 +69,9 @@ impl App {
     /// edit opens it.
     pub(super) fn refresh_menu(&mut self) {
         let word = match self.mode {
-            InputMode::Normal if !self.input.is_unedited_recall() => {
-                complete::word_at(self.input.lines(), self.input.cursor())
-            }
-            InputMode::Normal | InputMode::Search(_) => None,
+            InputMode::Search(_) => None,
+            _ if self.input.is_unedited_recall() => None,
+            _ => complete::word_at(self.input.lines(), self.input.cursor()),
         };
         let word = word
             .filter(|word| word.kind != complete::CompletionKind::Path || self.workspace.is_some());
@@ -216,18 +209,16 @@ impl App {
     }
 
     pub(super) fn main_key(&mut self, key: &KeyEvent, now: Instant, fx: &mut Vec<Effect>) {
-        // Any key disarms Esc-Esc and Ctrl-C-Ctrl-C. Whether Esc was armed
-        // is read first, for the Esc that clears; the Ctrl-C press that
-        // reaches the quit ladder gets its arm back ([`Self::ctrl_c`]).
-        let esc_armed = self.esc_clear_armed(now);
-        self.last_esc = None;
-        let ctrl_c_armed = self.quit.last_ctrl_c.take();
+        // One mode at a time ([`InputMode`]): any key ends an armed Esc or
+        // Ctrl-C and a pending chord, and says what they made of it (the
+        // Esc that clears, the Ctrl-C that quits, the chord's second key).
+        let pressed = self.mode.key_pressed(now);
         if self.stop_confirmation().is_some() {
             self.stop_confirm_key(key, fx);
             return;
         }
-        if let InputMode::Search(search) = &mut self.mode {
-            match search.key(key, &self.search_corpus) {
+        if let InputMode::Search(searching) = &mut self.mode {
+            match searching.search.key(key, &searching.corpus) {
                 SearchOutcome::Continue => {}
                 SearchOutcome::Accept(text) | SearchOutcome::Cancel(text) => {
                     self.end_search(&text);
@@ -235,9 +226,7 @@ impl App {
             }
             return;
         }
-        if let Some(started) = self.chord.take()
-            && now.saturating_duration_since(started) < CHORD_WINDOW
-        {
+        if pressed == Pressed::Chord {
             match key.code {
                 KeyCode::Esc => return,
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -297,13 +286,10 @@ impl App {
             Action::HelperPrev => self.move_panel_selection(false),
             Action::HelperNext => self.move_panel_selection(true),
             Action::Newline => self.input.newline(),
-            Action::CtrlC => {
-                self.quit.last_ctrl_c = ctrl_c_armed;
-                self.ctrl_c(now, fx);
-            }
+            Action::CtrlC => self.ctrl_c(pressed == Pressed::CtrlCArmed, now, fx),
             Action::CtrlD if !self.input.is_empty() => self.input.delete(),
             Action::CtrlD => self.ctrl_d(now, fx),
-            Action::Escape => self.escape(esc_armed, now, fx),
+            Action::Escape => self.escape(pressed == Pressed::EscArmed, now, fx),
             Action::Edit(EditAction::Up) if self.input.is_empty() && self.can_take_back() => {
                 self.take_back_queued(fx);
             }
@@ -335,7 +321,7 @@ impl App {
                 fx.push(Effect::SetMode(next));
             }
             Action::HistorySearch => self.start_search(),
-            Action::ChordPrefix => self.chord = Some(now),
+            Action::ChordPrefix => self.mode.start_chord(now),
             Action::ScrollUp(n) => self.active_scroll().up(n),
             Action::ScrollDown(n) => self.active_scroll().down(n),
             Action::PageUp => self.active_scroll().up(page),
@@ -348,14 +334,14 @@ impl App {
     }
 
     pub(super) fn start_search(&mut self) {
-        self.search_corpus = search::build_corpus(self.input.history(), &self.global_history);
-        self.mode = InputMode::Search(HistorySearch::start(self.input.text(), &self.search_corpus));
+        let corpus = search::build_corpus(self.input.history(), &self.global_history);
+        let search = HistorySearch::start(self.input.text(), &corpus);
+        self.mode.start_search(search, corpus);
     }
 
     /// Leave search mode with `text` in the editor (cursor at the end).
     pub(super) fn end_search(&mut self, text: &str) {
-        self.mode = InputMode::Normal;
-        self.search_corpus = Vec::new();
+        self.mode.end_search();
         self.input.clear();
         self.input.set_text(text);
     }
@@ -615,7 +601,7 @@ impl App {
     /// (which forces the interrupt, or says the turn is already stopped)
     /// and never clear the editor the returned messages are in.
     ///
-    /// Idle, Esc twice within [`DOUBLE_ESC_WINDOW`] on an input with text
+    /// Idle, Esc twice within [`super::DOUBLE_ESC_WINDOW`] on an input with text
     /// clears it and saves it to the prompt history (`esc_armed`: the
     /// previous key was such an Esc); one Esc only arms it. On an empty
     /// input it interrupts all the same: the agent may run a turn this UI
@@ -638,25 +624,25 @@ impl App {
                 self.submitted.push(text);
             }
         } else {
-            self.last_esc = Some(now);
+            self.mode.arm_esc(now);
         }
     }
 
-    pub(super) fn ctrl_c(&mut self, now: Instant, fx: &mut Vec<Effect>) {
+    /// Ctrl-C: interrupt a running turn, cancel a `!` command, clear the
+    /// input; on an idle empty input the first press arms the quit and a
+    /// second (`armed`: the previous key was such a press, within
+    /// [`super::DOUBLE_CTRL_C_WINDOW`]) quits.
+    pub(super) fn ctrl_c(&mut self, armed: bool, now: Instant, fx: &mut Vec<Effect>) {
         if self.turn.is_running() || self.interrupt_repeats(now) {
-            self.quit.last_ctrl_c = None;
             self.interrupt(now, fx);
         } else if self.shell.running.is_some() {
-            self.quit.last_ctrl_c = None;
             fx.push(Effect::CancelShell);
         } else if !self.input.is_empty() {
-            self.quit.last_ctrl_c = None;
             self.input.clear();
-        } else if self.quit_armed(now) {
-            self.quit.last_ctrl_c = None;
+        } else if armed {
             self.request_quit(now, fx);
         } else {
-            self.quit.last_ctrl_c = Some(now);
+            self.mode.arm_ctrl_c(now);
         }
     }
 
@@ -830,8 +816,6 @@ pub(super) struct QuitState {
     /// An [`Effect::DecideQuit`] waits for its [`super::Msg::QuitDecided`]
     /// (another `/quit` meanwhile leaves at once).
     pub(super) deciding: bool,
-    /// When Ctrl-C was last pressed on an idle input.
-    pub(super) last_ctrl_c: Option<Instant>,
 }
 
 /// The completion menu above the input and the `@` path index it reads.

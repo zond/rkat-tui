@@ -19,6 +19,7 @@ pub mod failures;
 mod helpers;
 pub mod history;
 pub mod input;
+mod input_mode;
 pub mod keymap;
 mod keys;
 pub mod markdown;
@@ -190,15 +191,7 @@ struct LastDown {
     clicks: u8,
 }
 
-/// How keys reach the input area.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum InputMode {
-    /// Keys edit the prompt.
-    #[default]
-    Normal,
-    /// Keys drive a reverse history search (Ctrl-R).
-    Search(HistorySearch),
-}
+use input_mode::{InputMode, Pressed};
 
 /// Result of a finished turn, reported by the runner.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1510,17 +1503,14 @@ pub struct App {
     compaction: turn_state::Compaction,
     /// Sequence number of the last primary-stream event processed.
     last_seq: u64,
-    /// Normal editing or history search.
+    /// How the main input takes the next key: editing, an armed Esc or
+    /// Ctrl-C, a pending chord, or a history search ([`InputMode`]).
     mode: InputMode,
-    /// When Ctrl-X was pressed, while a chord is pending.
-    chord: Option<Instant>,
     /// Context-gauge policy: warn about a filling context (warn mode).
     gauge: CompactionGauge,
     /// Global (cross-workspace) prompt history, oldest first; searched after the
     /// workspace history.
     global_history: Vec<String>,
-    /// Search corpus (newest first, deduplicated), built when a search starts.
-    search_corpus: Vec<String>,
     pending_escalations: VecDeque<(EscalationId, RecordedPrompt)>,
     /// A picker ([`Modal::Model`], [`Modal::Resume`] or [`Modal::List`]) an escalation
     /// displaced; restored once no escalation remains.
@@ -1533,8 +1523,6 @@ pub struct App {
     run_first_block: BlockId,
     /// What the current run's failures said, and who started it.
     failures: failures::RunFailures,
-    /// When an Esc on an idle input with text armed the draft clear.
-    last_esc: Option<Instant>,
     /// The last Esc (or Ctrl+C) that interrupted, while it belongs to that
     /// interrupt ([`INTERRUPT_REPEAT`]).
     last_interrupt: Option<Instant>,
@@ -1615,17 +1603,14 @@ impl App {
             compaction: turn_state::Compaction::default(),
             last_seq: 0,
             mode: InputMode::Normal,
-            chord: None,
             gauge: CompactionGauge::default(),
             global_history: Vec::new(),
-            search_corpus: Vec::new(),
             pending_escalations: VecDeque::new(),
             parked: None,
             arming: None,
             submitted: Vec::new(),
             run_first_block: BlockId(0),
             failures: failures::RunFailures::default(),
-            last_esc: None,
             last_interrupt: None,
             btw: None,
             viewport_height: 20,
@@ -1711,9 +1696,8 @@ impl App {
     #[must_use]
     pub fn wants_tick(&self) -> bool {
         self.status.busy()
-            || self.quit.last_ctrl_c.is_some()
+            || self.mode.ticks()
             || self.quit.confirm.is_some()
-            || self.chord.is_some()
             || self.transcript.helpers_running()
             || self.transcript.helpers_lingering()
     }
@@ -2190,17 +2174,11 @@ impl App {
                     || tools_ticked
                     || lingering
                     || self.status.busy()
-                    || self.quit.last_ctrl_c.is_some()
-                    || self.quit.confirm.is_some()
-                    || self.chord.is_some();
-                if self.quit.last_ctrl_c.is_some() && !self.quit_armed(now) {
-                    self.quit.last_ctrl_c = None;
-                }
+                    || self.mode.ticks()
+                    || self.quit.confirm.is_some();
+                self.mode.expire(now);
                 if self.quit.confirm.is_some() && !self.quit_confirm_armed(now) {
                     self.quit.confirm = None;
-                }
-                if self.chord.is_some() && !self.chord_pending(now) {
-                    self.chord = None;
                 }
             }
         }

@@ -1035,7 +1035,7 @@ fn chord_ctrl_x_ctrl_s_interrupt_and_send_when_running() {
         app.update_at(ctrl('s'), t0),
         vec![Effect::StartTurn("first".into())]
     );
-    assert!(app.chord.is_none());
+    assert!(!matches!(app.mode, InputMode::Chord(_)));
     // Running with input: interrupt and send.
     type_str(&mut app, "next");
     app.update_at(ctrl('x'), t0);
@@ -1058,11 +1058,11 @@ fn chord_ctrl_x_ctrl_s_interrupt_and_send_when_running() {
     // Esc cancels the chord without interrupting.
     app.update_at(ctrl('x'), t0);
     assert!(app.update_at(key(KeyCode::Esc), t0).is_empty());
-    assert!(app.chord.is_none());
+    assert!(!matches!(app.mode, InputMode::Chord(_)));
     // Any other key cancels the chord and is processed normally.
     app.update_at(ctrl('x'), t0);
     app.update_at(key(KeyCode::Char('a')), t0);
-    assert!(app.chord.is_none());
+    assert!(!matches!(app.mode, InputMode::Chord(_)));
     assert_eq!(app.input.text(), "a");
     assert!(app.update_at(ctrl('s'), t0).is_empty());
 }
@@ -1082,7 +1082,7 @@ fn chord_expires_after_window() {
     // A tick after the window clears the pending chord.
     app.update_at(ctrl('x'), t0);
     app.update_at(Msg::Tick, late);
-    assert!(app.chord.is_none());
+    assert!(!matches!(app.mode, InputMode::Chord(_)));
 }
 
 #[test]
@@ -1208,7 +1208,7 @@ fn ctrl_g_and_ctrl_x_ctrl_e_edit_the_draft_externally() {
             "draft".into()
         ))]
     );
-    assert!(app.chord.is_none());
+    assert!(!matches!(app.mode, InputMode::Chord(_)));
     // Bare Ctrl-E still goes to the line end.
     assert!(app.update_at(ctrl('e'), t0).is_empty());
     // While a turn runs too: it only edits the input.

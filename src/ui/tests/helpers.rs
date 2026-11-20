@@ -299,7 +299,10 @@ fn esc_in_a_helper_s_view_goes_back_at_once() {
     assert!(app.update(key(KeyCode::Esc)).is_empty(), "no interrupt");
     assert_eq!(app.helper_view(), None);
     assert_eq!(app.stop_confirmation(), None);
-    assert!(app.last_esc.is_none(), "Esc-Esc is not armed");
+    assert!(
+        !matches!(app.mode, crate::ui::InputMode::EscArmed(_)),
+        "Esc-Esc is not armed"
+    );
     assert_eq!(app.panel_selection(), Some(fork));
     // The next Esc drops the selection (and the one after that is the
     // agent's own).

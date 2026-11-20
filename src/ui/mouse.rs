@@ -170,10 +170,10 @@ impl App {
         {
             picker.type_text(text);
         } else if self.modal.is_none() {
-            self.chord = None;
-            if let InputMode::Search(search) = &mut self.mode {
+            self.mode.end_chord();
+            if let InputMode::Search(searching) = &mut self.mode {
                 for c in text.chars().filter(|c| !c.is_control()) {
-                    search.push(c, &self.search_corpus);
+                    searching.search.push(c, &searching.corpus);
                 }
             } else {
                 self.input.paste(text);
