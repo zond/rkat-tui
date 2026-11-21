@@ -1,13 +1,13 @@
-//! Peer requests between the agents and helpers. On the engine release in
-//! use a session that sent a peer request stops for good when a response
-//! without a result arrives (lukacf/meerkat PR #2402's changelog entry;
+//! Peer requests between the agents and helpers. Up to Meerkat 0.9.16 a
+//! session that sent a peer request stopped for good when a response
+//! without a result arrived (lukacf/meerkat PR #2402's changelog entry;
 //! shown on this rig before the guard: the requester's next input was
 //! refused "has no committed runtime attachment … (unregister_not_started)"
 //! and the daemon's clean stop failed "terminal completion finalization
-//! lost the exact durable CAS"). So neither `send_request` nor
-//! `send_response` is offered to an agent or a helper: they ask and answer
-//! with `send_message`. A call of either is refused; the helper goes on
-//! taking messages.
+//! lost the exact durable CAS"); 0.9.17 fixes it. Neither `send_request`
+//! nor `send_response` came back: they are not offered to an agent or a
+//! helper, which ask and answer with `send_message`. A call of either is
+//! refused; the helper goes on taking messages.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

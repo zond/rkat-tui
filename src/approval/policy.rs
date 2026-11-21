@@ -138,12 +138,21 @@ impl VerdictSummary {
 /// diff-reporting file tools, gated by the approval policy).
 pub const TUI_OWNED_BUILTINS: [&str; 2] = ["brain_swap", "apply_patch"];
 
-/// The shell's job controls, withheld from every member and helper through
-/// its tool access policy like [`TUI_OWNED_BUILTINS`]: a daemon member's
-/// shell cannot start a background job ([`BACKGROUND_SHELL_UNAVAILABLE`]),
-/// so there is no job to list, read or cancel. A call that reaches the
-/// gate anyway is [`Tier::Unavailable`].
-pub const SHELL_JOB_TOOLS: [&str; 3] = ["shell_jobs", "shell_job_status", "shell_job_cancel"];
+/// The shell's job controls and its monitor, withheld from every member and
+/// helper through its tool access policy like [`TUI_OWNED_BUILTINS`]: a
+/// daemon member's shell cannot start a background job
+/// ([`BACKGROUND_SHELL_UNAVAILABLE`]), so there is no job to list, read or
+/// cancel, and `monitor_start` (a script run as a background job that can
+/// wake its session and runs again after a restart; offered beside `shell`
+/// from Meerkat 0.9.17) would be the one background job left, outside the
+/// gate's shell rules. A call that reaches the gate anyway is
+/// [`Tier::Unavailable`].
+pub const SHELL_JOB_TOOLS: [&str; 4] = [
+    "shell_jobs",
+    "shell_job_status",
+    "shell_job_cancel",
+    "monitor_start",
+];
 
 /// Why `shell` with `background` and the [`SHELL_JOB_TOOLS`] are refused:
 /// what the agent reads, with what to do instead.
@@ -203,8 +212,8 @@ pub const READ_ONLY_BUILTINS: &[&str] = &[
 ];
 
 /// Upstream builtins that act (or read outside the project) and so pass the
-/// classifier unless a user rule decides them: the shell and its job
-/// controls, loading a file into a blob ([`BLOB_SAVE_FILE`] is judged as
+/// classifier unless a user rule decides them: the shell (its job controls
+/// and monitor are [`SHELL_JOB_TOOLS`]), loading a file into a blob ([`BLOB_SAVE_FILE`] is judged as
 /// the file write it is), skill functions, web search, image generation,
 /// comms sends, councils and objective conclusions. The
 /// mutating `mob_*` tools need review too (any `mob_*` not in
@@ -212,7 +221,6 @@ pub const READ_ONLY_BUILTINS: &[&str] = &[
 #[cfg(any(test, feature = "test-support"))]
 pub const REVIEWED_BUILTINS: &[&str] = &[
     "shell",
-    "monitor_start",
     "blob_save_file",
     "blob_load_file",
     "skill_invoke_function",
@@ -261,12 +269,12 @@ pub const AGENT_SEND_TOOLS: &[&str] = &["send_message"];
 ///   by accident. `assign` (`crate::tools::assign`) starts every helper,
 ///   fresh or forked, single-use or kept; it forks through the engine's own
 ///   `fork_off` (`crate::daemon::deferral::ForkRoutes`).
-/// - `send_request` and `send_response`: on the engine release in use a
-///   session that sent a peer request stops for good when a response to it
-///   arrives without a result (lukacf/meerkat PR #2402's changelog entry,
-///   `docs/evidence.md`). Agents and helpers ask and answer with
-///   `send_message`; no flow of the engine needs a model to answer a
-///   request (the runtime answers its own).
+/// - `send_request` and `send_response`: withdrawn while a session that
+///   sent a peer request stopped for good when a response to it arrived
+///   without a result (Meerkat 0.9.5 to 0.9.16; fixed in 0.9.17,
+///   `docs/evidence.md`), and not brought back since: agents and helpers
+///   ask and answer with `send_message`; no flow of the engine needs a
+///   model to answer a request (the runtime answers its own).
 /// - `peers` (helpers, agents and wires mixed, with no kind or state) and
 ///   `list_members` (its own mob's roster, without fresh kept helpers):
 ///   `contacts` (`crate::daemon::contacts`) lists everyone a member can

@@ -18,19 +18,19 @@ unused-ignored-advisory = "deny"
 # dated and says what lifts it.
 ignore = [
     # rmcp 1.8 buffers an MCP HTTP server's response body without a limit;
-    # the fix is rmcp 3.9, outside meerkat-mcp 0.9.16's `rmcp = "1.4"`.
-    # Meerkat 0.9.12 through 0.9.16 no longer compile rmcp's reqwest Streamable HTTP
+    # the fix is rmcp 3.9, outside meerkat-mcp 0.9.17's `rmcp = "1.4"`.
+    # Meerkat 0.9.12 through 0.9.17 no longer compile rmcp's reqwest Streamable HTTP
     # client (meerkat-mcp's own client bounds bodies and SSE events at
     # 64 MiB), so the affected code is not in this graph; cargo-deny matches
     # the advisory by rmcp's version alone. Ignored 2026-11-10, reason
-    # rewritten 2026-11-11 (still current at 0.9.16, 2026-11-17); lifts when a Meerkat release takes rmcp >= 3.9.
-    { id = "RUSTSEC-2026-0462", reason = "not affected: rmcp's reqwest Streamable HTTP client is not compiled from Meerkat 0.9.12 through 0.9.16 (meerkat-mcp's own client bounds bodies and SSE events at 64 MiB); cargo-deny matches the rmcp version alone; remove with the Meerkat release that moves to rmcp >= 3.9" },
+    # rewritten 2026-11-11 (still current at 0.9.17, 2026-11-21); lifts when a Meerkat release takes rmcp >= 3.9.
+    { id = "RUSTSEC-2026-0462", reason = "not affected: rmcp's reqwest Streamable HTTP client is not compiled from Meerkat 0.9.12 through 0.9.17 (meerkat-mcp's own client bounds bodies and SSE events at 64 MiB); cargo-deny matches the rmcp version alone; remove with the Meerkat release that moves to rmcp >= 3.9" },
     # Three unmaintained notices published 2026-11-17 (no vulnerability, no
-    # fixed version): the crates come in through Meerkat 0.9.16. Ignored
+    # fixed version): the crates come in through Meerkat 0.9.17. Ignored
     # 2026-11-17; each lifts with the Meerkat release that moves off it.
-    { id = "RUSTSEC-2026-0543", reason = "unmaintained notice, not a vulnerability: chrono comes in through meerkat, meerkat-anthropic, meerkat-atif, chrono-tz (meerkat-schedule) and other Meerkat 0.9.16 crates; rkat-tui also uses it directly for UTC RFC 3339 timestamps (daemon/endpoint.rs, daemon/audit.rs, daemon/schedules.rs, bootstrap/realm_home.rs, ui/checklist.rs, client/list.rs), but dropping that use would not take it out of the graph while the engine depends on it (docs/evidence.md names the replacement); ignored 2026-11-17, remove with the Meerkat release that moves off chrono" },
-    { id = "RUSTSEC-2026-0555", reason = "unmaintained notice, not a vulnerability: chrono-tz comes in through meerkat-schedule 0.9.16 only (rkat-tui does not use it); ignored 2026-11-17, remove with the Meerkat release that moves off it" },
-    { id = "RUSTSEC-2026-0542", reason = "unmaintained notice, not a vulnerability: humantime comes in through meerkat-tools 0.9.16 and through humantime-serde, which meerkat-core 0.9.16 uses (rkat-tui does not use it); ignored 2026-11-17, remove with the Meerkat release that moves off it" },
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained notice, not a vulnerability: chrono comes in through meerkat, meerkat-anthropic, meerkat-atif, chrono-tz (meerkat-schedule) and other Meerkat 0.9.17 crates; rkat-tui also uses it directly for UTC RFC 3339 timestamps (daemon/endpoint.rs, daemon/audit.rs, daemon/schedules.rs, bootstrap/realm_home.rs, ui/checklist.rs, client/list.rs), but dropping that use would not take it out of the graph while the engine depends on it (docs/evidence.md names the replacement); ignored 2026-11-17, remove with the Meerkat release that moves off chrono" },
+    { id = "RUSTSEC-2026-0555", reason = "unmaintained notice, not a vulnerability: chrono-tz comes in through meerkat-schedule 0.9.17 only (rkat-tui does not use it); ignored 2026-11-17, remove with the Meerkat release that moves off it" },
+    { id = "RUSTSEC-2026-0542", reason = "unmaintained notice, not a vulnerability: humantime comes in through meerkat-tools 0.9.17 and through humantime-serde, which meerkat-core 0.9.17 uses (rkat-tui does not use it); ignored 2026-11-17, remove with the Meerkat release that moves off it" },
 ]
 
 [licenses]

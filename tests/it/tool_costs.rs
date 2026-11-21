@@ -82,8 +82,8 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     assert!(main.tools.iter().any(|name| name == "assign"), "{report}");
     assert!(bytes["mob"] < 12_000, "{report}");
     // The engine's comms tools, but `send_request` and `send_response`
-    // (withdrawn: a result-less response stops the requester on this
-    // release, and messages suffice), `peers` (rkat-tui's `contacts`
+    // (withdrawn while a result-less response stopped the requester, up to
+    // Meerkat 0.9.16, and messages suffice), `peers` (rkat-tui's `contacts`
     // lists whom the agent can message and what each is) and
     // `reply_to_peer` (`send_message` answers).
     let mut comms = main.tools_of("comms");
@@ -186,6 +186,22 @@ async fn an_agent_s_request_carries_every_tool_definition() {
         "{helper_bytes:?}"
     );
     assert!(helper.total_tool_bytes() < 45_000, "{helper_bytes:?}");
+    // The shell alone of its family, for the agent and the helper: no
+    // background job, so neither the job controls nor `monitor_start`,
+    // which Meerkat 0.9.17 offers beside `shell` unless it is denied.
+    assert!(rkat_tui::approval::policy::SHELL_JOB_TOOLS.contains(&"monitor_start"));
+    for (who, request) in [("agent", main), ("helper", helper)] {
+        assert!(
+            request.tools.iter().any(|t| t == "shell"),
+            "{who}: {report}"
+        );
+        for withheld in rkat_tui::approval::policy::SHELL_JOB_TOOLS {
+            assert!(
+                !request.tools.iter().any(|t| t == withheld),
+                "{who} is offered {withheld}: {report}"
+            );
+        }
+    }
     eprintln!("helper request {} bytes", helper.total_tool_bytes());
     rig.quit().await;
 }

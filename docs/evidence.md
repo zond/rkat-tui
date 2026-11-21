@@ -14340,3 +14340,91 @@ machine. Tests: `remote_wire::tests::the_down_words_say_what_the_agent_can_do`,
 `daemon::wires::tests::an_ssh_wire_round_trips_and_an_older_file_opens`
 (an older file without the field opens), the stand-in test's remote
 side.
+
+## The engine moves to crates.io 0.9.17 (2026-11-21)
+
+Every `meerkat-*` line names `version = "0.9.17"`; `cargo update -p
+meerkat` moved the 38 engine crates of the lock together and nothing
+else (no new dependency; `rmcp` stays 1.8 with the same features in
+`meerkat-mcp`, `chrono`, `chrono-tz` and `humantime` stay, so the four
+ignores of `deny.toml` still match; their reasons name 0.9.17).
+`cargo check --all-targets --all-features` was clean with no change of
+ours: no API drift reaches this crate. The release notes on GitHub are
+empty; upstream's `CHANGELOG.md` at the tag holds the entry. Its
+breaking items that could reach us, checked against the code:
+- New fields of `ToolsConfig` (`agent_schedules_may_create_sessions`),
+  `RestServerConfig`, `AppState`, the kernels' input structs and new
+  variants of `TransitionId`, the mob machine enums,
+  `ProviderBindingError` and `ConfigWarning`: rkat-tui builds none of
+  them by a struct literal and matches none of them.
+- Schedules written by agents: a member's schedule into a member it is
+  not wired to, one that creates a session and one that spawns a helper
+  are refused unless the host allows it. Our agents schedule their own
+  session (`daemon::schedules`, `"type": "current_session"`, an identity
+  target naming their own member), which stays open; helpers have no
+  schedule tools. The schedule tests pass unchanged.
+- The file tools: `blob_load_file` and `view_image` now refuse `.rkat`
+  paths and the host's declared stores, as `blob_save_file` did;
+  `view_image` judges an image by its bytes and drops `.svg`. Our gate
+  already seals `.rkat` for `blob_save_file`; nothing of ours reads
+  through them.
+- `meerkat-comms`'s Unix socket listener no longer takes a path a live
+  listener holds: our wires' and helper links' sockets are bound with
+  tokio's `UnixListener` by `daemon::wires::serve_socket`, not by the
+  engine's listener, so nothing changes.
+- The realm lookup across ancestor state roots: rkat-tui opens its
+  realm at an explicit path (`bootstrap::realm_home`), not through the
+  engine's resolution.
+- Config answers redact stored secrets: endpoint keys reach the engine
+  from the environment, the realm document names only the variable
+  (`endpoints::discover`), so nothing of ours reads a redacted value.
+- GPT-6.2 Astra and Sol join the catalog: rkat-tui writes no
+  `[models.<id>]` entry since batch 4 ("One mechanism for models the
+  catalog does not know"), so no entry of ours can collide.
+
+**`monitor_start` is withheld (a decision).** 0.9.17 turns on the whole
+shell family with `shell` wherever the session has durable job and blob
+stores, so every agent and helper was offered `monitor_start` (a script
+run as a background job, which can wake its session at a rate it
+chooses and runs again after a restart). Before, no stock surface
+offered it. Shown by `tool_costs::an_agent_s_request_carries_every_tool_definition`,
+extended with an assertion on the shell family: on the plain pin move
+it failed "agent is offered monitor_start". rkat-tui's agents have no
+background jobs (the shell job tools are withheld, `shell` with
+`background` is refused: "Background shell jobs"), and the gate's
+shell rules judge `shell` calls by their command, not a monitor's
+script (upstream's Upgrade notes say a host's dispatch admission must
+learn the name or deny the tool). So `monitor_start` joins
+`approval::policy::SHELL_JOB_TOOLS` (denied in every member's tool
+policy, `Tier::Unavailable` at the gate) and leaves `REVIEWED_BUILTINS`.
+Tests: the `tool_costs` assertion (agent and helper offered `shell` and
+none of `SHELL_JOB_TOOLS`), `shell_jobs::*` (iterate `SHELL_JOB_TOOLS`,
+so they now pin `monitor_start` absent too),
+`policy::tests::upstream_builtins_are_all_classified`,
+`customizer::tests::the_tui_owned_builtins_are_denied`. It comes back
+with background jobs (#2180's Detached contract, CLAUDE.md).
+
+**The result-less peer response limitation is fixed.** 0.9.17's Fixed
+entry "Peer requests: a response to a peer request without a result no
+longer stops the requester" ends it (the store's exact compare takes the
+stored bytes first; a null result is admitted with no payload). As
+CLAUDE.md said beforehand, nothing of ours goes: `send_request` and
+`send_response` stay in `NOT_OFFERED` (messages suffice); the
+CLAUDE.md entry is removed and the comments that named the limitation
+(`approval::policy::NOT_OFFERED`, `tests/it/peer_requests.rs`,
+`tests/it/tool_costs.rs`) now say it ended with 0.9.16.
+
+What it did not fix (every other upstream entry of CLAUDE.md stays,
+each issue still open on 2026-11-21, none named in the 0.9.17 entry):
+#2180 (`tool_costs` still finds the catalog inexact, so the search and
+reveal stays), #2184's override (`meerkat-mob` `roster.rs` still carries
+`effective_profile_override` on resume; its change is the adopted-seat
+labels), #2126 (no rewind), #2231, #2232, #2233, #2234 and #2388
+(`meerkat-openai` changed only in classing a reset connection as
+`connection_reset`, so `schema_compat` and `blank_text` stay), #2235,
+#2300 (`meerkat-tools` added read refusals, no allowed directories),
+#2350, #2374, #2384, #2411, #2431, #2432 and #2433. No stored engine form
+changes by the entry ("No stored form ... changes" on each runtime and
+mob item; the new roster field is `#[serde(skip)]`), and the stored-state
+guard opens `tests/fixtures/state-0.0.1/` unchanged. No test was
+re-pinned to new engine behaviour; one assertion was added.

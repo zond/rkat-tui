@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The engine is Meerkat 0.9.17 (from 0.9.16). Agents and helpers are not
+  offered the engine's `monitor_start` (a script run as a background
+  job), which 0.9.17 starts offering beside the shell: background jobs
+  are not available to rkat-tui's agents yet, so it is withheld as the
+  shell's job tools are. What else you
+  can notice: the engine's `blob_load_file` and `view_image` refuse paths
+  inside a `.rkat` directory, and `view_image` takes only PNG, JPEG, GIF
+  and WebP files (no SVG), judged by the file's bytes; a dropped
+  connection to an OpenAI or OpenAI-compatible endpoint after it was made
+  reads as a connection reset rather than an unknown error; OpenAI's
+  GPT-6.2 Astra and Sol are in the engine's model catalog. None of the
+  engine limitations rkat-tui works around is lifted by it.
+
 ## [0.0.19] - 2026-11-20
 
 ### Added
