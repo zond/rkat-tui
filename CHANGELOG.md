@@ -16,6 +16,9 @@
   reads as a connection reset rather than an unknown error; OpenAI's
   GPT-6.2 Astra and Sol are in the engine's model catalog. None of the
   engine limitations rkat-tui works around is lifted by it.
+- The `url` crate is 2.5.9 (from 2.5.8), for RUSTSEC-2026-0592: a URL
+  nested in many `blob:` prefixes overflowed the stack in
+  `Url::origin()`.
 
 ### Added
 
