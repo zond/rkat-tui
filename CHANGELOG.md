@@ -17,6 +17,23 @@
   GPT-6.2 Astra and Sol are in the engine's model catalog. None of the
   engine limitations rkat-tui works around is lifted by it.
 
+### Added
+
+- `/permissions` has a third section, Hosts (`/permissions hosts` opens
+  it): the hosts you trust with the project's data, each with the file
+  that names it, and the project's own hosts from its git remotes,
+  read-only. `n` trusts a host you type (a host name or `*.domain`,
+  checked as the files' entries are; Tab: this workspace or every
+  workspace), written to that `tui.toml`'s `[auto] trusted_hosts` and in
+  force at the next review; `d` stops trusting one (it leaves the files
+  that name it). Before, the list could only be edited in the file.
+- A block for sending project data to a host you did not name (D5) now
+  says how to trust that host in `/permissions`, and its Blocked row
+  offers `t` (this workspace) and `T` (every workspace): the hosts are
+  read from the call itself, trusted, and the agent is told to run the
+  call again. A D5 block whose call names no readable host says how to
+  trust one in the Hosts section.
+
 ## [0.0.19] - 2026-11-20
 
 ### Added

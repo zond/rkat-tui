@@ -1629,6 +1629,7 @@ pub(super) fn blocked_call(id: u64, approved_once: bool) -> crate::approval::gra
         rule: Some("T3".into()),
         path: None,
         effect: None,
+        hosts: Vec::new(),
         reason: "blocked by the classifier".into(),
         at: 100,
         grant: None,
@@ -1646,7 +1647,15 @@ pub(super) fn blocked_call(id: u64, approved_once: bool) -> crate::approval::gra
 #[test]
 fn the_blocked_section_marks_a_waiting_approval_and_withdraws_it() {
     let blocked = |calls: &[crate::approval::grants::BlockedCall]| {
-        permissions_dialog(calls, 160, &[], &[], &[], None)
+        permissions_dialog(
+            calls,
+            160,
+            &[],
+            &[],
+            &[],
+            &crate::approval::hosts::HostRows::default(),
+            None,
+        )
     };
     let mut app = App::new(StatusInfo::default());
     app.update(Msg::ShowPicker {

@@ -28,14 +28,86 @@
 
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
+
 /// The setting's dotted key.
 pub const TRUSTED_HOSTS_KEY: &str = "auto.trusted_hosts";
 
 /// Most trusted hosts taken; the rest are skipped with a notice.
 pub const MAX_TRUSTED_HOSTS: usize = 64;
 
+/// What a valid trusted host looks like, as a refusal ends.
+pub const VALID_HOST: &str = "a valid entry is a host name (`ci.example.net`) or `*.` and a domain of at least two labels (`*.corp.example`)";
+
+/// The block rule a trusted host clears: sending project data to a host
+/// the user did not name.
+pub const HOST_RULE: &str = "D5";
+
+/// Whether the classifier's `rule` is [`HOST_RULE`] (any case, with
+/// whatever it wrote after the id).
+#[must_use]
+pub fn is_host_rule(rule: Option<&str>) -> bool {
+    rule.and_then(|rule| {
+        rule.split(|c: char| !c.is_ascii_alphanumeric())
+            .find(|word| !word.is_empty())
+    })
+    .is_some_and(|id| id.eq_ignore_ascii_case(HOST_RULE))
+}
+
+/// Which of the user's own layers names a trusted host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostOrigin {
+    /// The user's own `tui.toml` (every workspace).
+    User,
+    /// The realm's `tui.toml` (this workspace).
+    Workspace,
+    /// The daemon's command line (`--set auto.trusted_hosts=…`).
+    CommandLine,
+}
+
+impl HostOrigin {
+    /// How `/permissions` names it.
+    #[must_use]
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::User => "your tui.toml (every workspace)",
+            Self::Workspace => "this workspace (the realm's tui.toml)",
+            Self::CommandLine => "the daemon's command line",
+        }
+    }
+}
+
+/// A trusted host as held: the pattern (normalized) and every layer that
+/// names it, in layer order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustedHost {
+    /// The pattern ([`HostPattern::as_str`]).
+    pub pattern: String,
+    /// The layers that name it.
+    pub origins: Vec<HostOrigin>,
+}
+
+/// The patterns of `hosts`.
+#[must_use]
+pub fn patterns(hosts: &[TrustedHost]) -> Vec<String> {
+    hosts.iter().map(|host| host.pattern.clone()).collect()
+}
+
+/// The hosts `/permissions`' Hosts section lists: the ones the user
+/// trusts, and the project's own (read-only).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostRows {
+    /// The trusted hosts, with where each comes from.
+    #[serde(default)]
+    pub trusted: Vec<TrustedHost>,
+    /// The hosts of the project's git remotes as the daemon read them.
+    #[serde(default)]
+    pub project: Vec<ProjectHost>,
+}
+
 /// One host of the project's git remotes.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ProjectHost {
     /// The remote's name (`origin`).
     pub remote: String,
@@ -276,14 +348,15 @@ pub fn hosts_in(text: &str) -> Vec<String> {
 }
 
 /// What would let the user trust `hosts` (each named in a blocked action,
-/// none of the project's or trusted): the setting, the files it is read
-/// from, and that it trusts the host, not every action.
+/// none of the project's or trusted; none known: the general form): the
+/// command, the Blocked section's key when `keyed` (the block's hosts are
+/// on its row there), the setting and the files it is read from, that
+/// only the user can, and that it trusts the host, not every action. For
+/// the agent and the user alike.
 #[must_use]
-pub fn trust_hint(hosts: &[String], files: Option<(&Path, &Path)>) -> String {
-    let named: Vec<String> = hosts.iter().map(|host| format!("`{host}`")).collect();
-    let example = hosts.first().map_or("host.example", String::as_str);
+pub fn trust_hint(hosts: &[String], files: Option<(&Path, &Path)>, keyed: bool) -> String {
     let files = files.map_or_else(
-        || "your tui.toml or this workspace's".to_string(),
+        || "your tui.toml (every workspace) or this workspace's".to_string(),
         |(user, workspace)| {
             format!(
                 "{} (every workspace) or {} (this workspace)",
@@ -292,10 +365,24 @@ pub fn trust_hint(hosts: &[String], files: Option<(&Path, &Path)>) -> String {
             )
         },
     );
+    let who = if hosts.is_empty() {
+        "If the data goes to a host the user trusts with this project's data, the user can trust that host".to_string()
+    } else {
+        let named: Vec<String> = hosts.iter().map(|host| format!("`{host}`")).collect();
+        format!(
+            "If {} {} a host the user trusts with this project's data, the user can trust {}",
+            named.join(", "),
+            if hosts.len() == 1 { "is" } else { "are" },
+            if hosts.len() == 1 { "it" } else { "them" },
+        )
+    };
+    let key = if keyed {
+        "t on this call in /permissions' Blocked section, or n in its Hosts section"
+    } else {
+        "n in /permissions' Hosts section"
+    };
     format!(
-        "If {} {} a host the user trusts with this project's data, the user can add it to `{TRUSTED_HOSTS_KEY}` in {files} (`trusted_hosts = [\"{example}\"]` under `[auto]`; a project's own `.rkat/tui.toml` cannot set it). That trusts sending to the host, not every action there: the other rules still apply",
-        named.join(", "),
-        if hosts.len() == 1 { "is" } else { "are" },
+        "{who}: {key} (this workspace, or every workspace); it goes to `{TRUSTED_HOSTS_KEY}` in {files}, which only the user sets (a project's own `.rkat/tui.toml` cannot). That trusts sending to the host, not every action there: the other rules still apply"
     )
 }
 
@@ -442,19 +529,40 @@ mod tests {
 
     #[test]
     fn the_hint_names_the_host_the_setting_and_its_files() {
-        let hint = trust_hint(
-            &["paste.example.com".into()],
-            Some((Path::new("/u/tui.toml"), Path::new("/r/tui.toml"))),
-        );
+        let files = Some((Path::new("/u/tui.toml"), Path::new("/r/tui.toml")));
+        let hint = trust_hint(&["paste.example.com".into()], files, true);
         for part in [
             "`paste.example.com` is a host",
+            "t on this call in /permissions' Blocked section, or n in its Hosts section",
             "`auto.trusted_hosts`",
             "/u/tui.toml (every workspace)",
             "/r/tui.toml (this workspace)",
-            "cannot set it",
+            "only the user sets",
+            "cannot",
             "the other rules still apply",
         ] {
             assert!(hint.contains(part), "{part}: {hint}");
+        }
+        // No host known: the general form, no key on the call.
+        let general = trust_hint(&[], files, false);
+        assert!(
+            general.starts_with("If the data goes to a host the user trusts"),
+            "{general}"
+        );
+        assert!(
+            general.contains("n in /permissions' Hosts section"),
+            "{general}"
+        );
+        assert!(!general.contains("t on this call"), "{general}");
+    }
+
+    #[test]
+    fn the_host_rule_is_recognized_by_its_id() {
+        for rule in ["D5", "d5", "D5 (exfiltration)", "**D5**"] {
+            assert!(is_host_rule(Some(rule)), "{rule}");
+        }
+        for rule in [None, Some("D50"), Some("D4"), Some(""), Some("T5")] {
+            assert!(!is_host_rule(rule), "{rule:?}");
         }
     }
 }

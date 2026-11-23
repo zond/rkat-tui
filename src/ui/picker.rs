@@ -108,6 +108,24 @@ pub enum PickAct {
     /// Withdraw the approval once of call `id` (it is a blocked call
     /// again), then the list again.
     Withdraw(u64),
+    /// Trust the host the user typed with the project's data, in this
+    /// workspace or (`user`) every workspace, then the list again.
+    TrustHost {
+        /// As typed.
+        host: String,
+        /// The user's own `tui.toml`.
+        user: bool,
+    },
+    /// Trust the hosts blocked call `id`'s D5 block names, in this
+    /// workspace or (`user`) every workspace, then the list again.
+    TrustCallHosts {
+        /// The blocked call.
+        id: u64,
+        /// The user's own `tui.toml`.
+        user: bool,
+    },
+    /// Stop trusting the host, then the list again.
+    UntrustHost(String),
     /// Allow the kind of action `text` describes, as blocked call `id`'s
     /// approval, for the scope, then the list again.
     AllowEffect {
@@ -301,6 +319,14 @@ pub enum FieldFor {
         /// The text after the tool is matched exactly, not as a pattern.
         literal: bool,
     },
+    /// A host to trust with the project's data: Tab switches this
+    /// workspace and every workspace; Enter is [`PickAct::TrustHost`]
+    /// once the text is a valid entry
+    /// ([`crate::approval::hosts::HostPattern::parse`]).
+    Host {
+        /// Written to the user's own `tui.toml`.
+        user: bool,
+    },
 }
 
 /// A rule as the `/permissions` dialog's `r` form leaves it.
@@ -351,6 +377,8 @@ impl FieldFor {
             Self::Effect { .. } | Self::Statement { .. } => {
                 crate::approval::statements::MAX_STATEMENT_CHARS
             }
+            // A host name's 253 and `*.`.
+            Self::Host { .. } => 255,
         }
     }
 
@@ -358,7 +386,7 @@ impl FieldFor {
     /// rule, allow or deny (Shift+Tab: this workspace or the user's file).
     fn toggle(&mut self, back: bool) {
         match self {
-            Self::Setting { user, .. } => *user = !*user,
+            Self::Setting { user, .. } | Self::Host { user } => *user = !*user,
             Self::Effect { scope, .. } | Self::Statement { scope } => {
                 *scope = next_statement_scope(*scope);
             }
@@ -399,6 +427,26 @@ impl FieldFor {
                 scope: *scope,
                 text,
             },
+            Self::Host { user } => {
+                if text.is_empty() {
+                    return Err(format!(
+                        "no host trusted: type one; {}",
+                        crate::approval::hosts::VALID_HOST
+                    ));
+                }
+                // The daemon checks it again; refused here, it is said at
+                // once.
+                if let Err(why) = crate::approval::hosts::HostPattern::parse(&text) {
+                    return Err(format!(
+                        "`{text}` was not trusted: {why}; {}",
+                        crate::approval::hosts::VALID_HOST
+                    ));
+                }
+                PickAct::TrustHost {
+                    host: text,
+                    user: *user,
+                }
+            }
             Self::Rule {
                 deny,
                 user,
@@ -470,6 +518,16 @@ impl FieldFor {
                 };
                 format!(
                     "new rule: {kind} · {file} · type {arg} (Enter adds · Tab allow/deny · Shift+Tab workspace/your tui.toml · ↑/↓ pattern/literal · Esc cancels):"
+                )
+            }
+            Self::Host { user } => {
+                let (now, other) = if *user {
+                    ("every workspace (your tui.toml)", "this workspace")
+                } else {
+                    ("this workspace (the realm's tui.toml)", "every workspace")
+                };
+                format!(
+                    "trust a host with this project's data · {now} · type a host name or *.domain (Enter trusts · Tab: {other} · Esc cancels):"
                 )
             }
         }
@@ -1523,6 +1581,11 @@ impl App {
             PickAct::RemoveStatement(id) => fx.push(Effect::PickedStatementRemoval(id)),
             PickAct::Approve(id, scope) => fx.push(Effect::PickedApproval(id, scope, None)),
             PickAct::Withdraw(id) => fx.push(Effect::PickedWithdrawal(id)),
+            PickAct::TrustHost { host, user } => fx.push(Effect::PickedHostTrust { host, user }),
+            PickAct::TrustCallHosts { id, user } => {
+                fx.push(Effect::PickedCallHostTrust { id, user });
+            }
+            PickAct::UntrustHost(host) => fx.push(Effect::PickedHostRemoval(host)),
             PickAct::AllowEffect { id, scope, text } => {
                 fx.push(Effect::PickedApproval(id, scope, Some(text)));
             }

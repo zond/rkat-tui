@@ -393,6 +393,10 @@ pub struct RuleRows {
     /// ([`super::statements::Statements::rows`]).
     #[serde(default)]
     pub statements: Vec<super::statements::StatementRow>,
+    /// The hosts the user trusts and the project's own
+    /// ([`ApprovalEngine::host_rows`]): `/permissions`' Hosts section.
+    #[serde(default)]
+    pub hosts: super::hosts::HostRows,
 }
 
 /// The rules of `engine` as the `/permissions` picker shows them.
@@ -415,6 +419,7 @@ pub fn rule_rows(engine: &ApprovalEngine) -> RuleRows {
             .collect(),
         grants: Vec::new(),
         statements: Vec::new(),
+        hosts: engine.host_rows(),
     }
 }
 

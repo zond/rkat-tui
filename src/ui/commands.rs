@@ -615,24 +615,28 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "permissions",
         aliases: &[],
-        usage: "[blocked | rules | list | add allow|deny <tool> [pattern] [--user] | rm <n>]",
-        summary: "approve blocked calls; see, add and remove rules, grants and statements",
+        usage: "[blocked | rules | hosts | list | add allow|deny <tool> [pattern] [--user] | rm <n>]",
+        summary: "approve blocked calls; see, add and remove rules, grants, statements and trusted hosts",
         help: &[
             (
                 "/permissions",
-                "open the permissions dialog, two sections (Tab and Shift+Tab\nswitch): Blocked, the calls the gate recently blocked (the\nnewest 10) and the approvals waiting for the agent; In force,\nthe rules, grants and statements with where each comes from.\nIt opens on Blocked when anything is there, else on In force",
+                "open the permissions dialog, three sections (Tab and Shift+Tab\nswitch): Blocked, the calls the gate recently blocked (the\nnewest 10) and the approvals waiting for the agent; In force,\nthe rules, grants and statements with where each comes from;\nHosts, the hosts you trust with the project's data and the\nproject's own. It opens on Blocked when anything is there,\nelse on In force",
             ),
             (
                 "  Blocked",
-                "Enter or o runs a call once, s allows its directory or call\nfor this session, a always for this workspace (the realm's\ntui.toml), A always in every workspace (your own tui.toml), e\nallows its kind of effect (a statement the classifier judges);\nthe agent is told at once and goes on; a call approved once\nwaits on the list until the agent runs it, w withdraws that\napproval",
+                "Enter or o runs a call once, s allows its directory or call\nfor this session, a always for this workspace (the realm's\ntui.toml), A always in every workspace (your own tui.toml), e\nallows its kind of effect (a statement the classifier judges);\non a block for sending to a host you did not name (D5), t\ntrusts that host here, T in every workspace; the agent is\ntold at once and goes on; a call approved once waits on the\nlist until the agent runs it, w withdraws that approval",
             ),
             (
                 "  In force",
                 "d then y removes one (for good for the workspace's and your own\ntui.toml's, until the daemon restarts for one of the command\nline or the project); n allows a kind of action you type (Tab:\nthis session, always here, every workspace); r adds a rule\n(Tab allow/deny, Shift+Tab this workspace/your tui.toml, ↑/↓\npattern/literal)",
             ),
             (
-                "/permissions blocked|rules",
-                "open the dialog on Blocked, or on In force",
+                "  Hosts",
+                "n trusts a host you type (a host name or *.domain; Tab: this\nworkspace or every workspace), d then y stops trusting one\n(it leaves the files that name it); the project's own hosts\n(its git remotes) are listed read-only",
+            ),
+            (
+                "/permissions blocked|rules|hosts",
+                "open the dialog on Blocked, In force or Hosts",
             ),
             ("/permissions list", "list approval rules"),
             (
@@ -1207,8 +1211,8 @@ Lists (/schedules, /permissions, /helpers, /mode, /memory, /wire, /unwire, /sett
   Enter, p (/schedules)          pause the schedule, or resume a paused one
   d, then y (/schedules)         delete it; n or Esc keeps it
   Enter, then y (/unwire)        unwire the agent of the other workspace
-  Tab, Shift+Tab (/permissions)  switch between Blocked and In force (inside a field Tab switches
-                                 what the field does instead)
+  Tab, Shift+Tab (/permissions)  switch between Blocked, In force and Hosts (inside a field Tab
+                                 switches what the field does instead)
   Enter, o (Blocked)             approve the blocked call once (exact); a row that shows only part
                                  of the call asks you to read it whole first
   Ctrl+O (Blocked)               the whole call in place of the list (scroll it; Esc back)
@@ -1219,11 +1223,16 @@ Lists (/schedules, /permissions, /helpers, /mode, /memory, /wire, /unwire, /sett
                                  here/every workspace, Enter (judged by the classifier)
   w (Blocked)                    withdraw an approval once that waits for the agent (the call is
                                  blocked again)
+  t / T, then y (Blocked)        on a D5 block: trust the hosts the call names in this workspace /
+                                 in every workspace; the agent is told to run it again
   d, then y (In force)           remove the rule, the session grant or the statement
   n (In force)                   allow a kind of action you type: Tab session/always here/every
                                  workspace, Enter (judged by the classifier)
   r (In force)                   add a rule: type <tool> [pattern]; Tab allow/deny, Shift+Tab this
                                  workspace/your tui.toml, Up/Down pattern/literal, Enter
+  n (Hosts)                      trust a host: type a host name or *.domain; Tab this workspace/
+                                 every workspace, Enter
+  d, then y (Hosts)              stop trusting the host (the project's own are read-only)
   Enter (/helpers)               open the helper's full view
   f (/helpers)                   fold or expand the helper's block in the transcript
   s, then y (/helpers)           stop the running helper (its run ends and it is retired; the
@@ -1353,6 +1362,7 @@ fn parse_rules(args: &[&str]) -> Option<RulesCommand> {
         ["rules"] => Some(RulesCommand::Pick(Some(
             super::permissions::Section::InForce,
         ))),
+        ["hosts"] => Some(RulesCommand::Pick(Some(super::permissions::Section::Hosts))),
         ["list"] => Some(RulesCommand::List),
         ["add", effect, tool, pattern @ ..] => {
             let effect = match *effect {
@@ -1902,6 +1912,15 @@ mod tests {
                 crate::ui::permissions::Section::InForce
             )))
         );
+        assert_eq!(
+            ok("/permissions hosts"),
+            Command::Rules(RulesCommand::Pick(Some(
+                crate::ui::permissions::Section::Hosts
+            )))
+        );
+        // Hosts are added and removed in the dialog only: no typed form.
+        assert!(parse("/permissions hosts add ci.example.net").is_some_and(|r| r.is_err()));
+        assert!(parse("/hosts").is_some_and(|r| r.is_err()));
         assert!(matches!(
             parse("/approve"),
             Some(Err(CommandError::Unknown(name))) if name == "approve"
@@ -2000,8 +2019,10 @@ mod tests {
             "1, y",
             "2, t",
             "3, a",
-            "/permissions blocked|rules",
+            "/permissions blocked|rules|hosts",
             "n (In force)",
+            "n (Hosts)",
+            "t / T, then y (Blocked)",
             "r (In force)",
             "4, n, Esc",
             "j/k, Enter",
@@ -2061,7 +2082,7 @@ mod tests {
         }
         assert_eq!(
             usage_of("/permissions rm x"),
-            "/permissions [blocked | rules | list | add allow|deny <tool> [pattern] [--user] | rm <n>]"
+            "/permissions [blocked | rules | hosts | list | add allow|deny <tool> [pattern] [--user] | rm <n>]"
         );
     }
 

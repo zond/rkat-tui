@@ -1002,7 +1002,7 @@ fn trusted_hosts_come_from_the_user_s_layers_only() {
     .unwrap();
     let (_, settings, notices) = load_layered(&realm, Some(&global), &project).unwrap();
     assert_eq!(
-        settings.trusted_hosts,
+        crate::approval::hosts::patterns(&settings.trusted_hosts),
         vec!["ci.example.net".to_string(), "*.corp.example".to_string()]
     );
     assert!(

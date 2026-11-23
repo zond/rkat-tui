@@ -6,6 +6,7 @@ use super::dispatch::blocked_call;
 use super::*;
 use crate::approval::desk::RuleRow;
 use crate::approval::grants::{BlockedCall, GrantOrigin, GrantRow, GrantScope, GrantTarget};
+use crate::approval::hosts::{HostOrigin, HostRows, ProjectHost, TrustedHost};
 use crate::approval::rules::RuleOrigin;
 use crate::approval::statements::{StatementOrigin, StatementRow};
 
@@ -15,12 +16,20 @@ fn press(code: KeyCode) -> KeyEvent {
 
 /// The dialog over `calls` alone, opened as `/permissions` opens it.
 fn blocked(calls: &[BlockedCall], now: u64) -> ListPicker {
-    permissions_dialog(calls, now, &[], &[], &[], None)
+    permissions_dialog(calls, now, &[], &[], &[], &HostRows::default(), None)
 }
 
 /// The dialog over the rules, grants and statements alone.
 fn in_force(rules: &[RuleRow], grants: &[GrantRow], statements: &[StatementRow]) -> ListPicker {
-    permissions_dialog(&[], 0, rules, grants, statements, None)
+    permissions_dialog(
+        &[],
+        0,
+        rules,
+        grants,
+        statements,
+        &HostRows::default(),
+        None,
+    )
 }
 
 fn question(picker: &ListPicker) -> String {
@@ -57,38 +66,71 @@ fn open(app: &App) -> &ListPicker {
 fn the_dialog_opens_on_the_right_section_and_tab_switches() {
     let calls = [blocked_call(1, false), blocked_call(2, false)];
     let grants = [session_grant(4)];
-    let mut p = permissions_dialog(&calls, 160, &[], &grants, &[], None);
+    let mut p = permissions_dialog(&calls, 160, &[], &grants, &[], &HostRows::default(), None);
     assert_eq!(p.section(), Some(Section::Blocked.index()));
-    assert_eq!(p.title(), " Permissions: [Blocked 2] · In force 1 ");
+    assert_eq!(
+        p.title(),
+        " Permissions: [Blocked 2] · In force 1 · Hosts 0 "
+    );
     assert!(
         p.footer.ends_with("· Tab In force · Esc close"),
         "{}",
         p.footer
     );
     // Only a waiting approval: still Blocked.
-    let waiting = permissions_dialog(&[blocked_call(3, true)], 160, &[], &grants, &[], None);
+    let waiting = permissions_dialog(
+        &[blocked_call(3, true)],
+        160,
+        &[],
+        &grants,
+        &[],
+        &HostRows::default(),
+        None,
+    );
     assert_eq!(waiting.section(), Some(Section::Blocked.index()));
     // Nothing blocked: In force; asked for: that one.
-    let none = permissions_dialog(&[], 160, &[], &grants, &[], None);
+    let none = permissions_dialog(&[], 160, &[], &grants, &[], &HostRows::default(), None);
     assert_eq!(none.section(), Some(Section::InForce.index()));
-    assert_eq!(none.title(), " Permissions: Blocked 0 · [In force 1] ");
-    let asked = permissions_dialog(&[], 160, &[], &grants, &[], Some(Section::Blocked));
+    assert_eq!(
+        none.title(),
+        " Permissions: Blocked 0 · [In force 1] · Hosts 0 "
+    );
+    let asked = permissions_dialog(
+        &[],
+        160,
+        &[],
+        &grants,
+        &[],
+        &HostRows::default(),
+        Some(Section::Blocked),
+    );
     assert_eq!(asked.section(), Some(Section::Blocked.index()));
     assert!(asked.rows.is_empty() && asked.empty.contains("nothing was blocked"));
-    let asked = permissions_dialog(&calls, 160, &[], &grants, &[], Some(Section::InForce));
+    let asked = permissions_dialog(
+        &calls,
+        160,
+        &[],
+        &grants,
+        &[],
+        &HostRows::default(),
+        Some(Section::InForce),
+    );
     assert_eq!(asked.section(), Some(Section::InForce.index()));
     // Tab switches, the highlight of each section kept.
     p.key(&press(KeyCode::Down));
     assert_eq!(p.key(&press(KeyCode::Tab)), ModalKey::Stay);
     assert_eq!(p.section(), Some(Section::InForce.index()));
-    assert_eq!(p.title(), " Permissions: Blocked 2 · [In force 1] ");
+    assert_eq!(
+        p.title(),
+        " Permissions: Blocked 2 · [In force 1] · Hosts 0 "
+    );
     assert!(
         p.rows[0].text.starts_with("grant writes under"),
         "{:?}",
         p.rows
     );
     assert!(
-        p.footer.ends_with("· Tab Blocked · Esc close"),
+        p.footer.ends_with("· Tab Hosts · Esc close"),
         "{}",
         p.footer
     );
@@ -115,7 +157,7 @@ fn tab_is_the_field_s_or_the_question_s_while_one_is_open() {
         }),
         ..blocked_call(1, false)
     }];
-    let mut p = permissions_dialog(&calls, 160, &[], &[], &[], None);
+    let mut p = permissions_dialog(&calls, 160, &[], &[], &[], &HostRows::default(), None);
     p.key(&press(KeyCode::Char('s')));
     p.key(&press(KeyCode::Tab));
     assert_eq!(p.section(), Some(Section::Blocked.index()));
@@ -158,7 +200,15 @@ fn tab_is_the_field_s_or_the_question_s_while_one_is_open() {
 /// A key of the other section says where it acts, and acts on nothing.
 #[test]
 fn a_key_of_the_other_section_says_where_it_acts() {
-    let mut p = permissions_dialog(&[blocked_call(1, false)], 160, &[], &[], &[], None);
+    let mut p = permissions_dialog(
+        &[blocked_call(1, false)],
+        160,
+        &[],
+        &[],
+        &[],
+        &HostRows::default(),
+        None,
+    );
     for code in ['d', 'n', 'r'] {
         assert_eq!(p.key(&press(KeyCode::Char(code))), ModalKey::Stay);
         assert!(
@@ -371,6 +421,7 @@ fn blocked_offers_once_session_and_always() {
         reason: "the safety classifier blocked it: x".into(),
         at: 100,
         effect: (id == 2).then(|| "pushing to the default branch".to_string()),
+        hosts: Vec::new(),
         grant,
         approved_once: false,
         call: format!("cmd {id}"),
@@ -470,6 +521,7 @@ fn blocked_allows_an_edited_kind_of_effect() {
         reason: "blocked".into(),
         at: 100,
         effect: effect.map(str::to_string),
+        hosts: Vec::new(),
         grant: None,
         approved_once: false,
         call: "git push origin main".into(),
@@ -731,7 +783,15 @@ fn an_approval_shows_in_in_force_and_the_dialog_stays_open() {
     };
     let mut app = App::new(StatusInfo::default());
     app.update(Msg::ShowPicker {
-        picker: permissions_dialog(&[with_grant(1), with_grant(2)], 160, &[], &[], &[], None),
+        picker: permissions_dialog(
+            &[with_grant(1), with_grant(2)],
+            160,
+            &[],
+            &[],
+            &[],
+            &HostRows::default(),
+            None,
+        ),
         refresh: false,
     });
     app.update(key(KeyCode::Char('s')));
@@ -742,7 +802,15 @@ fn an_approval_shows_in_in_force_and_the_dialog_stays_open() {
     assert_eq!(open(&app).section(), Some(Section::Blocked.index()));
     // The daemon's lists again: the call is gone, its grant in force.
     app.update(Msg::ShowPicker {
-        picker: permissions_dialog(&[with_grant(1)], 170, &[], &[session_grant(7)], &[], None),
+        picker: permissions_dialog(
+            &[with_grant(1)],
+            170,
+            &[],
+            &[session_grant(7)],
+            &[],
+            &HostRows::default(),
+            None,
+        ),
         refresh: true,
     });
     app.update(Msg::PickerDone {
@@ -751,7 +819,10 @@ fn an_approval_shows_in_in_force_and_the_dialog_stays_open() {
     });
     let p = open(&app);
     assert_eq!(p.section(), Some(Section::Blocked.index()));
-    assert_eq!(p.title(), " Permissions: [Blocked 1] · In force 1 ");
+    assert_eq!(
+        p.title(),
+        " Permissions: [Blocked 1] · In force 1 · Hosts 0 "
+    );
     assert!(p.selected().unwrap().text.starts_with("#1 "));
     assert!(matches!(&p.line, Some(PickerLine::Done(what)) if what.starts_with("granted")));
     let rows = screen(&mut app, 30).join("\n");
@@ -768,7 +839,15 @@ fn an_approval_shows_in_in_force_and_the_dialog_stays_open() {
     // A refresh while In force shows keeps In force, even with calls
     // blocked (the opening rule is for opening only).
     app.update(Msg::ShowPicker {
-        picker: permissions_dialog(&[with_grant(1)], 180, &[], &[session_grant(7)], &[], None),
+        picker: permissions_dialog(
+            &[with_grant(1)],
+            180,
+            &[],
+            &[session_grant(7)],
+            &[],
+            &HostRows::default(),
+            None,
+        ),
         refresh: true,
     });
     assert_eq!(open(&app).section(), Some(Section::InForce.index()));
@@ -848,5 +927,258 @@ fn a_long_blocked_call_is_read_in_full_before_it_is_approved_once() {
         matches!(&p.line, Some(PickerLine::Refused(why)) if why.contains("cannot be approved once")),
         "{:?}",
         p.line
+    );
+}
+
+/// The hosts of the Hosts section's tests: two trusted (one also on the
+/// command line), one only on the command line, and the project's own
+/// host named by two remotes.
+fn some_hosts() -> HostRows {
+    let trusted = |pattern: &str, origins: Vec<HostOrigin>| TrustedHost {
+        pattern: pattern.into(),
+        origins,
+    };
+    let project = |remote: &str, host: &str| ProjectHost {
+        remote: remote.into(),
+        host: host.into(),
+    };
+    HostRows {
+        trusted: vec![
+            trusted("ci.example.net", vec![HostOrigin::Workspace]),
+            trusted(
+                "*.corp.example",
+                vec![HostOrigin::User, HostOrigin::CommandLine],
+            ),
+            trusted("cli.example.org", vec![HostOrigin::CommandLine]),
+        ],
+        project: vec![
+            project("origin", "gitlab.example.com"),
+            project("mirror", "gitlab.example.com"),
+        ],
+    }
+}
+
+/// `/permissions hosts` opens on Hosts: a row per trusted host with every
+/// file that names it, then the project's own hosts, read-only; `d` asks
+/// which files the host leaves (and that the command line keeps it), or
+/// says why it cannot; the title counts the section.
+#[test]
+fn the_hosts_section_lists_trusted_and_project_hosts_and_removes_one() {
+    let mut p = permissions_dialog(&[], 0, &[], &[], &[], &some_hosts(), Some(Section::Hosts));
+    assert_eq!(p.section(), Some(Section::Hosts.index()));
+    assert_eq!(
+        p.title(),
+        " Permissions: Blocked 0 · In force 0 · [Hosts 4] "
+    );
+    let texts: Vec<&str> = p.rows.iter().map(|row| row.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        vec![
+            "trusted ci.example.net · this workspace (the realm's tui.toml)",
+            "trusted *.corp.example · your tui.toml (every workspace) + the daemon's command line",
+            "trusted cli.example.org · the daemon's command line",
+            "project gitlab.example.com · remote origin, mirror · read-only",
+        ]
+    );
+    assert!(
+        p.footer.contains("d stop trusting · n trust a host"),
+        "{}",
+        p.footer
+    );
+    assert!(
+        p.footer.ends_with("· Tab Blocked · Esc close"),
+        "{}",
+        p.footer
+    );
+    p.key(&press(KeyCode::Char('d')));
+    assert_eq!(
+        question(&p),
+        "Stop trusting `ci.example.net`? It leaves this workspace (the realm's tui.toml)."
+    );
+    assert_eq!(
+        p.key(&press(KeyCode::Char('y'))),
+        ModalKey::Choose(PickAct::UntrustHost("ci.example.net".into()))
+    );
+    p.key(&press(KeyCode::Down));
+    p.key(&press(KeyCode::Char('d')));
+    assert!(
+        question(&p).ends_with("it stays trusted until the daemon stops."),
+        "{}",
+        question(&p)
+    );
+    p.key(&press(KeyCode::Char('n')));
+    p.key(&press(KeyCode::Down));
+    p.key(&press(KeyCode::Char('d')));
+    assert!(
+        matches!(&p.line, Some(PickerLine::Refused(why)) if why.contains("daemon's command line")),
+        "{:?}",
+        p.line
+    );
+    p.key(&press(KeyCode::Down));
+    p.key(&press(KeyCode::Char('d')));
+    assert!(
+        matches!(&p.line, Some(PickerLine::Refused(why)) if why.contains("the project's own host (git remote origin, mirror)")),
+        "{:?}",
+        p.line
+    );
+    // Keys of the other sections say where they act; Tab goes round.
+    for code in ['t', 'o', 'e'] {
+        p.key(&press(KeyCode::Char(code)));
+        assert!(
+            matches!(&p.line, Some(PickerLine::Refused(why)) if why.contains("Tab switches to Blocked")),
+            "{code}: {:?}",
+            p.line
+        );
+    }
+    p.key(&press(KeyCode::Tab));
+    assert_eq!(p.section(), Some(Section::Blocked.index()));
+    // None: the empty line says how to trust one.
+    let none = permissions_dialog(
+        &[],
+        0,
+        &[],
+        &[],
+        &[],
+        &HostRows::default(),
+        Some(Section::Hosts),
+    );
+    assert!(
+        none.rows.is_empty() && none.empty.contains("n trusts one"),
+        "{}",
+        none.empty
+    );
+}
+
+/// `n` opens the field of a host to trust: an entry that is no host is
+/// refused on the line with what a valid one looks like (nothing sent),
+/// Tab switches this workspace and every workspace, Enter trusts it.
+#[test]
+fn the_hosts_field_checks_the_entry_and_chooses_the_file() {
+    let mut p = permissions_dialog(&[], 0, &[], &[], &[], &some_hosts(), Some(Section::Hosts));
+    let typed = |p: &mut ListPicker, text: &str| {
+        p.key(&press(KeyCode::Char('n')));
+        for c in text.chars() {
+            p.key(&press(KeyCode::Char(c)));
+        }
+    };
+    typed(&mut p, "https://paste.example.com/x");
+    assert!(matches!(&p.line, Some(PickerLine::Field(_))));
+    let lines = crate::ui::picker_lines_for_test(&p, 200).join("\n");
+    assert!(
+        lines.contains("trust a host with this project's data · this workspace (the realm's tui.toml) · type a host name or *.domain (Enter trusts · Tab: every workspace · Esc cancels):"),
+        "{lines}"
+    );
+    assert_eq!(p.key(&press(KeyCode::Enter)), ModalKey::Stay);
+    assert!(
+        matches!(&p.line, Some(PickerLine::Refused(why))
+            if why.contains("host name only") && why.contains("a valid entry is a host name (`ci.example.net`) or `*.` and a domain")),
+        "{:?}",
+        p.line
+    );
+    typed(&mut p, "*.com");
+    assert_eq!(p.key(&press(KeyCode::Enter)), ModalKey::Stay);
+    assert!(
+        matches!(&p.line, Some(PickerLine::Refused(why)) if why.contains("whole top-level domain")),
+        "{:?}",
+        p.line
+    );
+    typed(&mut p, "paste.example.com");
+    assert_eq!(
+        p.key(&press(KeyCode::Enter)),
+        ModalKey::Choose(PickAct::TrustHost {
+            host: "paste.example.com".into(),
+            user: false
+        })
+    );
+    typed(&mut p, "*.corp2.example");
+    p.key(&press(KeyCode::Tab));
+    let lines = crate::ui::picker_lines_for_test(&p, 200).join("\n");
+    assert!(
+        lines.contains("· every workspace (your tui.toml) ·"),
+        "{lines}"
+    );
+    assert_eq!(
+        p.key(&press(KeyCode::Enter)),
+        ModalKey::Choose(PickAct::TrustHost {
+            host: "*.corp2.example".into(),
+            user: true
+        })
+    );
+}
+
+/// A D5 block whose call names hosts: its row says `t` trusts them, the
+/// footer names t/T, and `t` (this workspace) and `T` (every workspace)
+/// ask, then trust them through the daemon; a block that names none says
+/// so. The acts reach the runner as their effects.
+#[test]
+fn a_d5_block_s_hosts_are_trusted_with_one_key() {
+    let d5 = BlockedCall {
+        rule: Some("D5".into()),
+        hosts: vec!["paste.example.com".into()],
+        ..blocked_call(4, false)
+    };
+    let mut p = blocked(&[blocked_call(3, false), d5.clone()], 160);
+    assert!(p.footer.contains("t/T trust its host"), "{}", p.footer);
+    assert!(
+        p.rows[0]
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("t trust `paste.example.com`")),
+        "{:?}",
+        p.rows[0]
+    );
+    p.key(&press(KeyCode::Char('t')));
+    assert_eq!(
+        question(&p),
+        "Trust `paste.example.com` with this project's data in this workspace (written to the realm's tui.toml)? The agent is told to run the call again."
+    );
+    assert_eq!(
+        p.key(&press(KeyCode::Char('y'))),
+        ModalKey::Choose(PickAct::TrustCallHosts { id: 4, user: false })
+    );
+    p.key(&press(KeyCode::Char('T')));
+    assert!(question(&p).contains("in every workspace (written to your own tui.toml)"));
+    assert_eq!(
+        p.key(&press(KeyCode::Char('y'))),
+        ModalKey::Choose(PickAct::TrustCallHosts { id: 4, user: true })
+    );
+    p.key(&press(KeyCode::Down));
+    p.key(&press(KeyCode::Char('t')));
+    assert!(
+        matches!(&p.line, Some(PickerLine::Refused(why)) if why.contains("names no host to trust")),
+        "{:?}",
+        p.line
+    );
+    let plain = blocked(&[blocked_call(3, false)], 160);
+    assert!(!plain.footer.contains("trust its host"), "{}", plain.footer);
+
+    // Through the app: each act is its effect.
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowPicker {
+        picker: permissions_dialog(&[d5], 160, &[], &[], &[], &some_hosts(), None),
+        refresh: false,
+    });
+    app.update(key(KeyCode::Char('t')));
+    assert_eq!(
+        app.update(key(KeyCode::Char('y'))),
+        vec![Effect::PickedCallHostTrust { id: 4, user: false }]
+    );
+    app.update(key(KeyCode::BackTab));
+    assert_eq!(open(&app).section(), Some(Section::Hosts.index()));
+    app.update(key(KeyCode::Char('d')));
+    assert_eq!(
+        app.update(key(KeyCode::Char('y'))),
+        vec![Effect::PickedHostRemoval("ci.example.net".into())]
+    );
+    app.update(key(KeyCode::Char('n')));
+    for c in "ci2.example.net".chars() {
+        app.update(key(KeyCode::Char(c)));
+    }
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::PickedHostTrust {
+            host: "ci2.example.net".into(),
+            user: false
+        }]
     );
 }

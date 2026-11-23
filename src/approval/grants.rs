@@ -142,6 +142,11 @@ pub struct BlockedCall {
     /// it, editable, as a statement ([`super::statements`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect: Option<String>,
+    /// Under the host rule (D5): the hosts the call itself names that were
+    /// neither the project's own nor trusted when it was blocked, which
+    /// `/permissions` offers to trust (`t`, `T`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
     /// Why it was blocked (the denial as the user reads it).
     pub reason: String,
     /// When, in seconds since the Unix epoch.

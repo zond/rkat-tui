@@ -7,6 +7,10 @@
 //! also takes goes in with the file's write as one ([`PermissionFiles`]).
 
 use super::*;
+use crate::approval::hosts::{
+    HostOrigin, HostPattern, HostRows, MAX_TRUSTED_HOSTS, TRUSTED_HOSTS_KEY, TrustedHost,
+    VALID_HOST,
+};
 
 /// Who holds the settings files' permission sections beside the engine
 /// (the daemon's settings, `crate::daemon::settings::Settings`). The
@@ -484,6 +488,242 @@ impl ApprovalEngine {
         Ok(format!("no longer allowed: \"{text}\""))
     }
 
+    /// The hosts `/permissions`' Hosts section lists: the ones the user
+    /// trusts, with where each comes from, and the project's own as the
+    /// daemon read them at its start.
+    #[must_use]
+    pub fn host_rows(&self) -> HostRows {
+        HostRows {
+            trusted: self.trusted_hosts.read().clone(),
+            project: self.environment.project_hosts.clone(),
+        }
+    }
+
+    /// The user trusts the host `raw` (a host name, or `*.` and a domain)
+    /// with the project's data, written to the file of `level` (the
+    /// user's own `tui.toml` for [`Level::User`], else the realm's): the
+    /// classifier is told from the next review on, and the agent of
+    /// `session_id` in one system note ([`ApprovalEvent::Granted`]).
+    /// Only the user's own `/permissions` reaches this: nothing the agent
+    /// can call does.
+    ///
+    /// # Errors
+    ///
+    /// Why it was not trusted, for the user: no valid entry (with what a
+    /// valid one looks like), the project's own host, trusted there
+    /// already, too many, or the file not written.
+    pub fn trust_host(
+        &self,
+        session_id: Option<&SessionId>,
+        raw: &str,
+        level: Level,
+    ) -> Result<Approved, String> {
+        let pattern = self.trust_host_as(raw, level)?;
+        let words = host_origin(level).words();
+        let approved = Approved {
+            notice: format!(
+                "trusted `{pattern}` with this project's data, {words}: sending the project's content there is no longer blocked as D5; the other rules still apply, and secrets stay blocked at any host"
+            ),
+            note: format!(
+                "The user now trusts `{pattern}` with this project's data ({words}): {TRUSTED_NOTE}"
+            ),
+        };
+        if let Some(session_id) = session_id {
+            self.emit(ApprovalEvent::Granted {
+                session_id: session_id.clone(),
+                note: approved.note.clone(),
+            });
+        }
+        Ok(approved)
+    }
+
+    /// [`Self::trust_host`] without the agent's note: the pattern trusted.
+    fn trust_host_as(&self, raw: &str, level: Level) -> Result<String, String> {
+        let shown = raw.trim();
+        let pattern = HostPattern::parse(raw)
+            .map_err(|why| format!("`{shown}` was not trusted: {why}; {VALID_HOST}"))?
+            .as_str()
+            .to_string();
+        if let Some(own) = self
+            .environment
+            .project_hosts
+            .iter()
+            .find(|own| own.host == pattern)
+        {
+            return Err(format!(
+                "`{pattern}` is the project's own host (git remote `{}`): sending the project's content there is not D5 already",
+                own.remote
+            ));
+        }
+        let origin = host_origin(level);
+        let _writing = self.writing();
+        {
+            let held = self.trusted_hosts.read();
+            match held.iter().find(|host| host.pattern == pattern) {
+                Some(known) if known.origins.contains(&origin) => {
+                    return Err(format!(
+                        "`{pattern}` is trusted already, in {}",
+                        origin.words()
+                    ));
+                }
+                None if held.len() >= MAX_TRUSTED_HOSTS => {
+                    return Err(format!(
+                        "`{pattern}` was not trusted: {MAX_TRUSTED_HOSTS} hosts are trusted already; remove one first (d in /permissions' Hosts section)"
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if let Some(files) = &self.files {
+            files
+                .of(level)
+                .add_to_list(TRUSTED_HOSTS_KEY, &pattern)
+                .map_err(|err| format!("`{pattern}` was not trusted: {err}"))?;
+        }
+        {
+            let mut held = self.trusted_hosts.write();
+            match held.iter_mut().find(|host| host.pattern == pattern) {
+                Some(known) => known.origins.push(origin),
+                None => held.push(TrustedHost {
+                    pattern: pattern.clone(),
+                    origins: vec![origin],
+                }),
+            }
+        }
+        self.audit_event(
+            "trusted_host_added",
+            format!("{pattern} ({})", origin.words()),
+        );
+        Ok(pattern)
+    }
+
+    /// The user trusts the hosts blocked call `id` of `session_id` names
+    /// (its D5 block's, [`BlockedCall::hosts`], read from the call itself)
+    /// in the file of `level`: the call leaves the Blocked list, and, as
+    /// [`Self::approve`], the note for whoever made the call (to run it
+    /// again) is returned, not emitted.
+    ///
+    /// # Errors
+    ///
+    /// No such call, one approved once already, one that names no host,
+    /// or why a host was not trusted.
+    pub fn trust_call_hosts(
+        &self,
+        session_id: &SessionId,
+        id: u64,
+        level: Level,
+    ) -> Result<Approved, String> {
+        let call = self.blocks.blocked(session_id, id)?;
+        if call.hosts.is_empty() {
+            return Err(format!(
+                "blocked call #{id} names no host to trust; n in /permissions' Hosts section trusts one you type"
+            ));
+        }
+        let held = super::super::hosts::patterns(&self.trusted_hosts.read());
+        for host in &call.hosts {
+            if !super::super::hosts::is_trusted(&held, host) {
+                self.trust_host_as(host, level)?;
+            }
+        }
+        self.blocks.drop_call(session_id, id);
+        self.stats
+            .add(Some(session_id), |stats| stats.approvals += 1);
+        let named: Vec<String> = call.hosts.iter().map(|host| format!("`{host}`")).collect();
+        let named = named.join(", ");
+        let words = host_origin(level).words();
+        let what = format!("`{} {}`", call.tool, call.summary);
+        Ok(approval(
+            format!(
+                "trusted {named} with this project's data, {words}; the agent is told to run {what} again"
+            ),
+            &what,
+            call.helper.as_deref(),
+            &format!("by trusting {named} with this project's data ({words})"),
+            &format!(" {TRUSTED_NOTE}"),
+            false,
+        ))
+    }
+
+    /// The user no longer trusts the host `raw`: it leaves every file of
+    /// the user's that names it (the realm's and the user's own); one the
+    /// daemon's command line names stays until the daemon stops, as the
+    /// answer says. Cached allows are dropped (one may have rested on it).
+    ///
+    /// # Errors
+    ///
+    /// No such trusted host, one only the command line names, or a file
+    /// not written.
+    pub fn untrust_host(&self, raw: &str) -> Result<String, String> {
+        let pattern = HostPattern::parse(raw)
+            .map_err(|why| format!("`{}` is no trusted host: {why}", raw.trim()))?
+            .as_str()
+            .to_string();
+        let _writing = self.writing();
+        let known = self
+            .trusted_hosts
+            .read()
+            .iter()
+            .find(|host| host.pattern == pattern)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "`{pattern}` is not a trusted host (/permissions' Hosts section lists them)"
+                )
+            })?;
+        if known.origins == [HostOrigin::CommandLine] {
+            return Err(format!(
+                "`{pattern}` comes from the daemon's command line (--set {TRUSTED_HOSTS_KEY}): it is trusted until the daemon stops"
+            ));
+        }
+        let mut left = Vec::new();
+        let mut from = Vec::new();
+        for origin in &known.origins {
+            let level = match origin {
+                HostOrigin::User => Level::User,
+                HostOrigin::Workspace => Level::Workspace,
+                HostOrigin::CommandLine => {
+                    left.push(*origin);
+                    continue;
+                }
+            };
+            if let Some(files) = &self.files {
+                files
+                    .of(level)
+                    .remove_matching(TRUSTED_HOSTS_KEY, |entry| {
+                        HostPattern::parse(entry).is_ok_and(|entry| entry.as_str() == pattern)
+                    })
+                    .map_err(|err| format!("`{pattern}` is still trusted: {err}"))?;
+            }
+            from.push(origin.words());
+        }
+        {
+            let mut held = self.trusted_hosts.write();
+            if left.is_empty() {
+                held.retain(|host| host.pattern != pattern);
+            } else if let Some(host) = held.iter_mut().find(|host| host.pattern == pattern) {
+                host.origins = left.clone();
+            }
+        }
+        for state in self.sessions.lock().values_mut() {
+            state.allow_cache.clear();
+        }
+        self.audit_event(
+            "trusted_host_removed",
+            format!("{pattern} ({})", from.join(", ")),
+        );
+        let stays = if left.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; it stays trusted from the daemon's command line (--set {TRUSTED_HOSTS_KEY}) until the daemon stops"
+            )
+        };
+        Ok(format!(
+            "no longer trusted: `{pattern}` (removed from {}); sending the project's data there is judged as D5 again{stays}",
+            from.join(" and ")
+        ))
+    }
+
     /// Hold the lasting permissions `lasting` (what the user's own layers
     /// give now, [`crate::config::lasting::Lasting::of`], as at start): the
     /// rules of the user's and the workspace's files, the statements and
@@ -543,15 +783,18 @@ impl ApprovalEngine {
         // Trusted hosts.
         {
             let mut held = self.trusted_hosts.write();
-            change.hosts_added = lasting
-                .trusted_hosts
+            let (before, after) = (
+                super::super::hosts::patterns(&held),
+                super::super::hosts::patterns(&lasting.trusted_hosts),
+            );
+            change.hosts_added = after
                 .iter()
-                .filter(|host| !held.contains(host))
+                .filter(|host| !before.contains(host))
                 .cloned()
                 .collect();
-            change.hosts_removed = held
+            change.hosts_removed = before
                 .iter()
-                .filter(|host| !lasting.trusted_hosts.contains(host))
+                .filter(|host| !after.contains(host))
                 .cloned()
                 .collect();
             held.clone_from(&lasting.trusted_hosts);
@@ -636,6 +879,17 @@ impl ApprovalEngine {
             }
         }
         change
+    }
+}
+
+/// What a trusted host means, as the agent's note says it.
+const TRUSTED_NOTE: &str = "sending the project's own content there is no longer blocked for that reason; every other rule still applies there, and credentials and secrets are still blocked at any host.";
+
+/// The layer a trusted host written to `level`'s file is of.
+fn host_origin(level: Level) -> HostOrigin {
+    match level {
+        Level::User => HostOrigin::User,
+        _ => HostOrigin::Workspace,
     }
 }
 

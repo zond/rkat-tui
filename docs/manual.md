@@ -679,11 +679,11 @@ same report on stdout, and exits 0 within the targets, 3 outside them and
 
 ### The permissions dialog
 
-`/permissions` opens one dialog with two sections; Tab and Shift+Tab
-switch between them (only while no question or field is open: inside a
-field Tab switches what the field does, and an open question is answered
-first). The title names both with their rows and marks the one shown:
-"Permissions: [Blocked 2] · In force 14".
+`/permissions` opens one dialog with three sections; Tab and Shift+Tab
+switch between them, round (only while no question or field is open:
+inside a field Tab switches what the field does, and an open question is
+answered first). The title names each with its rows and marks the one
+shown: "Permissions: [Blocked 2] · In force 14 · Hosts 3".
 
 - **Blocked**: the calls the gate recently blocked and the approvals
   waiting for the agent to use them; you approve them here
@@ -691,10 +691,14 @@ first). The title names both with their rows and marks the one shown:
 - **In force**: the rules, grants and statements in force, each with where
   it comes from; you remove them here, and add a statement (`n`) or a rule
   (`r`) ([below](#in-force-rules-grants-and-statements)).
+- **Hosts**: the hosts you trust with the project's data, each with the
+  file that names it, which you add (`n`) and remove (`d`) here, and the
+  project's own hosts, read-only
+  ([below](#the-projects-hosts-and-the-hosts-you-trust)).
 
 It opens on Blocked when a call is blocked or an approval waits, else on
-In force; `/permissions blocked` and `/permissions rules` open the one
-named. It stays open after everything you do in it, the lists refreshed
+In force; `/permissions blocked`, `/permissions rules` and
+`/permissions hosts` open the one named. It stays open after everything you do in it, the lists refreshed
 in place on the same row: an approval that makes a grant or a statement
 shows in In force at once. What was done, or why it was refused, is
 stated under the list as well as in the transcript. `q`, Esc or Ctrl-C
@@ -751,11 +755,24 @@ approval would make. On a row:
   start cannot fail on it.
 
 - `e` allows **this kind of effect**: see below.
+- `t`, then `y`, **trusts the host** of a block under rule D5 (sending
+  project data to a host you did not name), in this workspace (the
+  realm's `tui.toml`); `T`, then `y`, in every workspace (your own). The
+  row names the hosts (" · t trust `paste.example.com`"): those the
+  call itself names (its URLs, `user@host:path` remotes, `--hostname`)
+  that are neither the project's own nor trusted, read from the call,
+  never from the classifier's words. The question names them ("Trust
+  `paste.example.com` with this project's data in this workspace
+  (written to the realm's tui.toml)? The agent is told to run the call
+  again."); `y` trusts them as `n` in Hosts does, the row leaves the list
+  and the agent is told to run the call again. On a row whose block names
+  no host, `t` says so.
 
 The footer spells the choices: "Enter approve once · s grant this
 session · a grant always here · A always in every workspace · e allow
-this kind of effect · Tab In force · Esc close" (with "w withdraw a
-waiting approval" before Tab while one waits). `s`, `a`
+this kind of effect · Tab In force · Esc close" (with "t/T trust its
+host here/every workspace" when a D5 block names one, and "w withdraw
+a waiting approval" before Tab while one waits). `s`, `a`
 and `A` ask first, on a line of their own that names what will happen
 ("Grant writes under `/data/store` for this session? y yes · n or Esc
 no"). While that question is up only `y` (grants), `n` and Esc (cancel the
@@ -843,7 +860,7 @@ number, allow or deny, tool, pattern or literal, and the layer it came
 from), the grants (with where each comes from: `default`, `flag`,
 `config`, `always`, `session`) and the statements (`session`, `always`,
 `config`). Its footer: "↑/↓ move · d remove · n new statement · r new
-rule · Tab Blocked · Esc close".
+rule · Tab Hosts · Esc close".
 
 - `d` asks, and `y` removes the highlighted row. A rule goes as
   `/permissions rm <n>` does: one of the realm (or added during this run)
@@ -893,7 +910,8 @@ environment:
 - **The ones you trust.** `[auto] trusted_hosts = ["ci.example.net",
   "*.corp.example"]` in your own `tui.toml` (every workspace) or the
   realm's (this workspace), or `--set 'auto.trusted_hosts=["<host>"]'`
-  for one run; there is no `/set` for a list. An entry is a host name, or
+  for one run. `/set` takes no list; `/permissions`' Hosts section adds
+  and removes them (below). An entry is a host name, or
   `*.` and a domain of at least two labels for any subdomain of it
   (`*.corp.example` takes `git.corp.example`, never `corp.example`
   itself, `evilcorp.example` or `corp.example.evil.example`); a scheme,
@@ -905,9 +923,50 @@ environment:
 Neither list is a blanket allow: credentials and secrets are D5 at any
 host, and every other rule still judges what is done there (pushing to
 the default branch, publishing, a merge request, issue or comment you did
-not ask for, history rewrites). When a block names a host, its reason
-says which host is neither the project's nor trusted, and how to trust it
-(the setting and both files).
+not ask for, history rewrites).
+
+#### The Hosts section
+
+`/permissions hosts` (or Tab in `/permissions`) shows both lists. A
+trusted host's row names the files that hold it ("trusted ci.example.net
+· this workspace (the realm's tui.toml)", "trusted *.corp.example · your
+tui.toml (every workspace) + the daemon's command line"); the project's
+own follow, dim, one row per host with the remotes that name it
+("project gitlab.example.com · remote origin, mirror · read-only"). Its
+footer: "↑/↓ move · d stop trusting · n trust a host · Tab Blocked · Esc
+close".
+
+- `n` opens a field: "trust a host with this project's data · this
+  workspace (the realm's tui.toml) · type a host name or *.domain (Enter
+  trusts · Tab: every workspace · Esc cancels):". Tab switches to your own
+  `tui.toml` (every workspace) and back. Enter checks the entry as the
+  files' entries are checked; one that is no host is refused on the line,
+  with what a valid one looks like ("a valid entry is a host name
+  (`ci.example.net`) or `*.` and a domain of at least two labels
+  (`*.corp.example`)"), and nothing is written. A valid one is written to
+  that file's `[auto] trusted_hosts` by the daemon's one settings writer
+  (the key changed in place, the rest of the file as it was), applies at
+  the next review, and the agent is told in one system note. One of the
+  project's own hosts, or one that file holds already, is refused with
+  why.
+- `d`, then `y`, stops trusting the highlighted host: it leaves every
+  file of yours that names it (the question says which). One that the
+  daemon's command line names stays trusted until the daemon stops, as
+  the question and the answer say; one only the command line names cannot
+  be removed here. A project host says it is read from the git remotes at
+  the daemon's start.
+
+Only your own keys add a host: nothing the agent can call does, and the
+agent cannot write either file.
+
+When a block under D5 names a host, its reason (the agent's and the one
+you see, in the transcript and on the Blocked row) says which host is
+neither the project's nor trusted and how you can trust it: `t` on the
+call in the Blocked section ([above](#approving-a-blocked-call)), or `n`
+in Hosts, written to `auto.trusted_hosts` in your file or the realm's
+(both paths named). A D5 block whose call names no host the gate can
+read (a raw address piped to `nc`) gets the same hint without a host and
+without `t`.
 
 The remotes are read once, when the daemon starts for the workspace,
 and never again while it runs: the agent's confined shell can write
@@ -2065,7 +2124,7 @@ it may only lower a value, its lowering applies over every layer).
 | `daemon.principal`: The person every attached client decides approval requests as. | text (at most 200 characters) | the login name ($USER, else $LOGNAME, else owner) | may not set it | at the next start | — |
 | `[[allow]] / [[deny]]`: Rules: `tool`, then `arg` (a glob) or `literal`. | a section | none | may only add deny rules | at once from your own and the workspace's file (a project file's at the next start) | `--allow` / `--deny <tool>[=<glob>]`; /permissions (In force: r adds, d removes; Blocked: a, A) |
 | `auto.allow`: Statements: kinds of action you allow, which the classifier reads. | a section | none | may not set it | at once | —; /permissions (In force: n adds, d removes; Blocked: e) |
-| `auto.trusted_hosts`: Hosts you trust with the project's data (`host` or `*.domain`), which the classifier reads beside the hosts of the project's git remotes; other rules still apply there. | a section | none | may not set it | at once | `--set 'auto.trusted_hosts=["<host>"]'`; — (edit the file) |
+| `auto.trusted_hosts`: Hosts you trust with the project's data (`host` or `*.domain`), which the classifier reads beside the hosts of the project's git remotes; other rules still apply there. | a section | none | may not set it | at once | `--set 'auto.trusted_hosts=["<host>"]'`; /permissions (Hosts: n adds, d removes; Blocked: t, T) |
 | `confinement.extra_read / extra_write`: Extra directories for the confined shell, which the approval gate is told too. | a section | none | may not set it | the gate and the file tools at once; a confined shell at the next start | `--confinement-read` / `--confinement-write <dir>`; /permissions (Blocked: a, A) |
 | `endpoints.<name>`: `dialect`, `base_url`, `api_key_env`, `priority`, `api_style` (an inline `api_key` is refused). | a section | none | may not set it | at the next start | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]`; — |
 | `pricing."<model id>"`: `input`, `output`, `cached_input`, `cache_write` in USD per million tokens. | a section | none | may not set it | at the next start | `--set 'pricing."<id>".input=15'`; — |
@@ -2687,7 +2746,7 @@ feature by feature.
 
 
 `/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/audit [n]`, `/schedules [pause|resume|delete <name>]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
-`/permissions [blocked|rules|list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`; alone, it opens the dialog of the calls the gate recently blocked and of the rules, grants and statements in force; see [The permissions dialog](#the-permissions-dialog)),
+`/permissions [blocked|rules|hosts|list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`; alone, it opens the dialog of the calls the gate recently blocked, of the rules, grants and statements in force, and of the hosts you trust and the project's own; see [The permissions dialog](#the-permissions-dialog)),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume|stats|check [all|<n>|<case id>…]]` (see [Checking your classifier model](#checking-your-classifier-model)), `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [workspace|user|system]`, `/init`, `/compact [now|status|prepare [at <threshold>|default] [<text>|off|default]|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
 `/helpers [list [all]|expand|fold <label>|all]` (alias `/tasks`). `/status` prints the

@@ -871,6 +871,25 @@ pub enum Effect {
     /// The Blocked section's `w`: withdraw the approval once of call
     /// `id`, then the dialog's lists again.
     PickedWithdrawal(u64),
+    /// The Hosts section's `n`: trust the host typed, in this workspace
+    /// or (`user`) every workspace, then the dialog's lists again.
+    PickedHostTrust {
+        /// As typed.
+        host: String,
+        /// The user's own `tui.toml`.
+        user: bool,
+    },
+    /// The Blocked section's `t`/`T`: trust the hosts blocked call `id`'s
+    /// D5 block names, then the dialog's lists again.
+    PickedCallHostTrust {
+        /// The blocked call.
+        id: u64,
+        /// The user's own `tui.toml`.
+        user: bool,
+    },
+    /// The Hosts section's `d`: stop trusting the host, then the dialog's
+    /// lists again.
+    PickedHostRemoval(String),
     /// `/trust`: record every project input's digest
     /// in the host trust record; their servers and hooks run from the next
     /// session.

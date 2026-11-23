@@ -951,7 +951,15 @@ fn rule_picker_snapshot() {
         origin: RuleOrigin::Realm,
     };
     app.update(Msg::ShowPicker {
-        picker: permissions_dialog(&[], 0, &[rule], &[], &[], Some(Section::InForce)),
+        picker: permissions_dialog(
+            &[],
+            0,
+            &[rule],
+            &[],
+            &[],
+            &rkat_tui::approval::hosts::HostRows::default(),
+            Some(Section::InForce),
+        ),
         refresh: false,
     });
     app.update(Msg::Key(ratatui::crossterm::event::KeyEvent::from(
@@ -969,11 +977,11 @@ fn rule_picker_snapshot() {
     assert_eq!(
         all[top..top + 6].to_vec(),
         vec![
-            "  ┌ Permissions: Blocked 0 · [In force 1] ───────────────────────────┐",
+            "  ┌ Permissions: Blocked 0 · [In force 1] · Hosts 0 ─────────────────┐",
             "  │1. deny shell pattern `git push*` · realm                         │",
             "  │Remove rule 1? It leaves the workspace's rules for good. y yes · n│",
             "  │or Esc no                                                         │",
-            "  │↑/↓ move · d remove · n new statement · r new rule · Tab Blocked ·│",
+            "  │↑/↓ move · d remove · n new statement · r new rule · Tab Hosts ·  │",
             "  │Esc close                                                         │",
         ]
     );

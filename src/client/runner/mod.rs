@@ -1283,6 +1283,17 @@ impl Runner {
             Effect::PickedWithdrawal(id) => {
                 self.permissions(Some(commands::Picked::Withdraw(id)), None);
             }
+            Effect::PickedHostTrust { host, user } => {
+                let params = protocol::TrustHostParams::Host { host, user };
+                self.permissions(Some(commands::Picked::TrustHost(params)), None);
+            }
+            Effect::PickedCallHostTrust { id, user } => {
+                let params = protocol::TrustHostParams::Call { id, user };
+                self.permissions(Some(commands::Picked::TrustHost(params)), None);
+            }
+            Effect::PickedHostRemoval(host) => {
+                self.permissions(Some(commands::Picked::UntrustHost(host)), None);
+            }
             Effect::ListRules => {
                 self.outcome_command::<protocol::method::Rules>(RuleCommand::List, "/permissions");
             }

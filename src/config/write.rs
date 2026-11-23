@@ -175,12 +175,32 @@ impl SettingsFile {
     ///
     /// As [`Self::set`].
     pub fn remove_from_list(&self, key: &str, item: &str) -> Result<bool, WriteError> {
+        self.remove_matching(key, |known| known == item)
+    }
+
+    /// Remove every string of the list at the dotted `key` that `matches`
+    /// (a trusted host however it was spelled). Whether one was there.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set`].
+    pub fn remove_matching(
+        &self,
+        key: &str,
+        matches: impl Fn(&str) -> bool,
+    ) -> Result<bool, WriteError> {
         self.edit(|doc| {
             let Some(list) = item_at(doc, key).and_then(Item::as_array_mut) else {
                 return Ok(false);
             };
             let before = list.len();
-            list.retain(|known| known.as_str() != Some(item));
+            // The first entry's spacing stays the list's first, whichever
+            // entry that is now.
+            let lead = list.get(0).map(|first| first.decor().prefix().cloned());
+            list.retain(|known| !known.as_str().is_some_and(&matches));
+            if let (Some(lead), Some(first)) = (lead, list.get_mut(0)) {
+                first.decor_mut().set_prefix(lead.unwrap_or_default());
+            }
             Ok(list.len() != before)
         })
         .map(|(removed, _)| removed)

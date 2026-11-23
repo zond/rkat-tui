@@ -478,8 +478,9 @@ pub struct ApprovalEngine {
     grants: Grants,
     statements: Statements,
     /// The hosts the user trusts with the project's data (`[auto]
-    /// trusted_hosts`, checked), told to the classifier per review.
-    trusted_hosts: RwLock<Vec<String>>,
+    /// trusted_hosts`, checked, each with the layers that name it), told
+    /// to the classifier per review.
+    trusted_hosts: RwLock<Vec<super::hosts::TrustedHost>>,
     blocks: Blocks,
     builds: Builds,
     stats: Stats,
@@ -516,6 +517,10 @@ struct Evaluated {
     blocked_path: Option<String>,
     /// The kind of effect the classifier objected to, if it named one.
     blocked_effect: Option<String>,
+    /// For a block under the host rule (D5): the hosts the call itself
+    /// names that are neither the project's own nor trusted
+    /// ([`super::hosts::hosts_in`]), which `/permissions` offers to trust.
+    blocked_hosts: Vec<String>,
     /// The classifier's review of the call, when one ran (the audit line).
     review: Option<ReviewRecord>,
 }
@@ -528,6 +533,7 @@ impl From<Verdict> for Evaluated {
             answerer: None,
             blocked_path: None,
             blocked_effect: None,
+            blocked_hosts: Vec::new(),
             review: None,
         }
     }
@@ -1267,6 +1273,7 @@ impl ApprovalEngine {
             ),
             path,
             effect: evaluated.blocked_effect.clone(),
+            hosts: evaluated.blocked_hosts.clone(),
             reason: reason.to_string(),
             at,
             approved_once: false,
@@ -1797,13 +1804,15 @@ impl ApprovalEngine {
                     self.emit(ApprovalEvent::Paused(cause));
                 }
                 let hint = self.scope_hint(session_id, facts, path.as_deref());
-                let hint = match (hint, self.host_hint(facts, rule.as_deref(), &reason)) {
+                let (host, blocked_hosts) = self.host_hint(facts, rule.as_deref(), &reason);
+                let hint = match (hint, host) {
                     (Some(scope), Some(host)) => Some(format!("{scope}. {host}")),
                     (scope, host) => scope.or(host),
                 };
                 Evaluated {
                     blocked_path: path,
                     blocked_effect: effect,
+                    blocked_hosts,
                     ..Evaluated::from(deny3(DenyReason::Classifier {
                         rule,
                         explanation: reason,
@@ -1858,34 +1867,47 @@ impl ApprovalEngine {
 
     /// How the user could trust the hosts a blocked call names, when a host
     /// is why (rule D5, or a reason that names a host): the hosts of the
-    /// call that are neither the project's own nor trusted, the setting
-    /// and its files ([`super::hosts::trust_hint`]). `None` when the call
-    /// names no such host.
-    fn host_hint(&self, facts: &Facts<'_>, rule: Option<&str>, reason: &str) -> Option<String> {
-        let about_host = rule == Some("D5") || reason.to_ascii_lowercase().contains("host");
-        if !about_host {
-            return None;
+    /// call that are neither the project's own nor trusted, `/permissions`
+    /// and the setting's files ([`super::hosts::trust_hint`]); and, under
+    /// D5, those hosts, which the Blocked section offers to trust (`t`).
+    /// The hosts are read from the call itself
+    /// ([`super::hosts::hosts_in`]), never from the classifier's words.
+    /// A D5 block whose call names no host gets the general hint; one whose
+    /// hosts are all trusted already (a secret, D5 at any host), none.
+    fn host_hint(
+        &self,
+        facts: &Facts<'_>,
+        rule: Option<&str>,
+        reason: &str,
+    ) -> (Option<String>, Vec<String>) {
+        let d5 = super::hosts::is_host_rule(rule);
+        if !d5 && !reason.to_ascii_lowercase().contains("host") {
+            return (None, Vec::new());
         }
-        let trusted = self.trusted_hosts.read().clone();
-        let untrusted: Vec<String> = super::hosts::hosts_in(facts.action.args.get())
-            .into_iter()
+        let trusted = super::hosts::patterns(&self.trusted_hosts.read());
+        let named = super::hosts::hosts_in(facts.action.args.get());
+        let untrusted: Vec<String> = named
+            .iter()
             .filter(|host| {
                 !self
                     .environment
                     .project_hosts
                     .iter()
-                    .any(|own| &own.host == host)
+                    .any(|own| &own.host == *host)
                     && !super::hosts::is_trusted(&trusted, host)
             })
+            .cloned()
             .collect();
-        if untrusted.is_empty() {
-            return None;
+        if untrusted.is_empty() && !(d5 && named.is_empty()) {
+            return (None, Vec::new());
         }
         let files = self
             .files
             .as_ref()
             .map(|files| (files.user.path(), files.workspace.path()));
-        Some(super::hosts::trust_hint(&untrusted, files))
+        let keyed = d5 && !untrusted.is_empty();
+        let hint = super::hosts::trust_hint(&untrusted, files, keyed);
+        (Some(hint), if d5 { untrusted } else { Vec::new() })
     }
 
     /// A file tool's own target outside the project and the directories
@@ -1939,7 +1961,7 @@ impl ApprovalEngine {
         let environment = Environment {
             granted: self.grants.dirs_for(session_id),
             statements: self.statements_for(session_id),
-            trusted_hosts: self.trusted_hosts.read().clone(),
+            trusted_hosts: super::hosts::patterns(&self.trusted_hosts.read()),
             ..self.environment.clone()
         };
         let input = ClassifierInput {

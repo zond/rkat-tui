@@ -207,3 +207,27 @@ fn two_writers_of_one_file_lose_nothing() {
     let file = SettingsFile::new(Level::User, path);
     assert_eq!(file.read().unwrap().auto.unwrap().allow.len(), 40);
 }
+
+/// A list entry is removed by what it means (a trusted host however it
+/// was spelled), the others and the comments kept.
+#[test]
+fn list_entries_are_removed_by_a_match() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = file(tmp.path());
+    std::fs::create_dir_all(file.path().parent().unwrap()).unwrap();
+    std::fs::write(
+        file.path(),
+        "# mine\n[auto]\ntrusted_hosts = [\"GitLab.Example.com.\", \"ci.example.net\"] # hosts\n",
+    )
+    .unwrap();
+    let same = |raw: &str| {
+        crate::approval::hosts::HostPattern::parse(raw)
+            .is_ok_and(|p| p.as_str() == "gitlab.example.com")
+    };
+    assert!(file.remove_matching("auto.trusted_hosts", same).unwrap());
+    assert!(!file.remove_matching("auto.trusted_hosts", same).unwrap());
+    assert_eq!(
+        std::fs::read_to_string(file.path()).unwrap(),
+        "# mine\n[auto]\ntrusted_hosts = [\"ci.example.net\"] # hosts\n"
+    );
+}

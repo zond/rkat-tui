@@ -397,6 +397,7 @@ impl Runner {
                 &rows.rules,
                 &rows.grants,
                 &rows.statements,
+                &rows.hosts,
                 open,
             );
             let _ = say.ui_tx.send(Msg::ShowPicker { picker, refresh });
@@ -1119,6 +1120,10 @@ pub(super) enum Picked {
     AddStatement(String, crate::approval::grants::GrantScope),
     /// Add the rule (`r`).
     AddRule(crate::ui::RuleForm),
+    /// Trust a host typed (Hosts' `n`) or a blocked call's (Blocked's `t`).
+    TrustHost(protocol::TrustHostParams),
+    /// Stop trusting a host (Hosts' `d`).
+    UntrustHost(String),
 }
 
 impl Picked {
@@ -1194,6 +1199,23 @@ impl Picked {
                             user: form.user,
                             literal: form.literal,
                         },
+                    ),
+                )
+                .await
+            }
+            Self::TrustHost(params) => {
+                bounded(
+                    CALL_TIMEOUT,
+                    remote::call::<protocol::method::TrustHost>(connection, &params),
+                )
+                .await
+            }
+            Self::UntrustHost(host) => {
+                bounded(
+                    CALL_TIMEOUT,
+                    remote::call::<protocol::method::UntrustHost>(
+                        connection,
+                        &protocol::HostParams { host },
                     ),
                 )
                 .await

@@ -9,6 +9,7 @@
 //! The project's `.rkat/tui.toml` is not one of these layers: what it may
 //! contribute (deny rules) is taken at start only.
 
+use crate::approval::hosts::{HostOrigin, TrustedHost};
 use crate::approval::rules::{Rule, RuleKind, RuleOrigin, RulesError};
 use crate::approval::statements::{MAX_STATEMENTS, StatementOrigin, StatementRefusal, normalize};
 use crate::bootstrap::confinement::ConfinementSection;
@@ -27,8 +28,9 @@ pub struct Lasting {
     pub confinement: ConfinementSection,
     /// The `[auto] trusted_hosts`, checked
     /// ([`crate::approval::hosts::HostPattern::parse`]), none twice, at
-    /// most [`crate::approval::hosts::MAX_TRUSTED_HOSTS`].
-    pub trusted_hosts: Vec<String>,
+    /// most [`crate::approval::hosts::MAX_TRUSTED_HOSTS`], each with every
+    /// layer that names it.
+    pub trusted_hosts: Vec<crate::approval::hosts::TrustedHost>,
     /// The entries not taken, with why.
     pub skipped: Vec<Skipped>,
 }
@@ -130,8 +132,25 @@ impl Lasting {
         let Some(auto) = &file.auto else {
             return;
         };
+        let host_origin = match origin {
+            RuleOrigin::Global => HostOrigin::User,
+            RuleOrigin::Realm => HostOrigin::Workspace,
+            _ => HostOrigin::CommandLine,
+        };
         for raw in &auto.trusted_hosts {
-            let taken = crate::approval::hosts::HostPattern::parse(raw).and_then(|pattern| {
+            let parsed = crate::approval::hosts::HostPattern::parse(raw);
+            if let Ok(pattern) = &parsed
+                && let Some(known) = self
+                    .trusted_hosts
+                    .iter_mut()
+                    .find(|h| h.pattern == pattern.as_str())
+            {
+                if !known.origins.contains(&host_origin) {
+                    known.origins.push(host_origin);
+                }
+                continue;
+            }
+            let taken = parsed.and_then(|pattern| {
                 if self.trusted_hosts.len() >= crate::approval::hosts::MAX_TRUSTED_HOSTS {
                     Err(format!(
                         "more than {} trusted hosts",
@@ -142,8 +161,10 @@ impl Lasting {
                 }
             });
             match taken {
-                Ok(pattern) if self.trusted_hosts.iter().any(|h| h == pattern.as_str()) => {}
-                Ok(pattern) => self.trusted_hosts.push(pattern.as_str().to_string()),
+                Ok(pattern) => self.trusted_hosts.push(TrustedHost {
+                    pattern: pattern.as_str().to_string(),
+                    origins: vec![host_origin],
+                }),
                 Err(why) => self.skipped.push(Skipped::TrustedHost {
                     origin,
                     text: raw.chars().take(80).collect(),
@@ -268,8 +289,14 @@ mod tests {
         assert_eq!(
             lasting.trusted_hosts,
             vec![
-                "gitlab.example.com".to_string(),
-                "*.corp.example".to_string()
+                TrustedHost {
+                    pattern: "gitlab.example.com".to_string(),
+                    origins: vec![HostOrigin::User, HostOrigin::Workspace],
+                },
+                TrustedHost {
+                    pattern: "*.corp.example".to_string(),
+                    origins: vec![HostOrigin::Workspace],
+                },
             ]
         );
         let words: Vec<String> = lasting.skipped.iter().map(Skipped::describe).collect();

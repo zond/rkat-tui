@@ -1187,7 +1187,7 @@ pub static SECTIONS: &[Section] = &[
         project: "may not set it",
         applies: "at once",
         flags: "`--set 'auto.trusted_hosts=[\"<host>\"]'`",
-        commands: "— (edit the file)",
+        commands: "/permissions (Hosts: n adds, d removes; Blocked: t, T)",
     },
     Section {
         key: "confinement.extra_read / extra_write",

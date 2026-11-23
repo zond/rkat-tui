@@ -58,7 +58,7 @@ pub struct AutoSettings {
     /// ([`crate::approval::hosts::HostPattern::parse`]); never a project
     /// file's. A section, not a scalar setting: the layering adds them.
     #[serde(skip)]
-    pub trusted_hosts: Vec<String>,
+    pub trusted_hosts: Vec<crate::approval::hosts::TrustedHost>,
 }
 
 impl AutoSettings {

@@ -1,17 +1,21 @@
-//! The `/permissions` dialog: one [`ListPicker`] with two sections, Tab
+//! The `/permissions` dialog: one [`ListPicker`] with three sections, Tab
 //! and Shift+Tab between them. **Blocked**: the calls the gate recently
 //! blocked and the approvals once that wait for the agent, to approve
-//! once, for this session or always, or to allow their kind of effect.
-//! **In force**: the approval rules, grants and statements with where
-//! each comes from, to remove, and `n` (a statement) and `r` (a rule) to
-//! add one. The rows are built here from the daemon's lists; the runner
-//! asks for them and does what the keys choose.
+//! once, for this session or always, to allow their kind of effect, or
+//! (a D5 block whose call names hosts) to trust those hosts. **In
+//! force**: the approval rules, grants and statements with where each
+//! comes from, to remove, and `n` (a statement) and `r` (a rule) to add
+//! one. **Hosts**: the hosts the user trusts with the project's data, to
+//! remove, `n` to trust one, and the project's own, read-only. The rows
+//! are built here from the daemon's lists; the runner asks for them and
+//! does what the keys choose.
 
 use ratatui::crossterm::event::KeyCode;
 
 use super::picker::{Field, FieldFor, ListPicker, Page, PickAct, PickKey, PickRow, PickerKind};
 use crate::approval::desk::RuleRow;
 use crate::approval::grants::{BlockedCall, GrantRow, GrantScope};
+use crate::approval::hosts::HostRows;
 use crate::approval::statements::StatementRow;
 
 /// A section of the `/permissions` dialog.
@@ -21,6 +25,9 @@ pub enum Section {
     Blocked,
     /// The rules, grants and statements in force.
     InForce,
+    /// The hosts the user trusts with the project's data, and the
+    /// project's own (read-only).
+    Hosts,
 }
 
 impl Section {
@@ -30,6 +37,7 @@ impl Section {
         match self {
             Self::Blocked => 0,
             Self::InForce => 1,
+            Self::Hosts => 2,
         }
     }
 }
@@ -55,9 +63,13 @@ const IN_FORCE_KEY: &str = "that key acts in In force: Tab switches to it";
 /// What a key of the other section says here.
 const BLOCKED_KEY: &str = "that key acts on a blocked call: Tab switches to Blocked";
 
-/// The `/permissions` dialog over `calls` (the Blocked section) and the
-/// rules, grants and statements in force, showing `open`: when `None`,
-/// Blocked when it has a row, else In force.
+/// What the Blocked footer adds when a call's D5 block names hosts.
+const TRUST_FOOTER: &str = " · t/T trust its host here/every workspace";
+
+/// The `/permissions` dialog over `calls` (the Blocked section), the
+/// rules, grants and statements in force, and the hosts (trusted and the
+/// project's own), showing `open`: when `None`, Blocked when it has a
+/// row, else In force.
 #[must_use]
 pub fn permissions_dialog(
     calls: &[BlockedCall],
@@ -65,6 +77,7 @@ pub fn permissions_dialog(
     rules: &[RuleRow],
     grants: &[GrantRow],
     statements: &[StatementRow],
+    hosts: &HostRows,
     open: Option<Section>,
 ) -> ListPicker {
     let open = open.unwrap_or(if calls.is_empty() {
@@ -77,8 +90,100 @@ pub fn permissions_dialog(
         vec![
             ("Blocked", blocked_page(calls, now)),
             ("In force", in_force_page(rules, grants, statements)),
+            ("Hosts", hosts_page(hosts)),
         ],
         open.index(),
+    )
+}
+
+/// The Hosts section: a row per host the user trusts with the project's
+/// data (its pattern and every file that names it), then the project's
+/// own hosts (its git remotes as the daemon read them at its start),
+/// read-only. `d` asks, then stops trusting a host (it leaves the user's
+/// files that name it; one only the daemon's command line names says it
+/// ends with the daemon); on a project host it says why it cannot. `n`
+/// opens the field of a host to trust (Tab: this workspace or every
+/// workspace).
+fn hosts_page(hosts: &HostRows) -> Page {
+    use crate::approval::hosts::HostOrigin;
+    let trusted = hosts.trusted.iter().map(|host| {
+        let pattern = &host.pattern;
+        let from: Vec<&str> = host.origins.iter().map(|o| o.words()).collect();
+        let files: Vec<&str> = host
+            .origins
+            .iter()
+            .filter(|o| **o != HostOrigin::CommandLine)
+            .map(|o| o.words())
+            .collect();
+        let key = if files.is_empty() {
+            PickKey::refused(
+                KeyCode::Char('d'),
+                "it comes from the daemon's command line (--set auto.trusted_hosts): it is trusted until the daemon stops",
+            )
+        } else {
+            let stays = if host.origins.contains(&HostOrigin::CommandLine) {
+                " The daemon's command line names it too: it stays trusted until the daemon stops."
+            } else {
+                ""
+            };
+            PickKey::confirmed(
+                KeyCode::Char('d'),
+                PickAct::UntrustHost(pattern.clone()),
+                format!(
+                    "Stop trusting `{pattern}`? It leaves {}.{stays}",
+                    files.join(" and ")
+                ),
+            )
+        };
+        PickRow::new(
+            format!("trusted {pattern} · {}", from.join(" + ")),
+            vec![key],
+        )
+        .noted("sending the project's content there is not D5; the other rules still apply, secrets are blocked at any host")
+        .keyed(format!("trusted {pattern}"))
+    });
+    // The project's own, a row per host with the remotes that name it.
+    let mut own: Vec<(&str, Vec<&str>)> = Vec::new();
+    for project in &hosts.project {
+        match own.iter_mut().find(|(host, _)| *host == project.host) {
+            Some((_, remotes)) => remotes.push(&project.remote),
+            None => own.push((&project.host, vec![&project.remote])),
+        }
+    }
+    let project = own.into_iter().map(|(host, remotes)| {
+        let remotes = remotes.join(", ");
+        PickRow::new(
+            format!("project {host} · remote {remotes} · read-only"),
+            vec![PickKey::refused(
+                KeyCode::Char('d'),
+                format!(
+                    "the project's own host (git remote {remotes}), read when the daemon started: change the remote and restart the daemon to drop it"
+                ),
+            )],
+        )
+        .noted("the project's own: fetching and sending its own content there with git or the forge's tool is ordinary work")
+        .keyed(format!("project {host}"))
+        .dimmed()
+    });
+    let rows = trusted.chain(project).collect();
+    let mut keys = vec![PickKey::field(
+        KeyCode::Char('n'),
+        Field {
+            what: FieldFor::Host { user: false },
+            text: String::new(),
+        },
+    )];
+    keys.extend(
+        ['o', 's', 'a', 'A', 'e', 'w', 't', 'T']
+            .into_iter()
+            .map(|code| PickKey::refused(KeyCode::Char(code), BLOCKED_KEY)),
+    );
+    keys.push(PickKey::refused(KeyCode::Char('r'), IN_FORCE_KEY));
+    Page::new(
+        rows,
+        "no hosts: you trust none and the project's git remotes name none (n trusts one)",
+        "↑/↓ move · d stop trusting · n trust a host · Tab Blocked · Esc close",
+        keys,
     )
 }
 
@@ -167,6 +272,43 @@ fn blocked_page(calls: &[BlockedCall], now: u64) -> Page {
                     text: call.effect.clone().unwrap_or_default(),
                 },
             ));
+            let trust = if call.hosts.is_empty() {
+                for code in ['t', 'T'] {
+                    keys.push(PickKey::refused(
+                        KeyCode::Char(code),
+                        "this call's block names no host to trust (n in the Hosts section trusts one you type)",
+                    ));
+                }
+                String::new()
+            } else {
+                let named = call
+                    .hosts
+                    .iter()
+                    .map(|host| format!("`{host}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                keys.push(PickKey::confirmed(
+                    KeyCode::Char('t'),
+                    PickAct::TrustCallHosts {
+                        id: call.id,
+                        user: false,
+                    },
+                    format!(
+                        "Trust {named} with this project's data in this workspace (written to the realm's tui.toml)? The agent is told to run the call again."
+                    ),
+                ));
+                keys.push(PickKey::confirmed(
+                    KeyCode::Char('T'),
+                    PickAct::TrustCallHosts {
+                        id: call.id,
+                        user: true,
+                    },
+                    format!(
+                        "Trust {named} with this project's data in every workspace (written to your own tui.toml)? The agent is told to run the call again."
+                    ),
+                ));
+                format!(" · t trust {named}")
+            };
             let grant = call.grant.as_ref().map_or_else(String::new, |grant| {
                 format!(" · s/a exact: {}", grant.describe())
             });
@@ -184,7 +326,7 @@ fn blocked_page(calls: &[BlockedCall], now: u64) -> Page {
                 ),
                 keys,
             )
-            .noted(format!("{}{grant}{effect}", call.reason))
+            .noted(format!("{}{trust}{grant}{effect}", call.reason))
             .keyed(call.id.to_string());
             with_whole_call(row, call, vec![KeyCode::Enter, KeyCode::Char('o')])
         })
@@ -199,10 +341,18 @@ fn blocked_page(calls: &[BlockedCall], now: u64) -> Page {
     } else {
         ""
     };
+    let trust = if calls
+        .iter()
+        .any(|call| !call.approved_once && !call.hosts.is_empty())
+    {
+        TRUST_FOOTER
+    } else {
+        ""
+    };
     Page::new(
         rows,
         "nothing was blocked recently",
-        format!("{BLOCKED_FOOTER}{whole}{withdraw} · Tab In force · Esc close"),
+        format!("{BLOCKED_FOOTER}{trust}{whole}{withdraw} · Tab In force · Esc close"),
         ['d', 'n', 'r']
             .into_iter()
             .map(|code| PickKey::refused(KeyCode::Char(code), IN_FORCE_KEY))
@@ -223,6 +373,8 @@ fn waiting_row(call: &BlockedCall, who: &str, rule: &str, ago: &str) -> PickRow 
             KeyCode::Char('a'),
             KeyCode::Char('A'),
             KeyCode::Char('e'),
+            KeyCode::Char('t'),
+            KeyCode::Char('T'),
         ]
         .into_iter()
         .map(|code| PickKey::refused(code, WAITING_REFUSAL)),
@@ -403,14 +555,14 @@ fn in_force_page(rules: &[RuleRow], grants: &[GrantRow], statements: &[Statement
         ),
     ];
     keys.extend(
-        ['o', 's', 'a', 'A', 'e', 'w']
+        ['o', 's', 'a', 'A', 'e', 'w', 't', 'T']
             .into_iter()
             .map(|code| PickKey::refused(KeyCode::Char(code), BLOCKED_KEY)),
     );
     Page::new(
         rows,
         "no approval rules, grants or statements yet (n adds a statement, r a rule)",
-        format!("{IN_FORCE_FOOTER} · Tab Blocked · Esc close"),
+        format!("{IN_FORCE_FOOTER} · Tab Hosts · Esc close"),
         keys,
     )
 }

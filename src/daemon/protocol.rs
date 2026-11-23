@@ -308,6 +308,14 @@ methods! {
     /// Remove a statement of this client's agent's session, or one added
     /// always (`/permissions`).
     RemoveStatement = "rkat/remove_statement" (GrantParams) -> crate::approval::desk::RuleOutcome;
+    /// Trust a host with the project's data (`/permissions`' Hosts
+    /// section's `n`, or the hosts of a D5 block with the Blocked
+    /// section's `t`/`T`), written to the realm's `tui.toml` or the user's
+    /// own; the agent is told (for a blocked call: to run it again).
+    TrustHost = "rkat/trust_host" (TrustHostParams) -> crate::approval::desk::RuleOutcome;
+    /// Stop trusting a host (the Hosts section's `d`): it leaves the
+    /// user's files that name it.
+    UntrustHost = "rkat/untrust_host" (HostParams) -> crate::approval::desk::RuleOutcome;
     /// `/set`, `/unset` and their shorthands (`/compact prepare`, `/auto
     /// model`, Ctrl+T): one setting at the user's or the workspace's
     /// level, checked, written to that `tui.toml`, and applied when the
@@ -1063,6 +1071,34 @@ pub struct StatementParams {
     /// How long it holds: this session, always for this workspace or in
     /// every workspace.
     pub scope: crate::approval::grants::GrantScope,
+}
+
+/// [`method::TrustHost`]'s parameters: a host the user typed, or the
+/// hosts of a blocked call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrustHostParams {
+    /// The host the user typed (a host name, or `*.` and a domain).
+    Host {
+        /// As typed.
+        host: String,
+        /// The user's own `tui.toml` (every workspace), else the realm's.
+        user: bool,
+    },
+    /// The hosts blocked call `id`'s D5 block names
+    /// ([`crate::approval::grants::BlockedCall::hosts`]).
+    Call {
+        /// The blocked call's number.
+        id: u64,
+        /// The user's own `tui.toml` (every workspace), else the realm's.
+        user: bool,
+    },
+}
+
+/// [`method::UntrustHost`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostParams {
+    /// The trusted host's pattern, as `/permissions` lists it.
+    pub host: String,
 }
 
 /// [`method::RemoveGrant`]'s parameters.

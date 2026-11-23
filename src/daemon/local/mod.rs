@@ -403,6 +403,8 @@ impl Local {
             method::RemoveGrant, protocol::GrantParams { id } => self.remove_grant(&caller, id);
             method::WithdrawApproval, protocol::GrantParams { id } => self.withdraw_approval(&caller, id);
             method::RemoveStatement, protocol::GrantParams { id } => self.remove_statement(&caller, id);
+            method::TrustHost, params => self.trust_host(&caller, params);
+            method::UntrustHost, protocol::HostParams { host } => Ok(self.untrust_host(&host));
             method::Conversations, Empty {} => Ok(self.conversation_list(&caller).await);
             method::New, Empty {} => self.switch(&self.agent_of(&caller)?, Target::Fresh).await;
             method::Resume, protocol::SessionParams { session_id } => self.switch(&self.agent_of(&caller)?, Target::Resume(session_id)).await;

@@ -473,6 +473,55 @@ impl Local {
         })
     }
 
+    /// `rkat/trust_host`: the user trusts a host they typed (the agent of
+    /// `caller` is told in one system note), or the hosts of blocked call
+    /// `id` (whoever made the call is told to run it again, off this
+    /// answer's task, as [`Self::approve`] does).
+    pub(super) fn trust_host(
+        &self,
+        caller: &Caller,
+        params: protocol::TrustHostParams,
+    ) -> Result<RuleOutcome, Refusal> {
+        use crate::config::registry::Level;
+        let level = |user: bool| if user { Level::User } else { Level::Workspace };
+        let done = match params {
+            protocol::TrustHostParams::Host { host, user } => {
+                let session = self.session_of_caller(caller).ok();
+                self.core
+                    .engine
+                    .trust_host(session.as_ref(), &host, level(user))
+                    .map(|approved| approved.notice)
+            }
+            protocol::TrustHostParams::Call { id, user } => {
+                let session = self.session_of_caller(caller)?;
+                self.core
+                    .engine
+                    .trust_call_hosts(&session, id, level(user))
+                    .map(|approved| {
+                        let notice = approved.notice.clone();
+                        let agents = Arc::clone(&self.agents);
+                        tokio::spawn(async move { agents.approved(&session, approved).await });
+                        notice
+                    })
+            }
+        };
+        self.after_permission_command();
+        Ok(match done {
+            Ok(text) => RuleOutcome { ok: true, text },
+            Err(text) => RuleOutcome { ok: false, text },
+        })
+    }
+
+    /// `rkat/untrust_host`: the user no longer trusts `host`.
+    pub(super) fn untrust_host(&self, host: &str) -> RuleOutcome {
+        let done = self.core.engine.untrust_host(host);
+        self.after_permission_command();
+        match done {
+            Ok(text) => RuleOutcome { ok: true, text },
+            Err(text) => RuleOutcome { ok: false, text },
+        }
+    }
+
     /// `rkat/withdraw_approval`: withdraw the approval once of call `id`
     /// of `caller`'s agent; it is a blocked call again.
     pub(super) fn withdraw_approval(
