@@ -370,7 +370,7 @@ async fn a_typed_message_rides_the_first_request_after_it() {
 }
 
 /// Where a steer goes after another was withdrawn (`rkat/recall`) from
-/// the boundary it waited for; see [`a_recalled_steer_s_slot_is_not_reused`].
+/// the boundary it waited for; see [`a_recalled_steer_gives_its_request_to_the_next`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Probe {
     /// While the tools of request 0 are held: m1, recall m1, then m1+m2.
@@ -496,32 +496,31 @@ async fn probe_slots(probe: Probe) -> Vec<(&'static str, Option<usize>)> {
 }
 
 /// The owner's question: can a withdrawn steer be replaced in the
-/// boundary slot it held? Measured on the engine, each
-/// probe on a daemon of its own (every step waits on the send's or the
-/// recall's answer, no sleep; six rounds of each gave the same outcome
-/// when it was measured): (1) a steer recalled while
-/// the tools of request 0 run, and a combined one admitted after it; (2)
-/// the same while request 1 is in flight; (3) the control, two steers left
-/// alone, one per request; (4) of two waiting steers the second recalled
-/// and a third admitted. A steer recalled from the front of the queue
-/// leaves its request empty: what is admitted after it rides the request
-/// after (N+2), so recalling a waiting message to resend it combined with
-/// a new one costs a request. One recalled behind another loses nothing.
-/// The outcomes are `docs/evidence.md`'s ("A recalled steer's slot").
+/// boundary slot it held? Each probe on a daemon of its own (every step
+/// waits on the send's or the recall's answer, no sleep): (1) a steer
+/// recalled while the tools of request 0 run, and a combined one admitted
+/// after it; (2) the same while request 1 is in flight; (3) the control,
+/// two steers left alone; (4) of two waiting steers the second recalled
+/// and a third admitted. Up to Meerkat 0.9.17 a steer recalled from the
+/// front of the queue left its request empty (what came after it rode
+/// N+2); since 0.9.18 the recall gives the request to the steers behind
+/// it, so the combined one rides the next request (N+1). The outcomes are
+/// `docs/evidence.md`'s ("A recalled steer's slot", and its 0.9.18
+/// entry).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_recalled_steer_s_slot_is_not_reused() {
+async fn a_recalled_steer_gives_its_request_to_the_next() {
     // The recalled m1 rides nowhere: its marker shows first inside the
     // combined steer.
     let expected: [(Probe, &[(&str, Option<usize>)]); 4] = [
-        // Request 1 carries no steer: the combined one rides request 2.
+        // The combined one rides request 1, which m1 would have.
         (
             Probe::RecallThenCombine,
-            &[("SLOT-M1", Some(2)), ("SLOT-M2-COMBINED", Some(2))],
+            &[("SLOT-M1", Some(1)), ("SLOT-M2-COMBINED", Some(1))],
         ),
-        // Request 2 carries none: it rides request 3.
+        // It rides request 2, the one after request 1 in flight.
         (
             Probe::RecallThenCombineInFlight,
-            &[("SLOT-M1", Some(3)), ("SLOT-M2-COMBINED", Some(3))],
+            &[("SLOT-M1", Some(2)), ("SLOT-M2-COMBINED", Some(2))],
         ),
         (
             Probe::TwoLeftAlone,

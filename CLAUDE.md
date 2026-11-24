@@ -122,7 +122,7 @@ The README is the front page; the full user manual is `docs/manual.md`.
 ## Engine dependency
 
 `Cargo.toml` depends on every `meerkat-*` crate at one crates.io release,
-currently 0.9.17; there are no git sources. Moving the version is the pin
+currently 0.9.18; there are no git sources. Moving the version is the pin
 move: change the version in every dependency line, `cargo update -p
 meerkat`, `cargo check --all-targets --all-features`, adapt to API drift by
 reading upstream's replacement in the fetched sources under
@@ -152,7 +152,7 @@ repository). Open upstream issues this code waits on:
 - #2184: updating a stored mob definition (the agents' override profile,
   `src/daemon/mob.rs` `main_profile`). 0.9.15 ships the update, but each
   member's roster row keeps the override profile it was seated with
-  (still so in 0.9.17), so the override stays until a rebuild can drop
+  (still so in 0.9.18), so the override stays until a rebuild can drop
   it (`docs/evidence.md`, "Meerkat 0.9.15's fixes for our asks").
 - #2126: rewinding a session in place under the same identity; `/rewind`
   returns then.

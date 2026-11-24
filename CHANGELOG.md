@@ -4,7 +4,15 @@
 
 ### Changed
 
-- The engine is Meerkat 0.9.17 (from 0.9.16). Agents and helpers are not
+- The engine is Meerkat 0.9.18 (from 0.9.17). Every message waiting for
+  the agent's next model request now joins that request together, where
+  0.9.17 took one per request: a message you take back no longer leaves
+  its request empty, and another agent's message that arrives while
+  yours waits joins the same request. A built-in Gemini endpoint with no
+  model configured now starts on `gemini-4-neon` (was `gemini-4-argon`),
+  whose default thinking level is high; pick `gemini-4-argon` with
+  `/model` to keep it.
+- The engine was Meerkat 0.9.17 (from 0.9.16). Agents and helpers are not
   offered the engine's `monitor_start` (a script run as a background
   job), which 0.9.17 starts offering beside the shell: background jobs
   are not available to rkat-tui's agents yet, so it is withheld as the

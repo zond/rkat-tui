@@ -14482,3 +14482,71 @@ Pinned by `trusted_hosts::a_host_trusted_in_the_dialog_is_written_live_and_survi
 `ui::tests::permissions::a_d5_block_s_hosts_are_trusted_with_one_key`,
 `approval::hosts::tests::the_host_rule_is_recognized_by_its_id`,
 `config::write::tests::list_entries_are_removed_by_a_match`.
+
+## The engine moves to crates.io 0.9.18 (2026-11-24)
+
+Every `meerkat-*` line names `version = "0.9.18"`; `cargo update -p
+meerkat` moved the 38 engine crates of the lock together and nothing
+else (`rmcp` stays 1.8, `chrono`, `chrono-tz` and `humantime` stay, so
+the four ignores of `deny.toml` still match and `cargo deny check` is
+clean; their reasons name 0.9.18). `cargo check --all-targets
+--all-features` was clean with no change of ours: no API drift reaches
+this crate. The GitHub release notes are empty; upstream's
+`CHANGELOG.md` at the tag holds the entry. Its Breaking items, checked
+against the code:
+- The mob store restore machine (versions 2 to 7), its kernel's
+  `TransitionId`, `RecoverInputLifecycle`'s new field, the mob set's
+  records: rkat-tui builds none of them and matches none of them.
+- `MobHandle::close_if_idle` skips a request whose caller stopped
+  waiting: rkat-tui does not call it.
+- `MobError::MobAlreadyExists` replaces the "internal error: mob already
+  exists" message: nothing of ours matches that text (our
+  `MEMBER_EXISTS` is a member's, not a mob's).
+- The Gemini catalog default is `gemini-4-neon` (was `gemini-4-argon`):
+  `endpoints::startup::builtin_default` takes `meerkat_models::default_model`,
+  so a built-in Gemini endpoint with no configured model starts on Neon;
+  the classifier's Gemini default is our own (`gemini-3.1-flash-lite`)
+  and unchanged. Said in the changelog.
+- The steer timing change (below).
+
+No new built-in tool: `meerkat-tools`, `meerkat-schedule` and
+`meerkat-comms` are unchanged but for their build files, and
+`policy::tests::upstream_builtins_are_all_classified` passes. A member's
+seat row gains an internal `seat_lineage` member that older readers
+ignore (the stored schema does not move), and the stored-state guard
+opens `tests/fixtures/state-0.0.1/` unchanged.
+
+**Steers.** 0.9.18's "every steer admitted before a request's input is
+fixed joins it" (upstream #2446, issue #2431) and "a recalled steer gives
+its boundary to the next one" (our #2441). Probed through the daemon
+with plain `mob/member_send` steers that bypass the daemon's hold (no
+send key), five rounds of each case, numbering requests from 0: three
+steers while request 0 is held in flight: all in request 1, in order,
+as three user messages; the same while request 0's tools run (a held
+review): request 1; three, the first recalled: the other two in request
+1, the recalled one nowhere; one recalled and one sent after it: the new
+one in request 1; a daemon note (an in-process `mob_member_send`) and a
+user's steer while request 0 is in flight, in either order: both in
+request 1, in admission order. 30 of 30 rounds as described. On the
+plain pin move two tests failed, both pinning 0.9.17's one steer per
+request, and are re-pinned:
+`client_turns::a_recalled_steer_gives_its_request_to_the_next` (was
+`a_recalled_steer_s_slot_is_not_reused`: the combined steer after a
+recall now rides N+1, not N+2) and
+`held_steers::a_peer_s_message_gets_at_most_one_slot_ahead_of_the_held_ones`
+(the peer's message now joins request 1 with the user's first). The
+daemon's hold of the user's messages and of its own notes, built for
+the one-per-request rule, goes in the next change. The engine's other
+steer change (a steer that waited for its run's boundary when the
+session was loaded again joins the resumed run) does not reach the stop
+tests: the daemon still recalls a waiting message at its stop, and
+`held_steers::a_message_written_into_a_request_the_stop_cut_off_comes_back_once`
+still passes (the engine drops a written, uncommitted steer at the
+restart, as before).
+
+What it did not ship (every other upstream entry of CLAUDE.md stays,
+none named in the 0.9.18 entry, `meerkat-tools`, `meerkat-openai` and
+`meerkat-comms` unchanged): #2180 (`tool_costs` still passes with the
+catalog inexact), #2184's override (`roster.rs` still carries
+`effective_profile_override`), #2126, #2231, #2232, #2233, #2234, #2235,
+#2300, #2350, #2374, #2384, #2388, #2411, #2432 and #2433.

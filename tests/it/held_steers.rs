@@ -314,11 +314,12 @@ async fn a_peer_s_message_gets_at_most_one_slot_ahead_of_the_held_ones() {
         peer >= held || held - peer == 1,
         "the peer's message rode request {peer}, the held ones {held}"
     );
-    // Measured: the peer's message, admitted to the engine before the held
-    // ones were sent, takes the slot after the first's; the held two ride
-    // the one after it, together (unheld they would ride 2 and 3, the
-    // peer's 4).
-    assert_eq!((peer, held), (2, 3));
+    // Measured on Meerkat 0.9.18: the peer's message, admitted to the
+    // engine while the first waited, joins request 1 with it (every steer
+    // waiting at a boundary joins its request); the held two ride the one
+    // after it, together. On 0.9.17 the peer's took request 2 and the held
+    // two request 3.
+    assert_eq!((peer, held), (1, 2));
     a.quit().await;
     b.quit().await;
     daemon.stop().await;
