@@ -1367,3 +1367,70 @@ fn a_d5_block_s_hosts_are_trusted_with_one_key() {
         }]
     );
 }
+
+/// The box keeps the outline of its tallest section: Tab and Shift+Tab
+/// through every section, and ↑/↓ onto a row that shows in full when
+/// highlighted, leave its corner, width and height as they are, with the
+/// key hint on its last line; the sections themselves differ in height.
+#[test]
+fn the_box_keeps_its_outline_through_every_section() {
+    let long = BlockedCall {
+        summary: format!("cmd {}", "word ".repeat(60)),
+        call: format!("cmd {}", "word ".repeat(60)),
+        ..blocked_call(2, false)
+    };
+    let rule = |n| RuleRow {
+        n,
+        deny: false,
+        tool: "shell".into(),
+        arg: Some(format!("git status {n}*")),
+        literal: false,
+        origin: RuleOrigin::Realm,
+    };
+    let statement = |id| StatementRow {
+        id,
+        text: format!("network requests to api{id}.example.com"),
+        origin: StatementOrigin::Config,
+    };
+    let picker = permissions_dialog(
+        &[blocked_call(1, false), long],
+        160,
+        &[rule(1), rule(2), rule(3), rule(4), rule(5)],
+        &[session_grant(7)],
+        &[statement(1), statement(2), statement(3)],
+        &some_hosts(),
+        None,
+    );
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowPicker {
+        picker,
+        refresh: false,
+    });
+    let first = screen(&mut app, 40);
+    let outline = box_outline(&first, " Permissions");
+    let mut natural = std::collections::BTreeSet::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for step in [
+        KeyCode::Down,
+        KeyCode::Tab,
+        KeyCode::Down,
+        KeyCode::Tab,
+        KeyCode::Tab,
+        KeyCode::BackTab,
+        KeyCode::BackTab,
+        KeyCode::Up,
+    ] {
+        let picker = open(&app);
+        seen.insert(picker.section());
+        natural.insert(crate::ui::picker::list_picker_lines(picker, 74, 100).len());
+        app.update(key(step));
+        let rows = screen(&mut app, 40);
+        assert_eq!(box_outline(&rows, " Permissions"), outline, "{rows:#?}");
+        let (top, _, _, height) = outline;
+        let last = &rows[top + height - 2];
+        let last = last.trim_end_matches('│').trim_end();
+        assert!(last.ends_with("close"), "the key hint is last: {rows:#?}");
+    }
+    assert_eq!(seen.len(), 3, "every section was shown");
+    assert!(natural.len() > 1, "the sections differ: {natural:?}");
+}

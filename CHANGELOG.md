@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Dialogs no longer change size as you switch what they show: the
+  `/permissions` dialog keeps the height of its tallest section through
+  Tab and Shift+Tab, and the help (`/help`, `?`) that of its taller
+  view, with the shorter one's footer on the same row; moving onto a
+  row that shows in full when highlighted no longer grows a picker
+  either. A question, a field or a row's detail (Ctrl+O) taller than
+  that still grows the box, and a resize or a change of the lists
+  resizes it.
+
+### Added
+
+- The model pickers (`/model`, `/auto model`) show each model's price,
+  input / output per million tokens (`$3 / $15`), in a column of their
+  own, from the same sources as the cost readout (`[pricing]` in
+  `tui.toml`, a LiteLLM endpoint's `/model/info`, the community list;
+  `~` marks a stale list's estimate). A model no source prices says
+  "no price"; with no price known for any model the column is left
+  out, and in a narrow box the price goes before the model's name does.
+
 ## [0.0.22] - 2026-11-24
 
 ### Changed

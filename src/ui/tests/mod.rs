@@ -459,6 +459,23 @@ fn screen(app: &mut App, height: u16) -> Vec<String> {
         .collect()
 }
 
+/// The outline of the dialog box titled `title` on `rows`: its top row,
+/// left column, width and height, in cells.
+fn box_outline(rows: &[String], title: &str) -> (usize, usize, usize, usize) {
+    let top = rows
+        .iter()
+        .position(|r| r.contains(&format!("┌{title}")))
+        .unwrap_or_else(|| panic!("no box titled {title:?}: {rows:#?}"));
+    let cells: Vec<&str> = rows[top].split("").filter(|s| !s.is_empty()).collect();
+    let left = cells.iter().position(|c| *c == "┌").unwrap();
+    let right = cells.iter().position(|c| *c == "┐").unwrap();
+    let bottom = rows[top..]
+        .iter()
+        .position(|r| r.chars().nth(left) == Some('└'))
+        .unwrap_or_else(|| panic!("box {title:?} has no bottom: {rows:#?}"));
+    (top, left, right - left + 1, bottom + 1)
+}
+
 /// A tool call of the helper `fork-1` with id `id`.
 fn fork_call(id: &str) -> Msg {
     helper_msg(

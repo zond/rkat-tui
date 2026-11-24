@@ -540,7 +540,7 @@ outside, 1 when it could not complete.
 ### The permissions dialog
 
 `/permissions` (or `/permissions blocked|rules|hosts`) opens three
-sections, switched with Tab:
+sections, switched with Tab in a box the size of the largest:
 
 - **Blocked**: recently blocked calls, to approve
   ([below](#approving-a-blocked-call));
@@ -1402,7 +1402,9 @@ then the built-in endpoint of the id's catalog provider, then the highest
 catalog provider's endpoint, or to the only endpoint. Names are never
 guessed from a prefix.
 
-`/model` opens a picker grouped by endpoint, `/model <ref>` switches
+`/model` opens a picker grouped by endpoint, with each model's input and
+output price per million tokens where one is known ([Context gauge and
+cost](#context-gauge-and-cost)), `/model <ref>` switches
 directly, `/model refresh` refetches the lists. A switch takes effect
 between turns, across endpoints and dialects too. A conversation records
 its model and endpoint, so `-c` and `/resume` continue on them. Helpers

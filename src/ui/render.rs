@@ -214,7 +214,7 @@ pub fn draw_at(frame: &mut Frame<'_>, app: &mut App, now: Instant) {
     );
     let ignoring = app.arming.is_some_and(|arming| arming.says_ignored(now));
     if let Some(modal) = &mut app.modal {
-        draw_modal(frame, area, modal, ignoring);
+        draw_modal(frame, area, modal, ignoring, &app.status.prices);
     }
 }
 

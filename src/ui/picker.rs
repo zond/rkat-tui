@@ -1056,6 +1056,33 @@ impl ListPicker {
             .map(|page| page.rows.as_slice())
     }
 
+    /// The lines the picker's box keeps at `width` in `max_lines`: the
+    /// most any of its sections takes (a picker without sections has its
+    /// one), each with its own rows and the row that grows most when
+    /// highlighted highlighted, and nothing open over them. Tab, Shift+Tab
+    /// and ↑/↓ then leave the box's outline as it is; only a question, a
+    /// field or a row's detail taller than that grows it.
+    #[must_use]
+    pub(super) fn steady_lines(&self, width: usize, max_lines: usize) -> usize {
+        let count = self.sections.as_ref().map_or(1, |s| s.names.len());
+        (0..count)
+            .map(|index| {
+                let mut view = self.clone();
+                view.show_section(index);
+                view.line = None;
+                view.detail = None;
+                let tallest = (0..view.rows.len()).max_by_key(|&i| {
+                    let row = &view.rows[i];
+                    row_lines(row, width, true) - row_lines(row, width, false)
+                });
+                view.cursor = ListCursor::at(tallest.unwrap_or(0));
+                list_picker_parts(&view, width, usize::MAX).0.len()
+            })
+            .max()
+            .unwrap_or(0)
+            .min(max_lines)
+    }
+
     /// The box's title: the kind's, and with sections each one's name
     /// and rows, the shown one marked: ` Permissions: [Blocked 2] · In force 14 `.
     #[must_use]
@@ -1370,14 +1397,56 @@ impl ListPicker {
     }
 }
 
-/// The rows (each with its note), else the empty line; then the question
-/// or refusal; then the key hint. At most `max_lines` lines: the rows
-/// scroll to keep the selection visible.
+/// The picker's lines as [`list_picker_parts`] draws them.
+#[cfg(test)]
 pub(super) fn list_picker_lines(
     picker: &ListPicker,
     width: usize,
     max_lines: usize,
 ) -> Vec<Line<'static>> {
+    list_picker_parts(picker, width, max_lines).0
+}
+
+/// The picker's lines ([`list_picker_parts`]) at least `min_lines` long (capped by
+/// `max_lines`): the blank lines go above the question and the key hint,
+/// so the hint stays on the box's last line.
+pub(super) fn list_picker_lines_padded(
+    picker: &ListPicker,
+    width: usize,
+    max_lines: usize,
+    min_lines: usize,
+) -> Vec<Line<'static>> {
+    let (mut lines, tail) = list_picker_parts(picker, width, max_lines);
+    let want = min_lines.min(max_lines);
+    if lines.len() < want {
+        let at = lines.len().saturating_sub(tail);
+        lines.splice(
+            at..at,
+            std::iter::repeat_n(Line::default(), want - lines.len()),
+        );
+    }
+    lines
+}
+
+/// How many lines `row` takes at `width`: `full` as the highlighted row,
+/// else capped as the others.
+fn row_lines(row: &PickRow, width: usize, full: bool) -> usize {
+    let note = row.note.as_ref().map_or(0, |note| {
+        let inner = width.saturating_sub(NOTE_INDENT.len()).max(1);
+        capped(wrap_text(note, inner), full, inner).len()
+    });
+    capped(wrap_text(&row.text, width), full, width).len() + note
+}
+
+/// The rows (each with its note), else the empty line; then the question
+/// or refusal; then the key hint. At most `max_lines` lines: the rows
+/// scroll to keep the selection visible. With them, how many of the last
+/// lines are the tail (the question or refusal and the key hint).
+fn list_picker_parts(
+    picker: &ListPicker,
+    width: usize,
+    max_lines: usize,
+) -> (Vec<Line<'static>>, usize) {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let warn = Style::default().fg(Color::Yellow);
     let mut tail = Vec::new();
@@ -1451,11 +1520,12 @@ pub(super) fn list_picker_lines(
                 .collect()
         })
         .unwrap_or_default();
+    let tail_len = tail.len();
     if picker.rows.is_empty() {
         let mut lines = head;
         lines.extend(wrap_text(&picker.empty, width).into_iter().map(Line::from));
         lines.extend(tail);
-        return lines;
+        return (lines, tail_len);
     }
     let selected = picker.cursor.index();
     let rows: Vec<Vec<Line<'static>>> = picker
@@ -1488,7 +1558,7 @@ pub(super) fn list_picker_lines(
     let mut lines = head;
     lines.extend(window_lines(rows, selected, room));
     lines.extend(tail);
-    lines
+    (lines, tail_len)
 }
 
 /// The highlighted `row`'s whole `detail` in place of the rows: the row's
@@ -1502,7 +1572,7 @@ fn detail_lines(
     width: usize,
     max_lines: usize,
     tail: Vec<Line<'static>>,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, usize) {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let text = wrap_text(detail, width);
     let keys = wrap_text(
@@ -1529,9 +1599,10 @@ fn detail_lines(
         dim,
     ));
     lines.extend(text.into_iter().skip(start).take(room).map(Line::from));
+    let tail_len = tail.len() + keys.len();
     lines.extend(tail);
     lines.extend(keys.into_iter().map(|line| Line::styled(line, dim)));
-    lines
+    (lines, tail_len)
 }
 
 /// How far a row's note is indented under its text.

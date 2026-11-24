@@ -317,3 +317,35 @@ fn an_approval_takes_over_the_help_which_comes_back_after() {
     app.update(Msg::ShowModelPicker(picker_models()));
     assert!(matches!(app.modal, Some(Modal::Model(_))));
 }
+
+/// The box keeps the outline of its taller view: Tab and Shift+Tab leave
+/// its corner, width and height, and the footer's row, as they are, in
+/// a terminal both views fit in (the shorter gets blank lines above its
+/// footer) and in one where they scroll.
+#[test]
+fn the_help_keeps_its_outline_through_both_views() {
+    let mut app = App::new(StatusInfo::default());
+    submit(&mut app, "/help");
+    for (width, height) in [(100, 400), (100, 30), (60, 15)] {
+        let first = drawn(&mut app, width, height);
+        let outline = box_outline(&first, " Help ");
+        let footer_row = |rows: &[String]| inside(rows).len() - 1;
+        let mut text_lines = Vec::new();
+        for step in [KeyCode::Tab, KeyCode::BackTab, KeyCode::Tab, KeyCode::Tab] {
+            let rows = drawn(&mut app, width, height);
+            text_lines.push(body(&rows).iter().filter(|l| !l.is_empty()).count());
+            app.update(key(step));
+            let rows = drawn(&mut app, width, height);
+            assert_eq!(box_outline(&rows, " Help "), outline, "{rows:#?}");
+            assert_eq!(footer_row(&rows), footer_row(&first));
+            assert!(
+                inside(&rows).last().unwrap().ends_with("closes"),
+                "{rows:#?}"
+            );
+        }
+        if height == 400 {
+            // Both fit: the views differ in length, the box does not.
+            assert_ne!(text_lines[0], text_lines[1], "{width}x{height}");
+        }
+    }
+}
