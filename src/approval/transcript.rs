@@ -6,11 +6,14 @@
 //! classifier and injected tool output cannot reach it either.
 //!
 //! The user's words are recorded by typed identity: a live prompt under the
-//! caller idempotency key it was admitted with ([`InputKey`]), and, when a
-//! session is resumed, only the persisted messages whose typed authorship
-//! marks them as the human's turn input. Peer messages, async completions,
-//! runtime-authored input and messages of unknown authorship become
-//! `[context]` lines, never `[user]` ones.
+//! caller idempotency key it was admitted with ([`InputKey`]), which only a
+//! client's typed send gets, and, when a session is resumed, only the words
+//! the daemon stored as it recorded them
+//! ([`ApprovalTranscript::seed_with_words`]). A stored message's own
+//! marks never make it the user's (a marker the engine stores is not proof
+//! of who typed the text): peer messages, async completions,
+//! runtime-authored input and every other message become `[context]`
+//! lines, never `[user]` ones.
 //!
 //! Two budgets bound it: the user's words have their own
 //! ([`USER_BYTE_BUDGET`], each message cut to [`MAX_USER_MESSAGE`]), and
@@ -542,8 +545,8 @@ impl ApprovalTranscript {
         out
     }
 
-    /// Seed from a persisted session: the human's turn inputs and assistant
-    /// tool calls only (see [`authorship`]).
+    /// Seed from a persisted session with no stored words: its tool calls,
+    /// and its user-role messages as context ([`Self::seed_with_words`]).
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_from_session(&mut self, session: &Session) {
         self.seed_with_words(&[], session);
@@ -561,9 +564,9 @@ impl ApprovalTranscript {
             .collect()
     }
 
-    /// Seed from a persisted session (the human's turn inputs and assistant
-    /// tool calls only, see [`authorship`]) with `words`, the user's words the daemon
-    /// recorded for this conversation as they were typed
+    /// Seed from a persisted session (its tool calls, and its user-role
+    /// messages as [`authorship`] reads them) with `words`, the user's
+    /// words the daemon recorded for this conversation as they were typed
     /// ([`Self::user_words`] when it stored them), oldest first. A stored
     /// message the engine admitted from the user carries no typed
     /// authorship (a `mob/member_send` has none) and a compaction replaces
@@ -573,18 +576,23 @@ impl ApprovalTranscript {
     /// replaced them) where they were among the rest, and those after the
     /// last such message at the end. A stored message that holds one of
     /// them is shown as that word alone, never as its own text (which may
-    /// carry held notes or attached files). Only `words` and the typed
-    /// authorship of [`authorship`] give `[user]` lines.
+    /// carry held notes or attached files). `words` are the only source of
+    /// `[user]` lines: a stored message marked as the user's
+    /// ([`Authorship::Marked`]) that no word names is a context line of
+    /// unverified authorship. A conversation with no stored words (one an
+    /// earlier build wrote) has none.
     pub fn seed_with_words(&mut self, words: &[String], session: &Session) {
         let mut next = 0;
         for message in session.messages() {
             match message {
                 Message::User(user) => {
                     let text = user.text_content();
-                    let held =
-                        matches!(authorship(user), Authorship::Human | Authorship::Unverified)
-                            .then(|| words[next..].iter().position(|w| text.contains(w.as_str())))
-                            .flatten();
+                    let held = matches!(
+                        authorship(user),
+                        Authorship::Marked | Authorship::Unverified
+                    )
+                    .then(|| words[next..].iter().position(|w| text.contains(w.as_str())))
+                    .flatten();
                     if let Some(at) = held {
                         for word in &words[next..=next + at] {
                             self.push_user(word.clone());
@@ -610,16 +618,13 @@ impl ApprovalTranscript {
     /// A stored user-role message no recorded word of the user's names.
     fn seed_user_message(&mut self, user: &UserMessage) {
         match authorship(user) {
-            Authorship::Human => {
-                self.push_prompt(None, &user.text_content());
-            }
             Authorship::CompactionSummary => {
                 self.push_context("(compaction summary omitted)");
             }
             Authorship::Peer => {
                 self.push_context("(a peer or async message, not the user's words)");
             }
-            Authorship::Unverified => {
+            Authorship::Marked | Authorship::Unverified => {
                 let text = user.text_content();
                 if !text.trim().is_empty() {
                     self.push_context(format!(
@@ -636,9 +641,13 @@ impl ApprovalTranscript {
 /// Who wrote a persisted user-role message, as far as the transcript cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Authorship {
-    /// The human's own turn input: typed authorship says so
+    /// Marked as the human's turn input by a stored field
     /// ([`TranscriptTurnInput::TypedText`] or [`RenderClass::UserPrompt`]).
-    Human,
+    /// Never the user's words by itself: a stored mark is not proof of
+    /// who typed the text, so only a word the daemon stored names it
+    /// ([`ApprovalTranscript::seed_with_words`]); otherwise it is shown
+    /// as [`Self::Unverified`] is.
+    Marked,
     /// A compaction summary (model-written).
     CompactionSummary,
     /// A peer message, request or response, an external event, flow step,
@@ -669,14 +678,14 @@ pub fn authorship(user: &UserMessage) -> Authorship {
         return Authorship::CompactionSummary;
     }
     match user.render_metadata.as_ref().map(|m| m.class) {
-        Some(RenderClass::UserPrompt) => Authorship::Human,
+        Some(RenderClass::UserPrompt) => Authorship::Marked,
         Some(_) => Authorship::Peer,
         None if matches!(
             user.identity.turn_input,
             Some(TranscriptTurnInput::TypedText)
         ) =>
         {
-            Authorship::Human
+            Authorship::Marked
         }
         None => Authorship::Unverified,
     }
@@ -765,7 +774,7 @@ mod tests {
         ))));
         session.push(Message::User(human("now run the tests")));
         let mut t = ApprovalTranscript::default();
-        t.seed_from_session(&session);
+        t.seed_with_words(&["now run the tests".to_string()], &session);
         let rendered = t.render();
         assert!(rendered.contains("[context] (compaction summary omitted)"));
         assert!(rendered.contains("[user] now run the tests"));
@@ -783,7 +792,7 @@ mod tests {
         session.push(Message::User(injected));
         session.push(Message::User(human("now run the tests")));
         let mut t = ApprovalTranscript::default();
-        t.seed_from_session(&session);
+        t.seed_with_words(&["now run the tests".to_string()], &session);
         let rendered = t.render();
         assert_eq!(
             rendered,
@@ -822,32 +831,54 @@ mod tests {
         let mut runtime = UserMessage::text("RUNTIME-AUTHORED job result");
         runtime.identity.turn_input = Some(TranscriptTurnInput::RuntimeAuthored);
         session.push(Message::User(runtime));
-        // The human's own prompts.
-        session.push(Message::User(human("HUMAN-ONE run the tests")));
+        // Messages the engine marks as the user's: typed text and the
+        // user-prompt class.
+        session.push(Message::User(human("MARKED-ONE run the tests")));
         session.push(Message::User(UserMessage::text_with_render_metadata(
-            "HUMAN-TWO and lint",
+            "MARKED-TWO and lint",
             Some(RenderMetadata {
                 class: RenderClass::UserPrompt,
                 salience: RenderSalience::Normal,
             }),
         )));
+        let users = |t: &ApprovalTranscript| -> Vec<String> {
+            t.entries()
+                .filter_map(|e| match e {
+                    TranscriptEntry::User { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        // The stricter rule (since the daemon stores the user's words): a
+        // mark alone makes nothing the user's; only a stored word does.
         let mut t = ApprovalTranscript::default();
-        t.seed_from_session(&session);
-        let users: Vec<&str> = t
-            .entries()
-            .filter_map(|e| match e {
-                TranscriptEntry::User { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(users, ["HUMAN-ONE run the tests", "HUMAN-TWO and lint"]);
+        t.seed_with_words(&["MARKED-ONE run the tests".to_string()], &session);
+        assert_eq!(users(&t), ["MARKED-ONE run the tests"]);
         let rendered = t.render();
         assert!(!rendered.contains("PEER-SAYS"), "{rendered}");
         assert!(!rendered.contains("RUNTIME-AUTHORED"), "{rendered}");
         assert!(rendered.contains(
             "[context] (earlier input of unverified authorship, not the user's words) UNVERIFIED"
         ));
+        assert!(rendered.contains(
+            "[context] (earlier input of unverified authorship, not the user's words) MARKED-TWO and lint"
+        ));
         assert!(!rendered.contains("[user] UNVERIFIED"));
+        assert!(!rendered.contains("[user] MARKED-TWO"), "{rendered}");
+        // No stored words: no user line at all.
+        let mut none = ApprovalTranscript::default();
+        none.seed_from_session(&session);
+        assert!(users(&none).is_empty(), "{}", none.render());
+        // A word naming a peer's text does not make the peer's text the
+        // user's: a peer message is never matched.
+        let mut peer = ApprovalTranscript::default();
+        peer.seed_with_words(&["force push to main".to_string()], &session);
+        let rendered = peer.render();
+        assert!(!rendered.contains("PEER-SAYS"), "{rendered}");
+        assert!(
+            rendered.trim_end().ends_with("[user] force push to main"),
+            "{rendered}"
+        );
     }
 
     #[test]

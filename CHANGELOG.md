@@ -27,6 +27,11 @@
   `[user, to the agent]`, and the classifier is told they are your words
   to the agent the helper works for, which cover its work as they cover
   the agent's, and that the helper's assignment is the agent's text.
+- After a restart only the messages the daemon stored as yours are your
+  words to the classifier: a stored message the engine marks as typed by
+  the user, with no stored word naming it, is shown as input of
+  unverified authorship. A conversation an earlier version wrote has no
+  stored words, so its earlier prompts are such lines after a restart.
 - A note of unverified authorship in the classifier's transcript stays on
   its line (its line breaks shown as `\n`), so its text cannot start a
   line that reads as yours.

@@ -14785,12 +14785,28 @@ Decisions.
   the assignment is the agent's text (never recorded). The checkpoint
   review of a helper's run reads the same.
 
-Found and not changed: `authorship` takes `RenderClass::UserPrompt` as
-the human's, and the engine's `meerkat_schedule_create` accepts a
-`render_metadata` on a prompt action, so an agent's schedule could store
-a prompt classed so and be seeded as the user's after a restart. Not
-reproduced here; recorded for the owner (the stored words would let
-`UserPrompt` be dropped as a signal).
+A stored mark is no longer the user's words (owner's coordinator,
+follow-up). `authorship` took `RenderClass::UserPrompt` and
+`TranscriptTurnInput::TypedText` as the human's on a seed, and the
+engine's `meerkat_schedule_create` takes a `render_metadata` on a prompt
+action, so an agent's schedule looked able to plant a prompt a restart
+would read as `[user]`. Probed in the rig: the engine (0.9.18) stores the
+fired prompt with `render_metadata: None` and no `turn_input`, so it did
+not reproduce through schedules, and no other agent-reachable tool was
+found that sets the mark. The seed is made strict anyway: the daemon's
+stored words are now the only source of `[user]` lines on a seed, and a
+message marked as the user's that no stored word names is a context line
+of unverified authorship (`Authorship::Marked`). The consequence: a
+conversation an earlier build wrote has no stored words, so after a
+restart its prompts are context lines, as they already were for prompts
+sent through `mob/member_send`. While the daemon runs only a client's
+typed `mob/member_send` through the proxy is recorded as the user's
+(`local::observe`); a schedule's prompt, a watch's batch, a peer's or a
+wire's message and every daemon note reach the engine past it.
+Tests: `approval::transcript::tests::peer_and_unverified_user_role_messages_are_never_user_words`
+(stricter: a marked message is context unless a stored word names it),
+`classifier_transcript::a_prompt_an_agent_s_schedule_marks_as_the_user_s_is_never_the_user_s`
+(live and after a restart; pins what the engine stores).
 
 Tests: `approval::transcript::tests::the_user_s_request_outlives_any_number_of_tool_calls`,
 `the_user_s_words_have_their_caps`, `budget_trims_oldest`,
