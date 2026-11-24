@@ -116,38 +116,22 @@ impl Local {
     }
 
     /// Tests: a message of the daemon's own to `agent`, as its notes go
-    /// (held for an open run, [`crate::daemon::agents::hold_or_steer`]);
-    /// answered once the engine took it.
+    /// (a plain steer, [`crate::daemon::agents::steer_agent`]); answered
+    /// once the engine took it.
     ///
     /// # Errors
     ///
     /// The engine's refusal, as text.
     pub async fn steer_for_test(&self, agent: &str, text: &str) -> Result<(), String> {
-        crate::daemon::agents::hold_or_steer(&self.core, agent, text.to_string())
-            .await
-            .outcome()
-            .await
+        crate::daemon::agents::steer_agent(&self.core, agent, text.to_string()).await
     }
 
-    /// Tests: how many of the daemon's notes are held for `agent`'s open
-    /// run ([`crate::daemon::activity::HeldNote`]).
+    /// Tests: the inputs of `agent`'s messages of the user's that wait in
+    /// the engine for its open run's next request, once the engine answered
+    /// their sends ([`crate::daemon::activity::typed`]), oldest first.
     #[must_use]
-    pub fn held_notes_for_test(&self, agent: &str) -> usize {
-        self.core.activity.held_notes(agent)
-    }
-
-    /// Tests: the user's messages held for `agent`'s open run behind the
-    /// one in flight ([`crate::daemon::activity::steers`]), oldest first.
-    #[must_use]
-    pub fn held_user_for_test(&self, agent: &str) -> Vec<String> {
-        self.core.activity.held_user(agent)
-    }
-
-    /// Tests: the input `agent`'s message in flight went as, once the
-    /// engine answered its send ([`crate::daemon::activity::steers`]).
-    #[must_use]
-    pub fn in_flight_for_test(&self, agent: &str) -> Option<meerkat_core::lifecycle::InputId> {
-        self.core.activity.in_flight_input(agent)
+    pub fn waiting_for_test(&self, agent: &str) -> Vec<meerkat_core::lifecycle::InputId> {
+        self.core.activity.waiting(agent)
     }
 
     /// Tests: how many of `agent`'s messages written into a request whose
@@ -155,12 +139,5 @@ impl Local {
     #[must_use]
     pub fn written_for_test(&self, agent: &str) -> usize {
         self.core.activity.written(agent)
-    }
-
-    /// Measurements: hold even the first message of a model call, to go
-    /// at its first tool request (`docs/evidence.md`, "Holding the first
-    /// message too").
-    pub fn hold_first_for_test(&self, on: bool) {
-        self.core.activity.set_hold_first(on);
     }
 }

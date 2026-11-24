@@ -222,11 +222,6 @@ impl Runner {
                 }
                 self.steering.admitted.push(id);
                 self.send(Msg::SteerAck { id, result: Ok(()) });
-                // Held by the daemon behind the message in flight: its
-                // line says it goes in one step later.
-                if input.as_ref().is_some_and(|input| input.held) {
-                    self.send(Msg::SteerHeld(id));
-                }
                 let delivered = match input {
                     Some(input) => self.steering.steers.admitted(id, input.input),
                     None => {
@@ -306,10 +301,7 @@ impl Runner {
         let reports = self.reporter();
         let input_ids = self.steering.steers.outstanding_inputs();
         tokio::spawn(async move {
-            let params = protocol::RecallParams {
-                input_ids,
-                held_only: false,
-            };
+            let params = protocol::RecallParams { input_ids };
             let result = bounded(
                 CALL_TIMEOUT,
                 remote::call::<protocol::method::Recall>(&connection, &params),
@@ -318,65 +310,6 @@ impl Runner {
             .map_err(|err| err.to_string());
             reports.send(Report::Recalled(result));
         });
-    }
-
-    /// ↑ with a message the daemon holds behind the one in flight: take
-    /// that one back, and only while it is still held (`held_only`: one
-    /// the daemon sent meanwhile is not recalled from the engine, which
-    /// would cost it its request); answered with [`Msg::HeldTakenBack`].
-    pub(super) fn recall_held(&mut self, id: PendingId) {
-        let input = self
-            .steering
-            .steers
-            .outstanding()
-            .into_iter()
-            .find(|(steer, _)| *steer == id)
-            .map(|(_, input)| input);
-        let (Some(input), Some(connection)) = (input, self.connection()) else {
-            let errors = if self.connection().is_none() {
-                vec![self.unattached()]
-            } else {
-                Vec::new()
-            };
-            self.send(Msg::HeldTakenBack {
-                id,
-                taken: false,
-                errors,
-            });
-            return;
-        };
-        let reports = self.reporter();
-        tokio::spawn(async move {
-            let params = protocol::RecallParams {
-                input_ids: vec![input.clone()],
-                held_only: true,
-            };
-            let result = bounded(
-                CALL_TIMEOUT,
-                remote::call::<protocol::method::Recall>(&connection, &params),
-            )
-            .await
-            .map_err(|err| err.to_string());
-            reports.send(Report::HeldRecalled { id, input, result });
-        });
-    }
-
-    /// The daemon's answer to [`Self::recall_held`].
-    pub(super) fn held_recalled(
-        &mut self,
-        id: PendingId,
-        input: &meerkat_core::lifecycle::InputId,
-        result: Result<protocol::Recalled, String>,
-    ) {
-        let (taken, errors) = match result {
-            Ok(answer) => (answer.recalled.contains(input), answer.errors),
-            Err(why) => (false, vec![why]),
-        };
-        if taken {
-            self.steering.steers.recalled(std::slice::from_ref(input));
-            self.steering.admitted.retain(|admitted| *admitted != id);
-        }
-        self.send(Msg::HeldTakenBack { id, taken, errors });
     }
 
     /// The daemon's answer to [`Self::recall`]: the steers it took back
@@ -982,29 +915,16 @@ impl Runner {
         }
     }
 
-    /// The daemon's held messages moved on ([`protocol::HELD`]): this
-    /// client's among them are sent (followed by the engine's input from
-    /// now on, their lines say they go in at the next step), written
-    /// into a request (delivered), dropped unsent (back to the editor,
-    /// [`Msg::NotDelivered`]), or, delivered, not kept by the engine
-    /// because the daemon's stop cut their request off (back to the
-    /// editor too, [`Msg::Unkept`]).
-    pub(super) fn held_changed(&mut self, change: protocol::HeldChange) {
+    /// The daemon's stop gave back messages of the user's
+    /// ([`protocol::GIVEN_BACK`]): this client's among them that the agent
+    /// never read go back to the editor ([`Msg::NotDelivered`]), and the
+    /// ones shown delivered that the engine did not keep, because the stop
+    /// cut their request off, too ([`Msg::Unkept`]).
+    pub(super) fn given_back(&mut self, change: protocol::GivenBack) {
         match change.now {
-            protocol::HeldNow::Released { input_id } => {
-                let moved = self.steering.steers.rekey(&change.ids, &input_id);
-                if !moved.is_empty() {
-                    self.send(Msg::SteerReleased(moved));
-                }
-            }
-            protocol::HeldNow::Applied => {
-                for id in self.steering.steers.applied_held(&change.ids) {
-                    self.send(Msg::SteerDelivered(id));
-                }
-            }
-            protocol::HeldNow::Dropped { why } => {
-                for held in &change.ids {
-                    for id in self.steering.steers.settled(held) {
+            protocol::GivenBackNow::NotRead { why } => {
+                for input in &change.ids {
+                    for id in self.steering.steers.settled(input) {
                         self.steering.admitted.retain(|admitted| *admitted != id);
                         self.send(Msg::NotDelivered {
                             id,
@@ -1013,7 +933,7 @@ impl Runner {
                     }
                 }
             }
-            protocol::HeldNow::Unkept { why, text } => {
+            protocol::GivenBackNow::Unkept { why, text } => {
                 if change
                     .ids
                     .iter()
@@ -1062,10 +982,7 @@ impl Runner {
         let reports = self.reporter();
         let input_ids = self.steering.steers.outstanding_inputs();
         tokio::spawn(async move {
-            let params = protocol::RecallParams {
-                input_ids,
-                held_only: false,
-            };
+            let params = protocol::RecallParams { input_ids };
             let result = bounded(
                 CALL_TIMEOUT,
                 remote::call::<protocol::method::Inputs>(&connection, &params),
@@ -1534,14 +1451,7 @@ async fn ask_fate(
     match asked {
         Ok(protocol::SentFate::Admitted { input_id }) => {
             tracing::info!(%err, "a send's answer was lost; the daemon says the agent has it");
-            Ok(input_id.map(|input| remote::Admitted { input, held: false }))
-        }
-        Ok(protocol::SentFate::Held { input_id }) => {
-            tracing::info!(%err, "a send's answer was lost; the daemon says it holds it");
-            Ok(Some(remote::Admitted {
-                input: input_id,
-                held: true,
-            }))
+            Ok(input_id.map(|input| remote::Admitted { input }))
         }
         Ok(protocol::SentFate::Refused { why }) => Err(SendFailure::NotSent(why)),
         Ok(protocol::SentFate::NotReceived) => Err(SendFailure::NotSent(format!(

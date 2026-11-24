@@ -6,9 +6,18 @@
 
 - The engine is Meerkat 0.9.18 (from 0.9.17). Every message waiting for
   the agent's next model request now joins that request together, where
-  0.9.17 took one per request: a message you take back no longer leaves
-  its request empty, and another agent's message that arrives while
-  yours waits joins the same request. A built-in Gemini endpoint with no
+  0.9.17 took one per request: three messages typed while the agent
+  works ride its next request, each as its own message in the order
+  typed (with 0.9.17 the daemon held the second and third and sent them
+  as one message a request later; that hold and the line *goes in at the
+  step after the next* are gone). A message you take back no longer
+  leaves its request empty, and ↑ takes back every message still
+  waiting at once. The daemon's own notes (a helper's ending, an
+  approval, a watch's batch, the request to prepare for compaction, a
+  plan-mode change) go to a running agent at once instead of waiting
+  for your next message or the model's next tool call: they join the
+  same request as your message and never make it wait. Another agent's
+  message that arrives while yours waits joins the same request too. A built-in Gemini endpoint with no
   model configured now starts on `gemini-4-neon` (was `gemini-4-argon`),
   whose default thinking level is high; pick `gemini-4-argon` with
   `/model` to keep it.

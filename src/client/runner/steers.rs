@@ -64,17 +64,12 @@ pub(super) struct Steers {
     /// carry a steer only when its content holds that text
     /// ([`Self::carried`]).
     texts: Vec<(PendingId, String)>,
-    /// Held ids the daemon sent, and the input each went as (a late word
-    /// of the daemon's on one names it by its held id).
-    sent_as: Vec<(InputId, InputId)>,
     /// The inputs this client's steers were delivered by, newest last: a
     /// daemon stop may cut off the request that carried one, and its
     /// client takes the text back ([`Self::unkept`]).
     delivered: Vec<InputId>,
 }
 
-/// How many of [`Steers::sent_as`] are kept.
-const SENT_AS_KEPT: usize = 64;
 /// How many of [`Steers::delivered`] are kept.
 const DELIVERED_KEPT: usize = 64;
 
@@ -138,9 +133,8 @@ impl Steers {
         }
     }
 
-    /// The runtime wrote `input` into the running turn: the steers it
-    /// carries, if they are this client's and known yet (several: messages
-    /// the daemon held and sent as one, [`Self::rekey`]).
+    /// The runtime wrote `input` into the running turn: the steer it
+    /// carries, if it is this client's and known yet.
     pub(super) fn applied(&mut self, input: &InputId) -> Vec<PendingId> {
         let taken = self.take_input(input);
         if taken.is_empty() {
@@ -171,48 +165,6 @@ impl Steers {
     /// are still followed.
     pub(super) fn settled(&mut self, input: &InputId) -> Vec<PendingId> {
         self.take_input(input)
-    }
-
-    /// The daemon sent its held messages `held` as the engine's `input`
-    /// ([`crate::daemon::protocol::HeldNow::Released`]): this client's
-    /// among them are followed by that input from now on (it outlives
-    /// the daemon; the held ids do not). Their steers, oldest first.
-    pub(super) fn rekey(&mut self, held: &[InputId], input: &InputId) -> Vec<PendingId> {
-        let mut moved = Vec::new();
-        for (admitted, id) in &mut self.admitted {
-            if held.contains(admitted) {
-                *admitted = input.clone();
-                moved.push(*id);
-            }
-        }
-        for id in held {
-            self.sent_as.push((id.clone(), input.clone()));
-        }
-        let over = self.sent_as.len().saturating_sub(SENT_AS_KEPT);
-        self.sent_as.drain(..over);
-        moved
-    }
-
-    /// The daemon says its held messages `held` were written into a
-    /// request: this client's steers among them, taken (followed by their
-    /// held id, or by the input they went as).
-    pub(super) fn applied_held(&mut self, held: &[InputId]) -> Vec<PendingId> {
-        let mut taken = Vec::new();
-        for id in held {
-            let input = self
-                .sent_as
-                .iter()
-                .find(|(sent, _)| sent == id)
-                .map_or_else(|| id.clone(), |(_, input)| input.clone());
-            let steers = self.take_input(&input);
-            if !steers.is_empty() {
-                self.delivered_by(&input);
-            }
-            taken.extend(steers);
-        }
-        taken.sort();
-        taken.dedup();
-        taken
     }
 
     /// The admitted steers not applied yet, oldest first (what a recall,
@@ -321,33 +273,6 @@ mod tests {
         assert!(!steers.holds(PendingId(1)));
         // The same input again (a redelivery) marks nothing twice.
         assert_eq!(steers.applied(&mine), NONE);
-    }
-
-    /// Messages the daemon held and sent as one are followed by that
-    /// input: it delivers all of them, and the daemon's word by their
-    /// held ids, before or after, too.
-    #[test]
-    fn held_steers_sent_as_one_are_followed_by_that_input() {
-        let mut steers = Steers::default();
-        let (two, three, merged) = (input(), input(), input());
-        for (n, held) in [(2, &two), (3, &three)] {
-            steers.sending(PendingId(n));
-            steers.admitted(PendingId(n), held.clone());
-        }
-        assert_eq!(
-            steers.rekey(&[two.clone(), three.clone()], &merged),
-            vec![PendingId(2), PendingId(3)]
-        );
-        assert_eq!(steers.outstanding_inputs(), vec![merged.clone()]);
-        assert_eq!(steers.applied(&merged), vec![PendingId(2), PendingId(3)]);
-        assert_eq!(steers.applied_held(&[two, three]), NONE);
-        // The daemon's word comes first.
-        let (four, again) = (input(), input());
-        steers.sending(PendingId(4));
-        steers.admitted(PendingId(4), four.clone());
-        steers.rekey(std::slice::from_ref(&four), &again);
-        assert_eq!(steers.applied_held(&[four]), vec![PendingId(4)]);
-        assert_eq!(steers.applied(&again), NONE);
     }
 
     /// A delivered steer's input is known as this client's for a stop

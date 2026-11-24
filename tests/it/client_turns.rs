@@ -141,11 +141,15 @@ async fn a_prompt_queued_behind_a_running_turn_runs_next() {
 /// (b) typed while request 1 is in flight before any text rides request 2,
 /// and is marked delivered while request 2 is still streaming (the mark
 /// comes when the carrying request starts, not when its answer ends); (c)
-/// typed while request 2 streams text rides request 3. (d) The engine
-/// stages one steer per model request (lukacf/meerkat#2431), oldest first: two typed
-/// while request 3 is in flight ride requests 4 and 5. Pinned: the day a
-/// release lets every waiting steer join the next request, (d) fails and
-/// the pending line's words change (`docs/evidence.md`).
+/// typed while request 2 streams text rides request 3. (d) Two typed while
+/// request 3 is in flight both ride request 4 (since Meerkat 0.9.18 every
+/// steer waiting when a request's input is fixed joins it; 0.9.17 put the
+/// second in request 5). (e) A note of ours and a message typed while
+/// request 5 is in flight both ride request 6; (g) two notes while request
+/// 6 is in flight, nobody typing, both ride request 7; (f) the prepare
+/// request read after request 7's tools rides request 8 or 9, and a
+/// message typed while request 8 is in flight rides request 9: a note of
+/// ours never costs the user's message a request.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_typed_message_rides_the_first_request_after_it() {
     let ws = Workspace::new();
@@ -280,20 +284,15 @@ async fn a_typed_message_rides_the_first_request_after_it() {
             .await;
     }
     in_flight.notify_one();
+    llm.wait_call(4).await;
+    assert!(carried(&llm, 4, "TYPED-D1") && carried(&llm, 4, "TYPED-D2"));
+    assert!(!carried(&llm, 3, "TYPED-D1") && !carried(&llm, 3, "TYPED-D2"));
     llm.wait_call(5).await;
-    assert!(carried(&llm, 4, "TYPED-D1") && !carried(&llm, 4, "TYPED-D2"));
-    assert!(carried(&llm, 5, "TYPED-D2"), "{:?}", llm.requests()[5]);
     // (e) A note of ours (a helper's ending, say) comes while request 5 is
-    // in flight, just before the user types: it is held, and rides with
-    // the user's message, which rides request 6.
+    // in flight, just before the user types: both ride request 6.
     let agent = rig.agent().await;
     let local = rig.daemon.local();
-    let note = |text: &'static str| {
-        let (local, agent) = (Arc::clone(&local), agent.clone());
-        tokio::spawn(async move { local.steer_for_test(&agent, text).await })
-    };
-    let note_e = note("NOTE-E");
-    common::until(|| local.held_notes_for_test(&agent) == 1).await;
+    local.steer_for_test(&agent, "NOTE-E").await.unwrap();
     rig.send(steer(6, "TYPED-E"));
     rig.wait_for(|msg| {
         matches!(
@@ -305,25 +304,15 @@ async fn a_typed_message_rides_the_first_request_after_it() {
         )
     })
     .await;
-    assert_eq!(
-        local.held_notes_for_test(&agent),
-        0,
-        "it went with the message"
-    );
     in_flight.notify_one();
     llm.wait_call(6).await;
     assert!(carried(&llm, 6, "TYPED-E") && carried(&llm, 6, "NOTE-E"));
-    note_e.await.unwrap().unwrap();
-    // (g) Two notes held while request 6 is in flight, nobody typing: they
-    // go as ONE steer once the call asked for tools (its review is held),
-    // and ride request 7.
-    let notes = [note("NOTE-G1"), note("NOTE-G2")];
-    common::until(|| local.held_notes_for_test(&agent) == 2).await;
+    assert!(!carried(&llm, 5, "TYPED-E") && !carried(&llm, 5, "NOTE-E"));
+    // (g) Two notes while request 6 is in flight, nobody typing: both
+    // ride request 7 (its call's tool waits for its review meanwhile).
+    local.steer_for_test(&agent, "NOTE-G1").await.unwrap();
+    local.steer_for_test(&agent, "NOTE-G2").await.unwrap();
     in_flight.notify_one();
-    for note in notes {
-        note.await.unwrap().unwrap();
-    }
-    // The call's tool waits for its review meanwhile.
     common::until(|| classifier.seen().len() == 2).await;
     review.notify_one();
     llm.wait_call(7).await;
@@ -331,18 +320,14 @@ async fn a_typed_message_rides_the_first_request_after_it() {
         let requests = llm.requests();
         user_texts(&requests[at])[user_texts(&requests[at - 1]).len()..].to_vec()
     };
-    let both = added(7);
-    assert!(
-        both.len() == 1 && both[0].contains("NOTE-G1") && both[0].contains("NOTE-G2"),
-        "{both:?}"
-    );
+    assert_eq!(added(7), vec!["NOTE-G1".to_string(), "NOTE-G2".to_string()]);
     // (f) Request 7's context crosses the prepare threshold (read when its
-    // tools are done): the prepare request is held while request 8 is in
-    // flight; the user types then, and the message rides request 9 with it.
+    // tools are done): the prepare request is steered then and rides
+    // request 8, or 9 when it came after request 8's input was fixed; the
+    // user types while request 8 is in flight, and that rides request 9.
     rig.saw(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("asked the agent to prepare")))
         .await;
     llm.wait_call(8).await;
-    assert_eq!(local.held_notes_for_test(&agent), 1);
     rig.send(steer(7, "TYPED-F"));
     rig.wait_for(|msg| {
         matches!(
@@ -354,15 +339,10 @@ async fn a_typed_message_rides_the_first_request_after_it() {
         )
     })
     .await;
-    assert_eq!(
-        local.held_notes_for_test(&agent),
-        0,
-        "it went with the message"
-    );
     in_flight.notify_one();
     llm.wait_call(9).await;
-    assert!(!carried(&llm, 8, PREPARE));
-    assert!(carried(&llm, 9, "TYPED-F") && carried(&llm, 9, PREPARE));
+    assert!(carried(&llm, 9, "TYPED-F") && !carried(&llm, 8, "TYPED-F"));
+    assert!(carried(&llm, 8, PREPARE) || carried(&llm, 9, PREPARE));
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.expect("turn succeeds").text, "done");
     assert_eq!(llm.requests().len(), 10, "one run, no follow-up");
@@ -439,7 +419,6 @@ async fn probe_slots(probe: Probe) -> Vec<(&'static str, Option<usize>)> {
         async move {
             let params = RecallParams {
                 input_ids: vec![input],
-                held_only: false,
             };
             let answer = remote::call::<method::Recall>(agent, &params)
                 .await
@@ -524,16 +503,15 @@ async fn a_recalled_steer_gives_its_request_to_the_next() {
         ),
         (
             Probe::TwoLeftAlone,
-            &[("SLOT-M1", Some(1)), ("SLOT-M2", Some(2))],
+            &[("SLOT-M1", Some(1)), ("SLOT-M2", Some(1))],
         ),
-        // Behind a waiting steer nothing is lost: m3 rides the request
-        // after m1's.
+        // The one recalled behind another costs nothing: m3 rides with m1.
         (
             Probe::RecallSecondThenThird,
             &[
                 ("SLOT-M1", Some(1)),
                 ("SLOT-M2", None),
-                ("SLOT-M3", Some(2)),
+                ("SLOT-M3", Some(1)),
             ],
         ),
     ];

@@ -850,20 +850,11 @@ fn applies(msg: &Msg, text: &str) -> bool {
 /// its own steer delivered at the boundary event of the input its send
 /// admitted (or, when the runtime runs it as a follow-up run, at that
 /// run's start), and never at the other's. The runner sends a steer's
-/// `SteerDelivered` just before the event that delivered it. The engine
-/// applies A's steer (admitted first) at the tool boundary and runs B's
-/// as a follow-up run, so a first-in-first-out client would have B mark
-/// its own steer at A's boundary event: the negative case.
-///
-/// The follow-up run is part of the turn for both clients: a client ends
-/// its turn only when every run it saw ended and the daemon reports no
-/// unfinished input of the conversation (`rkat/active_inputs`), so a steer
-/// still queued (whoever sent it) keeps the turn open for the run that
-/// carries it, however late that run starts, and each client sees one turn
-/// end, after its mark. The client that did not send the follow-up's steer
-/// shows its text inside the turn. A short run-grace timer decided this
-/// before, and a slow host ended the turn first (once for B, sweeping its
-/// steer "delivered", once for A, which showed B's run as a new turn).
+/// `SteerDelivered` just before the event that delivered it. Both steers
+/// join request 1 (Meerkat 0.9.18: every waiting steer joins the next
+/// request), each with a boundary event of its own, so a first-in-first-out
+/// client would have B mark its own steer at A's event: the negative case.
+/// Each client sees one turn end, after its mark.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn each_client_marks_only_its_own_steer_delivered() {
     use rkat_tui::ui::delivery::PendingId;
@@ -880,7 +871,6 @@ async fn each_client_marks_only_its_own_steer_delivered() {
             }),
         ),
         Step::Text("done"),
-        Step::Text("follow-up"),
     ]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut a = Client::attach(&ws.root).await;
@@ -907,17 +897,12 @@ async fn each_client_marks_only_its_own_steer_delivered() {
         .await;
     b.wait_for(|m| matches!(m, Msg::SteerDelivered(PendingId(2))))
         .await;
-    llm.wait_call(2).await;
     for client in [&mut a, &mut b] {
-        client
-            .wait_for(|m| {
-                matches!(m, Msg::Agent(env) if matches!(&env.payload,
-                AgentEvent::TextComplete { content, .. } if content == "follow-up"))
-            })
-            .await;
-        client.turn_finished().await.unwrap();
+        assert_eq!(client.turn_finished().await.unwrap().text, "done");
     }
-    let last = common::user_texts(&llm.recorded()[2].messages);
+    let requests = llm.recorded();
+    assert_eq!(requests.len(), 2, "no follow-up run");
+    let last = common::user_texts(&requests[1].messages);
     assert!(
         ["steer from A", "steer from B"]
             .iter()
@@ -939,11 +924,9 @@ async fn each_client_marks_only_its_own_steer_delivered() {
         assert_eq!(marks.len(), 1, "one mark, its own: {seen:#?}");
         let at = marks[0];
         assert!(matches!(seen[at], Msg::SteerDelivered(id) if id == own));
-        let follow_up = matches!(&seen[at + 1], Msg::Agent(env)
-            if matches!(env.payload, AgentEvent::RunStarted { .. }));
         assert!(
-            applies(&seen[at + 1], mine) || follow_up,
-            "marked at its own input's event or its follow-up run: {seen:#?}"
+            applies(&seen[at + 1], mine),
+            "marked at its own input's event: {seen:#?}"
         );
         let ends: Vec<usize> = seen
             .iter()
@@ -953,16 +936,6 @@ async fn each_client_marks_only_its_own_steer_delivered() {
             .collect();
         assert_eq!(ends.len(), 1, "one turn, ended once: {seen:#?}");
         assert!(ends[0] > at, "the turn ends after the mark: {seen:#?}");
-        if !follow_up {
-            // The other client's steer joined this client's turn as its
-            // follow-up run: its text is shown inside the turn.
-            assert!(
-                seen[at..ends[0]]
-                    .iter()
-                    .any(|m| matches!(m, Msg::RemoteTurn { prompt: Some(p) } if p == theirs)),
-                "the other client's steer shown in the turn: {seen:#?}"
-            );
-        }
         if let Some(theirs_at) = seen.iter().position(|m| applies(m, theirs)) {
             negative_seen = true;
             assert!(

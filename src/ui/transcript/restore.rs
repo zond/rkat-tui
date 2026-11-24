@@ -516,9 +516,10 @@ mod tests {
         );
     }
 
-    /// Messages the daemon held and sent as one (a blank line between, the
-    /// held notes in front) restore as one message of the user's with
-    /// each text once.
+    /// Messages the daemon of 0.0.19 held and sent as one (a blank line
+    /// between, the held notes in front), as a stored conversation still
+    /// holds them, restore as one message of the user's with each text
+    /// once.
     #[test]
     fn held_messages_sent_as_one_restore_once() {
         let held = format!(

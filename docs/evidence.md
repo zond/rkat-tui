@@ -13547,6 +13547,9 @@ which name `reply_to_peer`, `send_request`, `send_response` and `peers`
 
 ## When a typed message goes in (owner, 2026-11-19)
 
+*Superseded on 2026-11-24 by Meerkat 0.9.18 ("Every waiting steer joins
+the next request"): case (d) now rides one request.*
+
 The owner: messages typed during a run felt one step late (text 1, m1
 typed, text 2 without it, m2 typed, text 3, only then m1 marked). The
 rule he set: what he types goes in at the next available spot.
@@ -13585,6 +13588,11 @@ What changed: the pending line says *goes in at the agent's next step*
 lets all waiting steers join the next request.
 
 ## A recalled steer's slot (owner, 2026-11-19)
+
+*Superseded on 2026-11-24 by Meerkat 0.9.18: a recalled steer gives its
+request to the ones behind it (the test is now
+`client_turns::a_recalled_steer_gives_its_request_to_the_next`; "Every
+waiting steer joins the next request").*
 
 The owner asked whether a withdrawn steer can be replaced in the same
 boundary slot, which "recall the waiting message and resend it combined
@@ -13713,6 +13721,10 @@ engine's refusal (`local::model::reconfigure_refusal`). Test:
 `daemon::local::model::tests::a_run_started_after_the_check_is_the_busy_refusal`.
 
 ## Our notes never go ahead of the user's message (2026-11-19)
+
+*Superseded on 2026-11-24: the hold described here is removed, every
+note is a plain steer again ("Every waiting steer joins the next
+request"). The part about the engine's comms instructions still holds.*
 
 Owner's rule: what the user types goes in at the next available spot.
 Measured in fa8e782 (`client_turns::a_typed_message_rides_the_first_request_after_it`):
@@ -13999,6 +14011,10 @@ Tests: `transcript::tests::the_thought_line_is_exact`,
 
 ## One message of the user's in flight, the rest held and sent as one (owner, 2026-11-20)
 
+*Superseded on 2026-11-24: removed with Meerkat 0.9.18 ("Every waiting
+steer joins the next request"). The engine finding at a daemon stop
+below still holds and is kept by `daemon::activity::typed`.*
+
 The engine stages one steer per model request, oldest first ("When a
 typed message goes in"; lukacf/meerkat#2431 open): three messages typed
 during one model call rode requests N+1, N+2, N+3. The Meta console
@@ -14111,6 +14127,9 @@ edited message sent again is a new message, held at the end. Tests:
 
 ## Holding the first message too (measured, not shipped, 2026-11-20)
 
+*Superseded on 2026-11-24: the measurement switch is removed with the
+hold ("Every waiting steer joins the next request").*
+
 Asked: could the daemon hold even the first message typed while a model
 request streams and send everything held at that request's first
 `ToolCallRequested` (as `send_held` does for its notes), so that all of
@@ -14139,6 +14158,11 @@ admission of ours that waits for the send's answer would order it. The
 shipped rule stays: the first message goes at once.
 
 ## A message in flight at a daemon stop (2026-11-20)
+
+*Still current; since 2026-11-24 it applies to every message waiting in
+the engine, not one in flight, and the tests are in
+`tests/it/typed_steers.rs` ("Every waiting steer joins the next
+request").*
 
 The held messages came back at a stop ("One message of the user's in
 flight"), the one in flight did not: its client had it as admitted and
@@ -14550,3 +14574,78 @@ none named in the 0.9.18 entry, `meerkat-tools`, `meerkat-openai` and
 catalog inexact), #2184's override (`roster.rs` still carries
 `effective_profile_override`), #2126, #2231, #2232, #2233, #2234, #2235,
 #2300, #2350, #2374, #2384, #2388, #2411, #2432 and #2433.
+
+## Every waiting steer joins the next request (2026-11-24)
+
+What 0.9.18 does, probed (the previous entry): every steer admitted
+before a request's input is fixed joins that request, in admission
+order, each its own user message; a recalled steer gives the request to
+the ones behind it; a daemon note and a user's steer waiting together
+join the same request in the order they were admitted. So the holds
+built for 0.9.17's one steer per request go:
+
+- The user's messages: `daemon::activity::steers` (the in-flight one,
+  the held ones sent as one, `rkat/held`, the proxy's own answer
+  `rkat_held`, `SentFate::Held`, `rkat/recall`'s `held_only`), the
+  client's re-keying of held ids, `Msg::SteerHeld`, `SteerReleased`,
+  `HeldTakenBack`, `Effect::RecallHeld`, the pending state `Held` and
+  its line *goes in at the step after the next*. Every typed message is
+  a plain steer; ↑ takes back every waiting one at once (`rkat/recall`
+  as before).
+- The daemon's own notes: `activity::HeldNote`, `agents::hold_or_steer`,
+  `Delivery`, the notes' ride in front of the user's words and their
+  send at a tool request. Every note is a plain steer
+  (`agents::steer_agent`).
+- The hold-first measurement switch.
+
+The owner's rule (what the user types goes into the next model request
+that starts, ahead of the harness's notes) holds without the hold: a
+note never delays the user's message to a later request, since both
+join the same one. Within that request they stand in the order they
+reached the engine; the hold put a note's text in front of the user's
+words, so "note first" when the note came first is what users saw
+before. The client marks a message delivered on its own
+`BoundaryAppendApplied`, as before.
+
+What stays, for the daemon's stop ("A message in flight at a daemon
+stop", which 0.9.18 does not change for us: the plain pin move left
+those tests green): `daemon::activity::typed` follows the user's
+messages steered into an open run by their send key until the engine's
+answer names the input, marks one written at its
+`BoundaryAppendApplied`, and forgets it when its round is committed (a
+tool of the run starts), when a run starts with it in its input, when
+it is taken back, when no run is open any more, or when the agent is
+seated again. At the stop every waiting one is recalled from the engine
+and given back as not read, and every written, uncommitted one as not
+kept; both go into `tui_unsent.txt`. They are pushed as
+`rkat/given_back` (`NotRead { why }`, `Unkept { why, text }`).
+Stored state: nothing stored changes; a conversation the 0.0.19 daemon
+wrote with held messages merged into one still restores
+(`ui::transcript::restore::tests::held_messages_sent_as_one_restore_once`).
+
+Tests: `typed_steers::three_quick_messages_ride_the_next_request_in_order`
+(not shown delivered before request 1 starts; each once in the stored
+conversation, no follow-up run),
+`typed_steers::messages_typed_as_the_run_ends_start_the_next_run_together`,
+`typed_steers::an_interrupt_returns_every_waiting_message`,
+`typed_steers::messages_taken_back_cost_the_next_one_nothing` (none of
+the recalled reaches a request; the one typed instead rides request 1),
+`typed_steers::a_peer_s_message_joins_the_request_the_user_s_wait_for`,
+`typed_steers::a_note_of_ours_never_costs_the_user_s_message_a_request`
+(both orders),
+`typed_steers::waiting_messages_outlive_their_client_s_detach`,
+`typed_steers::waiting_messages_at_a_stop_come_back_once_and_are_never_delivered`,
+`typed_steers::a_message_written_into_a_request_the_stop_cut_off_comes_back_once`,
+`typed_steers::a_message_whose_round_was_committed_stays_in_the_conversation_once`,
+`client_turns::a_typed_message_rides_the_first_request_after_it` (cases
+d, e, f, g re-pinned: two typed in one request; a note and a message in
+one; two notes in one; the prepare request no longer waits for the
+user), `client_turns::a_recalled_steer_gives_its_request_to_the_next`
+(all four probes now N+1),
+`client::each_client_marks_only_its_own_steer_delivered` (two clients'
+steers now join one request, each marked at its own boundary event; with
+the cross-client hold the second ran as a follow-up run),
+`daemon::activity::typed::tests::*`,
+`daemon::activity::tests::the_user_s_messages_are_followed_only_in_an_open_run`,
+`client::runner::tests::the_stop_s_given_back_messages_return_to_their_client`,
+`ui::tests::turns::up_takes_back_every_waiting_message_in_order`.

@@ -385,7 +385,7 @@ impl Local {
             method::RetireAgent, protocol::AgentParams { name } => self.retire_other(&caller, &name).await;
             method::StopHelper, protocol::StopHelperParams { path } => self.stop_helper(&caller, &path);
             method::Seated, protocol::SessionParams { session_id } => Ok(self.seated(&session_id).await);
-            method::Recall, protocol::RecallParams { input_ids, held_only } => self.recall(&caller, &input_ids, held_only).await;
+            method::Recall, protocol::RecallParams { input_ids } => self.recall(&caller, &input_ids).await;
             method::Inputs, protocol::RecallParams { input_ids, .. } => self.input_fates(&caller, &input_ids).await;
             method::Sent, protocol::SentParams { key } => Ok(self.sent_fate(&key).await);
             method::Interrupt, params => self.interrupt(&caller, params).await;
@@ -476,15 +476,9 @@ impl Local {
         let mut wait = None;
         match method.as_str() {
             engine::MEMBER_SEND => {
-                // A message of the user's while one is in flight in the
-                // agent's open run is held here and answered at once
-                // (`super::activity::steers`).
-                if let Some(held) = self.hold_user_steer(&agent, params, send_key.as_deref()) {
-                    return Ok(Observed {
-                        answered: Some(held),
-                        ..Observed::plain(request)
-                    });
-                }
+                // A message of the user's into the agent's open run is
+                // followed for the daemon's stop (`super::activity::typed`).
+                self.follow_user_steer(&agent, params, send_key.as_deref());
                 // A prompt to an idle agent starts a run: a mode change
                 // the client sent before it is in the agent's context
                 // first. A steer into a running turn does not wait (that
@@ -520,29 +514,10 @@ impl Local {
                     // The endings of helpers held since the user interrupted
                     // the agent go with this message, before its words (the
                     // classifier's transcript has the user's words only).
-                    // So do the notes held for its open run: the user's
-                    // message takes the next model request's one steer,
-                    // and they ride with it rather than ahead of it.
-                    let carries = params
-                        .get("content")
-                        .is_some_and(|content| content.is_string() || content.is_array());
-                    let open = carries
-                        .then(|| self.core.activity.take_notes(&agent))
-                        .flatten();
-                    let held = [
-                        self.agents.take_held(&agent, &session),
-                        open.as_ref().map(crate::daemon::activity::TakenNotes::text),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>();
-                    if !held.is_empty()
+                    if let Some(held) = self.agents.take_held(&agent, &session)
                         && let Some(content) = params.get_mut("content")
                     {
-                        prepend_note(content, &held.join("\n\n"));
-                    }
-                    if let Some(open) = open {
-                        open.answer(&Ok(()));
+                        prepend_note(content, &held);
                     }
                 }
             }
@@ -576,50 +551,29 @@ impl Local {
             input,
             wait,
             send_key,
-            answered: None,
         })
     }
 
-    /// The user's steer `params` to `agent` (sent with `key`), when the
-    /// daemon holds it behind the one in flight: its answer to the client
-    /// (the id it is followed by, [`protocol::HELD_ANSWER`]). It is the
-    /// user's input as a forwarded one is (the next run is attended, the
-    /// classifier's transcript has the words); the notes held for the run
-    /// go with it when it is sent. `None`: it is forwarded (a prompt, a
-    /// message with blocks, one sent without a key, one to an agent with
-    /// nothing in flight).
-    fn hold_user_steer(&self, agent: &str, params: &Value, key: Option<&str>) -> Option<Value> {
-        let key = key?;
-        if params.get("handling_mode").and_then(Value::as_str) != Some("steer") {
-            return None;
-        }
-        let text = params.get("content").and_then(Value::as_str)?;
-        if text.trim().is_empty() {
-            return None;
-        }
-        let session = self.core.conversations.current(agent)?;
-        let crate::daemon::activity::steers::Admit::Held(id) =
-            self.core.activity.user_steer(agent, key, text)
-        else {
-            return None;
+    /// The user's steer `params` to `agent` (sent with `key`): followed
+    /// when it goes into an open run of the agent
+    /// ([`crate::daemon::activity::Activity::user_sent`]). A prompt, a
+    /// message with blocks or one sent without a key is not.
+    fn follow_user_steer(&self, agent: &str, params: &Value, key: Option<&str>) {
+        let Some(key) = key else {
+            return;
         };
-        tracing::info!(%agent, held = %id, "held a message of the user's behind the one in flight");
-        self.agents.touch(agent);
-        self.agents.user_acted(agent, true);
-        self.core.engine.human_input(&session);
-        self.core.conversations.touch(&session, agent);
-        let n = self.inputs.fetch_add(1, Ordering::Relaxed);
-        let input_key = InputKey::new(format!("rkat-attach:{}:{n}", std::process::id()));
-        self.core
-            .engine
-            .record_user_input(&session, input_key, text);
-        self.sent.held(key, &id);
-        Some(serde_json::json!({ protocol::HELD_ANSWER: id }))
+        if params.get("handling_mode").and_then(Value::as_str) != Some("steer") {
+            return;
+        }
+        let Some(text) = params.get("content").and_then(Value::as_str) else {
+            return;
+        };
+        self.core.activity.user_sent(agent, key, text);
     }
 
     /// The engine answered the send the client keyed `key` with `answer`
-    /// (`rkat/sent` tells it from now on). When it is the user's message
-    /// in flight, the messages held behind it may go now.
+    /// (`rkat/sent` tells it from now on, and the user's message is
+    /// followed by the input it names).
     pub fn sent_answered(&self, key: &str, answer: &Value) {
         self.sent.answered(key, answer);
         let input = answer
@@ -628,10 +582,7 @@ impl Local {
             .and_then(|id| uuid::Uuid::parse_str(id).ok())
             .map(meerkat_core::lifecycle::InputId::from_uuid)
             .ok_or(());
-        if let Some(releasing) = self.core.activity.user_answered(key, input) {
-            let agents = Arc::clone(&self.agents);
-            tokio::spawn(async move { agents.release_user(releasing).await });
-        }
+        self.core.activity.user_answered(key, input);
     }
 
     /// Whether `caller` may send the engine request `method` with

@@ -396,24 +396,6 @@ pub enum Msg {
     /// The runtime wrote a steered message into the conversation (at a model
     /// boundary of the running turn, or as a follow-up turn).
     SteerDelivered(PendingId),
-    /// The daemon holds an admitted message behind the user's one in
-    /// flight (`crate::daemon::activity::steers`): it goes in one step
-    /// after the next, with the others held, and taking it back is free.
-    SteerHeld(PendingId),
-    /// The daemon sent these held messages (as one): they go in at the
-    /// agent's next step.
-    SteerReleased(Vec<PendingId>),
-    /// The runner's answer to [`Effect::RecallHeld`]: whether the daemon
-    /// still held the message and gave it back (to the editor), and the
-    /// errors of the call.
-    HeldTakenBack {
-        /// The message.
-        id: PendingId,
-        /// It was still held and comes back.
-        taken: bool,
-        /// Why the call failed, in words.
-        errors: Vec<String>,
-    },
     /// The runner's answer to [`Effect::RecallQueued`]: the steered
     /// messages the runtime abandoned before they joined the run (oldest
     /// first; back to the editor), and the cancels that failed. Admitted
@@ -752,10 +734,6 @@ pub enum Effect {
     /// yet joined to the run) without touching the run; answered with
     /// [`Msg::Recalled`].
     RecallQueued,
-    /// Take back the message the daemon holds behind the one in flight
-    /// ([`PendingState::Held`]), free, never
-    /// one it sent meanwhile; answered with [`Msg::HeldTakenBack`].
-    RecallHeld(PendingId),
     /// Steer a message into the running turn (a durable `Steer` input);
     /// answered with [`Msg::SteerAck`], then [`Msg::SteerDelivered`] or,
     /// when the runtime ended it without a run, [`Msg::NotDelivered`].
@@ -1987,15 +1965,6 @@ impl App {
             }
             Msg::SteerAck { id, result } => self.steer_ack(id, result, now, &mut fx),
             Msg::SteerDelivered(id) => self.pending.show_delivered(&mut self.transcript, id),
-            Msg::SteerHeld(id) => self.pending.hold(&mut self.transcript, id),
-            Msg::HeldTakenBack { id, taken, errors } => {
-                self.held_taken_back(id, taken, &errors);
-            }
-            Msg::SteerReleased(ids) => {
-                for id in ids {
-                    self.pending.release(&mut self.transcript, id);
-                }
-            }
             Msg::Recalled { recalled, errors } => self.recalled(&recalled, &errors),
             Msg::Returned(ids) => self.returned(&ids),
             Msg::BtwAnswered(answer) => self.btw_answered(answer),

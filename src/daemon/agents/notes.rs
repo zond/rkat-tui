@@ -203,162 +203,19 @@ pub(crate) async fn steer_member_as(
     Ok(receipt.admission.map(|admission| admission.input_id))
 }
 
-impl Agents {
-    /// Send the user's held messages `releasing` to `agent` as one steer
-    /// ([`crate::daemon::activity::steers`]): the helpers' endings held
-    /// since an interrupt and the daemon's notes held for the run go in
-    /// front of the user's words, as with any message of the user's
-    /// ([`crate::daemon::local::HELD_NOTE_SEPARATOR`]); what the send lets
-    /// go next is sent after it, in order. A release at the run's end
-    /// starts the next run, the user's.
-    pub(crate) async fn release_user(&self, releasing: crate::daemon::activity::Releasing) {
-        let mut next = Some(releasing);
-        while let Some(releasing) = next.take() {
-            let crate::daemon::activity::Releasing {
-                agent,
-                release,
-                notes,
-                ..
-            } = &releasing;
-            let session = self.core.conversations.current(agent);
-            let mut lead = Vec::new();
-            if let Some(session) = &session
-                && let Some(endings) = self.take_held(agent, session)
-            {
-                lead.push(endings);
-            }
-            if let Some(notes) = notes {
-                lead.push(notes.text());
-            }
-            let words = release.text();
-            let text = if lead.is_empty() {
-                words
-            } else {
-                format!(
-                    "{}\n\n{}\n\n{words}",
-                    lead.join("\n\n"),
-                    crate::daemon::local::HELD_NOTE_SEPARATOR
-                )
-            };
-            if let Some(session) = &session {
-                self.core.engine.human_input(session);
-            }
-            let sent = steer_member_as(
-                &self.core,
-                &MobId::from(MOB_ID),
-                AgentIdentity::from(agent.as_str()),
-                text,
-            )
-            .await
-            .map_err(|err| err.to_string());
-            if let Err(err) = &sent {
-                tracing::warn!(%agent, error = %err, held = release.held.len(), "the user's held messages did not reach the agent");
-            }
-            next = self.core.activity.released(agent, release, sent.clone());
-            let crate::daemon::activity::Releasing { notes, .. } = releasing;
-            if let Some(notes) = notes {
-                notes.answer(&sent.map(drop));
-            }
-        }
-    }
-}
-
-/// What became of a note to a workspace agent ([`hold_or_steer`]).
-pub(crate) enum Delivery {
-    /// Held for the agent's open run: the receiver is told whether the
-    /// engine took it ([`crate::daemon::activity::HeldNote`]).
-    Held(tokio::sync::oneshot::Receiver<Result<(), String>>),
-    /// No run of it was open: steered at once, which starts one.
-    Steered(Result<(), String>),
-}
-
-impl Delivery {
-    /// `Ok` once the note is held or the engine took it; a held note the
-    /// engine does not take later is handed to `failed` with why.
-    ///
-    /// # Errors
-    ///
-    /// The engine's refusal of a note steered at once.
-    pub(crate) fn accepted(
-        self,
-        failed: impl FnOnce(String) + Send + 'static,
-    ) -> Result<(), String> {
-        match self {
-            Self::Steered(result) => result,
-            Self::Held(told) => {
-                tokio::spawn(async move {
-                    if let Err(err) = Self::Held(told).outcome().await {
-                        failed(err);
-                    }
-                });
-                Ok(())
-            }
-        }
-    }
-
-    /// Whether the engine took the note, once it is known.
-    pub(crate) async fn outcome(self) -> Result<(), String> {
-        match self {
-            Self::Steered(result) => result,
-            Self::Held(told) => told
-                .await
-                .unwrap_or_else(|_| Err("the note was dropped before it went".to_string())),
-        }
-    }
-}
-
-/// A note of the daemon's own to the workspace's agent `agent`: held for
-/// its open run, so it never takes a model request's one steer ahead of
-/// the user's message ([`crate::daemon::activity::HeldNote`]), else
-/// steered at once ([`steer_member`]), which starts a run of it.
-pub(crate) async fn hold_or_steer(core: &Core, agent: &str, text: String) -> Delivery {
-    let (done, told) = tokio::sync::oneshot::channel();
-    match core
-        .activity
-        .hold_note(agent, crate::daemon::activity::HeldNote { text, done })
-    {
-        Ok(()) => Delivery::Held(told),
-        Err(note) => Delivery::Steered(
-            steer_member(
-                core,
-                &MobId::from(MOB_ID),
-                AgentIdentity::from(agent),
-                note.text,
-            )
-            .await
-            .map_err(|err| err.to_string()),
-        ),
-    }
-}
-
-/// [`hold_or_steer`], waiting for the outcome.
+/// A note of the daemon's own to the workspace's agent `agent`, steered
+/// at once ([`steer_member`]): into its open run, whose next model request
+/// takes it with every other steer waiting then (Meerkat 0.9.18), so it
+/// never costs the user's message a request; or as a run of its own when
+/// the agent is idle.
 ///
 /// # Errors
 ///
 /// The engine's refusal, in words.
 pub(crate) async fn steer_agent(core: &Core, agent: &str, text: String) -> Result<(), String> {
-    hold_or_steer(core, agent, text).await.outcome().await
-}
-
-/// Send the notes `taken` from `agent`'s hold as one steer, and tell each
-/// note's sender how it went.
-pub(crate) async fn send_taken(
-    core: &Core,
-    agent: &str,
-    taken: crate::daemon::activity::TakenNotes,
-) {
-    let result = steer_member(
-        core,
-        &MobId::from(MOB_ID),
-        AgentIdentity::from(agent),
-        taken.text(),
-    )
-    .await
-    .map_err(|err| err.to_string());
-    if let Err(err) = &result {
-        tracing::warn!(%agent, error = %err, notes = taken.notes.len(), "the held notes did not reach the agent");
-    }
-    taken.answer(&result);
+    steer_member(core, &MobId::from(MOB_ID), AgentIdentity::from(agent), text)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 /// Why the daemon steers a message into one of its agents
@@ -389,20 +246,10 @@ impl Agents {
     /// [`ApprovalEngine::human_input`]: crate::approval::ApprovalEngine::human_input
     /// [`ApprovalEngine::user_started`]: crate::approval::ApprovalEngine::user_started
     ///
-    /// A note held for the agent's open run ([`hold_or_steer`]) answers
-    /// `Ok` at once; should the engine not take it later, `failed` is told
-    /// why.
-    ///
     /// # Errors
     ///
     /// The engine's refusal of the send, in words.
-    pub(crate) async fn steer(
-        &self,
-        name: &str,
-        text: String,
-        wake: Wake,
-        failed: impl FnOnce(String) + Send + 'static,
-    ) -> Result<(), String> {
+    pub(crate) async fn steer(&self, name: &str, text: String, wake: Wake) -> Result<(), String> {
         let kind = match wake {
             Wake::HelperEnded => Kind::HelperEnding,
             Wake::Approved => Kind::Approval,
@@ -417,10 +264,7 @@ impl Agents {
         let _sending = self.core.activity.sending(name);
         #[cfg(any(test, feature = "test-support"))]
         let late = self.core.probe.steering(wake == Wake::HelperEnded)?;
-        let steered = match hold_or_steer(&self.core, name, text).await {
-            Delivery::Steered(steered) => steered,
-            held @ Delivery::Held(_) => return held.accepted(failed),
-        };
+        let steered = steer_agent(&self.core, name, text).await;
         #[cfg(any(test, feature = "test-support"))]
         let steered = crate::daemon::core::probe::CoreProbe::answer(steered, late);
         // A helper's note stays marked as sent after an error: should the
@@ -484,14 +328,7 @@ impl Agents {
             return;
         };
         let text = approved.note;
-        let later = {
-            let (agents, name) = (Arc::clone(self), name.clone());
-            move |err: String| {
-                agents.sent.forget(&name, Kind::Approval);
-                agents.approval_not_told(name, &err);
-            }
-        };
-        match self.steer(&name, text.clone(), Wake::Approved, later).await {
+        match self.steer(&name, text.clone(), Wake::Approved).await {
             Ok(()) => {
                 self.audit_run(&name, None, "approval_told", text.clone());
                 self.tell_triggered(&name, session, APPROVED_LABEL.to_string(), text);

@@ -731,31 +731,15 @@ impl Watcher {
         let session = || event_session(&envelope.source, following.session.as_ref());
         match &envelope.payload {
             AgentEvent::TurnCompleted { .. } => following.steps += 1,
-            // The model call asked for tools: the notes held for the run
-            // go now, as one steer the agent reads after those tools. (The
-            // call's `TurnCompleted` comes once its tools are done, right
-            // before the next request: too late to be sure of it.)
-            AgentEvent::ToolCallRequested { .. } => {
-                // Measurement only: the first message held too goes now.
-                #[cfg(any(test, feature = "test-support"))]
-                if let Some(releasing) = self.watched.activity.tool_requested(&self.name) {
-                    self.release_user(releasing);
-                }
-                self.send_held();
-            }
             // A request started with an input written into it: a message
-            // of the user's in flight lets the held ones go (they ride
-            // the request after it), held ones sent as it are delivered.
+            // of the user's in it is written, kept until its round is
+            // committed (`activity::typed`).
             AgentEvent::BoundaryAppendApplied { input_id, .. } => {
-                if let Some(releasing) =
-                    self.watched.activity.boundary_applied(&self.name, input_id)
-                {
-                    self.release_user(releasing);
-                }
+                self.watched.activity.boundary_applied(&self.name, input_id);
             }
             // The engine commits a round before any of its tools runs: what
             // the round's request carried of the user's is kept from now on,
-            // even through a stop (`activity::steers`, `Steers::written`).
+            // even through a stop (`activity::typed`).
             AgentEvent::ToolExecutionStarted { .. } | AgentEvent::ToolResultReceived { .. } => {
                 self.watched.activity.round_committed(&self.name);
             }
@@ -990,13 +974,10 @@ impl Watcher {
         } = &self.watched;
         let new = engine.new_run_started(session, run);
         activity.run_started(&self.name, session, run);
-        // A run that took the user's message in flight as its input: the
-        // held ones go (they ride its next request).
-        if let Some(releasing) = prompt
-            .as_deref()
-            .and_then(|prompt| activity.run_carries(&self.name, prompt))
-        {
-            self.release_user(releasing);
+        // A run that took the user's waiting messages as its input: the
+        // engine keeps them with the run.
+        if let Some(prompt) = prompt.as_deref() {
+            activity.run_carries(&self.name, prompt);
         }
         let Some(agents) = agents.upgrade() else {
             return;
@@ -1052,31 +1033,6 @@ impl Watcher {
     /// A run ended: the agent may be idle, its turn's watches and the
     /// run's schedule bookkeeping end, the counts are written behind and
     /// the session's tool catalog is read again.
-    /// The notes held for the agent's open run, sent as one steer.
-    /// Not while a message of the user's is in flight or held: the notes
-    /// then go with it ([`super::activity::steers`]).
-    fn send_held(&self) {
-        let Some(agents) = self.watched.agents.upgrade() else {
-            return;
-        };
-        let Some(held) = self.watched.activity.take_quiet_notes(&self.name) else {
-            return;
-        };
-        let name = self.name.clone();
-        tokio::spawn(async move {
-            crate::daemon::agents::send_taken(agents.core(), &name, held).await;
-        });
-    }
-
-    /// Send the user's held messages `releasing` as one steer, on a task
-    /// of its own.
-    fn release_user(&self, releasing: super::activity::Releasing) {
-        let Some(agents) = self.watched.agents.upgrade() else {
-            return;
-        };
-        tokio::spawn(async move { agents.release_user(releasing).await });
-    }
-
     fn run_ended(&self, session: &SessionId, run: Option<&meerkat_core::RunId>) {
         let Watched {
             activity,
@@ -1085,25 +1041,8 @@ impl Watcher {
             origins,
             ..
         } = &self.watched;
-        let held = activity.run_ended(&self.name, run);
+        activity.run_ended(&self.name, run);
         if let Some(agents) = agents.upgrade() {
-            // What was held for the run goes as an idle agent's does: it
-            // starts its next run (the user's held messages with the
-            // notes, else the notes).
-            match held {
-                Some(super::activity::Outgo::Notes(held)) => {
-                    let agents = Arc::clone(&agents);
-                    let name = self.name.clone();
-                    tokio::spawn(async move {
-                        crate::daemon::agents::send_taken(agents.core(), &name, held).await;
-                    });
-                }
-                Some(super::activity::Outgo::User(releasing)) => {
-                    let agents = Arc::clone(&agents);
-                    tokio::spawn(async move { agents.release_user(releasing).await });
-                }
-                None => {}
-            }
             agents.run_ended(&self.name);
             if let Some(run) = run {
                 agents.core().schedules.run_ended(run);

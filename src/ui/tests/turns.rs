@@ -494,12 +494,11 @@ fn esc_interrupts_even_with_queued_messages() {
     assert_eq!(app.status.queued, 2);
 }
 
-/// ↑ takes back what the daemon holds first, newest first, one per press,
-/// into the editor alone (the one in flight stays); sent again, it is a
-/// new message at the end. With nothing held, ↑ takes back the one in
-/// flight as before. One the daemon sent meanwhile stays, said so.
+/// Several messages wait in the engine: one ↑ asks the runner to take
+/// back all of them, and the ones it got back return to the editor in the
+/// order typed; one the agent read meanwhile stays, shown as sent.
 #[test]
-fn up_takes_back_the_held_messages_first_newest_first() {
+fn up_takes_back_every_waiting_message_in_order() {
     let mut app = running_app();
     submit(&mut app, "two");
     submit(&mut app, "three");
@@ -507,53 +506,20 @@ fn up_takes_back_the_held_messages_first_newest_first() {
     for id in 1..=3 {
         app.update(ack(id, Ok(())));
     }
-    app.update(Msg::SteerHeld(PendingId(2)));
-    app.update(Msg::SteerHeld(PendingId(3)));
-    assert_eq!(
-        app.update(key(KeyCode::Up)),
-        vec![Effect::RecallHeld(PendingId(3))]
-    );
+    assert_eq!(app.update(key(KeyCode::Up)), vec![Effect::RecallQueued]);
     // While it is on its way, ↑ waits.
     assert!(app.update(key(KeyCode::Up)).is_empty());
-    app.update(Msg::HeldTakenBack {
-        id: PendingId(3),
-        taken: true,
+    app.update(Msg::Recalled {
+        recalled: vec![PendingId(1), PendingId(3)],
         errors: Vec::new(),
     });
-    assert_eq!(app.input.text(), "four");
+    assert_eq!(app.input.text(), "two\nfour");
+    assert!(app.pending.get(PendingId(1)).is_none());
     assert!(app.pending.get(PendingId(3)).is_none());
     assert_eq!(
         app.pending.get(PendingId(2)).map(|p| p.state),
-        Some(PendingState::Held)
+        Some(PendingState::Admitted)
     );
-    // Edited and sent again: a new message, at the end.
-    type_str(&mut app, " and five");
-    assert_eq!(
-        app.update(key(KeyCode::Enter)),
-        vec![steer(4, "four and five")]
-    );
-    app.update(ack(4, Ok(())));
-    app.update(Msg::SteerHeld(PendingId(4)));
-    assert_eq!(
-        app.update(key(KeyCode::Up)),
-        vec![Effect::RecallHeld(PendingId(4))]
-    );
-    // Sent meanwhile: it stays, and the next ↑ goes on.
-    app.update(Msg::SteerReleased(vec![PendingId(2), PendingId(4)]));
-    app.update(Msg::HeldTakenBack {
-        id: PendingId(4),
-        taken: false,
-        errors: Vec::new(),
-    });
-    assert!(app.input.text().is_empty());
-    assert!(app.pending.get(PendingId(4)).is_some());
-    assert!(
-        last_notice(&app).is_some_and(|(_, text)| text.contains("just sent to the agent")),
-        "{:?}",
-        last_notice(&app)
-    );
-    // Nothing held: the one in flight, as before.
-    assert_eq!(app.update(key(KeyCode::Up)), vec![Effect::RecallQueued]);
 }
 
 #[test]

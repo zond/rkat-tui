@@ -10,9 +10,8 @@ impl Local {
         &self,
         caller: &Caller,
         inputs: &[meerkat_core::lifecycle::InputId],
-        held_only: bool,
     ) -> Result<protocol::Recalled, Refusal> {
-        let recalled = self.take_back(caller, inputs, held_only).await;
+        let recalled = self.take_back(caller, inputs).await;
         if let Some(agent) = &caller.agent {
             self.core.activity.changed(agent, false);
         }
@@ -31,59 +30,34 @@ impl Local {
     /// [`protocol::NO_AGENT`] when the connection is bound to no agent or
     /// its agent has no conversation.
     ///
-    /// A message the daemon holds (`crate::daemon::activity::steers`) is
-    /// taken back from the hold, at no cost; one it sent with others is
-    /// recalled as the input they went as, only when all of them are
-    /// named (else it counts as reached). A message in flight that is
-    /// taken back lets the held ones go. With `held_only` nothing is
-    /// recalled from the engine: what is no longer held is reached.
+    /// Since Meerkat 0.9.18 a steer taken back gives its model request to
+    /// the ones behind it: nothing else is delayed.
     async fn take_back(
         &self,
         caller: &Caller,
         inputs: &[meerkat_core::lifecycle::InputId],
-        held_only: bool,
     ) -> Result<protocol::Recalled, Refusal> {
         let session = self.caller_session(caller, "rkat/recall takes back")?;
         let agent = caller.agent.clone().unwrap_or_default();
-        let (taken, reached) = self.core.activity.take_back(&agent, inputs);
-        let mut answer = protocol::Recalled {
-            recalled: taken.held,
-            reached,
-            ..protocol::Recalled::default()
-        };
-        if held_only {
-            answer.reached.extend(taken.other);
-            answer
-                .reached
-                .extend(taken.sent.into_iter().flat_map(|(_, named)| named));
-            return Ok(answer);
-        }
-        let engine_inputs = taken
-            .other
-            .into_iter()
-            .map(|input| (input.clone(), vec![input]))
-            .chain(taken.sent);
+        let mut answer = protocol::Recalled::default();
         let mut withdrawn = Vec::new();
-        for (input, named) in engine_inputs {
+        for input in inputs {
             match self
                 .parts
                 .machine
-                .recall_queued_input(&session, &input)
+                .recall_queued_input(&session, input)
                 .await
             {
                 Ok(Some(recall)) if recall.abandoned() => {
-                    withdrawn.push(input);
-                    answer.recalled.extend(named);
+                    withdrawn.push(input.clone());
+                    answer.recalled.push(input.clone());
                 }
-                Ok(Some(_)) => answer.reached.extend(named),
-                Ok(None) => answer.foreign.extend(named),
+                Ok(Some(_)) => answer.reached.push(input.clone()),
+                Ok(None) => answer.foreign.push(input.clone()),
                 Err(err) => answer.errors.push(format!("input {input}: {err}")),
             }
         }
-        if let Some(releasing) = self.core.activity.user_settled(&agent, &withdrawn, false) {
-            let agents = Arc::clone(&self.agents);
-            tokio::spawn(async move { agents.release_user(releasing).await });
-        }
+        self.core.activity.user_settled(&agent, &withdrawn);
         if !answer.recalled.is_empty() {
             tracing::info!(recalled = answer.recalled.len(), %session, "rkat/recall");
         }
@@ -121,24 +95,8 @@ impl Local {
         use meerkat_runtime::SessionServiceRuntimeExt as _;
 
         let session = self.caller_session(caller, "rkat/inputs reads")?;
-        let agent = caller.agent.clone().unwrap_or_default();
         let mut answer = protocol::InputFates::default();
-        for asked in inputs {
-            // A held message is pending; one sent with others is the input
-            // they went as.
-            use crate::daemon::activity::HeldWhere;
-            let input = match self.core.activity.held_where(&agent, asked) {
-                HeldWhere::Held => {
-                    answer.inputs.push(protocol::InputRow {
-                        input_id: asked.clone(),
-                        fate: protocol::InputFate::Pending,
-                    });
-                    continue;
-                }
-                HeldWhere::Sent(sent) => sent,
-                HeldWhere::NotHeld => asked.clone(),
-            };
-            let input = &input;
+        for input in inputs {
             let fate = match self.parts.machine.input_state(&session, input).await {
                 Ok(Some(stored)) => input_fate(&stored.seed),
                 Ok(None) => protocol::InputFate::Unknown,
@@ -148,7 +106,7 @@ impl Local {
                 }
             };
             answer.inputs.push(protocol::InputRow {
-                input_id: asked.clone(),
+                input_id: input.clone(),
                 fate,
             });
         }
@@ -261,23 +219,6 @@ impl SentLog {
         self.changed.notify_waiters();
     }
 
-    /// The send `key` is held in the daemon, as `id`.
-    pub fn held(&self, key: &str, id: &meerkat_core::lifecycle::InputId) {
-        let mut sends = self.sends.lock();
-        sends.retain(|(sent, _)| sent != key);
-        if sends.len() >= SENT_KEPT {
-            sends.pop_front();
-        }
-        sends.push_back((
-            key.to_string(),
-            protocol::SentFate::Held {
-                input_id: id.clone(),
-            },
-        ));
-        drop(sends);
-        self.changed.notify_waiters();
-    }
-
     /// What became of the send `key` now.
     #[must_use]
     pub fn fate(&self, key: &str) -> protocol::SentFate {
@@ -307,25 +248,21 @@ impl SentLog {
 }
 
 impl Local {
-    /// The daemon stops: the user's messages it still holds are not sent;
-    /// the one in flight that no request carries yet is recalled from the
-    /// engine (which drops such a steer at the restart), and one written
-    /// into a request whose round the stop cuts off is given back too (the
-    /// engine drops that as well: `docs/evidence.md`, "A message in flight
-    /// at a daemon stop"). Their clients get them back in the editor, and
-    /// they are saved in the realm's unsent file, which the next start
-    /// announces, for a user whose client is gone. One whose round was
-    /// committed (a tool of it started) is the agent's and is kept; so is
-    /// one in flight that a request took first (the recall answers it as
-    /// reached).
+    /// The daemon stops: the user's messages that no request carries yet
+    /// are recalled from the engine (which drops such a steer at the
+    /// restart), and the ones written into a request whose round the stop
+    /// cuts off are given back too (the engine drops those as well:
+    /// `docs/evidence.md`, "A message in flight at a daemon stop"). Their
+    /// clients get them back in the editor, and they are saved in the
+    /// realm's unsent file, which the next start announces, for a user
+    /// whose client is gone. One whose round was committed (a tool of it
+    /// started) is the agent's and is kept; so is one a request took
+    /// first (the recall answers it as reached).
     pub async fn save_unsent_at_stop(&self) {
+        use protocol::GivenBackNow;
         let realm = &self.parts.report.realm;
         let file = realm.join(crate::workbench::unsent::UNSENT_FILE);
-        let held_why = format!(
-            "the daemon stopped before it sent it; it is also saved in {}",
-            file.display()
-        );
-        let flight_why = format!(
+        let why = format!(
             "the daemon stopped before the agent read it; it is also saved in {}",
             file.display()
         );
@@ -335,22 +272,28 @@ impl Local {
             // engine drops it at the restart, and no recall can take it
             // back (it is no longer queued).
             for (input, text) in taken.written {
-                self.core
-                    .activity
-                    .unkept_at_stop(&agent, input, &text, &flight_why);
+                self.core.activity.given_back(
+                    &agent,
+                    vec![input],
+                    GivenBackNow::Unkept {
+                        why: why.clone(),
+                        text: text.clone(),
+                    },
+                );
                 texts.push(text);
             }
-            if let Some((input, text)) = taken.in_flight
-                && self.recalled_at_stop(&agent, &input).await
-            {
-                self.core
-                    .activity
-                    .dropped_at_stop(&agent, vec![input], &flight_why);
-                texts.push(text);
+            let mut recalled = Vec::new();
+            for (input, text) in taken.queued {
+                if self.recalled_at_stop(&agent, &input).await {
+                    recalled.push(input);
+                    texts.push(text);
+                }
             }
-            let ids = taken.held.iter().map(|held| held.id.clone()).collect();
-            self.core.activity.dropped_at_stop(&agent, ids, &held_why);
-            texts.extend(taken.held.into_iter().map(|held| held.text));
+            self.core.activity.given_back(
+                &agent,
+                recalled,
+                GivenBackNow::NotRead { why: why.clone() },
+            );
         }
         if let Some(saved) = crate::workbench::unsent::save_texts(realm, &texts) {
             tracing::info!(count = saved.count, path = %saved.path.display(), "saved the user's unsent messages as the daemon stops");
@@ -377,7 +320,7 @@ impl Local {
             Ok(Some(recall)) => recall.abandoned(),
             Ok(None) => false,
             Err(err) => {
-                tracing::warn!(%input, %err, "the message in flight was not recalled as the daemon stops");
+                tracing::warn!(%input, %err, "the user's waiting message was not recalled as the daemon stops");
                 false
             }
         }

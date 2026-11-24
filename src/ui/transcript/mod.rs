@@ -143,9 +143,6 @@ pub enum QueuedLabel {
     /// Admitted; written into the turn at its next model boundary (or run
     /// as a follow-up turn).
     Delivering,
-    /// Held by the daemon behind the message in flight: written one model
-    /// boundary later, with the others held.
-    Held,
     /// Held by the UI; sent when the current work ends.
     Deferred,
     /// A `!` command held until the turn ends.
@@ -160,12 +157,9 @@ impl QueuedLabel {
     pub fn text(self) -> &'static str {
         match self {
             Self::Queued => "queued",
-            // The engine stages one steer per model request, oldest first:
-            // "next" is the first step that has room for it.
+            // Every steer waiting when a model request is composed joins
+            // it: "next" is the first request that starts after it.
             Self::Delivering => "goes in at the agent's next step",
-            // Behind the one that goes at the next step: every one held
-            // goes, together, at the step after it.
-            Self::Held => "goes in at the step after the next",
             Self::Deferred => "will send after this turn",
             Self::Shell => "runs after this turn",
             Self::Command => "when the turn ends",

@@ -210,13 +210,6 @@ repository). Open upstream issues this code waits on:
   #2180 (`approval::policy::SHELL_JOB_TOOLS`, `BACKGROUND_SHELL_UNAVAILABLE`
   go when a mob member's shell keeps its `Detached` contract).
 
-- #2431 (filed 2026-11-19): every steer waiting at a model boundary
-  joining that request (the engine takes one per request, oldest first).
-  The daemon's hold of its own notes for a running agent
-  (`src/daemon/activity.rs` `HeldNote`, `agents::hold_or_steer`) can
-  become a plain steer when it ships; two typed messages one request
-  apart are the engine's until then.
-
 - #2433 (filed 2026-11-20): engine events for facts we poll for (a
   spawned or forked member listed, wireable and registered; a session
   with no run and no pending input; a session actor live again after a

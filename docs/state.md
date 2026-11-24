@@ -81,7 +81,7 @@ reads (refused when group or others may read it).
 | `notes/<slug>.md`, `notes/MEMORY.md` | workspace-scope notes, as in `<config>` | daemon, atomic Private | user data |
 | `attach.cursor`, `attach-<agent>.cursor` | one-line JSON `client::catchup::Cursor { session_id, sequence, epoch?, daemon? }` | client, atomic Private | nothing (the client replays instead) |
 | `tui_history` | as `<config>/history`, this workspace's prompts | client | prompt history |
-| `tui_unsent.txt` | text, blocks starting `--- unsent message ---` | client appends (its unsent messages, at quit); daemon appends (the user's messages it held behind the one in flight and never sent, at its stop) | unsent messages |
+| `tui_unsent.txt` | text, blocks starting `--- unsent message ---` | client appends (its unsent messages, at quit); daemon appends (the user's messages the engine would lose at its stop: not read yet, or read in a request the stop cut off) | unsent messages |
 | `drafts/draft-*.md` | the external editor's temporary file | client, removed after the edit | nothing |
 | `export-<session>-<secs>.txt` | plain-text transcript (`/export` without a path) | client, atomic Private | the export |
 | `logs/rkat-tui.log`, `logs/rkat-tui-mob.log`, `logs/rkat-tui-mob.stderr.log` | text logs | client; a daemon whose stderr is a terminal (started by hand); the daemon's stdout/stderr when a client starts it (opened by that client; the daemon's only log then) | nothing |

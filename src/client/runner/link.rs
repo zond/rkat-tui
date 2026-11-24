@@ -540,9 +540,9 @@ impl Runner {
             {
                 self.run_noted(note.run_id);
             }
-            // Of every client's held messages: this client knows its own.
-            Push::Held(change) if change.agent == link.connection.agent() => {
-                self.held_changed(change);
+            // Of every client's messages: this client knows its own.
+            Push::GivenBack(change) if change.agent == link.connection.agent() => {
+                self.given_back(change);
             }
             Push::AgentNotice(notice) if notice.agent == link.connection.agent() => {
                 let level = if notice.warn {
@@ -572,7 +572,7 @@ impl Runner {
             | Push::Reloaded(_)
             | Push::Idle(_)
             | Push::Running(_)
-            | Push::Held(_)
+            | Push::GivenBack(_)
             | Push::AgentNotice(_)
             | Push::HelperEnded(_)
             | Push::Seated(_) => {}

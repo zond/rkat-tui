@@ -1114,11 +1114,6 @@ pub struct GrantParams {
 pub struct RecallParams {
     /// The inputs to take back, or to read.
     pub input_ids: Vec<meerkat_core::lifecycle::InputId>,
-    /// A recall of messages the daemon still holds only
-    /// (`super::activity::steers`): one sent meanwhile is left with the
-    /// agent (reached), never recalled from the engine.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub held_only: bool,
 }
 
 /// [`method::Recall`]'s result, each list in the order asked.
@@ -1307,51 +1302,32 @@ pub enum SentFate {
         /// Why.
         why: String,
     },
-    /// The daemon holds it behind the user's message in flight
-    /// ([`HELD_ANSWER`]), under the id it names.
-    Held {
-        /// The id the client follows it by.
-        input_id: meerkat_core::lifecycle::InputId,
-    },
 }
 
-/// The field of the daemon's own answer to a `mob/member_send` it held
-/// (`super::activity::steers`): the id it is followed by from now on (it is
-/// no engine input). The engine's answer is never so: a client reads this
-/// field before it reads the engine's.
-pub const HELD_ANSWER: &str = "rkat_held";
+/// The notification that the daemon's stop gave back messages of the
+/// user's ([`GivenBack`], `super::activity::typed`): the engine would
+/// have lost them. Pushed to every client; one knows the inputs of its
+/// own.
+pub const GIVEN_BACK: &str = "rkat/given_back";
 
-/// The notification that held messages moved on ([`HeldChange`],
-/// `super::activity::steers`): sent to the engine, written into a request,
-/// or dropped. Pushed to every client; one knows the ids of its own.
-pub const HELD: &str = "rkat/held";
-
-/// [`HELD`]'s parameters.
+/// [`GIVEN_BACK`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HeldChange {
+pub struct GivenBack {
     /// The agent.
     pub agent: String,
-    /// The held messages, by the ids their clients know them by.
+    /// The messages, by the inputs the engine admitted them as.
     pub ids: Vec<meerkat_core::lifecycle::InputId>,
-    /// What became of them.
-    pub now: HeldNow,
+    /// How they came back.
+    pub now: GivenBackNow,
 }
 
-/// What became of held messages ([`HeldChange`]).
+/// How messages came back at the daemon's stop ([`GivenBack`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum HeldNow {
-    /// Sent to the engine as one steer, the input it names: it goes in at
-    /// the agent's next step, and its client follows it by that input
-    /// from now on (it outlives the daemon, the held id does not).
-    Released {
-        /// The input they went as.
-        input_id: meerkat_core::lifecycle::InputId,
-    },
-    /// Written into the request that started now.
-    Applied,
-    /// Never sent (why, in words): its client takes it back.
-    Dropped {
+pub enum GivenBackNow {
+    /// Not written into a request yet: taken back from the engine (why,
+    /// in words); its client takes it back.
+    NotRead {
         /// Why.
         why: String,
     },
@@ -1361,7 +1337,7 @@ pub enum HeldNow {
     Unkept {
         /// Why.
         why: String,
-        /// What the message said (several sent as one: all of them).
+        /// What the message said.
         text: String,
     },
 }

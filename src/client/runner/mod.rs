@@ -394,13 +394,6 @@ enum Report {
     },
     /// `rkat/recall` answered (or failed, in words).
     Recalled(Result<protocol::Recalled, String>),
-    /// `rkat/recall` of the held message `id`, followed by `input`,
-    /// answered (or failed, in words).
-    HeldRecalled {
-        id: PendingId,
-        input: meerkat_core::lifecycle::InputId,
-        result: Result<protocol::Recalled, String>,
-    },
     /// `rkat/inputs` answered for the steers this client still followed
     /// (or failed, in words).
     InputFates(Result<protocol::InputFates, String>),
@@ -910,7 +903,6 @@ impl Runner {
                 again: None,
             } => self.sent(turn, steer, result),
             Report::Recalled(result) => self.recalled(result),
-            Report::HeldRecalled { id, input, result } => self.held_recalled(id, &input, result),
             Report::InputFates(result) => self.input_fates(result),
             Report::AgentsRead { name, status } => self.agents_read(name, status),
             Report::StopAsked(Ok(text)) => {
@@ -1136,7 +1128,6 @@ impl Runner {
             Effect::Steer { id, text } => self.steer(id, &text),
             Effect::Interrupt => self.interrupt(),
             Effect::RecallQueued => self.recall(),
-            Effect::RecallHeld(id) => self.recall_held(id),
             Effect::RunShell { id, command } => match &self.config.remote {
                 Some(why) => self.send(Msg::ShellFinished {
                     id,
@@ -1367,7 +1358,7 @@ mod tests {
 
     /// A send admitted by the engine as `input`.
     fn engine(input: InputId) -> Option<remote::Admitted> {
-        Some(remote::Admitted { input, held: false })
+        Some(remote::Admitted { input })
     }
 
     /// The runner's open turn.
@@ -2157,62 +2148,64 @@ mod tests {
         assert!(!runner.steering.steers.holds(PendingId(3)));
     }
 
-    /// A held send is acknowledged and told held; the daemon's word moves
-    /// it on: sent (told so, followed by the engine's input, whose boundary
-    /// event delivers it), or dropped (back to the editor, with why).
+    /// The daemon's stop gives back messages: one this client sent that
+    /// the agent never read goes back to the editor with why; one it saw
+    /// delivered that the engine did not keep comes back with its text;
+    /// another client's comes back to nobody here.
     #[tokio::test]
-    async fn the_daemon_s_word_on_held_messages_moves_them_on() {
+    async fn the_stop_s_given_back_messages_return_to_their_client() {
         let dir = tempfile::tempdir().unwrap();
         let (mut runner, mut ui_rx) = runner(dir.path());
         runner.turn = prompted(1);
-        let (two, three, merged) = (InputId::new(), InputId::new(), InputId::new());
-        for (id, held) in [(2, &two), (3, &three)] {
+        let (two, three, other) = (InputId::new(), InputId::new(), InputId::new());
+        for (id, input) in [(2, &two), (3, &three)] {
             runner.steering.steers.sending(PendingId(id));
             runner.sent(
                 1,
                 Some(PendingId(id)),
                 Ok(Some(remote::Admitted {
-                    input: held.clone(),
-                    held: true,
+                    input: input.clone(),
                 })),
             );
         }
-        let held: Vec<PendingId> = drain(&mut ui_rx)
-            .into_iter()
-            .filter_map(|m| match m {
-                Msg::SteerHeld(id) => Some(id),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(held, [PendingId(2), PendingId(3)]);
+        assert_eq!(runner.steering.steers.applied(&three), vec![PendingId(3)]);
+        drain(&mut ui_rx);
         let agent = String::new();
-        runner.held_changed(protocol::HeldChange {
+        runner.given_back(protocol::GivenBack {
             agent: agent.clone(),
-            ids: vec![two],
-            now: protocol::HeldNow::Released {
-                input_id: merged.clone(),
+            ids: vec![two, other.clone()],
+            now: protocol::GivenBackNow::NotRead { why: "gone".into() },
+        });
+        runner.given_back(protocol::GivenBack {
+            agent: agent.clone(),
+            ids: vec![three],
+            now: protocol::GivenBackNow::Unkept {
+                why: "cut".into(),
+                text: "three".into(),
             },
         });
-        runner.held_changed(protocol::HeldChange {
+        runner.given_back(protocol::GivenBack {
             agent,
-            ids: vec![three],
-            now: protocol::HeldNow::Dropped { why: "gone".into() },
+            ids: vec![other],
+            now: protocol::GivenBackNow::Unkept {
+                why: "cut".into(),
+                text: "not mine".into(),
+            },
         });
         let msgs = drain(&mut ui_rx);
         assert!(
-            msgs.iter()
-                .any(|m| matches!(m, Msg::SteerReleased(ids) if *ids == [PendingId(2)])),
+            msgs.iter().any(|m| matches!(m, Msg::NotDelivered { id: PendingId(2), why: Some(why) } if why == "gone")),
             "{msgs:?}"
         );
-        assert!(
-            msgs.iter().any(|m| matches!(m, Msg::NotDelivered { id: PendingId(3), why: Some(why) } if why == "gone")),
-            "{msgs:?}"
-        );
-        assert_eq!(
-            runner.steering.steers.outstanding_inputs(),
-            vec![merged.clone()]
-        );
-        assert_eq!(runner.steering.steers.applied(&merged), vec![PendingId(2)]);
+        let unkept: Vec<&str> = msgs
+            .iter()
+            .filter_map(|m| match m {
+                Msg::Unkept { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(unkept, ["three"], "{msgs:?}");
+        assert!(runner.steering.steers.outstanding_inputs().is_empty());
     }
 
     #[test]
@@ -3217,7 +3210,6 @@ mod tests {
                     report,
                     Ok(Some(remote::Admitted {
                         input: input.clone(),
-                        held: false
                     }))
                 ),
                 "refused" => assert!(matches!(report, Err(SendFailure::NotSent(_))), "{report:?}"),

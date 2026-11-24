@@ -1401,7 +1401,6 @@ async fn an_agent_cannot_recall_another_agents_input() {
     let unknown = InputId::new();
     let params = RecallParams {
         input_ids: vec![steer.clone(), unknown.clone()],
-        held_only: false,
     };
     let answer = remote::call::<method::Recall>(&b, &params).await.unwrap();
     assert!(answer.recalled.is_empty(), "{answer:?}");

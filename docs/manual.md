@@ -175,18 +175,12 @@ show, for example one that was going when the client attached. The client
 asks the daemon; when the agent runs, its run is cancelled and a notice
 says so; when it does not, the notice says "nothing is running".
 
-*↑ on an empty editor* first takes back the messages the daemon holds
-behind the one in flight (*goes in at the step after the next*), newest
-first, one per press, into the editor: they have not reached the agent,
-so this costs nothing, and the one in flight is not touched. Edited and
-sent again, such a message is held again, after the others. When none is
-held, ↑ takes back the messages the UI still holds (not yet
-sent) and the ones sent to the daemon that the agent has not read yet
-(the runtime still holds them queued, as while a tool runs; taking back
-the one waiting for the next request leaves that request without it, so
-what you send instead goes in one request later); a message
-the agent already took stays, the transcript says so, and only Esc stops
-the turn. Typing alone never interrupts: a message sent while a
+*↑ on an empty editor* takes back the messages the UI still holds (not
+yet sent) and the ones sent that the agent has not read yet (the
+runtime still holds them queued, as while a tool runs), all of them, in
+the order you typed them; what you send instead joins the next request
+as they would have. A message the agent already took stays, the
+transcript says so, and only Esc stops the turn. Typing alone never interrupts: a message sent while a
 tool runs waits for that tool's result and joins the turn after it.
 
 **How a turn ends.** A turn ends when the daemon reports the agent idle:
@@ -198,31 +192,24 @@ A steered message counts as delivered only when the stream shows it
 written at a boundary or the run that carries it starts. Until then it
 shows *goes in at the agent's next step*: it joins the first model
 request that starts after it was sent (one already under way does not
-take it). The engine takes one waiting message per request, oldest
-first, so the daemon keeps one of your messages waiting in the engine at
-a time: the ones you type after it, before it went in, are held by the
-daemon and show *goes in at the step after the next*; when the first is
-written into a request, they all go as one message (in the order typed,
-a blank line between) and ride the request after it together. Three
-quick messages ride the next two requests, not the next three. A held
-message has not reached the agent, so ↑ takes it back for free (see
-below); the daemon's own notes held meanwhile go with it, in front of
-your words. Another agent's message that arrives meanwhile can take the
-one request between the first and the held ones, no more. When the run
-ends before the first went in, the held ones go at once with it, as the
-next run's input. When the daemon stops with messages held, they are not
-sent (the engine would not deliver them after the restart): they come
+take it). Every message waiting then joins that request together, each
+as its own message in the order sent: three quick messages ride the
+next request, all three. The daemon's own notes (a helper's ending, an
+approval, a watch's batch) and another agent's message that arrive
+meanwhile join the same request, in the order they reached the agent;
+none of them makes your message wait for a later one. When the run ends
+before they went in, they start the next run together. When the daemon
+stops with messages waiting in the engine, the daemon takes them back
+from the engine first (the engine would not deliver them after the
+restart, and so they are never delivered after it as well): they come
 back to your editor as not sent and are saved in the realm's
-`tui_unsent.txt`, which the next start announces. The one waiting in the
-engine comes back the same way (the daemon takes it back from the engine
-first, so it is never delivered after the restart as well), and so does
-one already shown delivered when the stop cut off the model request that
-carried it before the agent answered: the engine keeps a message only
-once the step that read it is saved (its tools started, or the run
-ended), and drops it at the restart otherwise; a notice says the agent
-did not keep it. One the agent answered stays in the conversation. A
-client that detaches leaves them with the daemon, which sends them as
-usual (nothing is lost at a detach). Everything you send is such a
+`tui_unsent.txt`, which the next start announces. So does one already
+shown delivered when the stop cut off the model request that carried it
+before the agent answered: the engine keeps a message only once the step
+that read it is saved (its tools started, or the run ended), and drops
+it at the restart otherwise; a notice says the agent did not keep it.
+One the agent answered stays in the conversation. A client that
+detaches leaves them with the agent (nothing is lost at a detach). Everything you send is such a
 message to the engine, a prompt typed while the agent looks idle too: it
 goes into the next model request of whatever run the agent has by then,
 or starts a run when it has none, and never waits behind a run that

@@ -78,10 +78,7 @@ impl Local {
             returned: Vec::new(),
             read: Vec::new(),
         };
-        // Each engine input with the ids the client named of it: a message
-        // the daemon held comes back at once (the engine never had it);
-        // held ones it sent together are the input they went as.
-        let mut open: Vec<(InputId, Vec<InputId>)> = Vec::new();
+        let mut open: Vec<InputId> = Vec::new();
         let mut follow_ups: Vec<RunId> = Vec::new();
         let mut settled: Vec<InputId> = Vec::new();
         let run = match &target {
@@ -89,41 +86,23 @@ impl Local {
             InterruptTarget::Current => machine.current_run(&session).await,
             InterruptTarget::Inputs => None,
         };
-        let (taken, reached) = self.core.activity.take_back(&agent, &input_ids);
-        answer.returned.extend(taken.held);
-        let mut named: Vec<(InputId, Vec<InputId>)> = taken
-            .other
-            .into_iter()
-            .map(|input| (input.clone(), vec![input]))
-            .chain(taken.sent)
-            .collect();
-        for id in reached {
-            if let crate::daemon::activity::HeldWhere::Sent(input) =
-                self.core.activity.held_where(&agent, &id)
-            {
-                match named.iter_mut().find(|(sent, _)| *sent == input) {
-                    Some((_, ids)) => ids.push(id),
-                    None => named.push((input, vec![id])),
-                }
-            }
-        }
-        for (input, ids) in named {
+        for input in input_ids {
             match self.take_back_one(&session, &input).await {
                 Fate::Returned => {
-                    settled.push(input);
-                    answer.returned.extend(ids);
+                    settled.push(input.clone());
+                    answer.returned.push(input);
                 }
                 Fate::Read => {
-                    settled.push(input);
-                    answer.read.extend(ids);
+                    settled.push(input.clone());
+                    answer.read.push(input);
                 }
                 Fate::HeldBy(holder) if run.as_ref() != Some(&holder) => {
                     if !follow_ups.contains(&holder) {
                         follow_ups.push(holder);
                     }
-                    open.push((input, ids));
+                    open.push(input);
                 }
-                Fate::HeldBy(_) | Fate::Open => open.push((input, ids)),
+                Fate::HeldBy(_) | Fate::Open => open.push(input),
             }
         }
 
@@ -147,15 +126,15 @@ impl Local {
                 break;
             }
             let mut still = Vec::new();
-            for (input, ids) in open {
+            for input in open {
                 match self.take_back_one(&session, &input).await {
                     Fate::Returned => {
-                        settled.push(input);
-                        answer.returned.extend(ids);
+                        settled.push(input.clone());
+                        answer.returned.push(input);
                     }
                     Fate::Read => {
-                        settled.push(input);
-                        answer.read.extend(ids);
+                        settled.push(input.clone());
+                        answer.read.push(input);
                     }
                     Fate::HeldBy(holder) => {
                         // Taken by a run after the stop (or not settled yet):
@@ -168,9 +147,9 @@ impl Local {
                         {
                             answer.follow_ups += 1;
                         }
-                        still.push((input, ids));
+                        still.push(input);
                     }
-                    Fate::Open => still.push((input, ids)),
+                    Fate::Open => still.push(input),
                 }
             }
             open = still;
@@ -181,12 +160,7 @@ impl Local {
                 "rkat/interrupt: messages not settled yet"
             );
         }
-        // The message in flight came back or was read: what another
-        // client has held goes at the run's end.
-        if let Some(releasing) = self.core.activity.user_settled(&agent, &settled, true) {
-            let agents = Arc::clone(&self.agents);
-            tokio::spawn(async move { agents.release_user(releasing).await });
-        }
+        self.core.activity.user_settled(&agent, &settled);
         self.core.activity.changed(&agent, false);
         #[cfg(any(test, feature = "test-support"))]
         self.probe.interrupted(&answer);

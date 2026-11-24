@@ -545,21 +545,6 @@ fn queued_block_status_count_and_hints() {
             .any(|r| r == "› also fix tests  · goes in at the agent's next step"),
         "rows: {rows:#?}"
     );
-    // Held by the daemon behind the one in flight, then sent.
-    app.update(Msg::SteerHeld(PendingId(1)));
-    let rows = render_sized(&mut app, now, 100);
-    assert!(
-        rows.iter()
-            .any(|r| r == "› also fix tests  · goes in at the step after the next"),
-        "rows: {rows:#?}"
-    );
-    app.update(Msg::SteerReleased(vec![PendingId(1)]));
-    let rows = render_sized(&mut app, now, 100);
-    assert!(
-        rows.iter()
-            .any(|r| r == "› also fix tests  · goes in at the agent's next step"),
-        "rows: {rows:#?}"
-    );
     // The placeholder is dim.
     let buffer = render_buffer(&mut app, 100, H);
     let y = (0..H)

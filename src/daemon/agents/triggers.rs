@@ -7,7 +7,7 @@ use std::sync::Arc;
 use meerkat_core::SessionId;
 
 use super::Agents;
-use super::notes::{Delivery, hold_or_steer, note_agent};
+use super::notes::{note_agent, steer_agent};
 use super::sent::Kind;
 
 /// The label of a run a note of helpers' endings started.
@@ -220,15 +220,7 @@ impl Agents {
         let text = batch.text();
         self.sent.record(&name, Kind::Watch, text.clone());
         let _sending = self.core.activity.sending(&name);
-        let later = {
-            let name = name.clone();
-            move |err: String| {
-                tracing::warn!(agent = %name, error = %err, "a held watch event did not reach the agent");
-            }
-        };
-        let sent = hold_or_steer(&self.core, &name, text.clone())
-            .await
-            .accepted(later);
+        let sent = steer_agent(&self.core, &name, text.clone()).await;
         if let Err(err) = sent {
             tracing::warn!(agent = %name, error = %err, "a watch event did not reach the agent");
             self.sent.forget(&name, Kind::Watch);
@@ -272,20 +264,11 @@ impl Agents {
                     crate::daemon::prepare::Prepare::asked_notice(tokens)
                 }
             };
-            // Held for the open run, it is asked now: it goes with the
-            // user's next message or after the next model call's tools.
-            let delivery = hold_or_steer(&agents.core, &name, text.clone()).await;
-            let held = matches!(delivery, Delivery::Held(_));
-            if held {
-                agents.audit_run(&name, None, "compact_prepare", text.clone());
-                notice(false, asked());
-            }
-            match delivery.outcome().await {
-                Ok(()) if !held => {
+            match steer_agent(&agents.core, &name, text.clone()).await {
+                Ok(()) => {
                     agents.audit_run(&name, None, "compact_prepare", text);
                     notice(false, asked());
                 }
-                Ok(()) => {}
                 Err(err) => {
                     tracing::warn!(agent = %name, error = %err, "the prepare instruction did not reach the agent");
                     notice(

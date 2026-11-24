@@ -1128,10 +1128,8 @@ Keys:
                                  own run only: its helpers keep working, and how each ends comes to
                                  the agent with your next message
   Esc Esc (idle, with text)      clear the input and save it to the prompt history (↑ recalls it)
-  Up (empty input)               take queued messages back into the editor: the ones held
-                                 behind the message in flight first, newest first, one per
-                                 press (free); then the rest (and commands waiting for the
-                                 turn's end: /model, /new, /resume, /init, …)
+  Up (empty input)               take queued messages back into the editor (and commands
+                                 waiting for the turn's end: /model, /new, /resume, /init, …)
   Ctrl-D                         quit on an empty input: press again within 3 s (while a turn
                                  runs or messages are queued the turn is then interrupted and
                                  undelivered messages are saved; attached, as /quit: it may stop
