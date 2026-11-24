@@ -428,6 +428,22 @@ the tool block shows the same text.
 The classifier is a separate LLM call on the start-up endpoint. It is given
 the user's messages and the agent's prior tool calls, never the agent's
 reasoning or its tool outputs, so the agent cannot argue with it directly.
+Your messages have a budget of their own (32 KiB; a message longer than
+8 KiB keeps its first 6 and last 2 KiB with a marker between), apart from
+the 32 KiB of actions and notes, so a long run of tool calls never pushes
+out the request that asked for them: each budget drops its own oldest
+entries and always keeps its newest, the transcript stays in order, and
+one `[omitted]` line stands where entries were left out. The classifier is
+told that a request, permission or prohibition you gave earlier stands
+unless a later message of yours withdraws it. The daemon stores the
+messages it keeps for each conversation in the workspace's state
+(`tui_user_words/`), so after a restart, a `/resume` or a compaction of
+the conversation (whose summary is never counted as your words) the
+classifier still has them. A helper's call (an `assign` helper, fresh or
+forked, its own helpers, a team or council member) is judged on the
+transcript of the agent it works for, your messages labelled
+`[user, to the agent]`; the helper's assignment is the agent's text and
+never counts as yours.
 
 **What the classifier blocks: effects, not places.** The policy is tuned
 for a mistaken or overeager agent, not an adversary (the sandbox is the

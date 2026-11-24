@@ -510,6 +510,12 @@ impl Local {
                         let n = self.inputs.fetch_add(1, Ordering::Relaxed);
                         let key = InputKey::new(format!("rkat-attach:{}:{n}", std::process::id()));
                         self.core.engine.record_user_input(&session, key, &text);
+                        // Stored for a restart: the conversation alone
+                        // does not say which of its messages were the
+                        // user's.
+                        self.core
+                            .conversations
+                            .store_user_words(&session, self.core.engine.user_words(&session));
                     }
                     // The endings of helpers held since the user interrupted
                     // the agent go with this message, before its words (the

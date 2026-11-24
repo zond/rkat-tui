@@ -147,13 +147,22 @@ async fn an_assigned_helper_runs_behind_the_sessions_gate() {
     let seen = classifier.seen();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].0, "shell");
-    assert!(seen[0].2.contains("USER-ASK"), "{}", seen[0].2);
+    // The user's words to the agent, labelled so: never as words to the
+    // helper.
+    assert!(
+        seen[0].2.contains(&format!(
+            "{} USER-ASK",
+            rkat_tui::approval::transcript::USER_TO_AGENT_LABEL
+        )),
+        "{}",
+        seen[0].2
+    );
     // The helper's task is the parent's action, never the user's words.
     assert!(
         seen[0]
             .2
             .lines()
-            .filter(|line| line.starts_with("[user]"))
+            .filter(|line| line.starts_with("[user"))
             .all(|line| !line.contains("HELPER-TASK")),
         "{}",
         seen[0].2

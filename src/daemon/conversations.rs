@@ -49,6 +49,18 @@ pub const TITLE_PAGE: usize = 16;
 /// reads at most looking for a conversation's first user message.
 pub const TITLE_PAGES: usize = 8;
 
+/// The directory in the realm of the user's words each conversation's
+/// classifier transcript keeps, one `<session>.json` each
+/// ([`Conversations::store_user_words`]).
+pub const WORDS_DIR: &str = "tui_user_words";
+
+/// A conversation's stored words of the user's, oldest first.
+#[derive(Debug, Serialize, Deserialize)]
+struct WordsFile {
+    version: u32,
+    words: Vec<String>,
+}
+
 /// How many conversations [`Conversations::list`] reads at once.
 const LIST_READS: usize = 8;
 
@@ -333,6 +345,8 @@ pub struct Conversations {
     log_file: PathBuf,
     log: parking_lot::Mutex<Log>,
     writer: Arc<LogWriter>,
+    /// [`WORDS_DIR`] in the realm.
+    words_dir: PathBuf,
     /// One switch at a time per agent.
     switching: parking_lot::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// How many times each agent was seated (a switch, a reseat, a seat
@@ -381,6 +395,7 @@ impl Conversations {
         Ok(Self {
             state,
             registry,
+            words_dir: realm_root.join(WORDS_DIR),
             writer: Arc::new(LogWriter {
                 file: log_file.clone(),
                 next: std::sync::atomic::AtomicU64::new(0),
@@ -659,6 +674,13 @@ impl Conversations {
     /// classifier of a restored or resumed
     /// conversation then sees what the user asked before. A session that
     /// cannot be read is left unseeded.
+    ///
+    /// The stored conversation alone does not say which messages were the
+    /// user's (a `mob/member_send` carries no typed authorship) and a
+    /// compaction replaces the older ones with a summary, which is not the
+    /// user's words; the words the daemon stored as the user typed them
+    /// ([`Self::store_user_words`]) give them back, in their places
+    /// ([`crate::approval::transcript::ApprovalTranscript::seed_with_words`]).
     pub async fn seed(&self, engine: &crate::approval::ApprovalEngine, session: &SessionId) {
         match self
             .state
@@ -666,10 +688,61 @@ impl Conversations {
             .load_persisted_session(session)
             .await
         {
-            Ok(Some(stored)) => engine.seed_transcript(&stored),
+            Ok(Some(stored)) => {
+                let words = self.stored_user_words(session);
+                engine.seed_transcript(&words, &stored);
+            }
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!(%session, error = %err, "cannot seed the classifier transcript");
+            }
+        }
+    }
+
+    /// Where the user's words for the classifier of `session` are stored.
+    fn words_path(&self, session: &SessionId) -> PathBuf {
+        self.words_dir.join(format!("{session}.json"))
+    }
+
+    /// Store `words`, the user's words the classifier's transcript of
+    /// `session` keeps now ([`crate::approval::ApprovalEngine::user_words`]).
+    /// A failed write is logged: the live transcript keeps them, only a
+    /// restart before the next write would not.
+    pub fn store_user_words(&self, session: &SessionId, words: Vec<String>) {
+        let path = self.words_path(session);
+        let file = WordsFile { version: 1, words };
+        let written = serde_json::to_vec(&file)
+            .map_err(|err| err.to_string())
+            .and_then(|bytes| {
+                crate::paths::write_atomic(&path, &bytes, crate::paths::FileMode::Private, None)
+                    .map_err(|err| err.to_string())
+            });
+        if let Err(err) = written {
+            tracing::warn!(%session, file = %path.display(), error = %err, "cannot store the user's words for the classifier");
+        }
+    }
+
+    /// The user's words stored for `session` ([`Self::store_user_words`]);
+    /// none when there is no file, or one that cannot be read (logged).
+    fn stored_user_words(&self, session: &SessionId) -> Vec<String> {
+        let path = self.words_path(session);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(err) => {
+                tracing::warn!(%session, file = %path.display(), error = %err, "cannot read the user's stored words; the classifier sees only those the conversation shows");
+                return Vec::new();
+            }
+        };
+        match serde_json::from_slice::<WordsFile>(&bytes) {
+            Ok(file) => file
+                .words
+                .into_iter()
+                .filter(|word| !word.trim().is_empty())
+                .collect(),
+            Err(err) => {
+                tracing::warn!(%session, file = %path.display(), error = %err, "the user's stored words do not parse; the classifier sees only those the conversation shows");
+                Vec::new()
             }
         }
     }

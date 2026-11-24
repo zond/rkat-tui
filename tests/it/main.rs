@@ -24,6 +24,7 @@ mod btw;
 mod checkpoints;
 mod classifier_check;
 mod classifier_llm;
+mod classifier_transcript;
 mod client;
 mod client_turns;
 mod compact;

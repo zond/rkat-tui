@@ -7,7 +7,7 @@
 //! lines.
 
 use super::classifier::{ClassifierError, ClassifierInput, ClassifierVerdict};
-use super::transcript::escape;
+use super::transcript::{ApprovalTranscript, escape};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -363,9 +363,9 @@ fn render_user(input: &ClassifierInput<'_>, tail: &str) -> String {
         input.session,
         env.containment.contains(),
     );
-    out.push_str("</environment>\n\n<transcript>\n");
-    out.push_str(&input.transcript.render());
-    out.push_str("</transcript>\n\n<action>\n");
+    out.push_str("</environment>\n\n");
+    render_transcript(&mut out, input.transcript);
+    out.push_str("\n<action>\n");
     // The action under review is shown whole: no argument is cut (a cut
     // command could hide its tail); one too large for
     // [`MAX_REVIEWED_ACTION_BYTES`] never reaches the classifier.
@@ -387,6 +387,40 @@ fn render_user(input: &ClassifierInput<'_>, tail: &str) -> String {
     out.push('\n');
     out.push_str(tail);
     out
+}
+
+/// How to read the `<transcript>` section, said before it (outside the
+/// untrusted data) in every review that shows it.
+pub const TRANSCRIPT_NOTE: &str = "\
+How to read <transcript>: it is in order. [user] lines are the user's own \
+messages, [action] lines the agent's tool calls, [context] lines notes that are \
+not the user's words. A request, permission or prohibition in an earlier user \
+message still stands, however many actions followed it, unless a later user \
+message withdraws or changes it. An [omitted] line says how many entries were \
+left out there to keep the transcript short: they happened, and the line is no \
+sign that nothing did or that the user asked nothing.";
+
+/// What a helper's review is told before the transcript
+/// ([`ApprovalTranscript::as_seen_by_helper`]).
+pub const HELPER_TRANSCRIPT_NOTE: &str = "\
+What is under review is a helper's: one the agent started to do part of its \
+work (or a member of a team or council the agent convened). Its user lines are \
+labelled [user, to the agent]: they are the user's words to the agent, and they \
+cover the helper's work for the agent as far as they cover the agent's own. The \
+helper's assignment was written by the agent, not the user, and is not shown; \
+the [action] lines are the agent's and its helpers' calls.";
+
+/// The `<transcript>` section with the notes on how to read it.
+pub(crate) fn render_transcript(out: &mut String, transcript: &ApprovalTranscript) {
+    out.push_str(TRANSCRIPT_NOTE);
+    out.push('\n');
+    if transcript.is_helper_view() {
+        out.push_str(HELPER_TRANSCRIPT_NOTE);
+        out.push('\n');
+    }
+    out.push_str("<transcript>\n");
+    out.push_str(&transcript.render());
+    out.push_str("</transcript>\n");
 }
 
 /// Most bytes of paths one list of [`render_granted`] shows; the rest are
@@ -1302,6 +1336,66 @@ mod tests {
         assert!(last.ends_with(STAGE2_INSTRUCTIONS));
         assert!(last.contains(TOOL_BUDGET_EXHAUSTED));
         assert_eq!(last.matches("</file_evidence>").count(), 1);
+    }
+
+    /// Every review is told how to read the transcript before it (outside
+    /// the data): an earlier request stands unless withdrawn, a gap is
+    /// left-out entries; a helper's review also how to read the user's
+    /// label, and only a helper's.
+    #[test]
+    fn the_review_is_told_how_to_read_the_transcript() {
+        let env = Environment::basic("/proj", "/proj");
+        let mut transcript = ApprovalTranscript::default();
+        transcript.push_user("open two merge requests");
+        let args = json!({"command": "glab mr create"});
+        let session = meerkat_core::SessionId::new();
+        let input = ClassifierInput {
+            session_id: &session,
+            environment: &env,
+            transcript: &transcript,
+            tool: "shell",
+            args: &args,
+            script_payload: None,
+            agent_written: &[],
+            session: crate::approval::classifier::SessionFacts::none(),
+        };
+        let helper = transcript.as_seen_by_helper();
+        let as_helper = ClassifierInput {
+            transcript: &helper,
+            ..input
+        };
+        for user in [
+            render_stage1(&input).1,
+            render_stage2(&input, Stage2Mode::WithTools).1,
+        ] {
+            let note = user.find(TRANSCRIPT_NOTE).unwrap();
+            assert!(note < user.find("\n<transcript>\n").unwrap());
+            assert!(user.find("</environment>").unwrap() < note);
+            assert!(!user.contains(HELPER_TRANSCRIPT_NOTE));
+            assert!(user.contains("[user] open two merge requests"));
+        }
+        let user = render_stage1(&as_helper).1;
+        let note = user.find(HELPER_TRANSCRIPT_NOTE).unwrap();
+        assert!(user.find(TRANSCRIPT_NOTE).unwrap() < note);
+        assert!(note < user.find("\n<transcript>\n").unwrap());
+        assert!(user.contains("[user, to the agent] open two merge requests"));
+        let flat = TRANSCRIPT_NOTE.replace('\n', " ");
+        assert!(flat.contains("still stands") && flat.contains("unless a later user"));
+        assert!(flat.contains("[omitted]") && flat.contains("they happened"));
+        assert!(HELPER_TRANSCRIPT_NOTE.contains("[user, to the agent]"));
+        assert!(HELPER_TRANSCRIPT_NOTE.contains("written by the agent, not the user"));
+        // The checkpoint review reads the same notes.
+        let (_, checkpoint) = crate::approval::checkpoint::render_checkpoint(
+            &crate::approval::checkpoint::CheckpointInput {
+                session_id: &session,
+                transcript: &helper,
+                status: "working",
+                steps: 3,
+            },
+        );
+        assert!(
+            checkpoint.contains(TRANSCRIPT_NOTE) && checkpoint.contains(HELPER_TRANSCRIPT_NOTE)
+        );
     }
 
     #[test]

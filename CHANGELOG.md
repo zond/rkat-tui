@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The approval classifier no longer loses your request in a long run of
+  tool calls. Its transcript kept 32 KiB in all and dropped the oldest
+  entries whoever wrote them, so after a few pages of calls your request
+  ("create two merge requests") was gone and the call doing it looked
+  unasked. Your messages now have a budget of their own (32 KiB, each
+  message cut to 8 KiB keeping its start and end, the oldest going first
+  and the newest always kept) beside the 32 KiB of actions and notes, the
+  transcript stays in order, and where entries were left out one
+  `[omitted]` line says how many. The classifier is told that an earlier
+  request or prohibition stands unless you withdraw it, and that a gap
+  means calls were left out, not that nothing happened.
+- After a restart or a `/resume` the classifier had none of your earlier
+  messages as yours: the stored conversation does not mark which messages
+  you typed (they showed as "earlier input of unverified authorship", cut
+  to 512 bytes), and a compaction replaces the older ones with a summary,
+  which is not your words. The daemon now stores the messages the
+  classifier keeps for each conversation (`tui_user_words/<session>.json`
+  in the workspace's state) and seeds them back in their places.
+- A helper's review (an `assign` helper, fresh or forked, one of its
+  helpers, a team or council member) shows your messages labelled
+  `[user, to the agent]`, and the classifier is told they are your words
+  to the agent the helper works for, which cover its work as they cover
+  the agent's, and that the helper's assignment is the agent's text.
+- A note of unverified authorship in the classifier's transcript stays on
+  its line (its line breaks shown as `\n`), so its text cannot start a
+  line that reads as yours.
+
 ## [0.0.21] - 2026-11-24
 
 ### Added

@@ -93,9 +93,10 @@ async fn new_starts_fresh_and_resume_brings_the_old_conversation_back() {
             .any(|b| matches!(b, Block::Assistant { md } if md == "one")),
         "{blocks:?}"
     );
-    // Seeded again from the stored conversation.
+    // Seeded again from the stored conversation, the user's prompt as
+    // theirs (the words the daemon stored name it).
     assert!(
-        gate_saw(&first).is_some_and(|t| t.contains("first")),
+        gate_saw(&first).is_some_and(|t| t.contains("[user] first\n")),
         "{:?}",
         gate_saw(&first)
     );

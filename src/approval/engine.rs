@@ -798,6 +798,7 @@ impl ApprovalEngine {
     pub async fn review_checkpoint(
         &self,
         session_id: &SessionId,
+        helper: bool,
         status: &str,
         steps: u64,
     ) -> Result<super::checkpoint::CheckpointVerdict, super::classifier::ClassifierError> {
@@ -805,7 +806,14 @@ impl ApprovalEngine {
             .sessions
             .lock()
             .get(session_id)
-            .map(|state| state.transcript.clone())
+            .map(|state| {
+                // A helper's run: the user's words are the agent's.
+                if helper {
+                    state.transcript.as_seen_by_helper()
+                } else {
+                    state.transcript.clone()
+                }
+            })
             .unwrap_or_default();
         let classifier = self.reviewer.current();
         classifier
@@ -834,10 +842,23 @@ impl ApprovalEngine {
     /// (on resume): seed its transcript from typed authorship (the human's
     /// turn inputs and tool calls, never assistant prose, tool output or
     /// peer messages).
-    pub fn seed_transcript(&self, session: &Session) {
+    /// `words` are the user's words the daemon stored for the conversation
+    /// ([`Self::user_words`]; [`ApprovalTranscript::seed_with_words`]).
+    pub fn seed_transcript(&self, words: &[String], session: &Session) {
         let mut transcript = ApprovalTranscript::default();
-        transcript.seed_from_session(session);
+        transcript.seed_with_words(words, session);
         self.session(session.id()).transcript = transcript;
+    }
+
+    /// The user's words the classifier's transcript of `session` keeps
+    /// now, oldest first (what the daemon stores for it).
+    #[must_use]
+    pub fn user_words(&self, session_id: &SessionId) -> Vec<String> {
+        self.sessions
+            .lock()
+            .get(session_id)
+            .map(|state| state.transcript.user_words())
+            .unwrap_or_default()
     }
 
     /// Record words the human submitted to a session (a prompt or a steer)
@@ -1681,7 +1702,7 @@ impl ApprovalEngine {
             return allow3(Decider::Classifier, "allowed earlier in this session").into();
         }
 
-        let (result, record) = self.classify(session_id, &facts.action, &payload).await;
+        let (result, record) = self.classify(&caller, &facts.action, &payload).await;
         if let Some(stopped) = self.stop_denial(&caller) {
             // A Stop given while the classifier reviewed: the call is
             // denied whatever the verdict, and the verdict is not applied
@@ -1940,17 +1961,23 @@ impl ApprovalEngine {
     /// result, and the review's record for the audit line.
     async fn classify(
         &self,
-        session_id: &SessionId,
+        caller: &Caller<'_>,
         action: &Action<'_>,
         payload: &Payload,
     ) -> (
         Result<ClassifierVerdict, super::classifier::ClassifierError>,
         ReviewRecord,
     ) {
+        let session_id = caller.session_id;
         let (transcript, agent_written, session_facts) = {
             let state = self.session(session_id);
             (
-                state.transcript.clone(),
+                // A helper's call: the user's words are the agent's.
+                if caller.agent.is_some() {
+                    state.transcript.as_seen_by_helper()
+                } else {
+                    state.transcript.clone()
+                },
                 state.agent_written.clone(),
                 state.facts.clone(),
             )

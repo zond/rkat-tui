@@ -20,6 +20,17 @@ use crate::daemon::checkpoint::{
 };
 use crate::mobs::endings::LimitReached;
 
+/// Whose run a checkpoint reviews, with the session whose transcript it
+/// reads.
+#[derive(Clone, Copy)]
+enum Reviewed<'a> {
+    /// The agent's own run, on its session.
+    Agent(&'a SessionId),
+    /// A helper's run, on the session of the agent it works for (the
+    /// user's words read as the agent's).
+    Helper(&'a SessionId),
+}
+
 /// Why a status could not be read.
 enum StatusError {
     /// The user cancelled the checkpoint (its run was interrupted).
@@ -95,8 +106,15 @@ impl Agents {
             Ok(status) => {
                 let cap = int_in_force(&CHECKPOINT_CONTINUES, &self.core.settings.layers());
                 let streak = self.checkpoints.streak(&subject);
-                self.review(session, &status, steps, streak, cap, &mut cancelled)
-                    .await
+                self.review(
+                    Reviewed::Agent(session),
+                    &status,
+                    steps,
+                    streak,
+                    cap,
+                    &mut cancelled,
+                )
+                .await
             }
         };
         if *cancelled.borrow() {
@@ -140,7 +158,7 @@ impl Agents {
     /// far, `cap` allowed): the cap first, then the classifier's model.
     async fn review(
         &self,
-        session: &SessionId,
+        reviewed: Reviewed<'_>,
         status: &str,
         steps: u64,
         streak: u64,
@@ -150,8 +168,12 @@ impl Agents {
         if streak >= cap {
             return Outcome::Capped(cap);
         }
+        let (session, helper) = match reviewed {
+            Reviewed::Agent(session) => (session, false),
+            Reviewed::Helper(session) => (session, true),
+        };
         let verdict = tokio::select! {
-            verdict = self.core.engine.review_checkpoint(session, status, steps) => verdict,
+            verdict = self.core.engine.review_checkpoint(session, helper, status, steps) => verdict,
             () = until_cancelled(cancelled) => return Outcome::Cancelled,
         };
         match verdict {
@@ -300,7 +322,14 @@ impl Agents {
                 let cap = int_in_force(&CHECKPOINT_CONTINUES, &self.core.settings.layers());
                 let streak = self.checkpoints.streak_at(&subject, run);
                 let outcome = self
-                    .review(&tag.owner, &status, steps, streak, cap, &mut cancelled)
+                    .review(
+                        Reviewed::Helper(&tag.owner),
+                        &status,
+                        steps,
+                        streak,
+                        cap,
+                        &mut cancelled,
+                    )
                     .await;
                 (outcome, status)
             }

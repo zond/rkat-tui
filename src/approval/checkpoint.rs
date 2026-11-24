@@ -75,9 +75,8 @@ pub enum CheckpointVerdict {
 #[must_use]
 pub fn render_checkpoint(input: &CheckpointInput<'_>) -> (String, String) {
     let mut user = String::new();
-    user.push_str("<transcript>\n");
-    user.push_str(&input.transcript.render());
-    user.push_str("</transcript>\n\n<status>\n");
+    super::prompts::render_transcript(&mut user, input.transcript);
+    user.push_str("\n<status>\n");
     let mut cut = input.status.len().min(MAX_STATUS_BYTES);
     while !input.status.is_char_boundary(cut) {
         cut -= 1;

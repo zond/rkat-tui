@@ -14715,3 +14715,93 @@ Tests: `bootstrap::realm_home::tests::a_tilde_is_the_home_directory`,
 `rehome::a_push_into_the_config_directory_or_of_nothing_is_refused`,
 `rehome::a_confirmed_discard_deletes_the_destination_s_state_and_moves_there`,
 `rehome::remove_state_deletes_exactly_the_named_state`.
+
+## The user's words outlast tool calls, restarts and compactions (owner's report, 2026-11-24)
+
+The report: in a long session the owner asked the agent to create two
+merge requests, and a few pages later the classifier denied the agent's
+`glab` call that would do it, as not asked for.
+
+What was measured. `ApprovalTranscript` was one FIFO of 32 KiB that
+dropped its oldest entries whoever wrote them; a tool call renders up to
+about 1 KiB per argument string, so some thirty calls (the agent's and
+its helpers', which share the agent's transcript) pushed the request
+out. A restart was worse: the rig showed every prompt of a restarted
+conversation as `[context] (earlier input of unverified authorship …)`,
+cut to 512 bytes. A prompt reaches the engine as a `mob/member_send`,
+which stores it with no typed authorship (no `turn_input`, no
+`render_metadata`), so `transcript::authorship` reads it as unverified.
+After a compaction the stored conversation holds a summary in place of
+the older messages (deliberately not the user's words). In a live
+daemon a compaction changes nothing of ours: the approval transcript is
+the daemon's own and is never compacted.
+
+Decisions.
+
+- Two budgets: the user's words 32 KiB (the owner's number), each
+  message cut to 8 KiB keeping its first 6 KiB and last 2 KiB (at least
+  four messages fit beside a pasted log; a request often ends a pasted
+  text), the rest 32 KiB as before. Each drops its own oldest entry and
+  keeps its newest; a dropped entry becomes a gap in place, merged with
+  the gaps beside it, rendered as one `[omitted] N … not shown here
+  (left out for length; they happened)` line, so the transcript stays
+  chronological. A context note keeps to one line (its line breaks
+  shown as `\n`): before, a stored message of unverified authorship with
+  a line break could start a line reading `[user] …`.
+- Prompt sizes. The transcript can now be 64 KiB plus its gap lines.
+  Stage 1 at its worst (environment about 6 KiB, both budgets full, a
+  48 KiB action, a 21 KiB script section, 50 agent-written paths) is
+  about 150 KiB, some 38k tokens, against about 120 KiB before; a typical
+  review (a few KiB of the user's words) is unchanged at 10–15k tokens.
+  Stage 2 adds its instructions (2 KiB), and its last tool-less call up
+  to six 16 KiB results.
+- How to read it, said before `<transcript>` outside the data
+  (`prompts::TRANSCRIPT_NOTE`, also in the checkpoint review): it is in
+  order, an earlier request, permission or prohibition stands unless a
+  later user message withdraws it, and an `[omitted]` line is entries
+  left out, not a sign that nothing happened or that the user asked
+  nothing.
+- Restarts and `/resume`: the engine's stored revisions were read first
+  (a compaction keeps its parent revision's body,
+  `read_transcript_revision`), but they hold the same unmarked prompts,
+  so they could only ever give context lines. Instead the daemon stores
+  the words the transcript keeps, at each message the user sends
+  (`<realm>/tui_user_words/<session>.json`, a new optional file,
+  `docs/state.md`), and `seed_with_words` puts each where the stored
+  message that holds it is, those a compaction replaced where they
+  were, and shows that message as the stored word alone (a held note
+  before the user's words stays out). Only the stored words and the
+  typed authorship give `[user]` lines; the file is the daemon's, in
+  the realm the confined shell cannot reach.
+- Helpers. Every helper (fresh or forked `assign` helpers, helpers of
+  helpers, team members, council participants) is gated for the agent's
+  session (`Owner::session`), so a helper's review already had the
+  user's words, unlabelled, beside every call of the agent and its
+  helpers; forks and fresh helpers are alike here (the fork's inherited
+  history is not what the gate reads). A helper's review now reads them
+  as `[user, to the agent]` (`ApprovalTranscript::as_seen_by_helper`),
+  told before the transcript that they are the user's words to the
+  agent and cover the helper's work as they cover the agent's, and that
+  the assignment is the agent's text (never recorded). The checkpoint
+  review of a helper's run reads the same.
+
+Found and not changed: `authorship` takes `RenderClass::UserPrompt` as
+the human's, and the engine's `meerkat_schedule_create` accepts a
+`render_metadata` on a prompt action, so an agent's schedule could store
+a prompt classed so and be seeded as the user's after a restart. Not
+reproduced here; recorded for the owner (the stored words would let
+`UserPrompt` be dropped as a signal).
+
+Tests: `approval::transcript::tests::the_user_s_request_outlives_any_number_of_tool_calls`,
+`the_user_s_words_have_their_caps`, `budget_trims_oldest`,
+`newest_entry_survives_tiny_budget`,
+`a_helper_s_view_labels_the_user_s_words_as_the_agent_s`,
+`a_context_note_cannot_start_a_user_line`,
+`stored_words_seed_a_compacted_conversation_in_order`;
+`approval::prompts::tests::the_review_is_told_how_to_read_the_transcript`;
+`classifier_transcript::a_request_before_a_long_run_of_calls_reaches_the_review_of_a_later_call`,
+`classifier_transcript::the_user_s_words_from_before_a_compaction_survive_a_restart`
+(failed before: after the restart the rule was missing and every prompt
+was a context line), `classifier_transcript::a_helper_s_review_has_the_user_s_words_to_its_agent_labelled_so`,
+`mobs::an_assigned_helper_runs_behind_the_sessions_gate`,
+`conversations::new_starts_fresh_and_resume_brings_the_old_conversation_back`.
