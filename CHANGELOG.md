@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.20] - 2026-11-24
+
 ### Changed
 
 - The engine is Meerkat 0.9.18 (from 0.9.17). Every message waiting for
