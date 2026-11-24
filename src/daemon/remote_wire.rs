@@ -983,7 +983,7 @@ impl SshLinks {
                         &agent,
                         true,
                         format!(
-                            "the link to {host} is down ({why}): messages between this agent and {label} wait until it is back; this machine makes it again"
+                            "the link to {host} is down ({why}): messages between this agent and {label} fail and are not kept until it is back; this machine makes it again"
                         ),
                     );
                     told_down = true;

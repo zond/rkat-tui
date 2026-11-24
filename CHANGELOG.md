@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The README, the manual and the Claude Code comparison are rewritten
+  shorter and in plainer words (the manual is half its length), and
+  corrected where they disagreed with the program.
+- Help texts corrected: `/trust` covers the project's `.rkat/mcp.toml`
+  and `.rkat/config.toml` only; `/rehome <directory>` asks before
+  deleting state the directory already has; `/compact status` names the
+  real default (`native`); the notice of a dropped ssh wire says that
+  messages fail and are not kept while it is down.
+
 ### Added
 
 - When your messages overrun the classifier's budget for them, the

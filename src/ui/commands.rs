@@ -654,7 +654,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "trust the project's MCP and config files as they are now",
         help: &[(
             "/trust",
-            "trust the project's .rkat/mcp.toml, .rkat/config.toml and\nworkspace realm config.toml as they are now (their MCP\nservers and hooks run from the next session; rkat-tui\n--trust-project trusts them for one run without recording)",
+            "trust the project's .rkat/mcp.toml and .rkat/config.toml as\nthey are now (their MCP servers and hooks run from the next\nsession; rkat-tui --trust-project trusts them for one run\nwithout recording)",
         )],
         parse: |rest| arg_free(rest, Command::TrustProject),
     },
@@ -763,7 +763,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             ),
             (
                 "/compact status",
-                "show the compaction policy (tui.toml [auto] compact =\n\"warn\" (default) warns at 75% and 85%; \"auto\" or\n--auto-compact lets the runtime compact at 85%) and the\nprepare instruction: its threshold, whether it is armed",
+                "show the compaction policy (tui.toml [auto] compact =\n\"native\" (default) compacts at the engine's threshold;\n\"warn\" only warns at 75% and 85%; \"auto\" or --auto-compact\ncompacts at 85%) and the prepare instruction: its threshold,\nwhether it is armed",
             ),
             (
                 "/compact prepare <text>|off|default",
@@ -881,7 +881,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             ),
             (
                 "/rehome <directory>",
-                "move this workspace's state there: the daemon restarts\nin that directory and this rkat-tui reattaches to the same\nconversation (during a turn: runs when it ends; refused\nwhen the directory's own state holds a conversation)",
+                "move this workspace's state there: the daemon restarts\nin that directory and this rkat-tui reattaches to the same\nconversation (during a turn: runs when it ends; asks before\ndeleting state the directory already has)",
             ),
             (
                 "/rehome <id|old path>",

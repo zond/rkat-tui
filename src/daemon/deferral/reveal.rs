@@ -220,7 +220,7 @@ pub fn definition() -> ToolDef {
     let families: Vec<&str> = HiddenFamily::ALL.iter().map(|f| f.name()).collect();
     ToolDef::new(
         TOOL_SEARCH,
-        "Find tools left out of your tool list and make them available. Every word of `query` must appear in a tool's name or description (a query of exact tool names finds just those); `family` limits the search to one family (`schedule`: scheduling yourself, `mob`: teams, councils, forks, mob profiles). Returns each match's name and summary; from your next step on the matches are in your tool list with their full schemas and you call them directly. A hidden tool you call without searching first is not found.",
+        "Find tools left out of your tool list and make them available. Every word of `query` must appear in a tool's name or description (a query of exact tool names finds just those); `family` limits the search to one family (`schedule`: scheduling yourself, `mob`: teams, councils, mob profiles). Returns each match's name and summary; from your next step on the matches are in your tool list with their full schemas and you call them directly. A hidden tool you call without searching first is not found.",
         json!({
             "type": "object",
             "properties": {

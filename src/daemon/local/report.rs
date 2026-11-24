@@ -565,7 +565,7 @@ impl Local {
         match self.parts.project.trust_all() {
             Ok(recorded) if recorded.is_empty() => RuleOutcome {
                 ok: true,
-                text: "the project has no .rkat/mcp.toml, .rkat/config.toml or workspace realm config.toml to trust".to_string(),
+                text: "the project has no .rkat/mcp.toml or .rkat/config.toml to trust".to_string(),
             },
             Ok(recorded) => {
                 let files = recorded
@@ -573,7 +573,10 @@ impl Local {
                     .map(|p| p.display().to_string())
                     .collect::<Vec<_>>()
                     .join(", ");
-                self.audit(crate::daemon::audit::Line::event("project_trusted", files.clone()));
+                self.audit(crate::daemon::audit::Line::event(
+                    "project_trusted",
+                    files.clone(),
+                ));
                 RuleOutcome {
                     ok: true,
                     text: format!(
