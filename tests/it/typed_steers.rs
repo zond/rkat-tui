@@ -615,7 +615,10 @@ async fn stop_after_written(committed: bool, text: &'static str) -> WrittenAtSto
         // The daemon read the tool's start (the round's commit).
         common::until(|| local.written_for_test(&agent) == 0).await;
     } else {
-        assert_eq!(local.written_for_test(&agent), 1);
+        // The daemon reads the agent's events on a task of its own: the
+        // request can be at the model before it has read that the message
+        // was written into it.
+        common::until(|| local.written_for_test(&agent) == 1).await;
     }
     drop(local);
     daemon.stop().await;
