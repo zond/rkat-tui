@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.21] - 2026-11-24
+
 ### Added
 
 - `/rehome` alone opens a picker instead of printing a list: a line on
