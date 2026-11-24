@@ -83,7 +83,7 @@ rkat-tui --no-confinement         # run the shell unsandboxed (see "Confinement"
 3. **The first request.** In your project, run `rkat-tui` and type a
    request, or pass it: `rkat-tui "fix the failing test"`. Tool calls run,
    go to the classifier or ask you (see
-   [How approval works](#how-approval-works)). `?` on an empty input lists
+   [How approval works](#how-approval-works)). `?` on an empty input shows
    the keys, `/help` the commands.
 4. **The daemon.** The first `rkat-tui` in a workspace starts its daemon
    in the background; later ones attach to it. The conversation, its
@@ -1658,7 +1658,10 @@ compares the two feature by feature.
 
 ### Commands
 
-`/help` lists these. `--user` (or `--global`) on a command that sets
+`/help` shows these in a dialog over the transcript, with the keys one Tab
+away; it scrolls (↑/↓, `j`/`k`, PgUp/PgDn, Home/End, the mouse wheel) and
+Esc, `q` or Ctrl-C closes it. Nothing of it goes into the transcript, and
+the agent goes on underneath. `--user` (or `--global`) on a command that sets
 something writes your own `tui.toml` (every workspace) instead of the
 workspace's. `//` at the start of a prompt sends a literal `/`.
 
@@ -1666,7 +1669,7 @@ workspace's. `//` at the start of a prompt sends a literal `/`.
 |---|---|
 | `/settings [filter]` | Every setting, its value and the layer it comes from; edit or remove it there ([Settings](#settings)) |
 | `/set <key> <value> [--user]`, `/unset <key> [--user]` | Write or remove a setting in the workspace's `tui.toml` |
-| `/help`, `/?` | The commands and keys |
+| `/help`, `/?` | The commands and keys, in a dialog (Tab switches) |
 | `/quit`, `/exit`, `/q` | Leave; your agent retires, and the daemon may stop ([The workspace daemon](#the-workspace-daemon)) |
 | `/detach` | Leave; the agent keeps working |
 | `/agents [name]` | Pick an agent of this workspace: switch, start a new one, retire an idle one ([Several agents](#several-agents)) |
@@ -1733,7 +1736,7 @@ close. A list stays open after you act in it and refreshes in place; only
 acts that take you elsewhere close it (choosing a mode, opening a helper,
 switching agent). Anything that deletes, retires, removes or grants asks a
 `y`/`n` question first. An approval request takes over the screen, and the
-list comes back after it.
+list (or the help) comes back after it.
 
 #### Menus, mentions and shell mode
 
@@ -1762,11 +1765,11 @@ messages. `!!` or `\!` at the start sends the text as a prompt.
 
 ### Keys
 
-`?` on an empty input lists these.
+`?` on an empty input shows these, in the help dialog.
 
 | Key | What it does |
 |---|---|
-| `?` (empty input) | Show the keys |
+| `?` (empty input) | Open the help on the keys (Tab: the commands) |
 | Enter | Send; while the agent works, queue for its next step |
 | Shift+Enter, Alt+Enter, Ctrl+J, `\` Enter | Newline |
 | Esc | Interrupt the turn (a pending `/btw` takes the first Esc); in a helper's full view, go back |

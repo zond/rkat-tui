@@ -464,7 +464,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         aliases: &["?"],
         usage: "",
         summary: "show the commands and keys",
-        help: &[("/help, /?", "show this help")],
+        help: &[(
+            "/help, /?",
+            "open this help over the transcript (Tab: the keys; Esc, q or\nCtrl-C closes it)",
+        )],
         parse: |_| Some(Command::Help),
     },
     CommandSpec {
@@ -1114,7 +1117,7 @@ const HELP_COLUMN: usize = 33;
 /// The keys and the approval prompt, as `/help` and the `?` panel list them.
 const KEYS_HELP: &str = "\
 Keys:
-  ? (empty input)                show these keys; any key closes them (with text, ? is typed)
+  ? (empty input)                open the help on these keys (with text, ? is typed)
   Enter                          send; while the agent is working, queues the message
                                  and delivers it at the next step
   Shift+Enter, Alt+Enter, Ctrl+J insert a newline (so does \\ right before Enter at a line end)
@@ -1200,6 +1203,10 @@ Agent picker (/agents):
   d, then y                      retire the agent: only one idle with no client (its
                                  conversation stays in /resume); n or Esc keeps it
   Esc, q                         close
+Help (/help, ?):
+  Tab, Shift+Tab                 switch between the commands and the keys
+  Up/Down, j/k, PgUp/PgDn        scroll (the mouse wheel too); Home/End: top, bottom
+  Esc, q, Ctrl-C                 close (an approval request takes over and the help comes back)
 Lists (/schedules, /permissions, /helpers, /mode, /memory, /wire, /unwire, /settings, /rehome):
   Up/Down, j/k                   move; rows wrap (the highlighted one in full); a list stays open
                                  after its acts, refreshed on the same row, until Esc, q or Ctrl-C
@@ -1242,16 +1249,16 @@ Lists (/schedules, /permissions, /helpers, /mode, /memory, /wire, /unwire, /sett
                                  stays in the field), then y moves this workspace's state there
   Esc, q, Ctrl-C                close (an approval request takes over and the list comes back)";
 
-/// The line that ends `/help`. `/rewind` returns when the engine can rewind
-/// a session in place under the same identity (lukacf/meerkat#2126).
+/// The paragraphs that end the help's commands, one per line (the help
+/// dialog wraps them). `/rewind` returns when the engine can rewind a
+/// session in place under the same identity (lukacf/meerkat#2126).
 const HELP_FOOTER: &str = "Start a prompt with // to send a literal leading slash.\n\
-There is no rewind: the agent's conversation cannot continue from before an earlier message yet\n\
-(the engine cannot rewind a mob member's session in place); /new starts over.";
+There is no rewind: the agent's conversation cannot continue from before an earlier message yet (the engine cannot rewind a mob member's session in place); /new starts over.";
 
-/// Help text shown by `/help`: every slash command (from [`COMMANDS`]) and
-/// key binding.
+/// The help dialog's commands: every slash command (from [`COMMANDS`]),
+/// then [`HELP_FOOTER`] after an empty line.
 #[must_use]
-pub fn help_text() -> &'static str {
+pub fn commands_help() -> &'static str {
     static TEXT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     TEXT.get_or_init(|| {
         let mut out = String::from("Commands:\n");
@@ -1269,15 +1276,14 @@ pub fn help_text() -> &'static str {
                 out.push_str(&format!("{pad}{line}\n"));
             }
         }
-        out.push_str(KEYS_HELP);
         out.push('\n');
         out.push_str(HELP_FOOTER);
         out
     })
 }
 
-/// The "Keys" and "Approval prompt" parts of [`help_text`]: what the `?`
-/// shortcut panel lists.
+/// The help dialog's keys: the keys, the approval prompt and the
+/// dialogs' keys (what `?` opens the help on).
 #[must_use]
 pub fn keys_help() -> &'static str {
     KEYS_HELP
@@ -1389,7 +1395,15 @@ fn parse_rules(args: &[&str]) -> Option<RulesCommand> {
 mod tests {
     use super::*;
     use crate::ui::keymap::{Action, EditAction, map_key};
+    use crate::ui::modal::HelpView;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    /// Everything the help dialog shows: its commands, then its keys.
+    fn help_text() -> String {
+        [HelpView::Commands, HelpView::Keys]
+            .map(HelpView::text)
+            .join("\n")
+    }
 
     fn ok(s: &str) -> Command {
         parse(s).unwrap().unwrap()
@@ -1494,7 +1508,7 @@ mod tests {
         assert!(!help_text().contains("/approve"), "{}", help_text());
         assert_eq!(seen.len(), 38);
         // `/help`'s "Commands:" rows come from the specs, in their order.
-        let commands = help_text().split_once("Keys:").unwrap().0;
+        let commands = HelpView::Commands.text();
         let mut at = 0;
         for (left, _) in COMMANDS.iter().flat_map(|spec| spec.help) {
             let found = commands[at..]
@@ -1554,7 +1568,7 @@ mod tests {
         for gone in ["/rewind", "/checkpoint", "/undo"] {
             assert!(matches!(parse(gone), Some(Err(_))), "{gone}");
         }
-        assert!(super::help_text().contains("There is no rewind"));
+        assert!(HelpView::Commands.text().contains("There is no rewind"));
         assert_eq!(
             ok("/model gpt-5.4"),
             Command::Model(ModelCommand::Set("gpt-5.4".into()))

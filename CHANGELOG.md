@@ -4,6 +4,13 @@
 
 ### Changed
 
+- `/help` and `?` open a help dialog over the transcript instead of
+  printing into it, so the chat no longer scrolls away: `/help` opens on
+  the commands, `?` on the keys, Tab switches. It scrolls with ↑/↓,
+  `j`/`k`, PgUp/PgDn, Home/End and the mouse wheel, wraps to the
+  terminal's width, and closes with Esc, `q` or Ctrl-C. Nothing of it
+  goes into the transcript or `/export`; the agent goes on underneath,
+  and an approval request takes over and the help comes back after it.
 - The README, the manual and the Claude Code comparison are rewritten
   shorter and in plainer words (the manual is half its length), and
   corrected where they disagreed with the program.

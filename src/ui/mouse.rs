@@ -122,8 +122,15 @@ impl App {
 
     pub(super) fn mouse(&mut self, m: MouseEvent, now: Instant) -> bool {
         match m.kind {
-            MouseEventKind::ScrollUp => self.active_scroll().up(keymap::LINE_SCROLL),
-            MouseEventKind::ScrollDown => self.active_scroll().down(keymap::LINE_SCROLL),
+            // Over the help the wheel scrolls the help.
+            MouseEventKind::ScrollUp => match &mut self.modal {
+                Some(Modal::Help(help)) => help.up(keymap::LINE_SCROLL),
+                _ => self.active_scroll().up(keymap::LINE_SCROLL),
+            },
+            MouseEventKind::ScrollDown => match &mut self.modal {
+                Some(Modal::Help(help)) => help.down(keymap::LINE_SCROLL),
+                _ => self.active_scroll().down(keymap::LINE_SCROLL),
+            },
             MouseEventKind::Down(MouseButton::Left) => {
                 return self.mouse_down(m.row, m.column, now);
             }

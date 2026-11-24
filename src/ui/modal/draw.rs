@@ -12,8 +12,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block as BorderBlock, Borders, Clear, Paragraph};
 
 use super::{
-    ENTER_NEEDS_A_ROW, EscalationDialog, MAX_ARGS_LINES, Modal, ModelPicker, PLAN_CHOICES,
-    PlanDialog, QuitDialog, ResumePicker,
+    ENTER_NEEDS_A_ROW, EscalationDialog, HelpDialog, HelpView, MAX_ARGS_LINES, Modal, ModelPicker,
+    PLAN_CHOICES, PlanDialog, QuitDialog, ResumePicker,
 };
 use crate::approval::escalation::RecordedPrompt;
 use crate::endpoints::describe_endpoint;
@@ -121,12 +121,12 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &mut Modal, ignoring
         ),
         Modal::PlanReady(dialog) => (" Plan ready ".to_string(), plan_lines(*dialog, inner_w)),
         Modal::Quit(dialog) => (" Quit ".to_string(), quit_lines(dialog, inner_w)),
-        Modal::Keys => {
+        Modal::Help(dialog) => {
             // Wider than the other dialogs: the help's columns.
             let width = area.width.saturating_sub(2).clamp(20, 104);
             let inner_w = usize::from(width.saturating_sub(2));
-            let lines = keys_lines(inner_w, usize::from(area.height.saturating_sub(2)));
-            return draw_box(frame, area, width, " Keys (any key closes) ", lines);
+            let lines = help_lines(dialog, inner_w, usize::from(area.height.saturating_sub(2)));
+            return draw_box(frame, area, width, " Help ", lines);
         }
     };
     let mut lines = lines;
@@ -154,17 +154,82 @@ fn draw_box(frame: &mut Frame<'_>, area: Rect, width: u16, title: &str, lines: V
 /// Column where the help's descriptions start.
 const HELP_DESC_COL: usize = 33;
 
-/// The keys help, wrapped to `width` (a description too long for its
-/// column continues under it) and cut to `max_lines` with a pointer to
-/// `/help`.
-fn keys_lines(width: usize, max_lines: usize) -> Vec<Line<'static>> {
-    let heading = Style::default().add_modifier(Modifier::BOLD);
+/// The help dialog in `room` lines of `width`: the tab line, the window
+/// of the view's wrapped text at the dialog's scroll, and the keys (with
+/// where the window is when the text does not fit). It records how far the
+/// text can scroll and a page's length at this size.
+fn help_lines(dialog: &mut HelpDialog, width: usize, room: usize) -> Vec<Line<'static>> {
     let dim = Style::default().add_modifier(Modifier::DIM);
+    let text = help_text_lines(dialog.view.text(), width);
+    let total = text.len();
+    let keys = "↑/↓ j/k PgUp/PgDn Home/End scroll · Tab switches · Esc, q or Ctrl-C closes";
+    // A footer wrapped to the width, and the window of the rest; at least
+    // one line of text however small the terminal.
+    let footer_of = |position: Option<String>| {
+        let footer = match position {
+            Some(position) => format!("{position} · {keys}"),
+            None => keys.to_string(),
+        };
+        wrap_text(&footer, width)
+    };
+    let mut footer = footer_of(None);
+    let mut body = room.saturating_sub(1 + footer.len()).max(1);
+    if total > body {
+        // The position joins the footer, which may take a line more.
+        let guess = footer_of(Some(format!("{total}/{total}"))).len();
+        body = room.saturating_sub(1 + guess).max(1);
+        dialog.scroll_max = total - body;
+        dialog.scroll = dialog.scroll.min(dialog.scroll_max);
+        let end = dialog.scroll + body;
+        footer = footer_of(Some(format!("{}-{end}/{total}", dialog.scroll + 1)));
+    } else {
+        dialog.scroll_max = 0;
+        dialog.scroll = 0;
+    }
+    dialog.page = body.saturating_sub(1).max(1);
+    // A terminal too small for the whole footer keeps what fits of it.
+    footer.truncate(room.saturating_sub(1 + body));
+    let mut tabs = Vec::new();
+    for view in [HelpView::Commands, HelpView::Keys] {
+        let style = if view == dialog.view {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            dim
+        };
+        tabs.push(Span::styled(format!(" {} ", view.name()), style));
+        tabs.push(Span::raw(" "));
+    }
+    let mut lines = vec![Line::from(tabs)];
+    lines.extend(text.into_iter().skip(dialog.scroll).take(body));
+    lines.extend(footer.into_iter().map(|l| Line::styled(l, dim)));
+    lines
+}
+
+/// A help text wrapped to `width`: a heading (`Approval prompt:`) in
+/// bold, a row's description too long for its column continued under it,
+/// any other line wrapped whole. The text's first line is its own
+/// heading, which the dialog's tab line already names.
+fn help_text_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    let heading = Style::default().add_modifier(Modifier::BOLD);
     let mut lines = Vec::new();
-    // The box's title names the panel: skip the help's own "Keys:" heading.
-    for raw in crate::ui::commands::keys_help().lines().skip(1) {
+    for raw in text.lines().skip(1) {
+        if raw.is_empty() {
+            lines.push(Line::default());
+            continue;
+        }
         if !raw.starts_with(' ') {
-            lines.push(Line::styled(raw.to_string(), heading));
+            let style = if raw.ends_with(':') {
+                heading
+            } else {
+                Style::default()
+            };
+            lines.extend(
+                wrap_text(raw, width)
+                    .into_iter()
+                    .map(|l| Line::styled(l, style)),
+            );
             continue;
         }
         let split = raw
@@ -187,10 +252,6 @@ fn keys_lines(width: usize, max_lines: usize) -> Vec<Line<'static>> {
             }
             None => lines.extend(wrap_text(raw, width).into_iter().map(Line::from)),
         }
-    }
-    if lines.len() > max_lines {
-        lines.truncate(max_lines.saturating_sub(1));
-        lines.push(Line::styled("… more in /help", dim));
     }
     lines
 }

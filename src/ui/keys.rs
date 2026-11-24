@@ -4,13 +4,13 @@
 
 use std::time::Instant;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{
-    Action, App, Command, Departure, EditAction, EditorClosed, EditorTarget, Effect, HistorySearch,
-    INTERRUPT_REPEAT, InputMode, LocalEffect, Modal, ModalKey, ModelCommand, NoticeLevel,
-    PathIndex, PendingId, PendingState, Pressed, QUIT_CONFIRM_WINDOW, QuitChoice, QuitDecision,
-    QuitDialog, SearchOutcome, StashOutcome, complete, keymap, search,
+    Action, App, Command, Departure, EditAction, EditorClosed, EditorTarget, Effect, HelpDialog,
+    HelpView, HistorySearch, INTERRUPT_REPEAT, InputMode, LocalEffect, Modal, ModalKey,
+    ModelCommand, NoticeLevel, PathIndex, PendingId, PendingState, Pressed, QUIT_CONFIRM_WINDOW,
+    QuitChoice, QuitDecision, QuitDialog, SearchOutcome, StashOutcome, complete, keymap, search,
 };
 
 impl App {
@@ -250,9 +250,9 @@ impl App {
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
             && self.input.is_empty()
         {
-            // `?` on an empty input opens the shortcut panel; with text it
-            // is just typed.
-            self.modal = Some(Modal::Keys);
+            // `?` on an empty input opens the help on its keys; with text
+            // it is just typed.
+            self.show_modal(Modal::Help(HelpDialog::new(HelpView::Keys)));
             return;
         }
         let action = keymap::map_key(key, self.input.is_empty());
@@ -535,10 +535,11 @@ impl App {
                     self.plan_chosen(choice, now, fx);
                 }
             },
-            // Any key closes the panel and is not typed; a held `?` does
-            // not close what it just opened.
-            Some(Modal::Keys) if key.kind != KeyEventKind::Repeat => self.modal = None,
-            Some(Modal::Keys) | None => {}
+            Some(Modal::Help(dialog)) => match dialog.key(key) {
+                ModalKey::Stay | ModalKey::Choose(()) => {}
+                ModalKey::Close => self.modal = None,
+            },
+            None => {}
         }
     }
 

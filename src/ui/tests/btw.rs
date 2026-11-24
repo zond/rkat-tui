@@ -94,5 +94,5 @@ fn a_second_btw_is_refused_and_an_empty_one_is_a_usage_error() {
     app.update(Msg::BtwAnswered(Err("no answer within 60s".into())));
     let text = app.transcript.export_text();
     assert!(text.contains("(no answer: no answer within 60s)"), "{text}");
-    assert!(commands::help_text().contains("/btw <question>"));
+    assert!(commands::commands_help().contains("/btw <question>"));
 }

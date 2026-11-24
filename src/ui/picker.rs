@@ -1596,13 +1596,12 @@ fn agent_row(agent: &AgentEntry) -> String {
 }
 
 impl App {
-    /// Open a picker `modal` over nothing (or over the keys panel); behind
-    /// an approval dialog it waits until the dialogs are answered
-    /// (replacing a picker waiting there); over any other dialog it is
-    /// dropped.
+    /// Open a picker `modal` over nothing (or over the help); behind an
+    /// approval dialog it waits until the dialogs are answered (replacing
+    /// a picker waiting there); over any other dialog it is dropped.
     pub(super) fn show_modal(&mut self, modal: Modal) {
         match self.modal {
-            None | Some(Modal::Keys) => self.modal = Some(modal),
+            None | Some(Modal::Help(_)) => self.modal = Some(modal),
             Some(Modal::Escalation { .. }) => self.parked = Some(modal),
             Some(_) => {}
         }

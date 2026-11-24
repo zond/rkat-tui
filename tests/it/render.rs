@@ -334,50 +334,49 @@ fn escalation_deny_comment_field_snapshot() {
 }
 
 #[test]
-fn keys_panel_snapshot() {
+fn help_dialog_snapshot() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
     let mut app = App::new(StatusInfo::default());
-    // Idle with an empty input, the editor title offers the panel.
+    // Idle with an empty input, the editor title offers the keys.
     let idle = rows(&render_buffer(&mut app, W, H));
     assert!(
         idle[H as usize - 3].starts_with(" ? keys · Shift+Tab mode ──"),
         "{idle:?}"
     );
     app.update(Msg::Key(KeyEvent::from(KeyCode::Char('?'))));
-    // Wide enough for the help's columns; cut to the height with a pointer
-    // to /help. The dialog spans columns 3..107.
+    // Wide enough for the help's columns, as tall as the terminal: the
+    // tab line, a window of the keys, and the footer with where it is.
+    // The dialog spans columns 3..107.
     let drawn = rows(&render_buffer(&mut app, 110, 10));
     let panel: Vec<String> = drawn
         .iter()
         .map(|r| r.chars().skip(3).collect::<String>().trim_end().to_string())
         .collect();
+    assert!(panel[0].starts_with("┌ Help ───"), "{panel:#?}");
+    assert!(panel[1].starts_with("│ Commands   Keys "), "{panel:#?}");
     assert_eq!(
-        panel,
-        [
-            "┌ Keys (any key closes) ───────────────────────────────────────────────────────────────────────────────┐",
-            "│  ? (empty input)                show these keys; any key closes them (with text, ? is typed)         │",
-            "│  Enter                          send; while the agent is working, queues the message                 │",
-            "│                                 and delivers it at the next step                                     │",
-            "│  Shift+Enter, Alt+Enter, Ctrl+J insert a newline (so does \\ right before Enter at a line end)        │",
-            "│  Ctrl-C                         interrupt the turn (as Esc) · clear the input · press twice to quit  │",
-            "│  Esc                            a pending /btw takes the first Esc: it cancels that question only.   │",
-            "│                                 Else interrupt the turn: your messages the agent has not read come   │───",
-            "│… more in /help                                                                                       │",
-            "└──────────────────────────────────────────────────────────────────────────────────────────────────────┘",
-        ]
+        panel[2],
+        "│  ? (empty input)                open the help on these keys (with text, ? is typed)                  │"
     );
+    assert!(
+        panel[3].starts_with("│  Enter                          send; while the agent is working"),
+        "{panel:#?}"
+    );
+    assert!(panel[8].starts_with("│1-6/"), "{panel:#?}");
+    assert!(panel[8].contains("Esc, q or Ctrl-C closes"), "{panel:#?}");
+    assert!(panel[9].starts_with("└───"), "{panel:#?}");
     // Narrow: descriptions wrap under their column.
     let narrow = rows(&render_buffer(&mut app, W, 14));
     assert!(
-        narrow[1].contains("│  ? (empty input)                show these keys; any   │"),
+        narrow[2].contains("│  ? (empty input)                open the help on these │"),
         "{narrow:?}"
     );
     assert!(
-        narrow[2].contains("│                                 key closes them (with  │"),
+        narrow[3].contains("│                                 keys (with text, ? is  │"),
         "{narrow:?}"
     );
-    // Any key closes it.
-    app.update(Msg::Key(KeyEvent::from(KeyCode::Char('x'))));
+    // Esc closes it.
+    app.update(Msg::Key(KeyEvent::from(KeyCode::Esc)));
     assert!(app.modal.is_none());
 }
 

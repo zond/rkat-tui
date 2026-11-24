@@ -12,6 +12,7 @@ mod activity;
 mod btw;
 mod dispatch;
 mod escalations;
+mod help;
 mod helpers;
 mod keys;
 mod mouse;

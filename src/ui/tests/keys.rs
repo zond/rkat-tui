@@ -414,51 +414,6 @@ fn esc_closes_the_slash_menu_until_the_word_changes() {
 }
 
 #[test]
-fn question_mark_on_an_empty_input_toggles_the_keys_panel() {
-    let mut app = App::new(StatusInfo::default());
-    assert!(app.update(key(KeyCode::Char('?'))).is_empty());
-    assert_eq!(app.modal, Some(Modal::Keys));
-    // A held `?` keeps it open; `?` again closes it and is not typed.
-    let mut held = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
-    held.kind = KeyEventKind::Repeat;
-    app.update(Msg::Key(held));
-    assert_eq!(app.modal, Some(Modal::Keys));
-    app.update(key(KeyCode::Char('?')));
-    assert!(app.modal.is_none());
-    assert!(app.input.is_empty());
-    // Esc closes it, and so does any other key, which is not typed
-    // (Enter does not send).
-    for close in [KeyCode::Esc, KeyCode::Char('x'), KeyCode::Enter] {
-        app.update(key(KeyCode::Char('?')));
-        assert!(app.update(key(close)).is_empty(), "{close:?}");
-        assert!(app.modal.is_none(), "{close:?}");
-        assert!(app.input.is_empty(), "{close:?}");
-    }
-    // With text in the input `?` is just typed.
-    type_str(&mut app, "why?");
-    assert!(app.modal.is_none());
-    assert_eq!(app.input.text(), "why?");
-}
-
-#[test]
-fn the_keys_panel_gives_way_to_escalations_and_pickers() {
-    let mut app = App::new(StatusInfo::default());
-    app.update(key(KeyCode::Char('?')));
-    app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
-    assert!(matches!(app.modal, Some(Modal::Escalation { .. })));
-    app.quiet_past_arming();
-    app.update(key(KeyCode::Char('y')));
-    assert!(app.modal.is_none(), "the panel is not parked");
-    app.update(key(KeyCode::Char('?')));
-    app.update(Msg::ShowResumePicker(vec![("a".into(), "x".into())]));
-    assert!(matches!(app.modal, Some(Modal::Resume(_))));
-    app.update(key(KeyCode::Esc));
-    app.update(key(KeyCode::Char('?')));
-    app.update(Msg::ShowModelPicker(picker_models()));
-    assert!(matches!(app.modal, Some(Modal::Model(_))));
-}
-
-#[test]
 fn ctrl_d_quits_only_on_empty_input() {
     let mut app = App::new(StatusInfo::default());
     type_str(&mut app, "ab");

@@ -6,7 +6,7 @@ use std::time::Instant;
 use super::deferred::Deferred;
 use super::{
     App, AutoCommand, Busy, COMPACT_FOCUS_UNSUPPORTED, Command, CompactCommand, CompactFailure,
-    Effect, Modal, ModelCommand, NoticeLevel, RulesCommand, commands,
+    Effect, HelpDialog, HelpView, Modal, ModelCommand, NoticeLevel, RulesCommand, commands,
 };
 use crate::approval::mode::PermissionMode;
 
@@ -116,8 +116,7 @@ impl App {
             Command::Quit => self.request_quit(now, fx),
             Command::Detach => self.request_detach(fx),
             Command::Help => {
-                self.transcript
-                    .push_notice(NoticeLevel::Info, commands::help_text());
+                self.show_modal(Modal::Help(HelpDialog::new(HelpView::Commands)));
             }
             Command::Copy(n) => self.copy_answer(n),
             Command::Context => fx.push(Effect::ContextReport(self.context_header())),

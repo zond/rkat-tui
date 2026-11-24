@@ -28,7 +28,7 @@ official tables name, then niche features.
 | 11 | Queue messages while the agent works | `Enter` queues; messages join after the current tool calls | `Enter` queues; every message typed so far joins the agent's next model request | same |
 | 12 | Send queued now | `Ctrl+X Ctrl+S` | `Ctrl+X Ctrl+S` interrupts the turn and sends the waiting messages, then the input | partial (CC backgrounds work instead of interrupting) |
 | 13 | Take back queued messages | `Up` from the first line | `Up` on an empty input takes back unread messages and waiting commands | same |
-| 14 | `/help` | `/help`; `?` on an empty input toggles a shortcut panel | `/help`, `/?`; `?` on an empty input shows the keys | same |
+| 14 | `/help` | `/help`; `?` on an empty input toggles a shortcut panel | `/help`, `/?` and `?` on an empty input open one scrolling help dialog over the transcript, on the commands or the keys (Tab switches; Esc, `q` or Ctrl-C closes) | same |
 | 15 | `/clear` | `/clear [name]` | `/clear`, `/new` start a new session | partial (no name) |
 | 16 | `/compact` | `/compact [instructions]`: compacts now, with optional focus | `/compact` compacts before the next model request; instructions are ignored. `/compact prepare` sets what the agent does first ([Context and compaction](manual.md#context-and-compaction)) | partial (no focus instructions) |
 | 17 | `/exit`, `/quit` | `/exit` (alias `/quit`) | `/quit`, `/exit`, `/q`; `/detach` leaves the agent running | same |

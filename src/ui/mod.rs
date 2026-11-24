@@ -70,8 +70,8 @@ pub use history::History;
 pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
 pub use modal::{
-    EscalationAnswer, EscalationDialog, EscalationId, Modal, ModalKey, ModelPicker, PlanChoice,
-    PlanDialog, QuitChoice, QuitDialog, ResumePicker,
+    EscalationAnswer, EscalationDialog, EscalationId, HelpDialog, HelpView, Modal, ModalKey,
+    ModelPicker, PlanChoice, PlanDialog, QuitChoice, QuitDialog, ResumePicker,
 };
 pub use permissions::{Section, permissions_dialog};
 #[cfg(any(test, feature = "test-support"))]
@@ -2089,12 +2089,12 @@ impl App {
             Msg::ShowPicker { picker, refresh } => self.show_picker(picker, refresh),
             Msg::RehomeChecked { typed, answer } => self.rehome_checked(&typed, answer),
             Msg::ShowClassifierPicker(groups) => {
-                if matches!(self.modal, None | Some(Modal::Keys)) && self.parked.is_none() {
+                if matches!(self.modal, None | Some(Modal::Help(_))) && self.parked.is_none() {
                     self.modal = Some(Modal::Model(ModelPicker::new(groups).for_classifier()));
                 }
             }
             Msg::ShowModelPicker(groups) => {
-                if matches!(self.modal, None | Some(Modal::Keys)) && self.parked.is_none() {
+                if matches!(self.modal, None | Some(Modal::Help(_))) && self.parked.is_none() {
                     self.modal = Some(Modal::Model(ModelPicker::new(groups)));
                 } else {
                     for warning in ModelPicker::warnings(&groups) {

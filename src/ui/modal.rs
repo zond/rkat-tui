@@ -1,7 +1,6 @@
 //! Modal dialogs: the escalation (approval) prompt, the resume picker, the
 //! model picker, the list pickers ([`super::picker`], the agent picker
-//! among them), the shortcut panel and plan mode's "Plan ready"
-//! dialog.
+//! among them), the help and plan mode's "Plan ready" dialog.
 //!
 //! Modals are driven by plain data so the UI stays decoupled from the
 //! session modules. The escalation dialog shows the approval engine's
@@ -627,6 +626,113 @@ impl ModelPicker {
     }
 }
 
+/// Which part of the help the help dialog shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpView {
+    /// Every slash command (`/help` opens it here).
+    Commands,
+    /// The keys, the approval prompt and the dialogs' keys (`?` opens it
+    /// here).
+    Keys,
+}
+
+impl HelpView {
+    /// The text this view shows, before the dialog wraps it.
+    #[must_use]
+    pub fn text(self) -> &'static str {
+        match self {
+            Self::Commands => super::commands::commands_help(),
+            Self::Keys => super::commands::keys_help(),
+        }
+    }
+
+    /// The view's name in the dialog's tab line.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Commands => "Commands",
+            Self::Keys => "Keys",
+        }
+    }
+
+    /// The other view (Tab).
+    #[must_use]
+    pub fn other(self) -> Self {
+        match self {
+            Self::Commands => Self::Keys,
+            Self::Keys => Self::Commands,
+        }
+    }
+}
+
+/// The help dialog (`/help`, `?`): one view of the help, scrolled. It
+/// writes nothing to the transcript; the agent goes on underneath.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpDialog {
+    /// The view shown.
+    pub view: HelpView,
+    /// The first wrapped line shown.
+    pub scroll: usize,
+    /// The last useful [`Self::scroll`] at the size last drawn (the
+    /// renderer records it: it knows the width the text wraps to).
+    pub scroll_max: usize,
+    /// The lines one PgUp/PgDn moves at the size last drawn.
+    pub page: usize,
+}
+
+impl HelpDialog {
+    /// The help on `view`, at its top.
+    #[must_use]
+    pub fn new(view: HelpView) -> Self {
+        Self {
+            view,
+            scroll: 0,
+            // Not drawn yet: the drawing clamps it.
+            scroll_max: usize::MAX,
+            page: 10,
+        }
+    }
+
+    /// Scroll up by `lines`.
+    pub fn up(&mut self, lines: usize) {
+        self.scroll = self.scroll.saturating_sub(lines);
+    }
+
+    /// Scroll down by `lines`, no further than the last page.
+    pub fn down(&mut self, lines: usize) {
+        self.scroll = self.scroll.saturating_add(lines).min(self.scroll_max);
+    }
+
+    /// ↑/↓ and `j`/`k` scroll a line, PgUp/PgDn a page, Home/End go to
+    /// the top and the end; Tab and Shift+Tab switch the view (at its
+    /// top); Esc, `q`, `?` and Ctrl-C close. A held key only scrolls;
+    /// other Ctrl/Alt keys do nothing.
+    pub fn key(&mut self, key: &KeyEvent) -> ModalKey<()> {
+        if let Some(answer) = ctrl_c_answer(key) {
+            return answer;
+        }
+        if has_ctrl_or_alt(key) {
+            return ModalKey::Stay;
+        }
+        let held = is_held(key);
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.up(1),
+            KeyCode::Down | KeyCode::Char('j') => self.down(1),
+            KeyCode::PageUp => self.up(self.page),
+            KeyCode::PageDown => self.down(self.page),
+            _ if held => {}
+            KeyCode::Home => self.scroll = 0,
+            // The end at whatever size it is drawn next (the drawing
+            // clamps it).
+            KeyCode::End => self.scroll = usize::MAX,
+            KeyCode::Tab | KeyCode::BackTab => *self = Self::new(self.view.other()),
+            KeyCode::Esc | KeyCode::Char('q' | '?') => return ModalKey::Close,
+            _ => {}
+        }
+        ModalKey::Stay
+    }
+}
+
 /// An open modal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Modal {
@@ -648,8 +754,8 @@ pub enum Modal {
     /// A list picker (`/schedules`, `/permissions`, `/helpers`, `/mode`,
     /// `/memory`, `/wire`, `/unwire`, `/agents`).
     List(ListPicker),
-    /// The `?` shortcut panel: the keys part of the help.
-    Keys,
+    /// The help (`/help`, `?`).
+    Help(HelpDialog),
     /// A turn ended in plan mode with an answer: proceed or keep planning.
     PlanReady(PlanDialog),
     /// `/quit` asks whether to detach or stop the daemon.

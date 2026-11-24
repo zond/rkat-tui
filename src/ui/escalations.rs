@@ -51,7 +51,7 @@ impl App {
         if answered
             && !self.turn.is_running()
             && self.status.mode == Some(PermissionMode::Plan)
-            && matches!(self.modal, None | Some(Modal::Keys))
+            && self.modal.is_none()
         {
             self.modal = Some(Modal::PlanReady(PlanDialog::default()));
             self.arming = Some(super::Arming::opened(now));
@@ -69,11 +69,8 @@ impl App {
             }
             _ => {
                 // Escalations are time-limited and shown at once; an open
-                // picker waits until they are answered (the shortcut panel
-                // just closes).
-                if let Some(picker) = self.modal.take()
-                    && picker != Modal::Keys
-                {
+                // picker or the help waits until they are answered.
+                if let Some(picker) = self.modal.take() {
                     self.parked = Some(picker);
                 }
                 self.modal = Some(Modal::Escalation {
