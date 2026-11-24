@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.23] - 2026-11-24
+
 ### Changed
 
 - Dialogs no longer change size as you switch what they show: the
