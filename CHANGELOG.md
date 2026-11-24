@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.22] - 2026-11-24
+
 ### Changed
 
 - `/help` and `?` open a help dialog over the transcript instead of
