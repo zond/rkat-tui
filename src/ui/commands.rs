@@ -297,8 +297,8 @@ pub enum Command {
     Status,
     /// `/export [file]`: write the transcript as plain text.
     Export(Option<String>),
-    /// `/rehome [directory|id|old path]`: list the state this workspace
-    /// could adopt (`None`), or re-home (the runner reads the argument).
+    /// `/rehome [directory|id|old path]`: the picker of this workspace's
+    /// state (`None`), or re-home (the runner reads the argument).
     Rehome(Option<String>),
     /// `/init`: ask the agent to write or update the workspace `AGENTS.md`.
     Init,
@@ -877,7 +877,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         help: &[
             (
                 "/rehome",
-                "this workspace's state, and the state of workspaces whose\ndirectory is gone, which it could adopt",
+                "open a picker: this workspace's state, the state it could\nadopt (workspaces gone first, then the others, dim), and a\nrow that moves it to a directory you type; each asks first",
             ),
             (
                 "/rehome <directory>",
@@ -1200,7 +1200,7 @@ Agent picker (/agents):
   d, then y                      retire the agent: only one idle with no client (its
                                  conversation stays in /resume); n or Esc keeps it
   Esc, q                         close
-Lists (/schedules, /permissions, /helpers, /mode, /memory, /wire, /unwire, /settings):
+Lists (/schedules, /permissions, /helpers, /mode, /memory, /wire, /unwire, /settings, /rehome):
   Up/Down, j/k                   move; rows wrap (the highlighted one in full); a list stays open
                                  after its acts, refreshed on the same row, until Esc, q or Ctrl-C
                                  (a mode chosen, a helper's full view, an agent switch close it)
@@ -1237,7 +1237,10 @@ Lists (/schedules, /permissions, /helpers, /mode, /memory, /wire, /unwire, /sett
                                  helpers it started keep running; its parent is told)
   Enter (/mode)                  switch to the mode (a paused auto mode: resume it)
   Enter (/memory)                edit the file in $VISUAL / $EDITOR
-  Esc, q, Ctrl-C                 close (an approval request takes over and the list comes back)";
+  Enter, then y (/rehome)        adopt that workspace's state here (the daemon restarts on it)
+  Enter, last row (/rehome)      type a directory (~ is your home), Enter checks it (a refusal
+                                 stays in the field), then y moves this workspace's state there
+  Esc, q, Ctrl-C                close (an approval request takes over and the list comes back)";
 
 /// The line that ends `/help`. `/rewind` returns when the engine can rewind
 /// a session in place under the same identity (lukacf/meerkat#2126).

@@ -220,6 +220,8 @@ pub const NOT_FORWARDED: &[&str] = &[
     "list",
     "wire_remote",
     "rehome",
+    "remove_state",
+    "yes",
     "audit",
     "classifier_check",
 ];

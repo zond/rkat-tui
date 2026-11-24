@@ -95,6 +95,9 @@ pub fn resolve_scope(args: &Args) -> Result<RuntimeScope, TuiError> {
     let project_root = project_root_from(&workspace_of(args, Some(&root))?)?;
     let context_root = project_root.as_path().to_path_buf();
     let user_config_root = args.user_config_root.clone().or_else(dirs::home_dir);
+    // No workspace is served from inside the config directory, which
+    // holds every workspace's state.
+    realm_home::check_not_in_config(&global.config, &context_root)?;
     let opened = realm_home::open_or_create(&root, &context_root)?;
     let offer = if opened.created {
         realm_home::offer(&opened.orphans)

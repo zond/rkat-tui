@@ -3074,6 +3074,24 @@ re-home one. `rkat-tui --list` lists every workspace's state.
 daemon serve each workspace, and the state's `workspace.toml` names it.
 There are two ways.
 
+- *The picker*: `/rehome` alone opens it. Its first line names this
+  workspace and its state; the rows below are the state you could adopt
+  here, first the state of workspaces whose directory is gone, then, dim,
+  the state of workspaces that still exist (adopting one takes its state
+  from there, and that directory starts with fresh state the next time
+  rkat-tui runs in it). Each row shows the id, the workspace it served,
+  its last use and its git remote. Enter asks first, in one line, what
+  will happen; `y` adopts it as `/rehome from <id>` does, `n` or Esc
+  keeps everything. `d`, then `y`, deletes a row's state as `rkat-tui
+  --remove-state <id> --yes` does. The last row, *Move this workspace's
+  state to another directory…*, opens a line to type the directory
+  (`~` is your home): Enter checks it on the spot, and a refusal (it does
+  not exist, it is not a directory, it lies in rkat-tui's config
+  directory) shows under the line with what you typed kept; a directory
+  that passes asks, and `y` moves the state there as `/rehome to <dir>`
+  does. Esc closes the picker with nothing changed. Tab does not complete
+  directories in that line (the `@` completion only knows the workspace's
+  own files).
 - *Push*, from inside the TUI: `/rehome <directory>` moves this
   workspace's state to that (existing) directory. The daemon is stopped
   and started again there, and the same `rkat-tui` reattaches to the same
@@ -3086,23 +3104,57 @@ There are two ways.
   not touched.
 - *Pull*, after a move: the first start in the moved directory begins
   with fresh, empty state and offers the old one in a notice (it is not
-  adopted on its own). `/rehome <id or old path>` in that TUI adopts it:
-  the empty state is removed, the daemon restarts on the adopted state
-  and the TUI continues its latest conversation. `rkat-tui --rehome <id
-  or old path>` does the same from the shell, without starting anything.
+  adopted on its own). `/rehome` picks it, or `/rehome <id or old path>`
+  in that TUI adopts it: the empty state is removed, the daemon restarts
+  on the adopted state and the TUI continues its latest conversation.
+  `rkat-tui --rehome <id or old path>` does the same from the shell,
+  without starting anything.
+
+The state is named by its id, by its own directory
+(`<config dir>/workspaces/<id>`, or any path inside it), or by the path
+its workspace had; a leading `~` is your home directory, in a path to
+move to as well. A path that names nothing says which it is: a directory
+that does not exist (create it first, or check the spelling), a path
+that is not a directory, or no state by that name (`rkat-tui --list`
+shows them). The notice after a re-home says which way it went: *moved
+this workspace's state (realm …, N conversations) from … to …: it now
+belongs to …* after a push, *adopted realm … (was …) for …, with N
+conversations* after a pull, and then where this rkat-tui works now.
 
 A daemon running on the state that moves is stopped (its agents come
 back when it starts in the new place). A re-home is refused, changing
 nothing, while a turn runs on a daemon it would stop (interrupt it or
-wait), and when the destination already has state that holds anything: a
-conversation with a turn of yours, or a daemon with another TUI attached.
-State that cannot be read counts as holding something. An argument that
-reads both ways (an existing directory that is also some state's
-workspace) is refused naming both readings; `/rehome from <ref>` and
-`/rehome to <directory>` say which. A directory that would contain the
-state, or lie inside it, is refused. After any re-home, `rkat-tui -c` in
-the new directory continues the latest conversation. `/rehome` alone
-lists this workspace's state and the state whose workspace is gone.
+wait), and while the destination's state has a daemon with another TUI
+attached. When the state it would replace holds anything (a
+conversation with a turn of yours; state that cannot be read counts as
+holding something), the TUI asks instead: a question names that state
+(its id, its workspace, how many conversations, its last use) and says
+it cannot be undone; `y` deletes it and the re-home goes on, `n` or Esc
+keeps it, and the notice beside it names the shell command that deletes
+it. `rkat-tui --rehome` from the shell refuses and names that command. An
+argument that reads both ways (an existing directory that is also some
+state's workspace) is refused naming both readings; `/rehome from <ref>`
+and `/rehome to <directory>` say which. An existing directory that no
+state names, while this workspace's state holds no conversation, is
+refused as well: moving nothing there is rarely meant (more often an
+adoption whose name matched nothing); `/rehome to <directory>` moves it
+anyway. A directory that would contain the state, or lie inside it, is
+refused, and so is any directory in rkat-tui's config directory or one
+that holds it (it keeps every workspace's state; a workspace there
+would reach all of it, and no workspace starts inside it). After any
+re-home, `rkat-tui -c` in the new directory continues the latest
+conversation.
+
+**Deleting a workspace's state.** `rkat-tui --remove-state <ref>`, the
+state named as for `--rehome` (its id, its directory, or the path the
+workspace had), prints what it would delete (the id, the workspace, how
+many conversations, its last use, its directory) and the command line
+that does; with `--yes` it deletes it: the state's directory and every
+conversation in it, which cannot be undone. A daemon running on it is
+stopped first when it is idle with no TUI attached; a running turn or an
+attached TUI refuses, saying so. Only a state directory under the config
+directory's `workspaces/` is ever deleted. The `/rehome` picker's `d`
+does the same for a row.
 
 A `.rkat/tui/` inside the workspace is never read (one a clone carries
 or the agent's shell writes marks nothing).
@@ -3214,6 +3266,8 @@ The flags that choose the daemon:
 | `--attach=HOST:PORT` | Attach to a daemon reached at that address (a tunnel), with `--attach-token-file`; a loopback address only, unless `--attach-insecure` |
 | `--list` | List every daemon that has an endpoint file, then exit (also `rkat-tui-mob --list`) |
 | `--audit` | Print the workspace daemon's audit log, then exit (see "Where things live") |
+| `--rehome REF` | Adopt the state REF names for this workspace, then exit (see "Moving or renaming a workspace") |
+| `--remove-state REF [--yes]` | Print what deleting the state REF names would delete; with `--yes`, delete it, then exit (see "Deleting a workspace's state") |
 | `--classifier-check[=quick\|all\|N]` | Measure the daemon's classifier model on the built-in cases, print the report, exit 0 within the targets, 3 outside, 1 incomplete (see "Checking your classifier model") |
 
 **Attaching to another workspace.** `--attach=DIRECTORY` (a value with a

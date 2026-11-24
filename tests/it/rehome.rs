@@ -13,10 +13,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use common::{ScriptedLlmClient, Step, Workspace, args_for, args_with, no_lists, user_texts};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use rig::{Client, Restarted, Running};
 use rkat_tui::bootstrap::realm_home;
 use rkat_tui::daemon::protocol::AgentChoice;
-use rkat_tui::ui::{Block, Connection as LinkState, Effect, Msg, NoticeLevel, StatusUpdate};
+use rkat_tui::ui::{
+    Block, Connection as LinkState, Effect, ListPicker, ModalKey, Msg, NoticeLevel, PickAct,
+    PickerKind, StatusUpdate,
+};
 use serde_json::json;
 use tokio::sync::Notify;
 
@@ -156,9 +160,16 @@ async fn a_push_moves_the_session_to_the_new_workspace_without_a_restart() {
         .await;
     old_daemon.ended().await;
     issuer.attached().await;
-    let said = notice(&mut issuer, NoticeLevel::Info, "now serves").await;
+    let said = notice(&mut issuer, NoticeLevel::Info, "now belongs to").await;
     assert!(
         said.contains(&realm.id) && said.contains(&new.display().to_string()),
+        "{said}"
+    );
+    assert!(said.contains("moved this workspace's state"), "{said}");
+    // The issuer's conversation and the second client's agent's.
+    assert!(said.contains("2 conversations"), "{said}");
+    assert!(
+        said.contains(&format!("this rkat-tui now works in {}", new.display())),
         "{said}"
     );
     // The same conversation, under the same realm, in the new place.
@@ -313,6 +324,13 @@ async fn a_rehome_into_a_realm_that_holds_a_conversation_is_refused() {
     issuer.send(Effect::Rehome(Some(format!("to {}", taken.display()))));
     let refused = notice(&mut issuer, NoticeLevel::Warn, "is not empty").await;
     assert!(refused.contains("user turns"), "{refused}");
+    assert!(refused.contains("--remove-state"), "{refused}");
+    // The dialog asks whether to delete it; nobody answers here (n).
+    let asked = issuer
+        .seen
+        .iter()
+        .any(|msg| matches!(msg, Msg::ShowPicker { picker, .. } if picker.kind == PickerKind::Rehome && picker.line.is_some()));
+    assert!(asked, "no question about deleting the destination's state");
     // Pull: this workspace's realm holds "here too".
     issuer.send(Effect::Rehome(Some(orphan.id.clone())));
     notice(
@@ -485,4 +503,314 @@ async fn after_a_shell_rehome_continue_resumes_the_latest_conversation_in_the_ne
     assert_eq!(common::realm_of(&moved), old.dir);
     again.quit().await;
     running.stop().await;
+}
+
+/// The `/rehome` picker the client is shown, seen or arriving.
+async fn rehome_picker(client: &mut Client) -> ListPicker {
+    let msg = client
+        .saw(|msg| matches!(msg, Msg::ShowPicker { picker, refresh: false } if picker.kind == PickerKind::Rehome))
+        .await;
+    match msg {
+        Msg::ShowPicker { picker, .. } => picker,
+        _ => unreachable!(),
+    }
+}
+
+/// What the picker's keys `keys` answer, the last one's act.
+fn press(picker: &mut ListPicker, keys: &[KeyCode]) -> Option<PickAct> {
+    let mut last = None;
+    for code in keys {
+        last = match picker.key(&KeyEvent::from(*code)) {
+            ModalKey::Choose(act) => Some(act),
+            _ => None,
+        };
+    }
+    last
+}
+
+/// The realms under the rig's config directory of `root`: (id, path).
+fn on_disk(root: &Path) -> Vec<(String, PathBuf)> {
+    realm_home::scan(&realms(root))
+        .unwrap()
+        .into_iter()
+        .map(|home| (home.id, home.manifest.path))
+        .collect()
+}
+
+/// `/rehome` alone opens the picker: the moved workspace's old state is
+/// its first row; `n` to the question and Esc change nothing (the same
+/// realms on disk, the daemon still serving); Enter then `y` answers
+/// `/rehome from <id>`, which adopts it here as the typed form does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_picker_adopts_the_old_state_and_its_no_changes_nothing() {
+    let ws = Workspace::new();
+    let first = one_conversation(&ws.root, "before the move").await;
+    let old = realm_home::find(&realms(&ws.root), &ws.root)
+        .unwrap()
+        .unwrap();
+    let moved = ws.sibling("moved");
+    std::fs::rename(&ws.root, &moved).unwrap();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let running = daemon(&moved, &llm).await;
+    let (mut issuer, restarted) = client(&moved, &llm, None).await;
+    issuer.send(Effect::Rehome(None));
+    let mut picker = rehome_picker(&mut issuer).await;
+    assert!(
+        picker
+            .header
+            .as_deref()
+            .unwrap()
+            .contains(&moved.display().to_string())
+    );
+    assert_eq!(picker.rows[0].id.as_deref(), Some(old.id.as_str()));
+    assert!(picker.rows.last().unwrap().text.starts_with("Move"));
+    let before = on_disk(&moved);
+    assert_eq!(
+        press(&mut picker, &[KeyCode::Enter, KeyCode::Char('n')]),
+        None
+    );
+    assert_eq!(press(&mut picker, &[KeyCode::Esc]), None);
+    assert_eq!(on_disk(&moved), before);
+    assert!(running.serving());
+    assert!(restarted.lock().is_empty());
+
+    let mut picker = rehome_picker(&mut issuer).await;
+    let act = press(&mut picker, &[KeyCode::Enter, KeyCode::Char('y')]);
+    let Some(PickAct::Rehome(argument)) = act else {
+        panic!("{act:?}");
+    };
+    assert_eq!(argument, format!("from {}", old.id));
+    issuer.send(Effect::Rehome(Some(argument)));
+    issuer
+        .wait_for(|msg| matches!(msg, Msg::Rerooted { realm, .. } if *realm == old.dir))
+        .await;
+    running.ended().await;
+    issuer.attached().await;
+    let said = notice(&mut issuer, NoticeLevel::Info, "adopted realm").await;
+    assert!(
+        said.contains(&format!("(was {})", ws.root.display())) && said.contains("1 conversation"),
+        "{said}"
+    );
+    assert_eq!(shown_session(&issuer), Some(first.to_string()));
+    assert_eq!(common::realm_of(&moved), old.dir);
+    issuer.quit().await;
+    let daemon = restarted.lock().pop().unwrap();
+    daemon.stop().await;
+}
+
+/// The picker's move row: a directory that does not exist is refused by
+/// the check, naming it, with nothing changed; once it exists the check
+/// asks, and `/rehome to <dir>` moves the state there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_picker_checks_the_directory_and_moves_the_state_there() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let running = daemon(&ws.root, &llm).await;
+    let realm = realm_home::find(&realms(&ws.root), &ws.root)
+        .unwrap()
+        .unwrap();
+    let (mut issuer, restarted) = client(&ws.root, &llm, None).await;
+    let new = ws.sibling("elsewhere");
+    let typed = "../elsewhere".to_string();
+    issuer.send(Effect::RehomeCheck(typed.clone()));
+    let answer = issuer
+        .wait_for(|msg| matches!(msg, Msg::RehomeChecked { .. }))
+        .await;
+    let Msg::RehomeChecked {
+        answer: Err(why), ..
+    } = answer
+    else {
+        panic!("{answer:?}");
+    };
+    assert!(
+        why.contains(&format!("{} does not exist", new.display())),
+        "{why}"
+    );
+    assert!(running.serving());
+    std::fs::create_dir_all(&new).unwrap();
+    let new = std::fs::canonicalize(&new).unwrap();
+    issuer.send(Effect::RehomeCheck(typed));
+    let answer = issuer
+        .wait_for(|msg| matches!(msg, Msg::RehomeChecked { .. }))
+        .await;
+    let Msg::RehomeChecked {
+        answer: Ok((question, path)),
+        ..
+    } = answer
+    else {
+        panic!("{answer:?}");
+    };
+    assert_eq!(path, new);
+    assert!(question.contains(&realm.id), "{question}");
+    // Nothing moved by the check itself.
+    assert_eq!(common::realm_of(&ws.root), realm.dir);
+    issuer.send(Effect::Rehome(Some(format!("to {}", path.display()))));
+    issuer
+        .wait_for(
+            |msg| matches!(msg, Msg::Rerooted { workspace, .. } if workspace.as_path() == new),
+        )
+        .await;
+    running.ended().await;
+    issuer.attached().await;
+    notice(&mut issuer, NoticeLevel::Info, "now belongs to").await;
+    assert_eq!(common::realm_of(&new), realm.dir);
+    issuer.quit().await;
+    let daemon = restarted.lock().pop().unwrap();
+    daemon.stop().await;
+}
+
+/// No push into the config directory: `to` a realm's directory (the
+/// owner's mistake: the old state's own directory, typed to adopt it) is
+/// refused naming `/rehome from`, with nothing changed on disk and the
+/// daemon still serving the workspace; read either way, that directory
+/// is the realm and is adopted. A directory read either way, to which a
+/// state with no conversation would move, is refused as well.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_push_into_the_config_directory_or_of_nothing_is_refused() {
+    let ws = Workspace::new();
+    let other = ws.sibling("other");
+    std::fs::create_dir_all(&other).unwrap();
+    one_conversation(&other, "the other's").await;
+    let other_realm = realm_home::find(&realms(&ws.root), &std::fs::canonicalize(&other).unwrap())
+        .unwrap()
+        .unwrap();
+    let free = ws.sibling("free");
+    std::fs::create_dir_all(&free).unwrap();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let running = daemon(&ws.root, &llm).await;
+    let (mut issuer, restarted) = client(&ws.root, &llm, None).await;
+    let before = on_disk(&ws.root);
+    issuer.send(Effect::Rehome(Some(format!(
+        "to {}",
+        other_realm.dir.display()
+    ))));
+    let refused = notice(&mut issuer, NoticeLevel::Warn, "config directory").await;
+    assert!(refused.contains("/rehome from"), "{refused}");
+    issuer.send(Effect::Rehome(Some(free.display().to_string())));
+    let empty = notice(&mut issuer, NoticeLevel::Warn, "holds no conversation").await;
+    assert!(empty.contains("/rehome to"), "{empty}");
+    assert_eq!(on_disk(&ws.root), before);
+    assert!(running.serving());
+    assert!(restarted.lock().is_empty());
+    // Read either way, the realm's directory is that realm: a pull.
+    issuer.send(Effect::Rehome(Some(other_realm.dir.display().to_string())));
+    issuer
+        .wait_for(|msg| matches!(msg, Msg::Rerooted { realm, .. } if *realm == other_realm.dir))
+        .await;
+    running.ended().await;
+    issuer.attached().await;
+    issuer.quit().await;
+    let daemon = restarted.lock().pop().unwrap();
+    daemon.stop().await;
+}
+
+/// A push onto a directory whose state holds a conversation, once the
+/// user confirmed deleting it (the dialog's `y`): that state is deleted
+/// and this workspace's moves there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_confirmed_discard_deletes_the_destination_s_state_and_moves_there() {
+    let ws = Workspace::new();
+    let taken = ws.sibling("taken");
+    std::fs::create_dir_all(&taken).unwrap();
+    one_conversation(&taken, "mine").await;
+    let taken = std::fs::canonicalize(&taken).unwrap();
+    let theirs = realm_home::find(&realms(&ws.root), &taken)
+        .unwrap()
+        .unwrap();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
+    let running = daemon(&ws.root, &llm).await;
+    let realm = realm_home::find(&realms(&ws.root), &ws.root)
+        .unwrap()
+        .unwrap();
+    let (mut issuer, restarted) = client(&ws.root, &llm, None).await;
+    issuer.send(Effect::StartTurn("here".into()));
+    let _ = issuer.turn_finished().await;
+    issuer.send(Effect::Rehome(Some(format!("to {}", taken.display()))));
+    notice(&mut issuer, NoticeLevel::Warn, "is not empty").await;
+    let mut asked = rehome_picker(&mut issuer).await;
+    let act = press(&mut asked, &[KeyCode::Char('y')]);
+    let Some(PickAct::RehomeDiscarding { argument, discard }) = act else {
+        panic!("{act:?}");
+    };
+    assert_eq!(discard, theirs.id);
+    assert!(theirs.dir.exists());
+    issuer.send(Effect::RehomeDiscarding { argument, discard });
+    issuer
+        .wait_for(
+            |msg| matches!(msg, Msg::Rerooted { workspace, .. } if workspace.as_path() == taken),
+        )
+        .await;
+    running.ended().await;
+    issuer.attached().await;
+    assert!(!theirs.dir.exists(), "the confirmed state is deleted");
+    assert_eq!(common::realm_of(&taken), realm.dir);
+    issuer.quit().await;
+    let daemon = restarted.lock().pop().unwrap();
+    daemon.stop().await;
+}
+
+/// `rkat-tui --remove-state`: an unknown reference is refused; with a
+/// client attached it refuses; without `--yes` it says what it would
+/// delete and deletes nothing; with `--yes` it stops the idle daemon and
+/// deletes exactly that realm, the others untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_state_deletes_exactly_the_named_state() {
+    use rkat_tui::client::rehome::{self, Removed};
+    let ws = Workspace::new();
+    let keep = ws.sibling("keep");
+    std::fs::create_dir_all(&keep).unwrap();
+    one_conversation(&keep, "kept").await;
+    let llm = ScriptedLlmClient::new(vec![]);
+    let running = daemon(&ws.root, &llm).await;
+    let realm = realm_home::find(&realms(&ws.root), &ws.root)
+        .unwrap()
+        .unwrap();
+    let files: rehome::EndpointFiles = Arc::new(|workspace: &Path| vec![file(workspace)]);
+    let mut args = args_for(&ws.root);
+    let unknown = rehome::remove_state(&args, "nope", &files)
+        .await
+        .unwrap_err();
+    assert!(unknown.to_string().contains("names no realm"), "{unknown}");
+    let (attached, _) = client(&ws.root, &llm, None).await;
+    args.yes = true;
+    let busy = rehome::remove_state(&args, &realm.id, &files)
+        .await
+        .unwrap_err();
+    assert!(busy.to_string().contains("client(s) attached"), "{busy}");
+    attached.quit().await;
+    // The daemon counts the client gone once its connection closed.
+    let mut clients = running.status().await.clients;
+    for _ in 0..200 {
+        if clients == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        clients = running.status().await.clients;
+    }
+    assert_eq!(clients, 0, "the client's leave was not counted");
+    args.yes = false;
+    let before = on_disk(&ws.root);
+    let would = rehome::remove_state(&args, &realm.id, &files)
+        .await
+        .unwrap();
+    let Removed::Would(text) = &would else {
+        panic!("{would:?}");
+    };
+    assert!(
+        text.contains(&format!("--remove-state {} --yes", realm.id)),
+        "{text}"
+    );
+    assert_eq!(on_disk(&ws.root), before);
+    assert!(running.serving());
+    args.yes = true;
+    let done = rehome::remove_state(&args, &realm.id, &files)
+        .await
+        .unwrap();
+    assert!(matches!(done, Removed::Deleted(_)), "{done:?}");
+    running.ended().await;
+    assert!(!realm.dir.exists());
+    let left = on_disk(&ws.root);
+    assert_eq!(left.len(), before.len() - 1);
+    assert!(left.iter().all(|(id, _)| *id != realm.id));
+    assert!(realms(&ws.root).exists());
 }

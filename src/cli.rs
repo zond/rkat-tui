@@ -236,6 +236,20 @@ pub struct Args {
     #[arg(long, value_name = "REF")]
     pub rehome: Option<String>,
 
+    /// Delete the state of a workspace: the state REF names (its id, its
+    /// directory, or the path the workspace had; `--list` shows them),
+    /// with every conversation in it. Without `--yes` it only prints what
+    /// it would delete and the command line that does; with `--yes` it
+    /// stops an idle daemon of it and deletes it. A daemon running a turn
+    /// or with a client attached refuses. Then exit.
+    #[arg(long, value_name = "REF", conflicts_with = "rehome")]
+    pub remove_state: Option<String>,
+
+    /// With `--remove-state`: delete, rather than print what would be
+    /// deleted.
+    #[arg(long, requires = "remove_state")]
+    pub yes: bool,
+
     /// Print the workspace daemon's audit log (every gate decision and who
     /// made it, and the changes of mode, rules and trust; the rotated
     /// generation first), then exit.

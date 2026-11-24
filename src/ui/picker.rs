@@ -47,6 +47,8 @@ pub enum PickerKind {
     Agents,
     /// `/settings`.
     Settings,
+    /// `/rehome`.
+    Rehome,
 }
 
 impl PickerKind {
@@ -64,6 +66,7 @@ impl PickerKind {
             Self::Unwire => " Wires to other workspaces ",
             Self::Agents => " Agents ",
             Self::Settings => " Settings ",
+            Self::Rehome => " Workspace state ",
         }
     }
 }
@@ -185,6 +188,24 @@ pub enum PickAct {
     /// Retire the agent (the list comes again without it, or the refusal
     /// shows on the picker).
     RetireAgent(String),
+    /// `/rehome <argument>` (`from <id>`, `to <directory>`), confirmed:
+    /// the picker closes and the re-home runs as the typed command does.
+    Rehome(String),
+    /// The `/rehome` picker's directory as typed: the runner checks it
+    /// (answered with [`super::Msg::RehomeChecked`]) while the field
+    /// stays open.
+    CheckRehome(String),
+    /// `/rehome <argument>` again, the state `discard` (a realm id) that
+    /// refused it deleted: the user confirmed it.
+    RehomeDiscarding {
+        /// The `/rehome` argument.
+        argument: String,
+        /// The realm to delete.
+        discard: String,
+    },
+    /// Delete the state of realm `id` (as `rkat-tui --remove-state <id>
+    /// --yes`), then the list again.
+    RemoveState(String),
 }
 
 impl PickAct {
@@ -195,7 +216,12 @@ impl PickAct {
     fn leaves_picker(&self) -> bool {
         matches!(
             self,
-            Self::SetMode(_) | Self::ViewHelper(_) | Self::SwitchAgent(_) | Self::NewAgent
+            Self::SetMode(_)
+                | Self::ViewHelper(_)
+                | Self::SwitchAgent(_)
+                | Self::NewAgent
+                | Self::Rehome(_)
+                | Self::RehomeDiscarding { .. }
         )
     }
 }
@@ -327,7 +353,17 @@ pub enum FieldFor {
         /// Written to the user's own `tui.toml`.
         user: bool,
     },
+    /// The directory to move this workspace's state to (`/rehome to`);
+    /// Enter is [`PickAct::CheckRehome`], and a refusal of the runner's
+    /// check shows here, the field kept open with its text.
+    Directory {
+        /// Why the last directory typed was refused (until the next edit).
+        refused: Option<String>,
+    },
 }
+
+/// The most characters the `/rehome` picker's directory takes.
+const DIRECTORY_CHARS: usize = 4_096;
 
 /// A rule as the `/permissions` dialog's `r` form leaves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -379,6 +415,27 @@ impl FieldFor {
             }
             // A host name's 253 and `*.`.
             Self::Host { .. } => 255,
+            Self::Directory { .. } => DIRECTORY_CHARS,
+        }
+    }
+
+    /// The text was edited: a refusal of the text before goes.
+    fn edited(&mut self) {
+        if let Self::Directory { refused } = self {
+            *refused = None;
+        }
+    }
+
+    /// Keep the refusal `why` of Enter in the field itself (it stays
+    /// open with its text); whether it did. Every other field closes
+    /// and the refusal shows under the rows.
+    fn hold_refusal(&mut self, why: &str) -> bool {
+        match self {
+            Self::Directory { refused } => {
+                *refused = Some(why.to_string());
+                true
+            }
+            _ => false,
         }
     }
 
@@ -397,6 +454,7 @@ impl FieldFor {
                     *deny = !*deny;
                 }
             }
+            Self::Directory { .. } => {}
         }
     }
 
@@ -446,6 +504,15 @@ impl FieldFor {
                     host: text,
                     user: *user,
                 }
+            }
+            Self::Directory { .. } => {
+                if text.is_empty() {
+                    return Err(
+                        "type the directory to move this workspace's state to (~ is your home)"
+                            .to_string(),
+                    );
+                }
+                PickAct::CheckRehome(text)
             }
             Self::Rule {
                 deny,
@@ -530,6 +597,15 @@ impl FieldFor {
                     "trust a host with this project's data · {now} · type a host name or *.domain (Enter trusts · Tab: {other} · Esc cancels):"
                 )
             }
+            Self::Directory { .. } => "move this workspace's state to another directory · type its path, ~ is your home (Enter checks it, then asks · Esc cancels):".to_string(),
+        }
+    }
+
+    /// Why the text in the field was refused, shown under it.
+    fn refusal(&self) -> Option<&str> {
+        match self {
+            Self::Directory { refused } => refused.as_deref(),
+            _ => None,
         }
     }
 }
@@ -685,6 +761,9 @@ pub struct ListPicker {
     /// The rows (by [`PickRow::id`]) whose detail was shown: their
     /// [`PickRow::view_first`] keys act.
     pub viewed: std::collections::BTreeSet<String>,
+    /// A line over the rows (what the rows are about: `/rehome`'s
+    /// workspace and its state).
+    pub header: Option<String>,
 }
 
 /// One section of a picker with sections: its rows and what goes with
@@ -900,7 +979,15 @@ impl ListPicker {
             sections: None,
             detail: None,
             viewed: std::collections::BTreeSet::new(),
+            header: None,
         }
+    }
+
+    /// The picker with `header` over its rows ([`Self::header`]).
+    #[must_use]
+    pub fn with_header(mut self, header: impl Into<String>) -> Self {
+        self.header = Some(header.into());
+        self
     }
 
     /// The picker with `keys` of its own ([`Self::keys`]).
@@ -969,7 +1056,9 @@ impl ListPicker {
                         ModalKey::Choose(act)
                     }
                     Err(why) => {
-                        self.line = Some(PickerLine::Refused(why));
+                        if !field.what.hold_refusal(&why) {
+                            self.line = Some(PickerLine::Refused(why));
+                        }
                         ModalKey::Stay
                     }
                 },
@@ -991,11 +1080,13 @@ impl ListPicker {
                 }
                 KeyCode::Backspace => {
                     field.text.pop();
+                    field.what.edited();
                     ModalKey::Stay
                 }
                 KeyCode::Char(c) => {
                     let mut buf = [0; 4];
                     push_line_text(&mut field.text, c.encode_utf8(&mut buf), field.what.max());
+                    field.what.edited();
                     ModalKey::Stay
                 }
                 _ => ModalKey::Stay,
@@ -1094,6 +1185,7 @@ impl ListPicker {
     pub fn type_text(&mut self, text: &str) {
         if let Some(PickerLine::Field(field)) = &mut self.line {
             push_line_text(&mut field.text, text, field.what.max());
+            field.what.edited();
         }
     }
 
@@ -1208,6 +1300,14 @@ pub(super) fn list_picker_lines(
                     .into_iter()
                     .map(Line::from),
             );
+            if let Some(why) = field.what.refusal() {
+                let refused = Style::default().fg(Color::Red);
+                tail.extend(
+                    wrap_text(why, width)
+                        .into_iter()
+                        .map(|line| Line::styled(line, refused)),
+                );
+            }
         }
         None => {}
     }
@@ -1221,11 +1321,19 @@ pub(super) fn list_picker_lines(
             .into_iter()
             .map(|line| Line::styled(line, dim)),
     );
+    let head: Vec<Line<'static>> = picker
+        .header
+        .as_deref()
+        .map(|header| {
+            wrap_text(header, width)
+                .into_iter()
+                .map(|line| Line::styled(line, Style::default().add_modifier(Modifier::BOLD)))
+                .collect()
+        })
+        .unwrap_or_default();
     if picker.rows.is_empty() {
-        let mut lines: Vec<Line<'static>> = wrap_text(&picker.empty, width)
-            .into_iter()
-            .map(Line::from)
-            .collect();
+        let mut lines = head;
+        lines.extend(wrap_text(&picker.empty, width).into_iter().map(Line::from));
         lines.extend(tail);
         return lines;
     }
@@ -1256,8 +1364,9 @@ pub(super) fn list_picker_lines(
             lines
         })
         .collect();
-    let room = max_lines.saturating_sub(tail.len());
-    let mut lines = window_lines(rows, selected, room);
+    let room = max_lines.saturating_sub(tail.len() + head.len());
+    let mut lines = head;
+    lines.extend(window_lines(rows, selected, room));
     lines.extend(tail);
     lines
 }
@@ -1554,6 +1663,42 @@ impl App {
         }
     }
 
+    /// The runner's check of the `/rehome` picker's directory `typed`: a
+    /// question whose `y` re-homes there, or the refusal in the field,
+    /// which stays open with its text. Nothing when the picker is gone or
+    /// its field holds other text now.
+    pub(super) fn rehome_checked(
+        &mut self,
+        typed: &str,
+        answer: Result<(String, std::path::PathBuf), String>,
+    ) {
+        for slot in [&mut self.modal, &mut self.parked] {
+            let Some(Modal::List(picker)) = slot else {
+                continue;
+            };
+            let Some(PickerLine::Field(field)) = &mut picker.line else {
+                continue;
+            };
+            if picker.kind != PickerKind::Rehome || field.text != typed {
+                continue;
+            }
+            match &answer {
+                Ok((question, path)) => {
+                    picker.line = Some(PickerLine::Confirm {
+                        question: question.clone(),
+                        act: PickAct::Rehome(format!("to {}", path.display())),
+                        nudged: false,
+                    });
+                }
+                Err(why) => {
+                    field.what = FieldFor::Directory {
+                        refused: Some(why.clone()),
+                    };
+                }
+            }
+        }
+    }
+
     /// `line` under the rows of a picker of `kind` open or waiting; a
     /// question pending there stays.
     fn picker_says(&mut self, kind: PickerKind, line: &PickerLine) {
@@ -1630,6 +1775,31 @@ impl App {
                 }
             }
             PickAct::RetireAgent(name) => fx.push(Effect::RetireAgent(name)),
+            // As typed: during a turn it waits for its end.
+            PickAct::Rehome(argument) => {
+                if !self.defer(
+                    format!("/rehome {argument}"),
+                    super::deferred::Deferred::Choice(Effect::Rehome(Some(argument.clone()))),
+                ) {
+                    fx.push(Effect::Rehome(Some(argument)));
+                }
+            }
+            PickAct::RehomeDiscarding { argument, discard } => {
+                fx.push(Effect::RehomeDiscarding { argument, discard });
+            }
+            PickAct::RemoveState(id) => fx.push(Effect::RemoveState(id)),
+            // The field stays open, its text kept, until the check's answer.
+            PickAct::CheckRehome(typed) => {
+                if let Some(Modal::List(picker)) = &mut self.modal
+                    && picker.kind == PickerKind::Rehome
+                {
+                    picker.line = Some(PickerLine::Field(Field {
+                        what: FieldFor::Directory { refused: None },
+                        text: typed.clone(),
+                    }));
+                }
+                fx.push(Effect::RehomeCheck(typed));
+            }
             PickAct::ViewHelper(header) => {
                 self.helper_view = Some(OpenHelperView {
                     header,

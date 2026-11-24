@@ -229,6 +229,16 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
         println!("rkat-tui: {rehomed}; rkat-tui -c here continues its latest conversation");
         return Ok(());
     }
+    if let Some(reference) = &args.remove_state {
+        let removed = client::rehome::remove_state(
+            &args,
+            reference,
+            &client::rehome::default_endpoint_files(),
+        )
+        .await?;
+        println!("rkat-tui: {removed}");
+        return Ok(());
+    }
     if args.audit {
         return daemon::audit::print(&args);
     }

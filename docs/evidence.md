@@ -14649,3 +14649,69 @@ the cross-client hold the second ran as a follow-up run),
 `daemon::activity::tests::the_user_s_messages_are_followed_only_in_an_open_run`,
 `client::runner::tests::the_stop_s_given_back_messages_return_to_their_client`,
 `ui::tests::turns::up_takes_back_every_waiting_message_in_order`.
+
+## `/rehome` read a state's own directory as a place to move to (owner, 2026-11-24)
+
+What happened: in a new directory the owner wanted the old workspace's
+state. `/rehome ~/old/project` was refused "is no realm and no
+directory": the reference was joined to the workspace literally
+(`<workspace>/~/old/project`), and every failure (missing, a file, a
+typo, `~`) gave that one sentence. The owner then named the old state's
+own directory, `<config dir>/workspaces/<id>`. It exists and no manifest
+names it as a workspace, so it read as a push: the new workspace's empty
+state was re-homed so that its workspace *was* the old realm's
+directory, with no error, and the notice ("realm X now serves Y (it
+served Z)") did not make the direction plain. `check_reach` only
+compared the workspace with the realm that moved, not with the other
+realms under the same config directory.
+
+Decisions:
+
+- One tilde expansion (`paths::expand_tilde_in`, the file tools'
+  `expand_tilde` now calls it), with the home a parameter of
+  `realm_home::Context`, so the tests use a temp home and never the
+  user's. Quotes are not trimmed: no other path argument of the crate
+  trims them.
+- A reference that is a realm's directory, or a path inside it, is that
+  realm (a pull), ahead of the workspace paths (`resolve_ref`,
+  `Named::Directory`); read either way it never reads two ways.
+- No workspace in the config directory or holding it:
+  `check_clear_of_config` on every push destination at read time and in
+  `rehome::prepare` (both ways), and `check_not_in_config` at the
+  daemon's start (`bootstrap::scope::resolve_scope`). Holding it is
+  refused for a re-home only: a `--workspace ~` started unconfined
+  stays possible as before (the confined one is refused by the realm's
+  exposure check).
+- A non-existent destination stays refused (the manual's "existing
+  directory"): no directory is created for the user.
+- Read either way, an existing directory no realm names while this
+  workspace's state holds nothing (the daemon's `rkat/holds`) is refused
+  (`RehomeError::NothingToMove`), after the checks of `prepare` so a
+  running turn still says so first; `to` moves it anyway. The picker
+  always sends `to`/`from`, so it never meets this.
+- The notices name the direction (`Plan::describe`, `Rehomed`'s
+  `Display`) and the conversations the state carries (its log's count).
+- The picker lists the realms whose workspace still exists too (dim),
+  since `read_reference` allows adopting them and the owner's old
+  directory still existed; the question says that directory starts
+  anew. Its directory line has no Tab completion: the `@` completion
+  indexes the workspace only, and directories outside it would need
+  file system reads in `App::update`.
+- State a re-home would replace that holds something asks in the TUI
+  (`rehome::discard_picker`), and `y` runs the re-home again with that
+  realm id confirmed (`prepare`'s and `commit`'s `discard`); a turn or
+  another client there still refuses. `--remove-state` (no prompt, a
+  `--yes`, as the CLI has no interactive prompt pattern) deletes a realm
+  under the lock with its manifest first (`realm_home::remove`), only a
+  directory directly under the realms root whose manifest is unchanged.
+
+Tests: `bootstrap::realm_home::tests::a_tilde_is_the_home_directory`,
+`each_refusal_says_what_the_path_is_and_what_to_do`,
+`a_realm_s_directory_is_that_realm_and_the_config_directory_no_destination`,
+`a_confirmed_discard_replaces_a_realm_that_holds_something`,
+`remove_deletes_exactly_that_realm`; `ui::tests::rehome::*`;
+`rehome::the_picker_adopts_the_old_state_and_its_no_changes_nothing`,
+`rehome::the_picker_checks_the_directory_and_moves_the_state_there`,
+`rehome::a_push_into_the_config_directory_or_of_nothing_is_refused`,
+`rehome::a_confirmed_discard_deletes_the_destination_s_state_and_moves_there`,
+`rehome::remove_state_deletes_exactly_the_named_state`.

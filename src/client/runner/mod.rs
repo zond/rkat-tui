@@ -1159,7 +1159,12 @@ impl Runner {
                 self.bench.export(path.as_deref(), &text, &session);
             }
             Effect::DaemonStop => self.daemon_stop(),
-            Effect::Rehome(reference) => self.rehome(reference),
+            Effect::Rehome(reference) => self.rehome(reference, None),
+            Effect::RehomeDiscarding { argument, discard } => {
+                self.rehome(Some(argument), Some(discard));
+            }
+            Effect::RehomeCheck(typed) => self.rehome_check(typed),
+            Effect::RemoveState(id) => self.remove_state(id),
             Effect::DaemonStart => self.daemon_start(),
             Effect::Agents(None) => self.show_agent_picker(),
             Effect::NewAgent => self.new_agent(),

@@ -622,11 +622,21 @@ impl ResolvedPath {
 }
 
 fn expand_tilde(raw: &str) -> Result<PathBuf, PathError> {
+    expand_tilde_in(raw, dirs::home_dir().as_deref())
+}
+
+/// `raw` with a leading `~` or `~/` replaced by `home` (`~user` is kept
+/// as it is); the one tilde expansion of the crate's path arguments.
+///
+/// # Errors
+///
+/// [`PathError::NoHome`] when `raw` starts with `~` and `home` is `None`.
+pub fn expand_tilde_in(raw: &str, home: Option<&Path>) -> Result<PathBuf, PathError> {
     if raw == "~" {
-        return dirs::home_dir().ok_or(PathError::NoHome);
+        return home.map(Path::to_path_buf).ok_or(PathError::NoHome);
     }
     if let Some(rest) = raw.strip_prefix("~/") {
-        let home = dirs::home_dir().ok_or(PathError::NoHome)?;
+        let home = home.ok_or(PathError::NoHome)?;
         return Ok(home.join(rest));
     }
     Ok(PathBuf::from(raw))

@@ -76,7 +76,6 @@ pub use modal::{
 pub use permissions::{Section, permissions_dialog};
 #[cfg(any(test, feature = "test-support"))]
 pub use picker::Does;
-#[cfg(any(test, feature = "test-support"))]
 pub use picker::PickerLine;
 pub use picker::{
     AgentEntry, Field, FieldFor, ListPicker, PickAct, PickKey, PickRow, PickerKind, RuleForm,
@@ -521,6 +520,16 @@ pub enum Msg {
         /// Replace an open picker of its kind only.
         refresh: bool,
     },
+    /// The runner's check of the directory typed in the `/rehome`
+    /// picker ([`Effect::RehomeCheck`]): the question to ask and the
+    /// directory (canonical) it moves this workspace's state to, or why
+    /// not, shown in the field.
+    RehomeChecked {
+        /// The text checked.
+        typed: String,
+        /// The question and the directory, or the refusal.
+        answer: Result<(String, std::path::PathBuf), String>,
+    },
     /// Replace the transcript (e.g. after resuming a session).
     ResetTranscript(Vec<Block>),
     /// A turn this UI did not start runs on the daemon (another
@@ -936,10 +945,26 @@ pub enum Effect {
     /// `/daemon stop`: ask the attached daemon to shut down (
     /// answered with a notice).
     DaemonStop,
-    /// `/rehome`: list the state this workspace could adopt (`None`), or
-    /// re-home: the runner stops the daemon, moves the realm, re-roots
-    /// itself and reattaches, telling the UI with [`Msg::Rerooted`].
+    /// `/rehome`: open the picker of this workspace's state (`None`,
+    /// answered with [`Msg::ShowPicker`]), or re-home: the runner stops
+    /// the daemon, moves the realm, re-roots itself and reattaches,
+    /// telling the UI with [`Msg::Rerooted`].
     Rehome(Option<String>),
+    /// The `/rehome` picker's directory as typed: check it as `/rehome to`
+    /// reads it (answered with [`Msg::RehomeChecked`]); nothing changes.
+    RehomeCheck(String),
+    /// `/rehome <argument>` again after the user confirmed deleting the
+    /// state `discard` (a realm id) that refused it: replaced whatever it
+    /// holds (a turn or another client there still refuses).
+    RehomeDiscarding {
+        /// The `/rehome` argument.
+        argument: String,
+        /// The realm to delete.
+        discard: String,
+    },
+    /// The `/rehome` picker's confirmed `d`: delete realm `id` (as
+    /// `rkat-tui --remove-state <id> --yes`), then the picker again.
+    RemoveState(String),
     /// `/daemon start`: connect to the workspace's daemon again (starting
     /// it when this client may) after the connect failed or the daemon
     /// stopped (answered with notices and the connection's state).
@@ -2062,6 +2087,7 @@ impl App {
             Msg::PickerRefused { kind, why } => self.picker_refused(kind, &why),
             Msg::PickerDone { kind, text } => self.picker_done(kind, &text),
             Msg::ShowPicker { picker, refresh } => self.show_picker(picker, refresh),
+            Msg::RehomeChecked { typed, answer } => self.rehome_checked(&typed, answer),
             Msg::ShowClassifierPicker(groups) => {
                 if matches!(self.modal, None | Some(Modal::Keys)) && self.parked.is_none() {
                     self.modal = Some(Modal::Model(ModelPicker::new(groups).for_classifier()));

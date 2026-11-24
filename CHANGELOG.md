@@ -2,6 +2,51 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/rehome` alone opens a picker instead of printing a list: a line on
+  this workspace's state, then the state it could adopt (workspaces whose
+  directory is gone first, then, dim, those that still exist), each row
+  with its id, the workspace it served and its last use, and a last row
+  that moves this workspace's state to a directory you type. Enter asks
+  in one line what will happen, `y` does it as `/rehome from <id>` or
+  `/rehome to <dir>` does, `n` or Esc changes nothing; the typed
+  directory is checked on the spot and a refusal stays in the line with
+  your text. `d`, then `y`, deletes a row's state.
+- `rkat-tui --remove-state <id|directory|old path>` deletes a workspace's
+  state: without `--yes` it prints what it would delete and the command
+  line that does, with `--yes` it stops an idle daemon of it and deletes
+  the state's directory. A running turn or an attached TUI refuses.
+  `--list` names it under the workspaces' state.
+- A re-home onto state that holds conversations asks in the TUI whether
+  to delete it (naming it, its conversations and last use; it cannot be
+  undone) instead of only refusing; `n` keeps it, and the notice names
+  `rkat-tui --remove-state <id> --yes`. `rkat-tui --rehome` still refuses,
+  naming that command.
+
+### Fixed
+
+- `/rehome ~/…` and `rkat-tui --rehome ~/…` expand `~` to your home
+  directory; it was joined to the workspace as a directory named `~`.
+- `/rehome` says why an argument names nothing instead of "is no realm and
+  no directory": the absolute path does not exist (create it or check the
+  spelling), it is not a directory, or no state has that id or path
+  (`rkat-tui --list` shows them).
+- `/rehome <config dir>/workspaces/<id>` (a state's own directory, or a
+  path inside it) adopts that state; it was taken for a directory to
+  move to, and this workspace's empty state was moved into the config
+  directory with no error. A move into rkat-tui's config directory, or to
+  a directory that holds it, is refused saying what to do instead, and no
+  workspace starts inside the config directory.
+- `/rehome <directory>` that no state names, while this workspace's state
+  holds no conversation, is refused (it moved nothing, which is rarely
+  meant): it says how to adopt instead, and `/rehome to <directory>` still
+  moves it.
+- The notice after a re-home says which way it went and what it carried:
+  *moved this workspace's state (realm …, N conversations) from … to …: it
+  now belongs to …* or *adopted realm … (was …) for …, with N
+  conversations*, then where this rkat-tui now works.
+
 ## [0.0.20] - 2026-11-24
 
 ### Changed

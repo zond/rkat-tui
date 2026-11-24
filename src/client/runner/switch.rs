@@ -364,29 +364,151 @@ impl Runner {
         self.connect(false, 0);
     }
 
-    /// `/rehome`: without an argument, what this workspace could adopt;
-    /// with one, re-home (a pull or a push, [`realm_home::read_reference`]),
-    /// then re-root this client on the workspace it serves now and
-    /// reattach ([`Runner::reroot`]).
-    ///
-    /// [`realm_home::read_reference`]: crate::bootstrap::realm_home::read_reference
-    pub(super) fn rehome(&mut self, argument: Option<String>) {
-        use super::super::rehome::{self as rh, Side};
-        use crate::bootstrap::realm_home::{self, Reading};
-        let scope = &self.config.scope;
-        let root = realm_home::root(&scope.global);
-        let Some(argument) = argument else {
-            match realm_home::adoptable(&root, Some(&scope.home)) {
-                Ok(text) => self.notice(NoticeLevel::Info, text),
-                Err(err) => self.notice(NoticeLevel::Warn, err.to_string()),
-            }
-            return;
-        };
-        let refused = if self.config.address.is_some() {
+    /// Why this client cannot re-home at all (attached to another
+    /// machine's daemon, or not able to re-root itself).
+    fn rehome_impossible(&self) -> Option<&'static str> {
+        if self.config.address.is_some() {
             Some("/rehome works on this machine's workspace only; run it there")
         } else if self.config.reroot.is_none() {
             Some("this client cannot be re-rooted; use rkat-tui --rehome from the shell")
-        } else if self.turn.is_open() || self.switches.running {
+        } else {
+            None
+        }
+    }
+
+    /// The `/rehome` picker over the realms under this workspace's config
+    /// directory ([`super::super::rehome::picker`]).
+    fn rehome_picker(&mut self) {
+        use crate::bootstrap::realm_home;
+        let scope = &self.config.scope;
+        let root = realm_home::root(&scope.global);
+        match realm_home::scan(&root) {
+            Ok(homes) => {
+                let picker =
+                    super::super::rehome::picker(&homes, &scope.home, scope.project_root.as_path());
+                self.send(Msg::ShowPicker {
+                    picker,
+                    refresh: false,
+                });
+            }
+            Err(err) => self.notice(NoticeLevel::Warn, err.to_string()),
+        }
+    }
+
+    /// The `/rehome` picker's directory `typed`, read as `/rehome to`
+    /// reads it: answered with the question to ask, or the refusal
+    /// ([`Msg::RehomeChecked`]). Nothing changes.
+    pub(super) fn rehome_check(&mut self, typed: String) {
+        use crate::bootstrap::realm_home::{self, Reading, Way};
+        let answer = (|| {
+            if let Some(why) = self.rehome_impossible() {
+                return Err(why.to_string());
+            }
+            let scope = &self.config.scope;
+            let root = realm_home::root(&scope.global);
+            let workspace = scope.project_root.as_path();
+            let homes = realm_home::scan(&root).map_err(|err| err.to_string())?;
+            let at = realm_home::Context::new(&root, workspace, workspace);
+            match realm_home::read_reference(&homes, &typed, Way::Push, &at) {
+                Ok(Reading::Push(path)) => {
+                    let taken = realm_home::find_in(&homes, &path)
+                        .map_err(|err| err.to_string())?
+                        .cloned();
+                    let question =
+                        super::super::rehome::move_question(&scope.home, &path, taken.as_ref());
+                    Ok((question, path))
+                }
+                Ok(Reading::Pull(home)) => Err(format!("`{typed}` names realm {}", home.id)),
+                Err(err) => Err(err.to_string()),
+            }
+        })();
+        self.send(Msg::RehomeChecked { typed, answer });
+    }
+
+    /// The `/rehome` picker's confirmed `d`: delete realm `id` as
+    /// `rkat-tui --remove-state <id> --yes` does (never this workspace's
+    /// own), then the picker again with the outcome under its rows.
+    pub(super) fn remove_state(&mut self, id: String) {
+        use crate::bootstrap::realm_home;
+        let scope = &self.config.scope;
+        let root = realm_home::root(&scope.global);
+        let current = scope.home.clone();
+        let workspace = scope.project_root.as_path().to_path_buf();
+        let files = match &self.config.reroot {
+            Some(reroot) => Arc::clone(&reroot.endpoint_files),
+            None => super::super::rehome::default_endpoint_files(),
+        };
+        let say = self.say();
+        tokio::spawn(async move {
+            use crate::ui::PickerKind;
+            let removed = async {
+                if id == current.id {
+                    return Err(format!(
+                        "realm {id} is this workspace's own state: it is not deleted from here"
+                    ));
+                }
+                let homes = realm_home::scan(&root).map_err(|err| err.to_string())?;
+                let home = homes
+                    .iter()
+                    .find(|home| home.id == id)
+                    .ok_or_else(|| format!("realm {id} is gone already"))?;
+                super::super::rehome::remove_home(&root, home, &files, true, None)
+                    .await
+                    .map_err(|err| err.to_string())
+            }
+            .await;
+            if let Ok(homes) = realm_home::scan(&root) {
+                let _ = say.ui_tx.send(Msg::ShowPicker {
+                    picker: super::super::rehome::picker(&homes, &current, &workspace),
+                    refresh: true,
+                });
+            }
+            match removed {
+                Ok(done) => {
+                    say.notice(NoticeLevel::Info, done.to_string());
+                    let _ = say.ui_tx.send(Msg::PickerDone {
+                        kind: PickerKind::Rehome,
+                        text: done.to_string(),
+                    });
+                }
+                Err(why) => {
+                    let _ = say.ui_tx.send(Msg::PickerRefused {
+                        kind: PickerKind::Rehome,
+                        why,
+                    });
+                }
+            }
+        });
+    }
+
+    /// `/rehome`: without an argument, the picker of this workspace's
+    /// state ([`Self::rehome_picker`]); with one, re-home (a pull or a
+    /// push, [`realm_home::read_reference`]), then re-root this client on
+    /// the workspace it serves now and reattach ([`Runner::reroot`]). A
+    /// directory read either way, to which this workspace would move a
+    /// state that holds no conversation, is refused
+    /// ([`RehomeError::NothingToMove`]): `to` says it is meant. State the
+    /// re-home would replace that holds conversations refuses it, and a
+    /// dialog asks whether to delete it ([`rehome::discard_picker`]);
+    /// `discard` is the realm id the user confirmed deleting there.
+    ///
+    /// [`realm_home::read_reference`]: crate::bootstrap::realm_home::read_reference
+    /// [`RehomeError::NothingToMove`]: super::super::rehome::RehomeError::NothingToMove
+    /// [`rehome::discard_picker`]: super::super::rehome::discard_picker
+    pub(super) fn rehome(&mut self, argument: Option<String>, discard: Option<String>) {
+        use super::super::rehome::{self as rh, RehomeError, Side};
+        use crate::bootstrap::realm_home::{self, HomeError, Reading, Way};
+        if let Some(why) = self.rehome_impossible() {
+            self.notice(NoticeLevel::Warn, why);
+            return;
+        }
+        let Some(argument) = argument else {
+            self.rehome_picker();
+            return;
+        };
+        let scope = &self.config.scope;
+        let root = realm_home::root(&scope.global);
+        let refused = if self.turn.is_open() || self.switches.running {
             Some(
                 "a turn is running or a switch is under way; re-home once it ends (or interrupt it)",
             )
@@ -408,13 +530,19 @@ impl Runner {
         let endpoint = link.endpoint.clone();
         let session = link.session.clone();
         let workspace = scope.project_root.as_path().to_path_buf();
+        let (way, reference) = realm_home::parse_way(&argument);
         let read = realm_home::scan(&root).and_then(|homes| {
-            let (way, reference) = realm_home::parse_way(&argument);
-            let reading =
-                realm_home::read_reference(&homes, reference, way, &workspace, &workspace)?;
+            let at = realm_home::Context::new(&root, &workspace, &workspace);
+            let reading = realm_home::read_reference(&homes, reference, way, &at)?;
             let current = realm_home::find_in(&homes, &workspace)?.cloned();
             Ok((homes, reading, current))
         });
+        // Read either way, a move of a state that holds nothing is
+        // refused below: more likely an adoption that matched no realm.
+        let either_push = match (&read, way) {
+            (Ok((_, Reading::Push(path), _)), Way::Either) => Some(path.clone()),
+            _ => None,
+        };
         let (homes, reading, current) = match read {
             Ok(read) => read,
             Err(err) => {
@@ -456,6 +584,13 @@ impl Runner {
                 AgentChoice::Recent,
             ),
         };
+        // The argument as resolved, for the question if the state it would
+        // replace holds something.
+        let again = match side {
+            Side::Adopt => format!("to {}", destination.display()),
+            Side::Replace => format!("from {}", adopt.id),
+        };
+        let taken = replace.clone();
         let say = self.say();
         let reports = self.reporter();
         if let Conn::Up { leaving, .. } = &mut self.conn {
@@ -470,16 +605,32 @@ impl Runner {
                     replace,
                     &reroot.endpoint_files,
                     Some((&connection, side)),
+                    discard.as_deref(),
                 )
                 .await
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| match (&err, &taken) {
+                    (RehomeError::Home(HomeError::Holds { id, .. }), Some(taken))
+                        if *id == taken.id =>
+                    {
+                        let _ = say.ui_tx.send(Msg::ShowPicker {
+                            picker: rh::discard_picker(taken, &again),
+                            refresh: false,
+                        });
+                        format!("{err}; the dialog asks whether to delete it and re-home (y), or keep it (n)")
+                    }
+                    _ => err.to_string(),
+                })?;
+                if let Some(path) = either_push {
+                    let held = rh::held_by(&connection, &path)
+                        .await
+                        .map_err(|err| err.to_string())?;
+                    if held.is_empty() {
+                        return Err(RehomeError::NothingToMove { path }.to_string());
+                    }
+                }
                 say.notice(
                     NoticeLevel::Info,
-                    format!(
-                        "re-homing realm {} to {}: stopping the daemon",
-                        plan.adopt().id,
-                        plan.workspace().display()
-                    ),
+                    format!("{}: stopping the daemon", plan.describe()),
                 );
                 rh::stop(&connection).await.map_err(|why| {
                     format!("the re-home did not start: the daemon was not stopped ({why})")
@@ -546,7 +697,7 @@ impl Runner {
                             say.notice(
                                 NoticeLevel::Info,
                                 format!(
-                                    "{done}; this rkat-tui works in {} now, starting its daemon there",
+                                    "{done}; this rkat-tui now works in {}, starting its daemon there",
                                     done.home.manifest.path.display()
                                 ),
                             );

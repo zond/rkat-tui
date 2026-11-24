@@ -237,6 +237,10 @@ pub fn realm_lines(homes: &[Home], listed: &[Listed]) -> Vec<String> {
         .collect()
 }
 
+/// What `--list` says under the workspaces' state (to stderr: the rows
+/// stay the output).
+const REALMS_FOOTER: &str = "rkat-tui --rehome <id> adopts one in the current workspace (/rehome in rkat-tui picks one); rkat-tui --remove-state <id> shows what deleting one would delete, --yes deletes it";
+
 /// Print every daemon, its agents under it (to stderr when there is
 /// none), then every workspace's realm under `global`'s config directory.
 pub async fn print(explicit: Option<&Path>, global: Option<&GlobalDirs>) {
@@ -264,6 +268,7 @@ pub async fn print(explicit: Option<&Path>, global: Option<&GlobalDirs>) {
             for line in realm_lines(&homes, &listed) {
                 println!("{line}");
             }
+            eprintln!("{REALMS_FOOTER}");
         }
         Err(err) => eprintln!("rkat-tui: {err}"),
     }
