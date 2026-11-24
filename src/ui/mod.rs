@@ -846,6 +846,17 @@ pub enum Effect {
     },
     /// The dialog's `r`: add the rule, then its lists again.
     PickedRule(RuleForm),
+    /// The dialog's `e` on a rule: replace rule `n`, which read `old`,
+    /// with `new` in place, then its lists again (a refusal shows in the
+    /// open field).
+    PickedRuleEdit {
+        /// The rule's number.
+        n: usize,
+        /// The rule as the dialog showed it.
+        old: crate::approval::desk::RuleSpec,
+        /// The rule as edited.
+        new: crate::approval::desk::RuleSpec,
+    },
     /// `/auto stats`: the review numbers, as a notice.
     AutoStats,
     /// `/auto check`: measure the classifier model on these corpus cases
@@ -973,9 +984,9 @@ pub enum Effect {
     /// [`Msg::ShowAgentPicker`]), or switch this client to the agent named
     /// (answered with notices).
     Agents(Option<String>),
-    /// `/wire`: open the picker of other workspaces' agents (`None`,
-    /// answered with [`Msg::ShowPicker`]), or wire this agent to the one
-    /// named (answered with a notice).
+    /// `/wire`: open the picker of this agent's wires and the other
+    /// workspaces' agents (`None`, answered with [`Msg::ShowPicker`]), or
+    /// wire this agent to the one named (answered with a notice).
     Wire(Option<String>),
     /// The `/wire` picker's choice: wire this agent to `agent` of
     /// `workspace` (answered with a notice).
@@ -985,11 +996,10 @@ pub enum Effect {
         /// The other agent.
         agent: String,
     },
-    /// `/unwire`: open the picker of this agent's cross-workspace wires
-    /// (`None`), or remove the one named (answered with a notice).
-    Unwire(Option<String>),
-    /// The `/unwire` picker's confirmed choice.
-    UnwireFrom {
+    /// The `/wire` picker's confirmed `d` on a wired row: remove this
+    /// agent's wire to `agent` of `workspace`, on both sides when the
+    /// other daemon runs (answered with a notice; the picker refreshes).
+    RemoveWire {
         /// The other agent's workspace.
         workspace: std::path::PathBuf,
         /// The other agent.

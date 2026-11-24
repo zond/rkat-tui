@@ -474,7 +474,8 @@ methods! {
     /// The client asks both daemons: the wire is both directions only when
     /// each side trusts the other.
     Wire = "rkat/wire" (WireParams) -> Wired;
-    /// `/unwire`: drop the agent's cross-workspace wire to `peer`.
+    /// The `/wire` picker's `d` on a wired row (and the undo of a wire's
+    /// half): drop the agent's cross-workspace wire to `peer`.
     Unwire = "rkat/unwire" (UnwireParams) -> Unwired;
     /// `/wire ssh://<host>/…`: this daemon runs ssh to the host, lists its
     /// agents or wires the caller's agent to one of them both ways, and

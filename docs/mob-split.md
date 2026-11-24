@@ -197,7 +197,7 @@ rkat-tui (client, src/client/)
   decision/notice + decision/decide for the approval dialog
   mob/compact_member (fallback session/compact) for /compact
   local: rendering, editor, `!` shell, model picker, history, notes
-  /wire, /unwire (client/wires.rs): finds the other daemons by their
+  /wire and its picker's removal of a wire (client/wires.rs): finds the other daemons by their
     endpoint files, attaches to one as a probe, asks both for their
     agent's card and both to wire, the other side undone when this one
     fails; after /new or /resume sends the agent's new card to each

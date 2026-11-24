@@ -1,5 +1,6 @@
-//! `/wire` and `/unwire`: the client arranges a wire between this client's
-//! agent and a top-level agent of another workspace's daemon, both sides.
+//! `/wire`: the client arranges a wire between this client's agent and a
+//! top-level agent of another workspace's daemon, both sides, and removes
+//! one (the picker's `d` on a wired row).
 //!
 //! The client holds the user's authority on both daemons: it finds the
 //! other daemons as `--list` does (their endpoint files), attaches to one
@@ -311,25 +312,24 @@ pub async fn wire(own: &Connection, other: &Endpoint, peer: &str) -> Result<Stri
             return Err(match undone {
                 Ok(_) => format!("{why}; the other side's half was undone, so nothing is wired"),
                 Err(undo) => format!(
-                    "{why}; undoing the other side failed too ({undo}): /unwire {} removes it",
-                    theirs.label()
+                    "{why}; undoing the other side failed too ({undo}): /wire in {}, then d on the row of {}, removes it",
+                    theirs.label(),
+                    ours.label()
                 ),
             });
         }
     };
     Ok(if wired_here.already && wired_there.already {
         format!(
-            "{} and {} are wired already: /unwire {} removes it",
+            "{} and {} are wired already: {REMOVE_HINT}",
             ours.label(),
             theirs.label(),
-            theirs.label()
         )
     } else {
         format!(
-            "wired {} and {}: each can message the other (send_message), and a message to an idle one starts a model turn there; /unwire {} removes it",
+            "wired {} and {}: each can message the other (send_message), and a message to an idle one starts a model turn there; {REMOVE_HINT}",
             ours.label(),
             theirs.label(),
-            theirs.label()
         )
     })
 }
@@ -347,7 +347,7 @@ fn unanswered_wire(name: &str, label: &str, undone: Result<bool, String>) -> Str
             "nothing was wired: {name} did not answer in time and holds no wire to this agent (/wire {label} again)"
         ),
         Err(undo) => format!(
-            "{name} did not answer in time, so whether it wired its side is not known, and undoing it failed too ({undo}); this side is not wired: /wire {label} again, or /unwire {label} in that workspace"
+            "{name} did not answer in time, so whether it wired its side is not known, and undoing it failed too ({undo}); this side is not wired: /wire {label} again, or in that workspace /wire, then d on this agent's row"
         ),
     }
 }
@@ -367,7 +367,7 @@ fn other_name(endpoint: &Endpoint) -> String {
 /// # Errors
 ///
 /// This side's failure.
-pub async fn unwire(
+pub async fn remove_wire(
     own: &Connection,
     own_agent: &str,
     own_workspace: &Path,
@@ -383,7 +383,7 @@ pub async fn unwire(
         })
         .await?;
     let mut text = if here.removed {
-        format!("unwired {label}")
+        format!("removed the wire to {label}")
     } else {
         format!("this agent had no wire to {label}")
     };
@@ -400,7 +400,7 @@ pub async fn unwire(
     // machine that made it, which this one does not reach.
     if let Some(from) = &row.from {
         text.push_str(&format!(
-            "; its half on {} stays (it delivers nothing now): `/unwire {}` in that workspace there removes it",
+            "; its half on {} stays (it delivers nothing now): `/wire` in that workspace there, then d on the row of {}, removes it",
             crate::daemon::protocol::machine(from),
             crate::daemon::protocol::wire_label(own_workspace, own_agent)
         ));
@@ -408,7 +408,7 @@ pub async fn unwire(
     }
     match others.iter().find(|o| o.status.workspace == row.workspace) {
         None => text.push_str(&format!(
-            "; the daemon of {} is not running, so its side is removed when you run /unwire there or that agent retires (it can no longer reach this one either way)",
+            "; the daemon of {} is not running, so its side is removed when you remove it there (/wire, then d on its row) or that agent retires (it can no longer reach this one either way)",
             row.workspace.display()
         )),
         Some(other) => {
@@ -504,67 +504,78 @@ pub fn rows_of(status: &Status) -> Vec<WireRow> {
         .unwrap_or_default()
 }
 
-/// The `/wire` picker: a row per candidate; Enter wires to it (an agent
-/// wired already says so). `wired`: this agent's wires.
+/// How a picker row says "d then y removes it", where a notice or a
+/// refusal points at the removal.
+pub const REMOVE_HINT: &str = "/wire, then d on its row, removes it";
+
+/// The `/wire` picker: first a row per wire of this agent (`wired`, with
+/// what the other side is now: its state when its daemon runs among
+/// `others`, retired there, not running, or the ssh link), where `d` asks
+/// and `y` removes the wire and Enter only says it is wired; then a row
+/// per agent of another workspace not wired yet (`all`), where Enter wires
+/// to it. Opens with wires alone when no other daemon runs.
 #[must_use]
-pub fn wire_picker(all: &[Candidate], wired: &[WireRow]) -> crate::ui::ListPicker {
+pub fn wire_picker(
+    all: &[Candidate],
+    wired: &[WireRow],
+    others: &[Other],
+) -> crate::ui::ListPicker {
     use crate::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
     use ratatui::crossterm::event::KeyCode;
-    let rows = all
-        .iter()
-        .map(|c| {
-            let is_wired = wired
-                .iter()
-                .any(|w| w.workspace == c.workspace && w.agent == c.agent);
-            let clients = if c.clients == 0 {
-                "no client".to_string()
-            } else {
-                crate::text::count(c.clients, "client")
-            };
-            let text = format!(
-                "{}  {}  {clients}{}",
-                c.label(),
-                c.run.picker_word(),
-                if is_wired { "  · wired" } else { "" }
-            );
-            let enter = if is_wired {
-                PickKey::refused(
-                    KeyCode::Enter,
-                    format!(
-                        "this agent is wired to {} already: /unwire removes it",
-                        c.label()
-                    ),
+    let mut rows = wired_rows(wired, others);
+    rows.extend(
+        all.iter()
+            .filter(|c| {
+                !wired
+                    .iter()
+                    .any(|w| w.workspace == c.workspace && w.agent == c.agent)
+            })
+            .map(|c| {
+                let clients = if c.clients == 0 {
+                    "no client".to_string()
+                } else {
+                    crate::text::count(c.clients, "client")
+                };
+                let text = format!("{}  {}  {clients}", c.label(), c.run.picker_word());
+                PickRow::new(
+                    text,
+                    vec![
+                        PickKey::now(
+                            KeyCode::Enter,
+                            PickAct::Wire {
+                                workspace: c.workspace.clone(),
+                                agent: c.agent.clone(),
+                            },
+                        ),
+                        PickKey::refused(
+                            KeyCode::Char('d'),
+                            format!("this agent is not wired to {}: Enter wires it", c.label()),
+                        ),
+                    ],
                 )
-            } else {
-                PickKey::now(
-                    KeyCode::Enter,
-                    PickAct::Wire {
-                        workspace: c.workspace.clone(),
-                        agent: c.agent.clone(),
-                    },
-                )
-            };
-            PickRow::new(text, vec![enter])
                 .noted(c.workspace.display().to_string())
                 .keyed(format!("{}/{}", c.workspace.display(), c.agent))
-        })
-        .collect();
+            }),
+    );
+    let empty = if others.is_empty() {
+        "this agent has no wires, and no other workspace's daemon runs: start rkat-tui in the other workspace, then /wire again"
+    } else {
+        "this agent has no wires, and the other workspaces' daemons have no agents"
+    };
     ListPicker::new(
         PickerKind::Wire,
         rows,
-        "no other workspace's daemon runs: start rkat-tui in the other workspace, then /wire again",
-        "↑/↓ move · Enter wire this agent to it (both ways) · Esc close",
+        empty,
+        "↑/↓ move · Enter wire this agent to it (both ways) · d remove a wire · Esc close",
     )
 }
 
-/// The `/unwire` picker: a row per wire of this agent (`running`: whether
-/// the other workspace's daemon runs); Enter removes it after a
-/// confirmation.
-#[must_use]
-pub fn unwire_picker(wired: &[WireRow], others: &[Other]) -> crate::ui::ListPicker {
-    use crate::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
+/// The `/wire` picker's rows of this agent's wires: each marked wired,
+/// with what the other side is now; `d` then `y` removes it.
+fn wired_rows(wired: &[WireRow], others: &[Other]) -> Vec<crate::ui::PickRow> {
+    use crate::ui::{PickAct, PickKey, PickRow};
     use ratatui::crossterm::event::KeyCode;
-    let rows = wired
+    wired
         .iter()
         .map(|w| {
             let other = others.iter().find(|o| o.status.workspace == w.workspace);
@@ -584,41 +595,34 @@ pub fn unwire_picker(wired: &[WireRow], others: &[Other]) -> crate::ui::ListPick
                     Some(a) => a.run().picker_word().to_string(),
                 },
             };
-            let act = PickAct::Unwire {
+            let act = PickAct::RemoveWire {
                 workspace: w.workspace.clone(),
                 agent: w.agent.clone(),
             };
             PickRow::new(
-                format!("{}  {state}", w.label()),
-                vec![PickKey::confirmed(
-                    KeyCode::Enter,
-                    act,
-                    format!("Unwire {}? Messages between the two stop.", w.label()),
-                )],
+                format!("{}  wired · {state}", w.label()),
+                vec![
+                    PickKey::refused(
+                        KeyCode::Enter,
+                        format!(
+                            "this agent is wired to {} already: d removes the wire",
+                            w.label()
+                        ),
+                    ),
+                    PickKey::confirmed(
+                        KeyCode::Char('d'),
+                        act,
+                        format!(
+                            "Remove the wire to {}? Messages between the two stop.",
+                            w.label()
+                        ),
+                    ),
+                ],
             )
             .noted(w.workspace.display().to_string())
             .keyed(format!("{}/{}", w.workspace.display(), w.agent))
         })
-        .collect();
-    ListPicker::new(
-        PickerKind::Unwire,
-        rows,
-        "this agent has no wires to other workspaces (/wire makes one)",
-        "↑/↓ move · Enter unwire · Esc close",
-    )
-}
-
-/// The wire of `wired` that `target` names (`<workspace>/<agent>`, the
-/// workspace by name or path, or a workspace alone with one wire there).
-///
-/// # Errors
-///
-/// What `target` matches instead.
-pub fn resolve_wire<'a>(target: &str, wired: &'a [WireRow]) -> Result<&'a WireRow, String> {
-    if wired.is_empty() {
-        return Err("this agent has no wires to other workspaces".to_string());
-    }
-    find_named(target, wired, |w| (&w.workspace, &w.agent), WireRow::label)
+        .collect()
 }
 
 #[cfg(test)]
@@ -642,7 +646,7 @@ mod tests {
         assert!(!unknown.contains("nothing was wired"), "{unknown}");
         assert!(
             unknown.contains("whether it wired its side is not known")
-                && unknown.contains("/unwire gamma/main-g in that workspace"),
+                && unknown.contains("in that workspace /wire, then d on this agent's row"),
             "{unknown}"
         );
     }
@@ -697,32 +701,58 @@ mod tests {
             from: None,
             link: None,
         }];
-        let picker = wire_picker(&all, &wired);
+        let picker = wire_picker(&all, &wired, &[]);
         let texts: Vec<&str> = picker.rows.iter().map(|r| r.text.as_str()).collect();
+        // The wire first, marked; the agents not wired after it.
         assert_eq!(
             texts,
             vec![
+                "web/main-cccc  wired · its daemon is not running",
                 "api/main-aaaa  working  1 client",
-                "web/main-cccc  idle  no client  · wired"
             ]
         );
-        assert_eq!(picker.rows[0].note.as_deref(), Some("/w/api"));
+        assert_eq!(picker.rows[1].note.as_deref(), Some("/w/api"));
+        let key = |row: usize, code| {
+            picker.rows[row]
+                .keys
+                .iter()
+                .find(|key| key.code == code)
+                .unwrap()
+                .does
+                .clone()
+        };
+        use crate::ui::{Does, PickAct};
+        use ratatui::crossterm::event::KeyCode;
         assert!(matches!(
-            picker.rows[0].keys[0].act(),
-            Some(crate::ui::PickAct::Wire { agent, .. }) if agent == "main-aaaa"
+            key(1, KeyCode::Enter),
+            Does::Act(PickAct::Wire { agent, .. }) if agent == "main-aaaa"
         ));
         assert!(
-            matches!(&picker.rows[1].keys[0].does, crate::ui::Does::Refused(why) if why.contains("already"))
+            matches!(key(1, KeyCode::Char('d')), Does::Refused(why) if why.contains("not wired"))
+        );
+        // Enter on a wired row only says it is wired and how to remove it.
+        assert!(
+            matches!(key(0, KeyCode::Enter), Does::Refused(why) if why.contains("wired to web/main-cccc already: d removes"))
+        );
+        assert!(matches!(
+            key(0, KeyCode::Char('d')),
+            Does::Ask(PickAct::RemoveWire { agent, .. }, question)
+                if agent == "main-cccc" && question.contains("Remove the wire to web/main-cccc?")
+        ));
+        assert!(
+            picker.footer.contains("d remove a wire"),
+            "{}",
+            picker.footer
         );
         assert!(
-            wire_picker(&[], &[])
+            wire_picker(&[], &[], &[])
                 .empty
                 .contains("no other workspace's daemon runs")
         );
     }
 
     #[test]
-    fn the_unwire_picker_says_whether_the_other_side_runs() {
+    fn the_wire_picker_s_wired_rows_say_what_the_other_side_is() {
         let wired = vec![
             WireRow {
                 workspace: "/w/web".into(),
@@ -746,18 +776,20 @@ mod tests {
                 link: Some("up".into()),
             },
         ];
-        let picker = unwire_picker(&wired, &[]);
+        // No other daemon runs: the picker opens with the wires alone.
+        let picker = wire_picker(&[], &wired, &[]);
+        assert_eq!(picker.rows.len(), 3);
         assert_eq!(
             picker.rows[0].text,
-            "web/main-cccc  its daemon is not running"
+            "web/main-cccc  wired · its daemon is not running"
         );
         assert_eq!(
             picker.rows[1].text,
-            "far/main-eeee  over ssh to box, link down"
+            "far/main-eeee  wired · over ssh to box, link down"
         );
         assert_eq!(
             picker.rows[2].text,
-            "near/main-ffff  over ssh from laptop, link up"
+            "near/main-ffff  wired · over ssh from laptop, link up"
         );
         assert_eq!(wired[1].shown(), "far/main-eeee (ssh box, link down)");
         assert_eq!(
@@ -766,13 +798,13 @@ mod tests {
         );
         assert_eq!(wired[0].shown(), "web/main-cccc");
         let wired = &wired[..1];
-        assert!(matches!(
-            picker.rows[0].keys[0].does,
-            crate::ui::Does::Ask(..)
-        ));
-        assert_eq!(resolve_wire("web", wired).unwrap().agent, "main-cccc");
-        assert!(resolve_wire("web", &[]).is_err());
-        // The other daemon runs, but the agent retired there: stale.
+        assert!(picker.rows.iter().all(|row| {
+            row.keys
+                .iter()
+                .any(|key| matches!(key.does, crate::ui::Does::Ask(..)))
+        }));
+        // The other daemon runs, but the agent retired there: stale; its
+        // other agent is offered after the wire.
         let status: Status = serde_json::from_value(serde_json::json!({
             "workspace": "/w/web", "pid": 1, "started_at": "2026-11-13T00:00:00Z",
             "clients": 0, "detached": false, "owner": false, "running": false,
@@ -789,11 +821,13 @@ mod tests {
             },
             status,
         };
-        let picker = unwire_picker(wired, &[other]);
+        let others = [other];
+        let picker = wire_picker(&candidates(&others), wired, &others);
         assert_eq!(
             picker.rows[0].text,
-            "web/main-cccc  retired there (the wire is stale)"
+            "web/main-cccc  wired · retired there (the wire is stale)"
         );
+        assert_eq!(picker.rows[1].text, "web/main-dddd  unknown  no client");
     }
 
     /// Endpoint files whose daemons never answer cost one probe bound in

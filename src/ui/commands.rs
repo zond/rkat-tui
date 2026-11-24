@@ -256,12 +256,10 @@ pub enum Command {
     /// `/agents [name]`: open the agent picker, or switch this rkat-tui
     /// to the agent `name`.
     Agents(Option<String>),
-    /// `/wire [<workspace>/<agent>]`: open the picker of other workspaces'
-    /// agents, or wire this agent to the one named.
+    /// `/wire [<workspace>/<agent>]`: open the picker of this agent's
+    /// wires and the other workspaces' agents, or wire this agent to the
+    /// one named.
     Wire(Option<String>),
-    /// `/unwire [<workspace>/<agent>]`: open the picker of this agent's
-    /// cross-workspace wires, or remove the one named.
-    Unwire(Option<String>),
     /// `/audit [n]`: the last `n` lines of the daemon's audit log for this
     /// agent.
     Audit(Option<usize>),
@@ -511,11 +509,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "wire",
         aliases: &[],
         usage: "[workspace/agent | ssh://host[/workspace/agent]]",
-        summary: "wire this agent to an agent of another workspace",
+        summary: "wire this agent to an agent of another workspace, or remove a wire",
         help: &[
             (
                 "/wire [workspace/agent]",
-                "open a picker of the agents of other workspaces whose daemon\nruns (workspace, agent, working or idle, clients): Enter wires\nthis agent and that one both ways, so each can message the\nother; with a name (a workspace alone when one agent works\nthere), wire directly",
+                "open a picker: this agent's wires first (d then y removes one,\non both sides when the other daemon runs), then the agents of\nother workspaces whose daemon runs (workspace, agent, working\nor idle, clients): Enter wires this agent and that one both\nways, so each can message the other; with a name (a workspace\nalone when one agent works there), wire directly",
             ),
             (
                 "/wire ssh://host[/workspace/agent]",
@@ -528,21 +526,6 @@ pub static COMMANDS: &[CommandSpec] = &[
             [target, "--remote-rkat-tui", path] if target.starts_with("ssh://") => Some(
                 Command::Wire(Some(format!("{target} --remote-rkat-tui {path}"))),
             ),
-            _ => None,
-        },
-    },
-    CommandSpec {
-        name: "unwire",
-        aliases: &[],
-        usage: "[workspace/agent]",
-        summary: "remove a wire to another workspace's agent",
-        help: &[(
-            "/unwire [workspace/agent]",
-            "open a picker of this agent's wires to other workspaces: Enter\nthen y removes one, on both sides when the other daemon runs;\nwith a name, remove it directly",
-        )],
-        parse: |rest| match words(rest).as_slice() {
-            [] => Some(Command::Unwire(None)),
-            [target] => Some(Command::Unwire(Some((*target).to_string()))),
             _ => None,
         },
     },
@@ -1207,7 +1190,7 @@ Help (/help, ?):
   Tab, Shift+Tab                 switch between the commands and the keys
   Up/Down, j/k, PgUp/PgDn        scroll (the mouse wheel too); Home/End: top, bottom
   Esc, q, Ctrl-C                 close (an approval request takes over and the help comes back)
-Lists (/schedules, /permissions, /helpers, /mode, /memory, /wire, /unwire, /settings, /rehome):
+Lists (/schedules, /permissions, /helpers, /mode, /memory, /wire, /settings, /rehome):
   Up/Down, j/k                   move; rows wrap (the highlighted one in full); a list stays open
                                  after its acts, refreshed on the same row, until Esc, q or Ctrl-C
                                  (a mode chosen, a helper's full view, an agent switch close it)
@@ -1215,7 +1198,9 @@ Lists (/schedules, /permissions, /helpers, /mode, /memory, /wire, /unwire, /sett
                                  other key, Enter too, only points at y and n; Esc again closes
   Enter, p (/schedules)          pause the schedule, or resume a paused one
   d, then y (/schedules)         delete it; n or Esc keeps it
-  Enter, then y (/unwire)        unwire the agent of the other workspace
+  Enter (/wire)                  wire this agent to the other workspace's agent (both ways)
+  d, then y (/wire)              on a wired row: remove the wire, on both sides when the
+                                 other daemon runs
   Tab, Shift+Tab (/permissions)  switch between Blocked, In force and Hosts (inside a field Tab
                                  switches what the field does instead)
   Enter, o (Blocked)             approve the blocked call once (exact); a row that shows only part
@@ -1231,6 +1216,8 @@ Lists (/schedules, /permissions, /helpers, /mode, /memory, /wire, /unwire, /sett
   t / T, then y (Blocked)        on a D5 block: trust the hosts the call names in this workspace /
                                  in every workspace; the agent is told to run it again
   d, then y (In force)           remove the rule, the session grant or the statement
+  e (In force)                   edit the rule: its entry filled in, Tab allow/deny, Up/Down
+                                 pattern/literal, Enter replaces it where it stands in its file
   n (In force)                   allow a kind of action you type: Tab session/always here/every
                                  workspace, Enter (judged by the classifier)
   r (In force)                   add a rule: type <tool> [pattern]; Tab allow/deny, Shift+Tab this
@@ -1494,7 +1481,6 @@ mod tests {
             "detach",
             "agents",
             "wire",
-            "unwire",
             "audit",
             "rehome",
             "schedules",
@@ -1506,7 +1492,7 @@ mod tests {
         // alias left behind.
         assert!(super::spec("approve").is_none());
         assert!(!help_text().contains("/approve"), "{}", help_text());
-        assert_eq!(seen.len(), 38);
+        assert_eq!(seen.len(), 37);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = HelpView::Commands.text();
         let mut at = 0;
@@ -1531,15 +1517,25 @@ mod tests {
     }
 
     #[test]
-    fn wire_and_unwire_take_one_optional_target() {
+    fn wire_takes_one_optional_target_and_unwire_is_gone() {
         assert_eq!(ok("/wire"), Command::Wire(None));
         assert_eq!(
             ok("/wire api/main-ab12"),
             Command::Wire(Some("api/main-ab12".into()))
         );
-        assert_eq!(ok("/unwire"), Command::Unwire(None));
-        assert_eq!(ok("/unwire api"), Command::Unwire(Some("api".into())));
         assert_eq!(parse("/wire a b").map(|r| r.is_ok()), Some(false));
+        // A wire is removed in the `/wire` picker: there is no `/unwire`,
+        // no alias, and the help never names it.
+        for gone in ["/unwire", "/unwire api"] {
+            assert!(
+                matches!(parse(gone), Some(Err(CommandError::Unknown(_)))),
+                "{gone}: {:?}",
+                parse(gone)
+            );
+        }
+        assert!(super::spec("unwire").is_none());
+        assert!(!help_text().contains("unwire"));
+        assert_eq!(completions("unw").count(), 0);
     }
 
     #[test]

@@ -193,6 +193,46 @@ async fn notice(client: &mut Client, text: &str) -> (NoticeLevel, String) {
     }
 }
 
+/// Remove this agent's wire to `label` as the user does: `/wire` opens
+/// the picker, `d` on the wire's row, then `y`, through the UI's own
+/// picker; its answer goes to the client. Returns the picker as it opened.
+pub(crate) async fn remove_in_picker(c: &mut Client, label: &str) -> rkat_tui::ui::ListPicker {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    use rkat_tui::ui::{App, StatusInfo};
+    c.send(Effect::Wire(None));
+    let Msg::ShowPicker { picker, .. } = c
+        .wait_for(|msg| {
+            matches!(msg, Msg::ShowPicker { picker, refresh: false } if picker.kind == PickerKind::Wire)
+        })
+        .await
+    else {
+        unreachable!()
+    };
+    let at = picker
+        .rows
+        .iter()
+        .position(|row| row.text.starts_with(&format!("{label}  wired · ")))
+        .unwrap_or_else(|| panic!("no wired row of {label}: {:?}", picker.rows));
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowPicker {
+        picker: picker.clone(),
+        refresh: false,
+    });
+    for _ in 0..at {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Down)));
+    }
+    assert!(
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Char('d'))))
+            .is_empty()
+    );
+    let fx = app.update(Msg::Key(KeyEvent::from(KeyCode::Char('y'))));
+    let [effect @ Effect::RemoveWire { .. }] = fx.as_slice() else {
+        panic!("d then y on {label}'s row: {fx:?}")
+    };
+    c.send(effect.clone());
+    picker
+}
+
 /// The agent's cross-workspace wires as its daemon lists them.
 async fn wires_of(daemon: &Running) -> Vec<String> {
     let status = daemon.status().await;
@@ -295,7 +335,8 @@ async fn beta(markers: Markers) {
 /// agent; after a `/new` (a new key) the client refreshes the other side;
 /// the other daemon down fails a send at once, and once it is back (its
 /// agent restored, idle) the wire works again without re-wiring, from both
-/// sides; a restart of this side too; `/unwire` removes both sides.
+/// sides; a restart of this side too; `d` then `y` on the wire's row of
+/// the `/wire` picker removes both sides.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(clippy::disallowed_methods)] // test-only process launch: the other side
 async fn wired_agents_of_two_workspaces_message_both_ways_across_restarts() {
@@ -353,10 +394,10 @@ async fn wired_agents_of_two_workspaces_message_both_ways_across_restarts() {
     assert_eq!(level, NoticeLevel::Info, "{text}");
     assert!(
         text.contains(&format!("wired {a_label} and {b_label}"))
-            && text.contains(&format!("/unwire {b_label} removes it")),
+            && text.contains("/wire, then d on its row, removes it"),
         "{text}"
     );
-    // The picker stays, its row now marked wired.
+    // The picker stays, its row now a wire, with the agent's state.
     let refreshed = c
         .wait_for(|msg| {
             matches!(msg, Msg::ShowPicker { picker, refresh: true } if picker.kind == PickerKind::Wire)
@@ -364,7 +405,7 @@ async fn wired_agents_of_two_workspaces_message_both_ways_across_restarts() {
         .await;
     assert!(
         matches!(&refreshed, Msg::ShowPicker { picker, .. }
-            if picker.rows.len() == 1 && picker.rows[0].text.ends_with("· wired")),
+            if picker.rows.len() == 1 && picker.rows[0].text == format!("{b_label}  wired · idle")),
         "{refreshed:?}"
     );
     // Again: nothing changes, and the user is told so.
@@ -503,22 +544,26 @@ async fn wired_agents_of_two_workspaces_message_both_ways_across_restarts() {
     shown(&llm, "from B2: toa").await;
     a.idle(&a.agent).await;
 
-    // `/unwire` from its picker: both sides, and the picker stays with
-    // the wire gone from it.
+    // `d` then `y` on the wire's row of the `/wire` picker: both sides,
+    // and the picker stays with the agent offered again, not wired.
     let mut c = client(&root, std::slice::from_ref(&b_file)).await;
-    c.send(Effect::UnwireFrom {
-        workspace: b_root.clone(),
-        agent: b_agent.to_string(),
-    });
-    let (_, text) = notice(&mut c, "unwired").await;
-    assert_eq!(text, format!("unwired {b_label} on both sides"));
+    let opened = remove_in_picker(&mut c, &b_label).await;
+    assert_eq!(
+        opened.rows.len(),
+        1,
+        "the wire's row only: {:?}",
+        opened.rows
+    );
+    let (_, text) = notice(&mut c, "removed the wire").await;
+    assert_eq!(text, format!("removed the wire to {b_label} on both sides"));
     let refreshed = c
         .wait_for(|msg| {
-            matches!(msg, Msg::ShowPicker { picker, refresh: true } if picker.kind == PickerKind::Unwire)
+            matches!(msg, Msg::ShowPicker { picker, refresh: true } if picker.kind == PickerKind::Wire)
         })
         .await;
     assert!(
-        matches!(&refreshed, Msg::ShowPicker { picker, .. } if picker.rows.is_empty()),
+        matches!(&refreshed, Msg::ShowPicker { picker, .. }
+            if picker.rows.len() == 1 && picker.rows[0].text == format!("{b_label}  idle  no client")),
         "{refreshed:?}"
     );
     assert_eq!(wires_of(&a).await, Vec::<String>::new());
@@ -1395,19 +1440,6 @@ async fn wire_without_another_daemon_says_what_to_do() {
     c.send(Effect::Wire(Some(format!("alpha/{}", a.agent))));
     let (_, text) = notice(&mut c, "this workspace's").await;
     assert!(text.contains("wired to each other already"), "{text}");
-    c.send(Effect::Unwire(None));
-    let picker = match c
-        .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, .. } if picker.kind == PickerKind::Unwire))
-        .await
-    {
-        Msg::ShowPicker { picker, .. } => picker,
-        _ => unreachable!(),
-    };
-    assert!(
-        picker.empty.contains("no wires to other workspaces"),
-        "{}",
-        picker.empty
-    );
     c.quit().await;
     a.stop().await;
 }

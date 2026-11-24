@@ -223,32 +223,77 @@ impl SettingsFile {
                 .as_table_mut()
                 .entry(list)
                 .or_insert(Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
-            let mut fields = vec![("tool", entry.tool.as_str())];
-            fields.extend(entry.arg.as_deref().map(|arg| ("arg", arg)));
-            fields.extend(entry.literal.as_deref().map(|literal| ("literal", literal)));
             if rule_entries(item).iter().any(|known| known == entry) {
                 return Ok(false);
             }
-            match item {
-                Item::ArrayOfTables(tables) => {
-                    let mut table = toml_edit::Table::new();
-                    for (name, value) in fields {
-                        table.insert(name, toml_edit::value(value));
-                    }
-                    tables.push(table);
-                }
-                Item::Value(toml_edit::Value::Array(array)) => {
-                    let mut table = toml_edit::InlineTable::new();
-                    for (name, value) in fields {
-                        table.insert(name, value.into());
-                    }
-                    array.push(table);
-                }
-                _ => return Err(shape()),
-            }
+            push_rule(item, entry).ok_or_else(shape)?;
             Ok(true)
         })
         .map(|(added, _)| added)
+    }
+
+    /// Replace the `[[allow]]` or `[[deny]]` entry equal to `old` (in
+    /// `old_list`) with `new` (of `new_list`), in one write. Within one
+    /// list the entry changes where it stands, its comments and layout
+    /// kept (a field's value keeps its own comment); into the other list
+    /// it leaves its place and joins that list's end. Whether `old` was
+    /// there (nothing is written when it was not).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set`], and when a list is not an array of tables.
+    pub fn replace_rule(
+        &self,
+        old_list: &str,
+        old: &RuleEntry,
+        new_list: &str,
+        new: &RuleEntry,
+    ) -> Result<bool, WriteError> {
+        let path = self.path.clone();
+        self.edit(|doc| {
+            let shape = |key: &str| WriteError::Shape {
+                path: path.clone(),
+                key: key.to_string(),
+            };
+            let Some(item) = doc.as_table_mut().get_mut(old_list) else {
+                return Ok(false);
+            };
+            let Some(at) = rule_entries(item).iter().position(|known| known == old) else {
+                return Ok(false);
+            };
+            if old_list == new_list {
+                let table: &mut dyn TableLike = match item {
+                    Item::ArrayOfTables(tables) => {
+                        tables.get_mut(at).ok_or_else(|| shape(old_list))?
+                    }
+                    Item::Value(toml_edit::Value::Array(array)) => array
+                        .get_mut(at)
+                        .and_then(toml_edit::Value::as_inline_table_mut)
+                        .ok_or_else(|| shape(old_list))?,
+                    _ => return Err(shape(old_list)),
+                };
+                set_field(table, "tool", Some(&new.tool));
+                set_field(table, "arg", new.arg.as_deref());
+                set_field(table, "literal", new.literal.as_deref());
+                return Ok(true);
+            }
+            match item {
+                Item::ArrayOfTables(tables) => {
+                    tables.remove(at);
+                }
+                Item::Value(toml_edit::Value::Array(array)) => {
+                    array.remove(at);
+                }
+                _ => return Err(shape(old_list)),
+            }
+            let item = doc
+                .as_table_mut()
+                .entry(new_list)
+                .or_insert(Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
+            push_rule(item, new).ok_or_else(|| shape(new_list))?;
+            Ok(true)
+        })
+        .map(|(replaced, _)| replaced)
     }
 
     /// Remove the `[[allow]]` or `[[deny]]` entry equal to `entry`.
@@ -399,6 +444,52 @@ fn edit_value(value: &toml::Value) -> toml_edit::Value {
         .to_string()
         .parse()
         .unwrap_or_else(|_| toml_edit::Value::from(value.to_string()))
+}
+
+/// Append `entry` to the `allow`/`deny` item (an array of tables, or an
+/// inline array); `None` when the item is neither.
+fn push_rule(item: &mut Item, entry: &RuleEntry) -> Option<()> {
+    let mut fields = vec![("tool", entry.tool.as_str())];
+    fields.extend(entry.arg.as_deref().map(|arg| ("arg", arg)));
+    fields.extend(entry.literal.as_deref().map(|literal| ("literal", literal)));
+    match item {
+        Item::ArrayOfTables(tables) => {
+            let mut table = toml_edit::Table::new();
+            for (name, value) in fields {
+                table.insert(name, toml_edit::value(value));
+            }
+            tables.push(table);
+        }
+        Item::Value(toml_edit::Value::Array(array)) => {
+            let mut table = toml_edit::InlineTable::new();
+            for (name, value) in fields {
+                table.insert(name, value.into());
+            }
+            array.push(table);
+        }
+        _ => return None,
+    }
+    Some(())
+}
+
+/// Set a rule entry's field `name` to `value` where it stands (its value's
+/// own comment kept), add it at the end when it is not there, or remove it
+/// (`None`).
+fn set_field(table: &mut dyn TableLike, name: &str, value: Option<&str>) {
+    let Some(text) = value else {
+        table.remove(name);
+        return;
+    };
+    match table.get_mut(name).and_then(Item::as_value_mut) {
+        Some(held) => {
+            let decor = held.decor().clone();
+            *held = toml_edit::Value::from(text);
+            *held.decor_mut() = decor;
+        }
+        None => {
+            table.insert(name, toml_edit::value(text));
+        }
+    }
 }
 
 /// The rule entries of an `allow`/`deny` item, in order.

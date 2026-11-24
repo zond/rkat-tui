@@ -134,7 +134,6 @@ impl App {
             }
             Command::Agents(None) => fx.push(Effect::Agents(None)),
             Command::Wire(target) => fx.push(Effect::Wire(target)),
-            Command::Unwire(target) => fx.push(Effect::Unwire(target)),
             Command::Audit(lines) => fx.push(Effect::Audit(lines)),
             Command::Schedules(action) => fx.push(Effect::Schedules(action)),
             Command::Rehome(Some(reference)) => {

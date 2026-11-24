@@ -1,4 +1,5 @@
-//! `/wire` and `/unwire` in the runner: the pickers, the typed forms, and
+//! `/wire` in the runner: the picker (this agent's wires, then the agents
+//! it can wire to), the typed forms, a wire's removal from the picker, and
 //! the refresh of the other sides after a conversation switch
 //! ([`crate::client::wires`] does the calls).
 
@@ -24,6 +25,19 @@ impl Scene {
     async fn others(&self) -> Vec<Other> {
         cross::others(&self.files, &self.status.workspace).await
     }
+}
+
+/// The `/wire` picker as the daemon's `status` and the other daemons
+/// `others` have it now; `remote`: this client's daemon is on another
+/// machine, so no agent of this machine is offered (its wires still are,
+/// to remove).
+fn picker_of(status: &protocol::Status, others: &[Other], remote: bool) -> crate::ui::ListPicker {
+    let all = if remote {
+        Vec::new()
+    } else {
+        cross::candidates(others)
+    };
+    cross::wire_picker(&all, &cross::rows_of(status), others)
 }
 
 impl Runner {
@@ -98,16 +112,19 @@ impl Runner {
             );
             return;
         }
-        if self.wire_refused("nothing was wired") {
+        let remote = self.config.remote.is_some();
+        // Attached from another machine the picker still lists this
+        // agent's wires, to remove; nothing can be wired from here.
+        if target.is_some() && self.wire_refused("nothing was wired") {
             return;
         }
-        self.with_scene("nothing was wired", false, |say, connection, scene| async move {
+        self.with_scene("nothing was wired", false, move |say, connection, scene| async move {
             let others = scene.others().await;
-            let all = cross::candidates(&others);
             let Some(target) = target else {
-                show(&say, cross::wire_picker(&all, &cross::rows_of(&scene.status)), false);
+                show(&say, picker_of(&scene.status, &others, remote), false);
                 return;
             };
+            let all = cross::candidates(&others);
             if names_own(&target, &scene.status.workspace) {
                 say.notice(
                     NoticeLevel::Warn,
@@ -139,49 +156,21 @@ impl Runner {
                 let others = scene.others().await;
                 wire_with(&say, &connection, &others, &workspace, &agent).await;
                 if let Some(status) = daemon_status(&connection).await {
-                    let all = cross::candidates(&others);
-                    show(
-                        &say,
-                        cross::wire_picker(&all, &cross::rows_of(&status)),
-                        true,
-                    );
+                    show(&say, picker_of(&status, &others, false), true);
                 }
             },
         );
     }
 
-    /// `/unwire`: the picker of this agent's wires, or remove the one
-    /// `target` names.
-    pub(super) fn unwire(&self, target: Option<String>) {
+    /// The `/wire` picker's confirmed `d` on a wired row: remove the wire
+    /// (both sides when the other daemon runs); the picker stays, the row
+    /// then no longer wired.
+    pub(super) fn remove_wire(&self, workspace: PathBuf, agent: String) {
+        let remote = self.config.remote.is_some();
         self.with_scene(
-            "nothing was unwired",
+            "the wire was not removed",
             false,
-            |say, connection, scene| async move {
-                let rows = cross::rows_of(&scene.status);
-                let others = scene.others().await;
-                let Some(target) = target else {
-                    show(&say, cross::unwire_picker(&rows, &others), false);
-                    return;
-                };
-                match cross::resolve_wire(&target, &rows) {
-                    Ok(row) => {
-                        let _ = unwire_with(&say, &connection, &scene.status, row, &others).await;
-                    }
-                    Err(why) => {
-                        say.notice(NoticeLevel::Warn, format!("nothing was unwired: {why}"));
-                    }
-                }
-            },
-        );
-    }
-
-    /// The `/unwire` picker's confirmed choice; the picker stays, the wire
-    /// then gone from it.
-    pub(super) fn unwire_from(&self, workspace: PathBuf, agent: String) {
-        self.with_scene(
-            "nothing was unwired",
-            false,
-            |say, connection, scene| async move {
+            move |say, connection, scene| async move {
                 let others = scene.others().await;
                 let row = cross::rows_of(&scene.status)
                     .into_iter()
@@ -193,19 +182,15 @@ impl Runner {
                         from: None,
                         link: None,
                     });
-                let done = unwire_with(&say, &connection, &scene.status, &row, &others).await;
+                let done = remove_with(&say, &connection, &scene.status, &row, &others).await;
                 if let Some(status) = daemon_status(&connection).await {
-                    show(
-                        &say,
-                        cross::unwire_picker(&cross::rows_of(&status), &others),
-                        true,
-                    );
+                    show(&say, picker_of(&status, &others, remote), true);
                 }
                 match done {
-                    Ok(text) => say.picker_done(crate::ui::PickerKind::Unwire, Some(text)),
+                    Ok(text) => say.picker_done(crate::ui::PickerKind::Wire, Some(text)),
                     Err(why) => {
                         let _ = say.ui_tx.send(Msg::PickerRefused {
-                            kind: crate::ui::PickerKind::Unwire,
+                            kind: crate::ui::PickerKind::Wire,
                             why,
                         });
                     }
@@ -365,7 +350,7 @@ async fn wire_with(
     }
 }
 
-async fn unwire_with(
+async fn remove_with(
     say: &Say,
     connection: &Connection,
     status: &protocol::Status,
@@ -376,13 +361,13 @@ async fn unwire_with(
         say.notice(NoticeLevel::Warn, NO_STATUS);
         return Err(NO_STATUS.to_string());
     };
-    match cross::unwire(connection, agent, &status.workspace, row, others).await {
+    match cross::remove_wire(connection, agent, &status.workspace, row, others).await {
         Ok(text) => {
             say.notice(NoticeLevel::Info, text.clone());
             Ok(text)
         }
         Err(why) => {
-            let why = format!("nothing was unwired: {why}");
+            let why = format!("the wire was not removed: {why}");
             say.notice(NoticeLevel::Warn, why.clone());
             Err(why)
         }

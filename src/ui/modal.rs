@@ -752,7 +752,7 @@ pub enum Modal {
     /// Model picker.
     Model(ModelPicker),
     /// A list picker (`/schedules`, `/permissions`, `/helpers`, `/mode`,
-    /// `/memory`, `/wire`, `/unwire`, `/agents`).
+    /// `/memory`, `/wire`, `/agents`).
     List(ListPicker),
     /// The help (`/help`, `?`).
     Help(HelpDialog),

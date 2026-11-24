@@ -1120,6 +1120,15 @@ pub(super) enum Picked {
     AddStatement(String, crate::approval::grants::GrantScope),
     /// Add the rule (`r`).
     AddRule(crate::ui::RuleForm),
+    /// Replace rule `n`, which read `old`, with `new` (`e`).
+    EditRule {
+        /// The rule's number.
+        n: usize,
+        /// The rule as the dialog showed it.
+        old: crate::approval::desk::RuleSpec,
+        /// The rule as edited.
+        new: crate::approval::desk::RuleSpec,
+    },
     /// Trust a host typed (Hosts' `n`) or a blocked call's (Blocked's `t`).
     TrustHost(protocol::TrustHostParams),
     /// Stop trusting a host (Hosts' `d`).
@@ -1199,6 +1208,16 @@ impl Picked {
                             user: form.user,
                             literal: form.literal,
                         },
+                    ),
+                )
+                .await
+            }
+            Self::EditRule { n, old, new } => {
+                bounded(
+                    CALL_TIMEOUT,
+                    remote::call::<protocol::method::Rules>(
+                        connection,
+                        &RuleCommand::Edit { n, old, new },
                     ),
                 )
                 .await

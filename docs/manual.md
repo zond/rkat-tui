@@ -627,7 +627,11 @@ of the workspace's or your `tui.toml` for good, one of the project file
 or the command line until the daemon restarts; a session grant, while
 another grant names the file to edit. `n` adds a statement, `r` a rule
 (allow or deny, workspace or your file, pattern or literal), as
-`/permissions add` does ([Rules](#rules)).
+`/permissions add` does ([Rules](#rules)). `e` on a rule of the
+workspace's or your `tui.toml` opens the same entry filled in; Enter
+replaces the rule where it stands in its file, in one write (an entry
+that does not parse, or says what another rule says, is refused in the
+entry and the old rule stays).
 
 ### The project's hosts and the hosts you trust
 
@@ -955,7 +959,8 @@ Each limit is deliberate; *to tighten* says what a cautious user can do.
   Each agent's socket (`wire/<agent>.sock` in the state directory, 0600
   in a 0700 directory) admits only your own processes, and envelopes not
   signed by the wired agent are dropped unanswered. *To tighten:* wire
-  only projects that may share what they read, `/unwire` when done, or
+  only projects that may share what they read, remove a wire when done
+  (`d` on its row in `/wire`), or
   `[[deny]] tool = "send_message"`.
 - **`!` runs as you, unsandboxed and unreviewed,** with your whole
   environment, and its output joins the agent's context. *To tighten:*
@@ -1304,7 +1309,7 @@ says when a change made while the daemon runs applies.
 | `ui.checklist`: Whether the task checklist shows under the input. | `hidden`, `shown` | hidden | may set it (the command line wins) | at once | Ctrl+T |
 | `pricing.fetch`: Whether the community price list is fetched for the cost readout. | `true` or `false` | true | may only set `false` | at the next start | `--no-pricing-fetch` |
 | `daemon.principal`: The person every attached client decides approval requests as. | text (at most 200 characters) | the login name ($USER, else $LOGNAME, else owner) | may not set it | at the next start | — |
-| `[[allow]] / [[deny]]`: Rules: `tool`, then `arg` (a glob) or `literal`. | a section | none | may only add deny rules | at once from your own and the workspace's file (a project file's at the next start) | `--allow` / `--deny <tool>[=<glob>]`; /permissions (In force: r adds, d removes; Blocked: a, A) |
+| `[[allow]] / [[deny]]`: Rules: `tool`, then `arg` (a glob) or `literal`. | a section | none | may only add deny rules | at once from your own and the workspace's file (a project file's at the next start) | `--allow` / `--deny <tool>[=<glob>]`; /permissions (In force: r adds, e edits, d removes; Blocked: a, A) |
 | `auto.allow`: Statements: kinds of action you allow, which the classifier reads. | a section | none | may not set it | at once | —; /permissions (In force: n adds, d removes; Blocked: e) |
 | `auto.trusted_hosts`: Hosts you trust with the project's data (`host` or `*.domain`), which the classifier reads beside the hosts of the project's git remotes; other rules still apply there. | a section | none | may not set it | at once | `--set 'auto.trusted_hosts=["<host>"]'`; /permissions (Hosts: n adds, d removes; Blocked: t, T) |
 | `confinement.extra_read / extra_write`: Extra directories for the confined shell, which the approval gate is told too. | a section | none | may not set it | the gate and the file tools at once; a confined shell at the next start | `--confinement-read` / `--confinement-write <dir>`; /permissions (Blocked: a, A) |
@@ -1673,8 +1678,7 @@ workspace's. `//` at the start of a prompt sends a literal `/`.
 | `/quit`, `/exit`, `/q` | Leave; your agent retires, and the daemon may stop ([The workspace daemon](#the-workspace-daemon)) |
 | `/detach` | Leave; the agent keeps working |
 | `/agents [name]` | Pick an agent of this workspace: switch, start a new one, retire an idle one ([Several agents](#several-agents)) |
-| `/wire [workspace/agent \| ssh://host[/workspace/agent]]` | Wire this agent to one in another workspace or, over ssh, on another machine ([Wiring agents across workspaces](#wiring-agents-across-workspaces)) |
-| `/unwire [workspace/agent]` | Remove such a wire, on both sides when the other daemon runs |
+| `/wire [workspace/agent \| ssh://host[/workspace/agent]]` | Wire this agent to one in another workspace or, over ssh, on another machine; the picker lists its wires first, and `d` on one removes it ([Wiring agents across workspaces](#wiring-agents-across-workspaces)) |
 | `/audit [n]` | The audit log's last `n` (20) lines for this agent; `rkat-tui --audit` prints it all |
 | `/schedules [pause\|resume\|delete <name>]` | This agent's schedules ([Schedules](#schedules)) |
 | `/clear`, `/new` | Start a new session |
@@ -1729,8 +1733,7 @@ pending cancels only the question. One at a time; its tokens count in
 
 #### List dialogs
 
-The lists of `/permissions`, `/schedules`, `/agents`, `/wire`, `/unwire`,
-`/mode`, `/memory`, `/settings`, `/rehome` and `/helpers` show their keys
+The lists of `/permissions`, `/schedules`, `/agents`, `/wire`, `/mode`, `/memory`, `/settings`, `/rehome` and `/helpers` show their keys
 in a footer (`?` lists them too). ↑/↓ or `k`/`j` move; Esc, `q` or Ctrl-C
 close. A list stays open after you act in it and refreshes in place; only
 acts that take you elsewhere close it (choosing a mode, opening a helper,
@@ -2223,11 +2226,10 @@ agent and its client project's, say.
 
 | Command | Does |
 |---|---|
-| `/wire` | picker of the top-level agents of every other workspace on this machine whose daemon runs |
+| `/wire` | picker: your agent's wires first (marked wired, with the other side's state or the ssh link; `d` then `y` removes one, Enter on one only says it is wired), then the top-level agents of every other workspace on this machine whose daemon runs (Enter wires) |
 | `/wire <workspace>/<agent>` | wire directly; the workspace by directory name or path, alone when one agent works there |
 | `/wire ssh://<host>` | list the agents running on another machine |
 | `/wire ssh://<host>/<workspace>/<agent> [--remote-rkat-tui <path>]` | wire to an agent there |
-| `/unwire [<workspace>/<agent>]` | picker of your agent's wires, or remove one directly |
 
 **Running `/wire` is your consent, for both directions.** Neither
 workspace asks anything further. A message to a wired agent is tier 1
@@ -2257,10 +2259,11 @@ top-level agents can be wired, not helpers, one pair per `/wire`.
   it runs, and until then messages are not delivered.
 - If `/wire` is cut off halfway (the TUI killed), the wire is one-sided
   and the other side's messages are dropped: run `/wire` again.
-- Your side of a wire is always removed by `/unwire`; the other side
-  goes too when its daemon runs, otherwise when that agent retires or
-  `/unwire` runs there. A retired agent loses its wires; the other side's
-  `/unwire` picker marks the stale one.
+- Your side of a wire is always removed by `d` on its row in `/wire`; the
+  other side goes too when its daemon runs, otherwise when that agent
+  retires or the wire is removed there. A retired agent loses its wires;
+  the other side's `/wire` picker marks the stale one. The picker opens
+  with your wires even when no other daemon runs.
 - The socket path must fit a Unix socket address (107 bytes on Linux,
   103 on macOS); a very long `--config-dir` makes `/wire` fail with the
   path.
@@ -2281,7 +2284,8 @@ top-level agents can be wired, not helpers, one pair per `/wire`.
 Your workspace's daemon runs `ssh`, as you and outside the agent's
 sandbox; nothing the agent can call starts it. It holds one connection
 per wire, and the other machine never connects back, so it cannot
-`/wire` back through it and its `/unwire` removes only its own half. ssh
+`/wire` back through it, and removing the wire there removes only its own
+half. ssh
 is only the transport: every message is still signed by the sending
 agent's key.
 

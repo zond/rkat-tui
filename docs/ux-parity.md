@@ -94,7 +94,8 @@ rkat-tui has these with no CC counterpart:
 - `/trust`, `/auto` (on, off, resume, stats, check, model);
 - `/detach`, `/daemon`, `/agents`, `/rehome`, `/schedules`, `/audit`
   ([The workspace daemon](manual.md#the-workspace-daemon));
-- `/wire` and `/unwire` connect agents across workspaces
+- `/wire` connects agents across workspaces, and its picker removes a
+  wire (`d` on the wire's row)
   ([Wiring agents across workspaces](manual.md#wiring-agents-across-workspaces));
 - `//`, `\#` and `\!` send a literal `/`, `#` or `!`.
 

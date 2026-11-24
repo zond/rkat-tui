@@ -965,8 +965,8 @@ fn rule_picker_snapshot() {
             "  │1. deny shell pattern `git push*` · realm                         │",
             "  │Remove rule 1? It leaves the workspace's rules for good. y yes · n│",
             "  │or Esc no                                                         │",
-            "  │↑/↓ move · d remove · n new statement · r new rule · Tab Hosts ·  │",
-            "  │Esc close                                                         │",
+            "  │↑/↓ move · d remove · e edit a rule · n new statement · r new rule│",
+            "  │· Tab Hosts · Esc close                                           │",
         ]
     );
 }

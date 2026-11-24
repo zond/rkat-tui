@@ -287,65 +287,107 @@ fn schedules_picker(n: usize) -> ListPicker {
     ListPicker::new(PickerKind::Schedules, rows, "no schedules", "keys")
 }
 
-/// The `/unwire` picker stays open after a confirmed unwire and its
-/// refresh drops the row; the `/wire` picker stays after a wire (a list
-/// stays with the item gone, as `/agents` does).
+/// A wire of this agent, as the daemon's status lists it.
+fn wire_row(workspace: &str, agent: &str) -> crate::daemon::protocol::WireRow {
+    crate::daemon::protocol::WireRow {
+        workspace: workspace.into(),
+        agent: agent.into(),
+        host: None,
+        from: None,
+        link: None,
+    }
+}
+
+/// An agent of another workspace the `/wire` picker offers.
+fn candidate(workspace: &str, agent: &str) -> crate::client::wires::Candidate {
+    crate::client::wires::Candidate {
+        workspace: workspace.into(),
+        agent: agent.into(),
+        run: crate::daemon::protocol::RunWord::Idle,
+        clients: 0,
+    }
+}
+
+/// The `/wire` picker lists this agent's wires first, then the agents it
+/// can wire to. On a wired row `d` asks and `y` removes the wire; `n` and
+/// Esc keep it; Enter only says it is wired and how to remove it. The
+/// picker stays open after either act, its refresh in place.
 #[test]
-fn the_wire_pickers_stay_open_after_their_act() {
-    let unwire = |n: usize| {
-        let rows = (0..n)
-            .map(|i| {
-                let act = PickAct::Unwire {
-                    workspace: format!("/w/{i}").into(),
-                    agent: "main-aaaa".into(),
-                };
-                PickRow::new(
-                    format!("{i}/main-aaaa"),
-                    vec![PickKey::confirmed(KeyCode::Enter, act, "unwire?")],
-                )
-            })
-            .collect();
-        ListPicker::new(PickerKind::Unwire, rows, "no wires", "keys")
-    };
+fn the_wire_picker_lists_wires_first_and_removes_one_with_d_then_y() {
+    use crate::client::wires::wire_picker;
+    let wired = [wire_row("/w/web", "main-cccc")];
+    let all = [
+        candidate("/w/api", "main-aaaa"),
+        candidate("/w/web", "main-cccc"),
+    ];
     let mut app = App::new(StatusInfo::default());
     app.update(Msg::ShowPicker {
-        picker: unwire(2),
+        picker: wire_picker(&all, &wired, &[]),
         refresh: false,
     });
+    let rows = |app: &App| match &app.modal {
+        Some(Modal::List(p)) if p.kind == PickerKind::Wire => {
+            p.rows.iter().map(|r| r.text.clone()).collect::<Vec<_>>()
+        }
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        rows(&app),
+        [
+            "web/main-cccc  wired · its daemon is not running",
+            "api/main-aaaa  idle  no client"
+        ]
+    );
+    let line = |app: &App| match &app.modal {
+        Some(Modal::List(p)) => p.line.clone(),
+        _ => None,
+    };
+    // Enter on the wired row does nothing but say so.
     assert!(app.update(key(KeyCode::Enter)).is_empty());
+    assert!(
+        matches!(line(&app), Some(PickerLine::Refused(why)) if why.contains("wired to web/main-cccc already: d removes the wire")),
+        "{:?}",
+        line(&app)
+    );
+    // `d`, then `n` or Esc: the question goes, the wire stays.
+    for keep in [KeyCode::Char('n'), KeyCode::Esc] {
+        assert!(app.update(key(KeyCode::Char('d'))).is_empty());
+        assert!(
+            matches!(line(&app), Some(PickerLine::Confirm { question, .. }) if question.contains("Remove the wire to web/main-cccc?"))
+        );
+        assert!(app.update(key(keep)).is_empty(), "{keep:?}");
+        assert_eq!(line(&app), None, "{keep:?}");
+        assert!(matches!(&app.modal, Some(Modal::List(_))), "{keep:?}");
+    }
+    // `d`, then `y`: the removal, and the picker stays.
+    app.update(key(KeyCode::Char('d')));
     assert_eq!(
         app.update(key(KeyCode::Char('y'))),
-        vec![Effect::UnwireFrom {
-            workspace: "/w/0".into(),
-            agent: "main-aaaa".into()
+        vec![Effect::RemoveWire {
+            workspace: "/w/web".into(),
+            agent: "main-cccc".into()
         }]
     );
-    assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Unwire));
+    assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Wire));
+    // Its refresh: no wire now, both agents offered, on the same item.
     app.update(Msg::ShowPicker {
-        picker: unwire(1),
+        picker: wire_picker(&all, &[], &[]),
         refresh: true,
     });
-    assert!(matches!(&app.modal, Some(Modal::List(p)) if p.rows.len() == 1));
-    let wire = ListPicker::new(
-        PickerKind::Wire,
-        vec![PickRow::new(
-            "web/main-cccc",
-            vec![PickKey::now(
-                KeyCode::Enter,
-                PickAct::Wire {
-                    workspace: "/w/web".into(),
-                    agent: "main-cccc".into(),
-                },
-            )],
-        )],
-        "none",
-        "keys",
+    assert_eq!(
+        rows(&app),
+        [
+            "api/main-aaaa  idle  no client",
+            "web/main-cccc  idle  no client"
+        ]
     );
-    let mut app = App::new(StatusInfo::default());
-    app.update(Msg::ShowPicker {
-        picker: wire,
-        refresh: false,
-    });
+    assert!(
+        matches!(&app.modal, Some(Modal::List(p)) if p.selected().is_some_and(|r| r.text.starts_with("web/")))
+    );
+    // `d` on an agent not wired says so; Enter wires it, and the picker
+    // stays.
+    app.update(key(KeyCode::Char('d')));
+    assert!(matches!(line(&app), Some(PickerLine::Refused(why)) if why.contains("not wired")));
     assert_eq!(
         app.update(key(KeyCode::Enter)),
         vec![Effect::WireTo {
@@ -354,6 +396,57 @@ fn the_wire_pickers_stay_open_after_their_act() {
         }]
     );
     assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Wire));
+}
+
+/// `/unwire` is no command: typed, it does nothing but say so.
+#[test]
+fn unwire_is_an_unknown_command() {
+    let mut app = App::new(StatusInfo::default());
+    for typed in ["/unwire", "/unwire beta/main-ab12"] {
+        assert!(submit(&mut app, typed).is_empty(), "{typed}");
+        let (level, text) = last_notice(&app).unwrap();
+        assert_eq!(level, NoticeLevel::Warn, "{typed}");
+        assert!(text.contains("unknown command /unwire"), "{text}");
+        app.input.clear();
+    }
+}
+
+/// With no other daemon running the picker still opens with this agent's
+/// wires (local and over ssh), each removable.
+#[test]
+fn the_wire_picker_opens_with_only_wires_when_no_daemon_runs() {
+    use crate::client::wires::wire_picker;
+    let mut ssh = wire_row("/w/far", "main-eeee");
+    ssh.host = Some("box".into());
+    ssh.link = Some("up".into());
+    let wired = [wire_row("/w/web", "main-cccc"), ssh];
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowPicker {
+        picker: wire_picker(&[], &wired, &[]),
+        refresh: false,
+    });
+    let Some(Modal::List(picker)) = &app.modal else {
+        panic!("{:?}", app.modal)
+    };
+    assert_eq!(picker.rows.len(), 2);
+    assert_eq!(
+        picker.rows[1].text,
+        "far/main-eeee  wired · over ssh to box, link up"
+    );
+    assert!(
+        picker.footer.contains("d remove a wire"),
+        "{}",
+        picker.footer
+    );
+    app.update(key(KeyCode::Down));
+    app.update(key(KeyCode::Char('d')));
+    assert_eq!(
+        app.update(key(KeyCode::Char('y'))),
+        vec![Effect::RemoveWire {
+            workspace: "/w/far".into(),
+            agent: "main-eeee".into()
+        }]
+    );
 }
 
 /// `/schedules` asks for the picker; its acts run as the typed command

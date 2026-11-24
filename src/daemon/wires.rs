@@ -555,11 +555,11 @@ impl Wires {
         let ours_label = ours.label();
         Ok(if wired_here && wired_there.already {
             format!(
-                "{ours_label} and {label} are wired already over ssh to {host}: /unwire {label} removes it"
+                "{ours_label} and {label} are wired already over ssh to {host}: /wire, then d on its row, removes it"
             )
         } else {
             format!(
-                "wired {ours_label} and {label} over ssh to {host}: each can message the other (send_message); this machine holds the link and makes it again when it drops; /unwire {label} removes it"
+                "wired {ours_label} and {label} over ssh to {host}: each can message the other (send_message); this machine holds the link and makes it again when it drops; /wire, then d on its row, removes it"
             )
         })
     }
@@ -732,7 +732,7 @@ impl Wires {
             Some(match words {
                 Ok(_) => format!("removed on {} too", via.host),
                 Err(why) => format!(
-                    "the half on {} stays ({why}); it delivers nothing now, and `/unwire {ours}` in that workspace there removes it",
+                    "the half on {} stays ({why}); it delivers nothing now, and `/wire` in that workspace there, then d on the row of {ours}, removes it",
                     via.host
                 ),
             }),

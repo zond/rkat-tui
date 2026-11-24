@@ -765,7 +765,7 @@ impl Transport for Ssh {
     }
 }
 
-/// Whether a link is up, as `/agents`, `/unwire` and the gate see it.
+/// Whether a link is up, as `/agents`, the `/wire` picker and the gate see it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkState {

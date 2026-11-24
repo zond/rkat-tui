@@ -1,5 +1,5 @@
 //! The list pickers of `/schedules`, `/permissions`, `/helpers`, `/mode`,
-//! `/memory`, `/wire`, `/unwire` and `/agents`: one [`ListPicker`] of rows, each carrying the keys that
+//! `/memory`, `/wire` and `/agents`: one [`ListPicker`] of rows, each carrying the keys that
 //! act on it (an act, an act to confirm with `y`, or why it cannot), with
 //! a selection, a scrolling window and an optional line under the rows.
 //!
@@ -21,6 +21,7 @@ use super::modal::{
     window_lines,
 };
 use super::{App, BlockId, Effect, MemoryTarget, Modal, OpenHelperView, ScrollState};
+use crate::approval::desk::RuleSpec;
 use crate::approval::grants::GrantScope;
 use crate::approval::mode::PermissionMode;
 use crate::daemon::protocol::ScheduleOp;
@@ -41,8 +42,6 @@ pub enum PickerKind {
     Memory,
     /// `/wire`.
     Wire,
-    /// `/unwire`.
-    Unwire,
     /// `/agents`.
     Agents,
     /// `/settings`.
@@ -62,8 +61,7 @@ impl PickerKind {
             Self::Helpers => " Helpers ",
             Self::Mode => " Permission mode ",
             Self::Memory => " Instruction files ",
-            Self::Wire => " Agents of other workspaces ",
-            Self::Unwire => " Wires to other workspaces ",
+            Self::Wire => " Wires to other workspaces ",
             Self::Agents => " Agents ",
             Self::Settings => " Settings ",
             Self::Rehome => " Workspace state ",
@@ -108,6 +106,19 @@ pub enum PickAct {
     /// Add an approval rule (as `/permissions add`, or a literal one),
     /// then the list again.
     AddRule(RuleForm),
+    /// Replace rule `n`, which read `old`, with `new` in place, then the
+    /// list again; the field stays open until the daemon answers (a
+    /// refusal shows in it, its text kept).
+    EditRule {
+        /// The rule's number.
+        n: usize,
+        /// The rule as the dialog showed it.
+        old: RuleSpec,
+        /// The rule as edited.
+        new: RuleSpec,
+        /// It is in the user's own `tui.toml` (else the workspace's).
+        user: bool,
+    },
     /// Withdraw the approval once of call `id` (it is a blocked call
     /// again), then the list again.
     Withdraw(u64),
@@ -173,8 +184,9 @@ pub enum PickAct {
         /// The other agent.
         agent: String,
     },
-    /// `/unwire <workspace>/<agent>`.
-    Unwire {
+    /// Remove this agent's wire to `agent` of `workspace` (the `/wire`
+    /// picker's `d` on a wired row).
+    RemoveWire {
         /// The other agent's workspace.
         workspace: std::path::PathBuf,
         /// The other agent.
@@ -345,6 +357,25 @@ pub enum FieldFor {
         /// The text after the tool is matched exactly, not as a pattern.
         literal: bool,
     },
+    /// Rule `n` (which reads `old`) as edited, its text `<tool>
+    /// [pattern]`: Tab switches allow and deny, ↑/↓ a pattern and a
+    /// literal; the file stays the rule's own. Enter is
+    /// [`PickAct::EditRule`]; a refusal shows here, the field kept open
+    /// with its text.
+    EditRule {
+        /// The rule's number.
+        n: usize,
+        /// The rule as the dialog showed it.
+        old: RuleSpec,
+        /// A deny rule.
+        deny: bool,
+        /// The text after the tool is matched exactly.
+        literal: bool,
+        /// The rule is in the user's own `tui.toml` (else the workspace's).
+        user: bool,
+        /// Why the last edit was refused (until the next key that edits).
+        refused: Option<String>,
+    },
     /// A host to trust with the project's data: Tab switches this
     /// workspace and every workspace; Enter is [`PickAct::TrustHost`]
     /// once the text is a valid entry
@@ -409,7 +440,7 @@ impl FieldFor {
     /// The most characters the field takes.
     fn max(&self) -> usize {
         match self {
-            Self::Setting { .. } | Self::Rule { .. } => SETTING_CHARS,
+            Self::Setting { .. } | Self::Rule { .. } | Self::EditRule { .. } => SETTING_CHARS,
             Self::Effect { .. } | Self::Statement { .. } => {
                 crate::approval::statements::MAX_STATEMENT_CHARS
             }
@@ -421,7 +452,7 @@ impl FieldFor {
 
     /// The text was edited: a refusal of the text before goes.
     fn edited(&mut self) {
-        if let Self::Directory { refused } = self {
+        if let Self::Directory { refused } | Self::EditRule { refused, .. } = self {
             *refused = None;
         }
     }
@@ -431,7 +462,7 @@ impl FieldFor {
     /// and the refusal shows under the rows.
     fn hold_refusal(&mut self, why: &str) -> bool {
         match self {
-            Self::Directory { refused } => {
+            Self::Directory { refused } | Self::EditRule { refused, .. } => {
                 *refused = Some(why.to_string());
                 true
             }
@@ -454,6 +485,13 @@ impl FieldFor {
                     *deny = !*deny;
                 }
             }
+            // The file is the rule's own: Shift+Tab changes nothing.
+            Self::EditRule { deny, refused, .. } => {
+                if !back {
+                    *deny = !*deny;
+                    *refused = None;
+                }
+            }
             Self::Directory { .. } => {}
         }
     }
@@ -462,6 +500,13 @@ impl FieldFor {
     fn flip(&mut self) {
         if let Self::Rule { literal, .. } = self {
             *literal = !*literal;
+        }
+        if let Self::EditRule {
+            literal, refused, ..
+        } = self
+        {
+            *literal = !*literal;
+            *refused = None;
         }
     }
 
@@ -540,7 +585,60 @@ impl FieldFor {
                     user: *user,
                 })
             }
+            Self::EditRule {
+                n,
+                old,
+                deny,
+                literal,
+                user,
+                ..
+            } => {
+                let (tool, rest) = text.split_once(char::is_whitespace).unwrap_or((&text, ""));
+                let rest = rest.trim();
+                if tool.is_empty() {
+                    return Err(format!(
+                        "rule {n} not changed: type the tool's name (shell, write_file, …), then an optional pattern"
+                    ));
+                }
+                if *literal && rest.is_empty() {
+                    return Err(format!(
+                        "rule {n} not changed: a literal rule needs the exact text after `{tool}` (↑/↓ makes it a pattern)"
+                    ));
+                }
+                PickAct::EditRule {
+                    n: *n,
+                    old: old.clone(),
+                    new: RuleSpec {
+                        deny: *deny,
+                        tool: tool.to_string(),
+                        pattern: (!rest.is_empty()).then(|| rest.to_string()),
+                        literal: *literal,
+                    },
+                    user: *user,
+                }
+            }
         })
+    }
+
+    /// The field that edits rule `n`, which reads `old`, of the user's own
+    /// file (`user`) or the workspace's, its text the rule's own.
+    #[must_use]
+    pub fn edit_rule(n: usize, old: RuleSpec, user: bool) -> Field {
+        let text = match &old.pattern {
+            Some(pattern) => format!("{} {pattern}", old.tool),
+            None => old.tool.clone(),
+        };
+        Field {
+            what: Self::EditRule {
+                n,
+                deny: old.deny,
+                literal: old.literal,
+                old,
+                user,
+                refused: None,
+            },
+            text,
+        }
     }
 
     /// The line over the field: what Enter does there, what Tab switches
@@ -587,6 +685,28 @@ impl FieldFor {
                     "new rule: {kind} · {file} · type {arg} (Enter adds · Tab allow/deny · Shift+Tab workspace/your tui.toml · ↑/↓ pattern/literal · Esc cancels):"
                 )
             }
+            Self::EditRule {
+                n,
+                deny,
+                literal,
+                user,
+                ..
+            } => {
+                let kind = if *deny { "deny" } else { "allow" };
+                let file = if *user {
+                    "your tui.toml"
+                } else {
+                    "the workspace's tui.toml"
+                };
+                let arg = if *literal {
+                    "<tool> <exact text>"
+                } else {
+                    "<tool> [pattern]"
+                };
+                format!(
+                    "edit rule {n}: {kind} · in {file}, where it stands · {arg} (Enter replaces it · Tab allow/deny · ↑/↓ pattern/literal · Esc keeps it):"
+                )
+            }
             Self::Host { user } => {
                 let (now, other) = if *user {
                     ("every workspace (your tui.toml)", "this workspace")
@@ -604,7 +724,7 @@ impl FieldFor {
     /// Why the text in the field was refused, shown under it.
     fn refusal(&self) -> Option<&str> {
         match self {
-            Self::Directory { refused } => refused.as_deref(),
+            Self::Directory { refused } | Self::EditRule { refused, .. } => refused.as_deref(),
             _ => None,
         }
     }
@@ -1706,6 +1826,15 @@ impl App {
                 && picker.kind == kind
                 && !matches!(picker.line, Some(PickerLine::Confirm { .. }))
             {
+                // A field that holds its refusals (a rule's edit) keeps
+                // its text and says why there.
+                if let (PickerLine::Refused(why), Some(PickerLine::Field(field))) =
+                    (line, &mut picker.line)
+                    && matches!(field.what, FieldFor::EditRule { .. })
+                    && field.what.hold_refusal(why)
+                {
+                    continue;
+                }
                 picker.line = Some(line.clone());
             }
         }
@@ -1737,6 +1866,21 @@ impl App {
                 fx.push(Effect::PickedStatement { scope, text });
             }
             PickAct::AddRule(form) => fx.push(Effect::PickedRule(form)),
+            // The field stays open, its text kept, until the daemon's
+            // answer: the refreshed list (the row changed) or a refusal
+            // in the field.
+            PickAct::EditRule { n, old, new, user } => {
+                if let Some(Modal::List(picker)) = &mut self.modal
+                    && picker.kind == PickerKind::Permissions
+                {
+                    let mut field = FieldFor::edit_rule(n, new.clone(), user);
+                    if let FieldFor::EditRule { old: shown, .. } = &mut field.what {
+                        shown.clone_from(&old);
+                    }
+                    picker.line = Some(PickerLine::Field(field));
+                }
+                fx.push(Effect::PickedRuleEdit { n, old, new });
+            }
             PickAct::SetMode(mode) => fx.push(Effect::SetMode(mode)),
             PickAct::SetSetting {
                 key,
@@ -1753,8 +1897,8 @@ impl App {
             }
             PickAct::OpenMemory(target) => fx.push(Effect::OpenMemory(target)),
             PickAct::Wire { workspace, agent } => fx.push(Effect::WireTo { workspace, agent }),
-            PickAct::Unwire { workspace, agent } => {
-                fx.push(Effect::UnwireFrom { workspace, agent });
+            PickAct::RemoveWire { workspace, agent } => {
+                fx.push(Effect::RemoveWire { workspace, agent });
             }
             // A switch during a turn waits for its end.
             PickAct::SwitchAgent(name) => {
@@ -2192,7 +2336,7 @@ mod tests {
                 workspace: "/w".into(),
                 agent: "a".into(),
             },
-            PickAct::Unwire {
+            PickAct::RemoveWire {
                 workspace: "/w".into(),
                 agent: "a".into(),
             },

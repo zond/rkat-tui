@@ -569,6 +569,35 @@ impl RuleSet {
         RuleId { kind, serial }
     }
 
+    /// Replace rule `id` with `rule`: in its place and under its id when
+    /// both are of one kind, else at the end of the other kind's list
+    /// under a new id. Returns the id it has now (`None`: no rule `id`).
+    pub fn edit(&mut self, id: RuleId, rule: Rule) -> Option<RuleId> {
+        if rule.kind == id.kind {
+            let held = self
+                .list_mut(id.kind)
+                .iter_mut()
+                .find(|(serial, _)| *serial == id.serial)?;
+            held.1 = rule;
+            return Some(id);
+        }
+        self.remove(id)?;
+        self.last += 1;
+        let serial = self.last;
+        let kind = rule.kind;
+        self.list_mut(kind).push((serial, rule));
+        Some(RuleId { kind, serial })
+    }
+
+    /// Whether a rule other than `except` says what `rule` says (its kind,
+    /// tool and argument).
+    #[must_use]
+    pub fn says_already(&self, rule: &Rule, except: RuleId) -> Option<&Rule> {
+        self.with_ids(rule.kind)
+            .find(|(id, held)| *id != except && held.tool == rule.tool && held.arg == rule.arg)
+            .map(|(_, held)| held)
+    }
+
     /// Remove a rule by id.
     pub fn remove(&mut self, id: RuleId) -> Option<Rule> {
         let list = self.list_mut(id.kind);

@@ -524,6 +524,174 @@ async fn the_rule_picker_removes_a_rule_from_the_daemon() {
     daemon.stop().await;
 }
 
+/// The `/permissions` dialog's `e` on a deny rule, through the dialog's
+/// own keys: the rule is replaced where it stands in the realm's file (the
+/// rules before and after it unmoved), the next call meets the new rule
+/// and not the old one; an edit that changes nothing writes nothing, and
+/// one that says what another rule says is refused, the rule kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edited_deny_rule_applies_in_place_of_the_old_one() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    use rkat_tui::approval::desk::RuleSpec;
+    use rkat_tui::ui::{App, PickerKind, Section, StatusInfo};
+    let ws = Workspace::new();
+    std::fs::write(ws.root.join("a.txt"), "A-CONTENT\n").unwrap();
+    std::fs::write(ws.root.join("b.txt"), "B-CONTENT\n").unwrap();
+    let read = |id: &'static str, path: &str| Step::Tool {
+        id,
+        name: "read_file",
+        args: json!({"path": path}),
+    };
+    let llm = ScriptedLlmClient::new(vec![
+        read("r1", "a.txt"),
+        read("r2", "b.txt"),
+        Step::Text("read"),
+    ]);
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    let mut client = attach(&ws.root).await;
+    for (tool, pattern) in [
+        ("shell", "rm *"),
+        ("read_file", "*a.txt"),
+        ("write_file", "*.lock"),
+    ] {
+        client.send(Effect::AddRule {
+            effect: RuleEffect::Deny,
+            tool: tool.into(),
+            pattern: Some(pattern.into()),
+            user: false,
+        });
+        client
+            .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "rule added"))
+            .await;
+    }
+    let realm_toml = common::realm_of(&ws.root).join("tui.toml");
+    let deny_of = |text: &str| -> Vec<(String, String)> {
+        let file: toml::Table = toml::from_str(text).unwrap();
+        file["deny"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|rule| {
+                (
+                    rule["tool"].as_str().unwrap().to_string(),
+                    rule["arg"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    client.send(Effect::RequestPermissions(Some(Section::InForce)));
+    let Msg::ShowPicker { picker, .. } = client
+        .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, refresh: false }
+            if picker.kind == PickerKind::Permissions && picker.section() == Some(Section::InForce.index())))
+        .await
+    else {
+        unreachable!()
+    };
+    let at = |picker: &rkat_tui::ui::ListPicker, says: &str| {
+        picker
+            .rows
+            .iter()
+            .position(|row| row.text.contains(says))
+            .unwrap_or_else(|| panic!("no row {says}: {:?}", picker.rows))
+    };
+    let row = at(&picker, "deny read_file pattern `*a.txt` · realm");
+    let n: usize = picker.rows[row]
+        .text
+        .split_once('.')
+        .unwrap()
+        .0
+        .parse()
+        .unwrap();
+    // `e` on its row, the pattern edited, Enter: through the UI's dialog.
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowPicker {
+        picker: picker.clone(),
+        refresh: false,
+    });
+    for _ in 0..row {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Down)));
+    }
+    app.update(Msg::Key(KeyEvent::from(KeyCode::Char('e'))));
+    for _ in 0.."a.txt".len() {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Backspace)));
+    }
+    for c in "b.txt".chars() {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
+    }
+    let fx = app.update(Msg::Key(KeyEvent::from(KeyCode::Enter)));
+    let [edit @ Effect::PickedRuleEdit { .. }] = fx.as_slice() else {
+        panic!("{fx:?}")
+    };
+    let spec = |tool: &str, pattern: &str| RuleSpec {
+        deny: true,
+        tool: tool.into(),
+        pattern: Some(pattern.into()),
+        literal: false,
+    };
+    assert_eq!(
+        edit,
+        &Effect::PickedRuleEdit {
+            n,
+            old: spec("read_file", "*a.txt"),
+            new: spec("read_file", "*b.txt"),
+        }
+    );
+    client.send(edit.clone());
+    client
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. }
+            if text == &format!("rule {n} changed: deny read_file *a.txt is now deny read_file *b.txt")))
+        .await;
+    // The file holds the new rule where the old one stood, and only it.
+    let written = std::fs::read_to_string(&realm_toml).unwrap();
+    assert_eq!(
+        deny_of(&written),
+        [
+            ("shell".to_string(), "rm *".to_string()),
+            ("read_file".to_string(), "*b.txt".to_string()),
+            ("write_file".to_string(), "*.lock".to_string()),
+        ],
+        "{written}"
+    );
+    // The next calls: a.txt reads, b.txt is denied by the rule.
+    client.send(Effect::StartTurn("read both".into()));
+    assert_eq!(client.turn_finished().await.unwrap().text, "read");
+    let first = result_text(&llm, 1, "r1");
+    assert!(first.contains("A-CONTENT"), "{first}");
+    let second = result_text(&llm, 2, "r2");
+    assert!(
+        second.contains("deny rule") && !second.contains("B-CONTENT"),
+        "{second}"
+    );
+    // Unchanged: nothing written.
+    client.send(Effect::PickedRuleEdit {
+        n,
+        old: spec("read_file", "*b.txt"),
+        new: spec("read_file", "*b.txt"),
+    });
+    client
+        .wait_for(|msg| {
+            matches!(msg, Msg::Notice { text, .. }
+            if text == &format!("rule {n} unchanged: nothing was written"))
+        })
+        .await;
+    assert_eq!(std::fs::read_to_string(&realm_toml).unwrap(), written);
+    // What another rule says already: refused, the rule kept.
+    client.send(Effect::PickedRuleEdit {
+        n,
+        old: spec("read_file", "*b.txt"),
+        new: spec("shell", "rm *"),
+    });
+    client
+        .wait_for(|msg| {
+            matches!(msg, Msg::Notice { text, .. }
+            if text.starts_with(&format!("rule {n} not changed: another rule says that already")))
+        })
+        .await;
+    assert_eq!(std::fs::read_to_string(&realm_toml).unwrap(), written);
+    client.quit().await;
+    daemon.stop().await;
+}
+
 /// `/permissions`' Blocked section through the daemon: the classifier
 /// blocks a write to a directory outside the project; the block's notice
 /// says `/permissions` lists it; the dialog opens on Blocked and offers

@@ -7,6 +7,7 @@
 //! also takes goes in with the file's write as one ([`PermissionFiles`]).
 
 use super::*;
+use crate::approval::desk::{EDIT_CLI, EDIT_PROJECT};
 use crate::approval::hosts::{
     HostOrigin, HostPattern, HostRows, MAX_TRUSTED_HOSTS, TRUSTED_HOSTS_KEY, TrustedHost,
     VALID_HOST,
@@ -127,6 +128,81 @@ impl ApprovalEngine {
             }
         }
         Ok(removed)
+    }
+
+    /// Replace rule `id` with `rule` (the `/permissions` dialog's `e`): in
+    /// the engine in its place, and in the file it lives in with one write,
+    /// the entry changed where it stands (comments and layout kept; a rule
+    /// that changes kind moves to the other list's end). The rule keeps its
+    /// layer. An edit that says what the rule said writes nothing. The old
+    /// rule is audited as removed and the new one as added, both "(edited)".
+    ///
+    /// # Errors
+    ///
+    /// Why nothing changed, in words: no such rule, one of the project's
+    /// file or the command line (only the user's own and the workspace's
+    /// file are written), another rule says that already, the file could
+    /// not be written (the engine keeps the old rule then).
+    pub fn edit_rule(
+        &self,
+        id: RuleId,
+        mut rule: Rule,
+    ) -> Result<super::super::desk::RuleEdit, String> {
+        use super::super::desk::RuleEdit;
+        let _writing = self.writing();
+        let old = self
+            .rules
+            .read()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| "there is no such rule now".to_string())?;
+        let level = match old.origin {
+            RuleOrigin::Realm | RuleOrigin::Session => Level::Workspace,
+            RuleOrigin::Global => Level::User,
+            RuleOrigin::Project => {
+                return Err(EDIT_PROJECT.to_string());
+            }
+            RuleOrigin::Cli => return Err(EDIT_CLI.to_string()),
+        };
+        rule.origin = old.origin;
+        if rule.kind == old.kind && rule.tool == old.tool && rule.arg == old.arg {
+            return Ok(RuleEdit::Unchanged);
+        }
+        let now = {
+            let mut rules = self.rules.write();
+            if let Some(same) = rules.says_already(&rule, id) {
+                return Err(format!(
+                    "another rule says that already ({}, {})",
+                    describe_rule(same),
+                    same.origin.as_str()
+                ));
+            }
+            rules
+                .edit(id, rule.clone())
+                .ok_or_else(|| "there is no such rule now".to_string())?
+        };
+        if let Some(between) = self.between_steps.get() {
+            between();
+        }
+        if let Some(files) = self.files.as_ref() {
+            let list = |rule: &Rule| match rule.kind {
+                RuleKind::Allow => "allow",
+                RuleKind::Deny => "deny",
+            };
+            if let Err(err) = files.of(level).replace_rule(
+                list(&old),
+                &old.to_entry(),
+                list(&rule),
+                &rule.to_entry(),
+            ) {
+                // The file holds the old rule: so does the engine again.
+                self.rules.write().edit(now, old);
+                return Err(format!("the file was not written: {err}"));
+            }
+        }
+        self.audit_event("rule_removed", format!("{} (edited)", describe_rule(&old)));
+        self.audit_event("rule_added", format!("{} (edited)", describe_rule(&rule)));
+        Ok(RuleEdit::Edited { old, new: rule })
     }
 
     /// The user approves blocked call `id` of `session_id` for `scope`: once

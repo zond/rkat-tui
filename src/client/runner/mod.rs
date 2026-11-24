@@ -1176,8 +1176,7 @@ impl Runner {
             Effect::Agents(Some(name)) => self.switch_agent(name),
             Effect::Wire(target) => self.wire(target),
             Effect::WireTo { workspace, agent } => self.wire_to(workspace, agent),
-            Effect::Unwire(target) => self.unwire(target),
-            Effect::UnwireFrom { workspace, agent } => self.unwire_from(workspace, agent),
+            Effect::RemoveWire { workspace, agent } => self.remove_wire(workspace, agent),
             Effect::DecideQuit => self.decide_quit(),
             // Done once the loop ends: [`Effect::Quit`] follows.
             Effect::Leave(departure) => self.departing.chosen = Some(departure),
@@ -1265,6 +1264,9 @@ impl Runner {
             }
             Effect::PickedRule(form) => {
                 self.permissions(Some(commands::Picked::AddRule(form)), None);
+            }
+            Effect::PickedRuleEdit { n, old, new } => {
+                self.permissions(Some(commands::Picked::EditRule { n, old, new }), None);
             }
             Effect::AutoStats => {
                 self.outcome_command::<protocol::method::AutoStats>(

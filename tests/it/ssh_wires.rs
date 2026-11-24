@@ -471,7 +471,8 @@ async fn remote_side(markers: Markers) {
 /// a send refused with the words, the remote's send not delivered), back
 /// (told once, sends delivered), this daemon restarted (the link made
 /// again, the old one's end noticed on the remote side only after that:
-/// sends delivered both ways), and `/unwire` on both sides.
+/// sends delivered both ways), and the wire removed on both sides from the
+/// `/wire` picker.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(clippy::disallowed_methods)] // test-only process launch: the other side
 async fn an_ssh_wire_carries_messages_both_ways_and_survives_drops_and_restarts() {
@@ -616,11 +617,20 @@ async fn an_ssh_wire_carries_messages_both_ways_and_survives_drops_and_restarts(
     shown(&llm, "from B: afterrestart").await;
     a.idle(&a.agent).await;
 
-    // `/unwire`: both halves, through ssh for the remote one.
+    // `d` then `y` on the wire's row of the `/wire` picker (which opens
+    // with no other daemon of this machine): both halves, through ssh
+    // for the remote one.
     let mut c = client(&root).await;
-    c.send(Effect::Unwire(Some(b_label.clone())));
-    let (_, text) = notice(&mut c, "unwired").await;
-    assert_eq!(text, format!("unwired {b_label} on both sides"));
+    let opened = crate::cross_workspace::remove_in_picker(&mut c, &b_label).await;
+    assert!(
+        opened.rows[0]
+            .text
+            .starts_with(&format!("{b_label}  wired · over ssh to box, link ")),
+        "{:?}",
+        opened.rows
+    );
+    let (_, text) = notice(&mut c, "removed the wire").await;
+    assert_eq!(text, format!("removed the wire to {b_label} on both sides"));
     assert!(wires_of(&a).await.is_empty());
     assert_eq!(ssh.ops.lock().last().map(String::as_str), Some("unwire"));
     markers.set("unwired", "");
@@ -757,7 +767,8 @@ fn run(program: &str, args: &[&str]) {
 /// directory; `~/.ssh` is never read or written): `/wire ssh://box/…`
 /// with `--remote-rkat-tui` naming this build's binary, a message each
 /// way, the link killed here while the other machine notices it only
-/// after the next link is up (both ways work after), `/unwire`. Ignored: it needs `/usr/sbin/sshd` and `ssh-keygen`.
+/// after the next link is up (both ways work after), the wire removed from
+/// the `/wire` picker. Ignored: it needs `/usr/sbin/sshd` and `ssh-keygen`.
 /// `cargo nextest run --all-features --test it --run-ignored only -E
 /// 'test(a_real_ssh_wire)'`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -942,9 +953,9 @@ async fn a_real_ssh_wire_carries_messages_both_ways() {
     .await;
     a.idle(&a.agent).await;
 
-    c.send(Effect::Unwire(Some(b_label.clone())));
-    let (_, text) = notice(&mut c, "unwired").await;
-    assert_eq!(text, format!("unwired {b_label} on both sides"));
+    crate::cross_workspace::remove_in_picker(&mut c, &b_label).await;
+    let (_, text) = notice(&mut c, "removed the wire").await;
+    assert_eq!(text, format!("removed the wire to {b_label} on both sides"));
     markers.set("unwired", "");
     markers.wait("b.done").await;
     c.quit().await;

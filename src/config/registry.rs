@@ -1171,7 +1171,7 @@ pub static SECTIONS: &[Section] = &[
         project: "may only add deny rules",
         applies: PERMISSIONS_APPLY,
         flags: "`--allow` / `--deny <tool>[=<glob>]`",
-        commands: "/permissions (In force: r adds, d removes; Blocked: a, A)",
+        commands: "/permissions (In force: r adds, e edits, d removes; Blocked: a, A)",
     },
     Section {
         key: "auto.allow",

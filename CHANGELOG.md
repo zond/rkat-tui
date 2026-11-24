@@ -11,6 +11,12 @@
   terminal's width, and closes with Esc, `q` or Ctrl-C. Nothing of it
   goes into the transcript or `/export`; the agent goes on underneath,
   and an approval request takes over and the help comes back after it.
+- `/unwire` is removed. The `/wire` picker lists your agent's wires
+  first (marked wired, with the other side's state or the ssh link),
+  then the agents you can wire to: `d` then `y` on a wire's row removes
+  it, on both sides when the other daemon runs, and the picker opens
+  with your wires even when no other daemon runs. Messages that named
+  `/unwire` now say "/wire, then d on its row".
 - The README, the manual and the Claude Code comparison are rewritten
   shorter and in plainer words (the manual is half its length), and
   corrected where they disagreed with the program.
@@ -22,6 +28,15 @@
 
 ### Added
 
+- `/permissions`' In force section edits a rule: `e` on a rule of the
+  workspace's or your own `tui.toml` opens the add entry filled in with
+  its kind, tool and pattern or literal; Enter replaces it where it
+  stands in its file, comments and layout kept, in one write, and it
+  applies at once. A refused edit (it does not parse, or says what
+  another rule says) shows in the entry, its text kept, and the old rule
+  stays; an edit that changes nothing writes nothing. Rules of the
+  project's file or the command line, grants and statements say why
+  they are not edited.
 - When your messages overrun the classifier's budget for them, the
   classifier's model chooses which of the older ones stay: it is shown
   only your own earlier messages, numbered, and answers with the numbers

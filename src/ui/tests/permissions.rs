@@ -218,12 +218,197 @@ fn a_key_of_the_other_section_says_where_it_acts() {
         );
     }
     p.key(&press(KeyCode::Tab));
-    for code in ['o', 's', 'a', 'A', 'e', 'w'] {
+    for code in ['o', 's', 'a', 'A', 'w'] {
         assert_eq!(p.key(&press(KeyCode::Char(code))), ModalKey::Stay);
         assert!(
             matches!(&p.line, Some(PickerLine::Refused(why)) if why.contains("Tab switches to Blocked")),
             "{code}: {:?}",
             p.line
+        );
+    }
+    // `e` edits a rule in In force: with none, it says so.
+    assert_eq!(p.key(&press(KeyCode::Char('e'))), ModalKey::Stay);
+    assert!(
+        matches!(&p.line, Some(PickerLine::Refused(why)) if why.contains("move to a rule's row")),
+        "{:?}",
+        p.line
+    );
+}
+
+/// The open field's text and heading.
+fn field_of(app: &App) -> (String, String, Option<String>) {
+    match &open(app).line {
+        Some(PickerLine::Field(field)) => {
+            let heading = crate::ui::picker_lines_for_test(open(app), 400)
+                .into_iter()
+                .find(|l| l.starts_with("edit rule"))
+                .unwrap_or_default();
+            let refused = match &field.what {
+                FieldFor::EditRule { refused, .. } => refused.clone(),
+                _ => None,
+            };
+            (field.text.clone(), heading, refused)
+        }
+        other => panic!("no field open: {other:?}"),
+    }
+}
+
+/// In force's `e` on a rule opens its entry filled in (kind, tool,
+/// pattern or literal, its own file); Enter asks the daemon to replace
+/// it, the field kept open until the answer; a refusal shows in it, the
+/// text kept; Esc keeps the rule. A rule of the project's file or the
+/// command line, a grant and a statement say why they are not edited.
+#[test]
+fn e_edits_a_rule_in_its_own_entry() {
+    use crate::approval::desk::RuleSpec;
+    let rule = |n, deny, tool: &str, arg: Option<&str>, literal, origin| RuleRow {
+        n,
+        deny,
+        tool: tool.into(),
+        arg: arg.map(str::to_string),
+        literal,
+        origin,
+    };
+    let rules = [
+        rule(
+            1,
+            false,
+            "shell",
+            Some("git status*"),
+            false,
+            RuleOrigin::Realm,
+        ),
+        rule(4, true, "shell", Some("git push"), true, RuleOrigin::Global),
+        rule(5, true, "read_file", None, false, RuleOrigin::Project),
+        rule(7, false, "shell", None, false, RuleOrigin::Cli),
+    ];
+    let statement = StatementRow {
+        id: 3,
+        text: "network requests to api.example.com".into(),
+        origin: StatementOrigin::Session,
+    };
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowPicker {
+        picker: in_force(&rules, &[session_grant(2)], &[statement]),
+        refresh: false,
+    });
+    assert!(
+        open(&app).footer.contains("e edit a rule"),
+        "{}",
+        open(&app).footer
+    );
+    // Filled in, in the workspace's file.
+    app.update(key(KeyCode::Char('e')));
+    let (text, heading, _) = field_of(&app);
+    assert_eq!(text, "shell git status*");
+    assert!(
+        heading.starts_with(
+            "edit rule 1: allow · in the workspace's tui.toml, where it stands · <tool> [pattern]"
+        ),
+        "{heading}"
+    );
+    // Esc keeps the rule: nothing asked of the daemon.
+    assert!(app.update(key(KeyCode::Esc)).is_empty());
+    assert!(open(&app).line.is_none());
+    // Edited: a deny rule now, its pattern changed.
+    app.update(key(KeyCode::Char('e')));
+    for _ in 0.."status*".len() {
+        app.update(key(KeyCode::Backspace));
+    }
+    type_str(&mut app, "log*");
+    app.update(key(KeyCode::Tab));
+    let old = RuleSpec {
+        deny: false,
+        tool: "shell".into(),
+        pattern: Some("git status*".into()),
+        literal: false,
+    };
+    let new = RuleSpec {
+        deny: true,
+        tool: "shell".into(),
+        pattern: Some("git log*".into()),
+        literal: false,
+    };
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::PickedRuleEdit { n: 1, old, new }]
+    );
+    // The field stays, its text kept, until the answer; a refusal shows
+    // in it and the text stays to fix.
+    let (text, heading, refused) = field_of(&app);
+    assert_eq!(text, "shell git log*");
+    assert!(heading.starts_with("edit rule 1: deny"), "{heading}");
+    assert_eq!(refused, None);
+    app.update(Msg::PickerRefused {
+        kind: PickerKind::Permissions,
+        why: "rule 1 not changed: another rule says that already (deny shell git log*, realm)"
+            .into(),
+    });
+    let (text, _, refused) = field_of(&app);
+    assert_eq!(text, "shell git log*");
+    assert!(
+        refused
+            .as_deref()
+            .is_some_and(|why| why.contains("another rule says that already")),
+        "{refused:?}"
+    );
+    let shown = crate::ui::picker_lines_for_test(open(&app), 400).join("\n");
+    assert!(shown.contains("another rule says that already"), "{shown}");
+    // A key that edits clears the refusal.
+    type_str(&mut app, "x");
+    assert_eq!(field_of(&app).2, None);
+    // Refused in the field itself: no tool.
+    for _ in 0.."shell git log*x".len() {
+        app.update(key(KeyCode::Backspace));
+    }
+    assert!(app.update(key(KeyCode::Enter)).is_empty());
+    let (text, _, refused) = field_of(&app);
+    assert_eq!(text, "");
+    assert!(
+        refused
+            .as_deref()
+            .is_some_and(|why| why.contains("type the tool's name")),
+        "{refused:?}"
+    );
+    // A done answer replaces the field with what was done.
+    app.update(Msg::PickerDone {
+        kind: PickerKind::Permissions,
+        text: "rule 1 changed".into(),
+    });
+    assert!(matches!(&open(&app).line, Some(PickerLine::Done(_))));
+    // Your own file's literal: filled in as a literal, in your tui.toml.
+    app.update(key(KeyCode::Down));
+    app.update(key(KeyCode::Char('e')));
+    let (text, heading, _) = field_of(&app);
+    assert_eq!(text, "shell git push");
+    assert!(
+        heading.starts_with(
+            "edit rule 4: deny · in your tui.toml, where it stands · <tool> <exact text>"
+        ),
+        "{heading}"
+    );
+    // Shift+Tab does not move it to another file.
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::BackTab,
+        KeyModifiers::SHIFT,
+    )));
+    assert!(field_of(&app).1.contains("in your tui.toml"));
+    app.update(key(KeyCode::Esc));
+    // The project's file, the command line, a grant, a statement: why not.
+    for (why, rows_down) in [
+        ("project's .rkat/tui.toml", 1),
+        ("daemon's command line", 1),
+        ("a grant is not a rule", 1),
+        ("a statement is not edited in place", 1),
+    ] {
+        for _ in 0..rows_down {
+            app.update(key(KeyCode::Down));
+        }
+        assert!(app.update(key(KeyCode::Char('e'))).is_empty());
+        assert!(
+            matches!(&open(&app).line, Some(PickerLine::Refused(said)) if said.contains(why)),
+            "{why}: {:?}",
+            open(&app).line
         );
     }
 }

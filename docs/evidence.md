@@ -14859,3 +14859,66 @@ Tests: `approval::transcript::tests::the_user_s_request_outlives_any_number_of_t
 was a context line), `classifier_transcript::a_helper_s_review_has_the_user_s_words_to_its_agent_labelled_so`,
 `mobs::an_assigned_helper_runs_behind_the_sessions_gate`,
 `conversations::new_starts_fresh_and_resume_brings_the_old_conversation_back`.
+
+## The help in a dialog; `/unwire` folded into `/wire` (owner, 2026-11-24)
+
+`/help` printed the whole command reference into the transcript, which
+scrolled the chat away. `/help` and `?` now open one dialog
+(`ui::modal::HelpDialog`, two views: commands and keys, Tab between):
+it scrolls, wraps to the width it is drawn at (the drawing records the
+scroll bound and the page, as the expanded approval dialog does), and is
+parked behind an approval request like a list dialog, coming back where
+it was. Nothing reaches the transcript. A type-to-filter line was left
+out: the model picker's filter takes every letter, and the help's keys
+(`j`, `k`, `q`) would then be text. Tests:
+`ui::tests::help::*` (views, keys, scrolling, a 60x15 terminal with every
+character of both views on screen, a resize, the approval), the help
+rows of `ui::commands::tests` against the dialog's views,
+`render::help_dialog_snapshot`.
+
+`/unwire` and its picker are gone, no alias: the `/wire` picker lists
+this agent's wires first (`client::wires::wire_picker`: marked wired,
+with the other side's state, a stale mark, or the ssh link), where `d`
+then `y` removes one exactly as `/unwire` did (`Effect::RemoveWire`, the
+daemon's `rkat/unwire` on both sides; the method keeps its name), then
+the agents not wired yet. It opens with the wires alone when no other
+daemon runs, and for a client attached from another machine (its wires
+can be removed there, nothing wired). The typed removal is gone with the
+command. Notices that named `/unwire` now say "/wire, then d on its
+row". Tests: `client::wires::tests::the_wire_picker_rows_name_the_workspace_agent_state_and_clients`,
+`the_wire_picker_s_wired_rows_say_what_the_other_side_is`;
+`ui::tests::dispatch::the_wire_picker_lists_wires_first_and_removes_one_with_d_then_y`,
+`the_wire_picker_opens_with_only_wires_when_no_daemon_runs`,
+`unwire_is_an_unknown_command`; `cross_workspace::wired_agents_of_two_workspaces_message_both_ways_across_restarts`
+and `ssh_wires::an_ssh_wire_carries_messages_both_ways_and_survives_drops_and_restarts`
+now remove the wire through the picker's keys (`remove_in_picker`).
+
+## Editing a rule in place from `/permissions` (owner, 2026-11-24)
+
+In force's `e` on a rule opens the `r` entry filled in
+(`FieldFor::EditRule`: kind, tool, pattern or literal; the file is the
+rule's own, so Shift+Tab changes nothing). Enter sends
+`RuleCommand::Edit { n, old, new }` over `rkat/rules`; the field stays
+open until the answer, and a refusal is held in it with the text
+(`FieldFor::hold_refusal`, as `/rehome`'s directory). The daemon checks
+the rule still reads `old` (a list renumbered since is not edited by
+mistake), then `ApprovalEngine::edit_rule` under the files' hold: the
+rule changes in the engine where it stands (`RuleSet::edit`, same id;
+a change of kind moves it to the other list's end) and in its file by
+one `SettingsFile::replace_rule` (the entry's fields set where they
+stand, each value's comment kept; never a remove and an add), the engine
+put back if the write fails. A rule of the project's file or the command
+line is refused (only the user's and the workspace's file are written),
+so is one that says what another rule says (`RuleSet::says_already`); an
+edit that changes nothing writes nothing. Audit: the two existing events,
+`rule_removed` (old) and `rule_added` (new), each "(edited)". The agents
+learn of it as of an add or a removal: the same `rkat/rules` path and
+`after_permission_command`, once. Adding a rule refuses no broad allow
+rule (auto mode drops one, `RuleSet::sanitize_for_auto`), so neither
+does an edit: the same checks as `r`. Statements are not edited:
+their engine has no in-place replace, and a statement of the user's own
+file is not even removable from the dialog; `e` on one says to remove
+it and allow the kind anew. Tests:
+`config::write::tests::a_rule_is_replaced_in_place_keeping_comments_and_order`,
+`ui::tests::permissions::e_edits_a_rule_in_its_own_entry`,
+`approvals::an_edited_deny_rule_applies_in_place_of_the_old_one`.

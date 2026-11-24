@@ -270,8 +270,67 @@ pub enum RuleCommand {
         /// The number `/permissions list` shows.
         n: usize,
     },
+    /// The `/permissions` dialog's `e` on a rule: replace rule `n`, which
+    /// reads `old`, with `new`, in place in its own file.
+    Edit {
+        /// The number `/permissions list` shows.
+        n: usize,
+        /// The rule as the dialog showed it (a rule renumbered since is
+        /// not edited by mistake).
+        old: RuleSpec,
+        /// The rule as edited.
+        new: RuleSpec,
+    },
     /// `/permissions list`.
     List,
+}
+
+/// A rule as the `/permissions` dialog reads and edits it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleSpec {
+    /// A deny rule (else an allow rule).
+    pub deny: bool,
+    /// The tool's name or pattern.
+    pub tool: String,
+    /// The argument's pattern, or with `literal` its exact text (`None`:
+    /// every call of the tool).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    /// `pattern` is matched exactly.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub literal: bool,
+}
+
+impl RuleSpec {
+    /// The rule it reads as, of `origin`.
+    ///
+    /// # Errors
+    ///
+    /// Why it is no rule: a literal with no text, a pattern or tool that
+    /// does not parse.
+    pub fn rule(&self, origin: RuleOrigin) -> Result<Rule, String> {
+        let kind = if self.deny {
+            RuleKind::Deny
+        } else {
+            RuleKind::Allow
+        };
+        match (&self.pattern, self.literal) {
+            (Some(text), true) => Rule::literal(kind, &self.tool, text.clone(), origin),
+            (None, true) => return Err("a literal rule needs the exact text to match".into()),
+            (pattern, false) => Rule::new(kind, &self.tool, pattern.as_deref(), origin),
+        }
+        .map_err(|err| err.to_string())
+    }
+
+    /// Whether `rule` is the rule it reads as.
+    #[must_use]
+    pub fn is(&self, rule: &Rule) -> bool {
+        let row = RuleRow::of(0, rule);
+        row.deny == self.deny
+            && row.tool == self.tool
+            && row.arg == self.pattern
+            && row.literal == self.literal
+    }
 }
 
 /// What a rule command did: whether it succeeded and the text to show.
@@ -346,6 +405,36 @@ pub fn run_rule_command(engine: &ApprovalEngine, command: &RuleCommand) -> RuleO
                 Err(err) => RuleOutcome::failed(format!("rule not removed: {err}")),
             }
         }
+        RuleCommand::Edit { n, old, new } => {
+            let not = |why: &str| RuleOutcome::failed(format!("rule {n} not changed: {why}"));
+            let rules = engine.rules();
+            let Some((id, held)) =
+                nth_rule_id(&rules, *n).and_then(|id| rules.get(id).map(|rule| (id, rule.clone())))
+            else {
+                return not("there is no such rule now");
+            };
+            if !old.is(&held) {
+                return not(&format!(
+                    "it reads {} now, not what the dialog showed; look at the list again",
+                    describe_rule(&held)
+                ));
+            }
+            let rule = match new.rule(held.origin) {
+                Ok(rule) => rule,
+                Err(why) => return not(&why),
+            };
+            match engine.edit_rule(id, rule) {
+                Ok(RuleEdit::Unchanged) => {
+                    RuleOutcome::ok(format!("rule {n} unchanged: nothing was written"))
+                }
+                Ok(RuleEdit::Edited { old, new }) => RuleOutcome::ok(format!(
+                    "rule {n} changed: {} is now {}",
+                    describe_rule(&old),
+                    describe_rule(&new)
+                )),
+                Err(why) => not(&why),
+            }
+        }
         RuleCommand::List => {
             let rules = engine.rules();
             let lines: Vec<String> = numbered_rules(&rules)
@@ -379,6 +468,55 @@ pub struct RuleRow {
     pub origin: RuleOrigin,
 }
 
+impl RuleRow {
+    /// `rule`, numbered `n`.
+    #[must_use]
+    pub fn of(n: u64, rule: &Rule) -> Self {
+        Self {
+            n,
+            deny: rule.kind == RuleKind::Deny,
+            tool: rule.tool.as_str().to_string(),
+            arg: rule.arg.as_ref().map(|arg| arg.as_str().to_string()),
+            literal: rule
+                .arg
+                .as_ref()
+                .is_some_and(super::rules::ArgPattern::is_literal),
+            origin: rule.origin,
+        }
+    }
+
+    /// The rule as the dialog's edit reads it.
+    #[must_use]
+    pub fn spec(&self) -> RuleSpec {
+        RuleSpec {
+            deny: self.deny,
+            tool: self.tool.clone(),
+            pattern: self.arg.clone(),
+            literal: self.literal,
+        }
+    }
+}
+
+/// Why a rule of the project's `.rkat/tui.toml` is not edited.
+pub const EDIT_PROJECT: &str = "it is in the project's .rkat/tui.toml, and only your own tui.toml and the workspace's are written: edit that file (d removes it until the daemon restarts)";
+
+/// Why a rule of the daemon's command line is not edited.
+pub const EDIT_CLI: &str = "it comes from the daemon's command line (--allow, --deny), and only your own tui.toml and the workspace's are written: start the daemon with the rule you want";
+
+/// What [`ApprovalEngine::edit_rule`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleEdit {
+    /// The edit says what the rule said: nothing was written.
+    Unchanged,
+    /// The rule was replaced in place, in the engine and its file.
+    Edited {
+        /// The rule before.
+        old: Rule,
+        /// The rule now.
+        new: Rule,
+    },
+}
+
 /// [`crate::daemon::protocol::method::RuleRows`]'s answer: every rule, in
 /// `/permissions list`'s order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -405,17 +543,7 @@ pub fn rule_rows(engine: &ApprovalEngine) -> RuleRows {
     let rules = engine.rules();
     RuleRows {
         rules: numbered_rules(&rules)
-            .map(|(n, rule)| RuleRow {
-                n,
-                deny: rule.kind == RuleKind::Deny,
-                tool: rule.tool.as_str().to_string(),
-                arg: rule.arg.as_ref().map(|arg| arg.as_str().to_string()),
-                literal: rule
-                    .arg
-                    .as_ref()
-                    .is_some_and(super::rules::ArgPattern::is_literal),
-                origin: rule.origin,
-            })
+            .map(|(n, rule)| RuleRow::of(n, rule))
             .collect(),
         grants: Vec::new(),
         statements: Vec::new(),

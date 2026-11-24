@@ -758,7 +758,6 @@ fn up_walks_past_a_recalled_slash_command_to_every_earlier_entry() {
         "/mode",
         "/memory",
         "/wire",
-        "/unwire",
         "/permissions blocked",
         "/settings",
         "/auto",

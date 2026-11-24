@@ -142,6 +142,87 @@ fn lists_and_rules_add_once_and_remove_exactly() {
     assert_eq!(file.read().unwrap().allow.len(), 2);
 }
 
+/// A rule replaced in place: the one entry changes where it stands, every
+/// comment and the other entries' order kept, in one write; into the
+/// other list it moves to that list's end; an entry not there writes
+/// nothing.
+#[test]
+fn a_rule_is_replaced_in_place_keeping_comments_and_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = file(tmp.path());
+    std::fs::create_dir_all(file.path().parent().unwrap()).unwrap();
+    let text = "# my rules\n\n[[deny]]\ntool = \"shell\"\narg = \"rm *\"\n\n# the lock files\n[[deny]]\ntool = \"write_file\" # never\narg = \"*.lock\" # the pattern\n\n[[deny]]\ntool = \"read_file\"\nliteral = \".env\"\n\n[ui]\nbell = false # quiet\n";
+    std::fs::write(file.path(), text).unwrap();
+    let entry = |tool: &str, arg: Option<&str>, literal: Option<&str>| RuleEntry {
+        tool: tool.into(),
+        arg: arg.map(Into::into),
+        literal: literal.map(Into::into),
+    };
+    let old = entry("write_file", Some("*.lock"), None);
+    let new = entry("write_file", Some("*.lock.json"), None);
+    assert!(file.replace_rule("deny", &old, "deny", &new).unwrap());
+    assert_eq!(
+        std::fs::read_to_string(file.path()).unwrap(),
+        text.replace("\"*.lock\" # the pattern", "\"*.lock.json\" # the pattern")
+    );
+    // A pattern becomes a literal: the field goes, the other comes, the
+    // entry stays the second.
+    let literal = entry("write_file", None, Some("Cargo.lock"));
+    assert!(file.replace_rule("deny", &new, "deny", &literal).unwrap());
+    let read = file.read().unwrap();
+    assert_eq!(
+        read.deny,
+        vec![
+            entry("shell", Some("rm *"), None),
+            literal.clone(),
+            entry("read_file", None, Some(".env")),
+        ]
+    );
+    let now = std::fs::read_to_string(file.path()).unwrap();
+    assert!(
+        now.contains("# the lock files\n[[deny]]\ntool = \"write_file\" # never\n"),
+        "{now}"
+    );
+    assert!(now.contains("bell = false # quiet"), "{now}");
+    // An entry not there: nothing written.
+    assert!(!file.replace_rule("deny", &old, "deny", &new).unwrap());
+    assert_eq!(std::fs::read_to_string(file.path()).unwrap(), now);
+    // Deny to allow: it leaves its place and ends the allow list.
+    let allowed = entry("write_file", Some("docs/*"), None);
+    assert!(
+        file.replace_rule("deny", &literal, "allow", &allowed)
+            .unwrap()
+    );
+    let read = file.read().unwrap();
+    assert_eq!(
+        read.deny,
+        vec![
+            entry("shell", Some("rm *"), None),
+            entry("read_file", None, Some(".env")),
+        ]
+    );
+    assert_eq!(read.allow, vec![allowed]);
+    // Inline arrays (as --set writes them) are replaced in place too.
+    std::fs::write(
+        file.path(),
+        "deny = [{ tool = \"shell\" }, { tool = \"read_file\", arg = \"*.pem\" }]\n",
+    )
+    .unwrap();
+    assert!(
+        file.replace_rule(
+            "deny",
+            &entry("read_file", Some("*.pem"), None),
+            "deny",
+            &entry("read_file", Some("*.key"), None),
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        std::fs::read_to_string(file.path()).unwrap(),
+        "deny = [{ tool = \"shell\" }, { tool = \"read_file\", arg = \"*.key\" }]\n"
+    );
+}
+
 #[test]
 fn a_change_that_would_not_load_or_a_broken_file_is_refused_and_nothing_written() {
     let tmp = tempfile::tempdir().unwrap();

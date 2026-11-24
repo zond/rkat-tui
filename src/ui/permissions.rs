@@ -4,8 +4,8 @@
 //! once, for this session or always, to allow their kind of effect, or
 //! (a D5 block whose call names hosts) to trust those hosts. **In
 //! force**: the approval rules, grants and statements with where each
-//! comes from, to remove, and `n` (a statement) and `r` (a rule) to add
-//! one. **Hosts**: the hosts the user trusts with the project's data, to
+//! comes from, to remove, `e` to edit a rule in place, and `n` (a
+//! statement) and `r` (a rule) to add one. **Hosts**: the hosts the user trusts with the project's data, to
 //! remove, `n` to trust one, and the project's own, read-only. The rows
 //! are built here from the daemon's lists; the runner asks for them and
 //! does what the keys choose.
@@ -13,7 +13,7 @@
 use ratatui::crossterm::event::KeyCode;
 
 use super::picker::{Field, FieldFor, ListPicker, Page, PickAct, PickKey, PickRow, PickerKind};
-use crate::approval::desk::RuleRow;
+use crate::approval::desk::{EDIT_CLI, EDIT_PROJECT, RuleRow};
 use crate::approval::grants::{BlockedCall, GrantRow, GrantScope};
 use crate::approval::hosts::HostRows;
 use crate::approval::statements::StatementRow;
@@ -52,7 +52,17 @@ const WHOLE_CALL_FOOTER: &str = " · Ctrl+O the whole call";
 const WITHDRAW_FOOTER: &str = " · w withdraw a waiting approval";
 
 /// The footer of the In force section, before its Tab and Esc.
-const IN_FORCE_FOOTER: &str = "↑/↓ move · d remove · n new statement · r new rule";
+const IN_FORCE_FOOTER: &str = "↑/↓ move · d remove · e edit a rule · n new statement · r new rule";
+
+/// What `e` says on a grant's row.
+const EDIT_GRANT: &str = "a grant is not a rule, so it is not edited: d removes a session grant, and Blocked's s, a or A grants a call";
+
+/// What `e` says on a statement's row.
+const EDIT_STATEMENT: &str =
+    "a statement is not edited in place: d removes it and n allows the kind of action anew";
+
+/// What `e` says in In force off a rule's row.
+const EDIT_NO_RULE: &str = "e edits the rule it is on: move to a rule's row";
 
 /// What a key other than `w` says on a call approved once.
 const WAITING_REFUSAL: &str = "approved once already: it waits for the agent to run it again; w withdraws the approval, to approve it otherwise";
@@ -437,7 +447,10 @@ fn with_whole_call(row: PickRow, call: &BlockedCall, view_first: Vec<KeyCode>) -
 /// where it comes from; `d` removes one after a confirmation that says
 /// how long the removal lasts (for good for the realm's own rules, until
 /// the daemon restarts for those written in another layer, as
-/// `/permissions rm` does), or says where to drop it. `n` opens the
+/// `/permissions rm` does), or says where to drop it. `e` on a rule of the
+/// user's own or the workspace's file opens the rule's own entry, filled
+/// in, to replace it where it stands (a rule of the project's file or the
+/// command line says why not; a grant or a statement too). `n` opens the
 /// field of a new statement, `r` the form of a new rule.
 fn in_force_page(rules: &[RuleRow], grants: &[GrantRow], statements: &[StatementRow]) -> Page {
     use crate::approval::grants::GrantOrigin;
@@ -464,7 +477,7 @@ fn in_force_page(rules: &[RuleRow], grants: &[GrantRow], statements: &[Statement
         };
         PickRow::new(
             format!("grant {what} · {}", grant.origin.word()),
-            vec![key],
+            vec![key, PickKey::refused(KeyCode::Char('e'), EDIT_GRANT)],
         )
         .keyed(format!("grant {}", grant.id))
     });
@@ -494,7 +507,7 @@ fn in_force_page(rules: &[RuleRow], grants: &[GrantRow], statements: &[Statement
                 statement.text,
                 statement.origin.word()
             ),
-            vec![key],
+            vec![key, PickKey::refused(KeyCode::Char('e'), EDIT_STATEMENT)],
         )
         .noted("a statement: judged by the classifier, read narrowly")
         .keyed(format!("statement {}", statement.id))
@@ -517,13 +530,34 @@ fn in_force_page(rules: &[RuleRow], grants: &[GrantRow], statements: &[Statement
                 RuleOrigin::Cli => "It comes from the daemon's command line, so it is removed until the daemon restarts".to_string(),
             };
             let n = usize::try_from(rule.n).unwrap_or(usize::MAX);
+            let edit = match rule.origin {
+                RuleOrigin::Realm | RuleOrigin::Session => PickKey::field(
+                    KeyCode::Char('e'),
+                    FieldFor::edit_rule(n, rule.spec(), false),
+                ),
+                RuleOrigin::Global => PickKey::field(
+                    KeyCode::Char('e'),
+                    FieldFor::edit_rule(n, rule.spec(), true),
+                ),
+                RuleOrigin::Project => PickKey::refused(
+                    KeyCode::Char('e'),
+                    format!("rule {} is not edited here: {EDIT_PROJECT}", rule.n),
+                ),
+                RuleOrigin::Cli => PickKey::refused(
+                    KeyCode::Char('e'),
+                    format!("rule {} is not edited here: {EDIT_CLI}", rule.n),
+                ),
+            };
             PickRow::new(
                 format!("{}. {what} · {}", rule.n, rule.origin.as_str()),
-                vec![PickKey::confirmed(
-                    KeyCode::Char('d'),
-                    PickAct::RemoveRule(n),
-                    format!("Remove rule {}? {lasts}.", rule.n),
-                )],
+                vec![
+                    PickKey::confirmed(
+                        KeyCode::Char('d'),
+                        PickAct::RemoveRule(n),
+                        format!("Remove rule {}? {lasts}.", rule.n),
+                    ),
+                    edit,
+                ],
             )
             // Rules are numbered again after a removal: what the rule
             // says is what it is.
@@ -555,10 +589,11 @@ fn in_force_page(rules: &[RuleRow], grants: &[GrantRow], statements: &[Statement
         ),
     ];
     keys.extend(
-        ['o', 's', 'a', 'A', 'e', 'w', 't', 'T']
+        ['o', 's', 'a', 'A', 'w', 't', 'T']
             .into_iter()
             .map(|code| PickKey::refused(KeyCode::Char(code), BLOCKED_KEY)),
     );
+    keys.push(PickKey::refused(KeyCode::Char('e'), EDIT_NO_RULE));
     Page::new(
         rows,
         "no approval rules, grants or statements yet (n adds a statement, r a rule)",
