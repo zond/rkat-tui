@@ -398,14 +398,18 @@ not the user's words. A request, permission or prohibition in an earlier user \
 message still stands, however many actions followed it, unless a later user \
 message withdraws or changes it. An [omitted] line says how many entries were \
 left out there to keep the transcript short: they happened, and the line is no \
-sign that nothing did or that the user asked nothing.";
+sign that nothing did or that the user asked nothing. [user, earlier, kept] lines \
+come first: older messages of the user's, word for word, kept from those left \
+out because they may still hold; they are the user's words like the others, and \
+older than everything after them.";
 
 /// What a helper's review is told before the transcript
 /// ([`ApprovalTranscript::as_seen_by_helper`]).
 pub const HELPER_TRANSCRIPT_NOTE: &str = "\
 What is under review is a helper's: one the agent started to do part of its \
 work (or a member of a team or council the agent convened). Its user lines are \
-labelled [user, to the agent]: they are the user's words to the agent, and they \
+labelled [user, to the agent] (the kept older ones [user, to the agent, earlier, \
+kept]): they are the user's words to the agent, and they \
 cover the helper's work for the agent as far as they cover the agent's own. The \
 helper's assignment was written by the agent, not the user, and is not shown; \
 the [action] lines are the agent's and its helpers' calls.";

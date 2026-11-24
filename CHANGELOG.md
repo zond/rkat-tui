@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- When your messages overrun the classifier's budget for them, the
+  classifier's model chooses which of the older ones stay: it is shown
+  only your own earlier messages, numbered, and answers with the numbers
+  of those that still hold (standing requests, permissions, prohibitions,
+  constraints). They are kept word for word, never shortened or
+  reworded, under `[user, earlier, kept]` ahead of the transcript, within
+  8 KiB of your 32 KiB. An answer that does not parse, names a number out
+  of range, or a failing model keeps what was kept before and drops the
+  oldest, as before; it never holds or fails a review. The kept ones are
+  stored with the conversation's words, so a restart shows the same.
+
 ### Fixed
 
 - The approval classifier no longer loses your request in a long run of

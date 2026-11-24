@@ -62,6 +62,23 @@ const USER_MESSAGE_TAIL: usize = 2 * 1024;
 /// ([`ApprovalTranscript::as_seen_by_helper`]).
 pub const USER_TO_AGENT_LABEL: &str = "[user, to the agent]";
 
+/// The most bytes the user's older messages kept from those their budget
+/// pushed out may take ([`super::standing`]): a quarter of
+/// [`USER_BYTE_BUDGET`], within it, so the transcript is no larger for
+/// them and a selection of the next overrun has room to change its mind.
+pub const KEPT_BYTE_BUDGET: usize = 8 * 1024;
+
+/// The label of a kept older message of the user's.
+pub const KEPT_LABEL: &str = "[user, earlier, kept]";
+
+/// [`KEPT_LABEL`] in a helper's review.
+pub const KEPT_TO_AGENT_LABEL: &str = "[user, to the agent, earlier, kept]";
+
+/// The rendered length of a kept message.
+fn standing_len(text: &str) -> usize {
+    KEPT_LABEL.len() + 2 + escape(text).len()
+}
+
 /// Longest string value rendered inside tool-call arguments.
 const MAX_ARG_STRING: usize = 1024;
 
@@ -324,8 +341,35 @@ pub struct ApprovalTranscript {
     other_bytes: usize,
     users: usize,
     others: usize,
+    /// The user's older messages kept, word for word, when their budget
+    /// pushed them out ([`super::standing`]), oldest first; within
+    /// [`KEPT_BYTE_BUDGET`] and counted in the user's budget.
+    standing: Vec<String>,
+    standing_bytes: usize,
+    /// The user's messages the budget pushed out since the last
+    /// [`Self::take_selection`], oldest first.
+    candidates: Vec<String>,
     /// Rendered for a helper's review ([`Self::as_seen_by_helper`]).
     helper_view: bool,
+}
+
+/// What the daemon stores of a conversation's words of the user's
+/// ([`ApprovalTranscript::seed_stored`] after a restart).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StoredWords {
+    /// The older messages kept ([`ApprovalTranscript::standing`]).
+    pub kept: Vec<String>,
+    /// The recent ones ([`ApprovalTranscript::user_words`]).
+    pub words: Vec<String>,
+}
+
+/// The user's older messages to choose the kept ones from
+/// ([`ApprovalTranscript::take_selection`]): those kept before, then those
+/// pushed out since, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selection {
+    /// The candidates.
+    pub messages: Vec<String>,
 }
 
 impl Default for ApprovalTranscript {
@@ -345,7 +389,56 @@ impl ApprovalTranscript {
             other_bytes: 0,
             users: 0,
             others: 0,
+            standing: Vec::new(),
+            standing_bytes: 0,
+            candidates: Vec::new(),
             helper_view: false,
+        }
+    }
+
+    /// The user's older messages kept ([`Self::keep`]), oldest first.
+    #[must_use]
+    pub fn standing(&self) -> &[String] {
+        &self.standing
+    }
+
+    /// The candidates of a selection of the user's older messages to keep,
+    /// when the budget pushed any out since the last one: the messages kept
+    /// before and those pushed out, oldest first. The pushed-out ones are
+    /// taken: a failed selection drops them, as the budget alone would.
+    pub fn take_selection(&mut self) -> Option<Selection> {
+        if self.candidates.is_empty() {
+            return None;
+        }
+        let mut messages = self.standing.clone();
+        messages.append(&mut self.candidates);
+        Some(Selection { messages })
+    }
+
+    /// Keep `messages` (the chosen candidates of a [`Selection`], exactly as
+    /// it gave them, oldest first) as the user's older messages, the oldest
+    /// dropped past [`KEPT_BYTE_BUDGET`]; the newest messages give way to
+    /// them within the user's budget (those pushed out become candidates
+    /// of the next selection).
+    pub fn keep(&mut self, mut messages: Vec<String>) {
+        let size =
+            |messages: &[String]| -> usize { messages.iter().map(|m| standing_len(m)).sum() };
+        while size(&messages) > KEPT_BYTE_BUDGET && !messages.is_empty() {
+            messages.remove(0);
+        }
+        self.standing_bytes = size(&messages);
+        self.standing = messages;
+        self.trim_users();
+    }
+
+    /// Drop the user's oldest messages over their budget (the kept older
+    /// ones count in it), the newest always kept; each one dropped is a
+    /// candidate of the next selection.
+    fn trim_users(&mut self) {
+        while self.user_bytes + self.standing_bytes > self.budgets.user && self.users > 1 {
+            if let Some(TranscriptEntry::User { text, .. }) = self.drop_oldest(true) {
+                self.candidates.push(text);
+            }
         }
     }
 
@@ -383,9 +476,7 @@ impl ApprovalTranscript {
         if user {
             self.user_bytes += len;
             self.users += 1;
-            while self.user_bytes > self.budgets.user && self.users > 1 {
-                self.drop_oldest(true);
-            }
+            self.trim_users();
         } else {
             self.other_bytes += len;
             self.others += 1;
@@ -396,17 +487,14 @@ impl ApprovalTranscript {
     }
 
     /// Drop the oldest entry of the user's words (`user`) or of the rest,
-    /// leaving a gap that counts it in its place.
-    fn drop_oldest(&mut self, user: bool) {
-        let Some(at) = self
+    /// leaving a gap that counts it in its place; the entry dropped.
+    fn drop_oldest(&mut self, user: bool) -> Option<TranscriptEntry> {
+        let at = self
             .slots
             .iter()
-            .position(|slot| matches!(slot, Slot::Entry(e, _) if e.is_user() == user))
-        else {
-            return;
-        };
+            .position(|slot| matches!(slot, Slot::Entry(e, _) if e.is_user() == user))?;
         let Some(Slot::Entry(entry, len)) = self.slots.remove(at) else {
-            return;
+            return None;
         };
         if user {
             self.user_bytes -= len;
@@ -429,6 +517,7 @@ impl ApprovalTranscript {
             Some(Slot::Gap(before)) => before.merge(gap),
             _ => self.slots.insert(at, Slot::Gap(gap)),
         }
+        Some(entry)
     }
 
     /// The entries kept, oldest first.
@@ -535,7 +624,17 @@ impl ApprovalTranscript {
         } else {
             "[user]"
         };
-        let mut out = String::with_capacity(self.user_bytes + self.other_bytes + 256);
+        let mut out =
+            String::with_capacity(self.standing_bytes + self.user_bytes + self.other_bytes + 256);
+        // The kept older messages are older than everything after them.
+        let kept = if self.helper_view {
+            KEPT_TO_AGENT_LABEL
+        } else {
+            KEPT_LABEL
+        };
+        for text in &self.standing {
+            let _ = writeln!(out, "{kept} {}", escape(text));
+        }
         for slot in &self.slots {
             match slot {
                 Slot::Entry(entry, _) => entry.render_into(&mut out, label),
@@ -550,6 +649,16 @@ impl ApprovalTranscript {
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_from_session(&mut self, session: &Session) {
         self.seed_with_words(&[], session);
+    }
+
+    /// Seed as the daemon stored the conversation's words: `kept`, the
+    /// user's older messages kept ([`Self::standing`]), then
+    /// [`Self::seed_with_words`] with `words`. A restart shows what was
+    /// shown before it, and asks for no selection of its own.
+    pub fn seed_stored(&mut self, kept: &[String], words: &[String], session: &Session) {
+        self.keep(kept.to_vec());
+        self.seed_with_words(words, session);
+        self.candidates.clear();
     }
 
     /// The user's words kept now, oldest first: what the daemon stores for
@@ -598,6 +707,14 @@ impl ApprovalTranscript {
                             self.push_user(word.clone());
                         }
                         next += at + 1;
+                        continue;
+                    }
+                    // One of the kept older messages: shown as kept, first.
+                    let marked = matches!(
+                        authorship(user),
+                        Authorship::Marked | Authorship::Unverified
+                    );
+                    if marked && self.standing.iter().any(|k| text.contains(k.as_str())) {
                         continue;
                     }
                     self.seed_user_message(user);
@@ -1039,6 +1156,100 @@ mod tests {
         );
         assert!((0..6).all(|i| rendered.contains(&format!("\"path\":\"f{i}\""))));
         assert!(!rendered.contains("[omitted]"));
+    }
+
+    /// The user's messages pushed out of their budget are the candidates of
+    /// a selection, oldest first and never the newest; the chosen ones are
+    /// kept word for word, first in the transcript under their own label,
+    /// within their own budget and inside the user's; nothing else (an
+    /// action, a note) is ever a candidate.
+    #[test]
+    fn pushed_out_messages_are_candidates_and_the_chosen_are_kept_verbatim() {
+        let pad = "p".repeat(6 * 1024);
+        let mut t = ApprovalTranscript::default();
+        assert_eq!(t.take_selection(), None);
+        t.push_user(format!("NEVER force-push {pad}"));
+        t.push_context("CONTEXT-NOTE a peer said keep me");
+        t.push_tool_call("1", "shell", &raw(&json!({"command": "ACTION"})), None);
+        for i in 0..5 {
+            t.push_user(format!("M{i} {pad}"));
+        }
+        let selection = t.take_selection().unwrap();
+        assert_eq!(selection.messages, [format!("NEVER force-push {pad}")]);
+        assert_eq!(t.take_selection(), None, "taken once");
+        t.keep(selection.messages.clone());
+        // The kept one makes room: the next oldest is pushed out in turn.
+        assert!(t.user_bytes + t.standing_bytes <= USER_BYTE_BUDGET);
+        let next = t.take_selection().unwrap();
+        assert_eq!(
+            next.messages[0], selection.messages[0],
+            "kept ones come first"
+        );
+        assert!(
+            next.messages[1].starts_with("M0 "),
+            "{:?}",
+            &next.messages[1][..4]
+        );
+        assert!(
+            next.messages
+                .iter()
+                .all(|m| !m.contains("CONTEXT-NOTE") && !m.contains("ACTION"))
+        );
+        let rendered = t.render();
+        assert!(
+            rendered.starts_with(&format!("{KEPT_LABEL} NEVER force-push ")),
+            "{}",
+            &rendered[..80]
+        );
+        assert_eq!(rendered.matches(KEPT_LABEL).count(), 1);
+        assert!(rendered.contains("M4 "), "the newest stays");
+        // In a helper's review.
+        assert!(
+            t.as_seen_by_helper()
+                .render()
+                .starts_with(KEPT_TO_AGENT_LABEL)
+        );
+        // The kept ones stay within their own budget, the oldest dropped.
+        let mut many = ApprovalTranscript::default();
+        many.keep(vec![
+            format!("K1 {pad}"),
+            format!("K2 {}", "q".repeat(3 * 1024)),
+            "K3 never touch the database".to_string(),
+        ]);
+        assert!(many.standing_bytes <= KEPT_BYTE_BUDGET);
+        assert_eq!(many.standing().len(), 2);
+        assert!(many.standing()[0].starts_with("K2 ") && many.standing()[1].starts_with("K3 "));
+    }
+
+    /// A restart seeds what was stored: the same kept messages and recent
+    /// words, the same view, and no selection of its own.
+    #[test]
+    fn stored_kept_messages_give_the_same_view_after_a_restart() {
+        let mut t = ApprovalTranscript::default();
+        let pad = "p".repeat(6 * 1024);
+        t.keep(vec!["NEVER force-push".to_string()]);
+        for i in 0..6 {
+            t.push_user(format!("M{i} {pad}"));
+        }
+        let _ = t.take_selection();
+        let (kept, words) = (t.standing().to_vec(), t.user_words());
+        let mut session = Session::new();
+        for word in &words {
+            session.push(Message::User(UserMessage::text(word.clone())));
+        }
+        let mut restored = ApprovalTranscript::default();
+        restored.seed_stored(&kept, &words, &session);
+        assert_eq!(restored.standing(), kept);
+        assert_eq!(restored.user_words(), words);
+        assert_eq!(restored.take_selection(), None);
+        let lines = |t: &ApprovalTranscript| -> Vec<String> {
+            t.render()
+                .lines()
+                .filter(|l| l.starts_with("[user"))
+                .map(String::from)
+                .collect()
+        };
+        assert_eq!(lines(&restored), lines(&t));
     }
 
     /// A helper's review reads the user's lines as the user's words to the

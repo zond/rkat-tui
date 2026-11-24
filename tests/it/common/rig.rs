@@ -934,9 +934,31 @@ pub struct ScriptedClassifier {
     /// Each review waits for this gate first (the call it reviews is
     /// being dispatched meanwhile).
     hold: Option<Arc<tokio::sync::Notify>>,
+    /// The answers of selections of the user's older messages, in turn
+    /// (read by the real parser); none left: a provider error.
+    selections: parking_lot::Mutex<Vec<Result<String, ClassifierError>>>,
+    /// The candidates of every selection.
+    selected: parking_lot::Mutex<Vec<Vec<String>>>,
 }
 
 impl ScriptedClassifier {
+    /// Allow every review; answer selections of the user's older messages
+    /// with `answers` in turn.
+    #[allow(dead_code)]
+    pub fn selecting(answers: Vec<Result<String, ClassifierError>>) -> Arc<Self> {
+        Arc::new(Self {
+            allow_when_done: true,
+            selections: parking_lot::Mutex::new(answers),
+            ..Self::default()
+        })
+    }
+
+    /// The candidates of every selection so far.
+    #[allow(dead_code)]
+    pub fn selected(&self) -> Vec<Vec<String>> {
+        self.selected.lock().clone()
+    }
+
     /// Allow everything, but time out reviewing a call whose arguments
     /// contain `text`.
     pub fn failing_on(text: &str) -> Arc<Self> {
@@ -1027,5 +1049,21 @@ impl ActionClassifier for ScriptedClassifier {
         } else {
             Err(ClassifierError::Provider("script exhausted".into()))
         }
+    }
+
+    async fn select_standing(
+        &self,
+        input: rkat_tui::approval::standing::StandingInput<'_>,
+    ) -> Result<Vec<usize>, ClassifierError> {
+        self.selected.lock().push(input.messages.to_vec());
+        let answer = {
+            let mut answers = self.selections.lock();
+            if answers.is_empty() {
+                Err(ClassifierError::Provider("no selection scripted".into()))
+            } else {
+                answers.remove(0)
+            }
+        }?;
+        rkat_tui::approval::standing::parse_standing(&answer, input.messages.len())
     }
 }

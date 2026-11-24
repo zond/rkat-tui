@@ -516,6 +516,9 @@ impl Local {
                         self.core
                             .conversations
                             .store_user_words(&session, self.core.engine.user_words(&session));
+                        // Over their budget: the user's older messages to
+                        // keep are chosen off this path.
+                        select_standing(&self.core, &session);
                     }
                     // The endings of helpers held since the user interrupted
                     // the agent go with this message, before its words (the
@@ -670,6 +673,27 @@ fn answer(result: impl serde::Serialize) -> Result<Value, Refusal> {
 /// Put `note` (what the daemon held for the agent) before the user's
 /// words in the wire content input `content`: a string gets it in front,
 /// a block list a text block first.
+/// When the user's words of `session` overran their budget, choose on a
+/// task of its own which of the older ones stay
+/// ([`crate::approval::standing`]), store the result, and go on while
+/// more were pushed out meanwhile. A review never waits for it.
+fn select_standing(core: &Arc<super::core::Core>, session: &meerkat_core::SessionId) {
+    let Some(selection) = core.engine.standing_selection(session) else {
+        return;
+    };
+    let core = Arc::clone(core);
+    let session = session.clone();
+    tokio::spawn(async move {
+        let mut selection = Some(selection);
+        while let Some(next) = selection.take() {
+            core.engine.select_standing(&session, next).await;
+            core.conversations
+                .store_user_words(&session, core.engine.user_words(&session));
+            selection = core.engine.standing_selection(&session);
+        }
+    });
+}
+
 fn prepend_note(content: &mut Value, note: &str) {
     let lead = format!("{note}\n\n{HELD_NOTE_SEPARATOR}\n\n");
     match content {

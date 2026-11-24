@@ -107,8 +107,14 @@ async fn a_request_before_a_long_run_of_calls_reaches_the_review_of_a_later_call
         seen.find(needle)
             .unwrap_or_else(|| panic!("{needle}: {seen}"))
     };
-    assert!(at("[omitted]") < at("out/f38.txt") && at("out/f38.txt") < at("out/f39.txt"));
-    assert!(!seen.contains("out/f0.txt\""), "{seen}");
+    // The writes of one step are decided in parallel, in no fixed order:
+    // the newest decided are kept, every one after the gap.
+    let writes = seen
+        .lines()
+        .filter(|l| l.contains("\"path\":\"out/f"))
+        .count();
+    assert!(writes > 0 && writes < 40, "{writes}: {seen}");
+    assert!(at("[omitted]") < at("\"path\":\"out/f"), "{seen}");
     drop(connection);
     daemon.stop().await;
 }
@@ -384,4 +390,151 @@ async fn a_helper_s_review_has_the_user_s_words_to_its_agent_labelled_so() {
         drop(connection);
         daemon.stop().await;
     }
+}
+
+/// A prompt of about 6 KiB opening with `marker`.
+fn long_prompt(marker: &str) -> String {
+    format!("{marker}{}", " pad".repeat(1536))
+}
+
+/// The daemon on `ws` with `classifier`, and an agent that answers every
+/// prompt but `GO-NOW`, which it answers with a reviewed shell call.
+async fn selecting_daemon(
+    ws: &Workspace,
+    classifier: &Arc<ScriptedClassifier>,
+) -> (Running, Arc<ScriptedLlmClient>) {
+    let llm = Script::new()
+        .after("g1", Step::Text("done"))
+        .input(
+            "GO-NOW",
+            Step::Tool {
+                id: "g1",
+                name: "shell",
+                args: json!({"command": "glab mr create --fill GLAB-KEPT"}),
+            },
+        )
+        .otherwise(Step::Text("ok"))
+        .client(24);
+    let setup = Setup::default().classifier(Arc::clone(classifier) as _);
+    let daemon =
+        Running::start_with(&setup.command_line(&ws.root), setup.options(&ws.root, &llm)).await;
+    (daemon, llm)
+}
+
+/// When the user's words overrun their budget the classifier's model
+/// chooses, by number, which older messages stay: only the user's own
+/// typed messages are its candidates, the chosen prohibition is kept word
+/// for word under its own label ahead of the transcript of a later review,
+/// a one-off it left out is gone, and a restart shows the same kept set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_older_messages_the_model_chooses_are_kept_verbatim_and_survive_a_restart() {
+    let ws = Workspace::new();
+    let classifier =
+        ScriptedClassifier::selecting((0..8).map(|_| Ok("KEEP: 1".to_string())).collect());
+    let (daemon, llm) = selecting_daemon(&ws, &classifier).await;
+    let session = daemon.current_session().await;
+    let connection = daemon.connect_bound().await;
+    let mut typed = vec![
+        long_prompt("NEVER-FORCE-PUSH never force-push to any branch"),
+        long_prompt("ONE-OFF fix the typo in the readme"),
+    ];
+    typed.extend((0..4).map(|i| long_prompt(&format!("FILLER-{i}"))));
+    for prompt in &typed {
+        daemon.prompt(&connection, prompt).await;
+    }
+    // Two selections: the prohibition pushed out and kept, then the
+    // one-off pushed out by the room the kept one takes, and left out.
+    common::until(|| {
+        classifier.selected().concat().contains(&typed[1])
+            && daemon.engine().user_words(&session).kept == [typed[0].clone()]
+    })
+    .await;
+    for candidates in classifier.selected() {
+        for candidate in &candidates {
+            assert!(
+                typed.contains(candidate),
+                "not a typed message: {candidate:.60}"
+            );
+        }
+    }
+    daemon
+        .prompt(&connection, "GO-NOW open the merge request")
+        .await;
+    let seen = review_of(&classifier, "GLAB-KEPT").expect("the call was reviewed");
+    assert!(
+        seen.starts_with(&format!("[user, earlier, kept] {}\n", typed[0])),
+        "{seen:.200}"
+    );
+    assert!(!seen.contains("ONE-OFF"), "{seen:.400}");
+    assert!(seen.contains("[user] GO-NOW open the merge request"));
+    daemon.idle(&daemon.agent).await;
+    let before = daemon.engine().user_words(&session);
+    drop(connection);
+    daemon.stop().await;
+    // Stored with the conversation's words; a restart shows the same.
+    let file = common::realm_of(&ws.root)
+        .join(rkat_tui::daemon::conversations::WORDS_DIR)
+        .join(format!("{session}.json"));
+    let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(stored["kept"], json!(before.kept));
+    let (daemon, _llm) = selecting_daemon(&ws, &classifier).await;
+    let seeded = daemon.engine().transcript(&session).unwrap();
+    assert!(
+        seeded.starts_with("[user, earlier, kept] NEVER-FORCE-PUSH"),
+        "{seeded:.200}"
+    );
+    assert_eq!(daemon.engine().user_words(&session), before);
+    // The kept message once, as kept; the one left out is no user line
+    // (the stored conversation still holds it, a line of unverified
+    // authorship now).
+    assert_eq!(
+        seeded.matches("NEVER-FORCE-PUSH").count(),
+        1,
+        "{seeded:.300}"
+    );
+    assert!(
+        user_lines(&seeded).iter().all(|l| !l.contains("ONE-OFF")),
+        "{seeded:.300}"
+    );
+    drop(llm);
+    daemon.stop().await;
+}
+
+/// A selection that fails keeps what was kept before and drops the
+/// pushed-out messages, as the budget alone does: a number out of range,
+/// an answer that does not parse and a model error each change nothing
+/// kept, and the review of a later call still runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_selection_falls_back_to_dropping_the_oldest() {
+    let ws = Workspace::new();
+    let classifier = ScriptedClassifier::selecting(vec![
+        Ok("KEEP: 9".to_string()),
+        Ok("I would keep the first one".to_string()),
+    ]);
+    let (daemon, _llm) = selecting_daemon(&ws, &classifier).await;
+    let session = daemon.current_session().await;
+    let connection = daemon.connect_bound().await;
+    let typed: Vec<String> = (0..8).map(|i| long_prompt(&format!("MSG-{i}"))).collect();
+    for prompt in &typed {
+        daemon.prompt(&connection, prompt).await;
+    }
+    // Each pushed-out message was offered (the two bad answers first, then
+    // model errors) and none was kept.
+    common::until(|| {
+        let offered = classifier.selected().concat();
+        typed[..3].iter().all(|m| offered.contains(m))
+    })
+    .await;
+    assert!(daemon.engine().user_words(&session).kept.is_empty());
+    daemon
+        .prompt(&connection, "GO-NOW open the merge request")
+        .await;
+    let seen = review_of(&classifier, "GLAB-KEPT").expect("the call was reviewed");
+    assert!(!seen.contains("[user, earlier, kept]"), "{seen:.300}");
+    assert!(!seen.contains("MSG-0 "), "the oldest went");
+    assert!(seen.contains("[omitted] "), "{seen:.300}");
+    assert!(seen.contains("[user] GO-NOW"));
+    daemon.idle(&daemon.agent).await;
+    drop(connection);
+    daemon.stop().await;
 }

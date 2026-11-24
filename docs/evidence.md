@@ -14808,6 +14808,44 @@ Tests: `approval::transcript::tests::peer_and_unverified_user_role_messages_are_
 `classifier_transcript::a_prompt_an_agent_s_schedule_marks_as_the_user_s_is_never_the_user_s`
 (live and after a restart; pins what the engine stores).
 
+The user's older messages chosen by number (owner's follow-on). The first
+proposal, verbatim excerpts checked as substrings, was not built: a
+substring can drop a negation or a condition ("do not delete the
+database" holds "delete the database"), so a passage that verifies can
+still widen a permission. Built instead: when the user's words overrun
+their budget, the messages pushed out (never the newest: the budget keeps
+its newest message) and those kept before are candidates; the classifier
+slot's model (`ActionClassifier::select_standing`, the stage-1 request
+with its low-reasoning knobs, timeout and usage) is shown them numbered
+inside `<messages>` as data (`standing::STANDING_SYSTEM`: a message that
+asks to keep everything or to ignore the instructions is one more
+candidate) and answers `KEEP: 2, 5` or `KEEP: NONE`. The daemon keeps
+exactly those messages, as the transcript held them (already cut to
+8 KiB), in their order, under `[user, earlier, kept]` first in the
+transcript, within `KEPT_BYTE_BUDGET` (8 KiB, inside the 32 KiB, so no
+review grows; the oldest kept drop past it). A number out of range or an
+answer that does not parse is unparseable and nothing of it is used;
+that, an error or a timeout keeps the earlier kept set and drops the
+pushed-out ones, as before, with a warning and an audit line
+(`standing_selection_failed`). It runs on a task of its own after the
+message is recorded, one at a time per conversation (what is pushed out
+meanwhile is offered next), so no review waits for it. The kept set is
+stored with the words (`kept` in `tui_user_words/<session>.json`) and a
+restart seeds it without a new selection (a stored message holding a kept
+one is shown as kept only; one the selection left out, which the stored
+conversation still holds, is a line of unverified authorship after a
+restart, never a user line). Only user entries are ever
+candidates, so nothing an agent, a peer or a tool wrote can be kept.
+Tests: `approval::standing::tests::the_answer_is_numbers_in_range_or_nothing_is_used`,
+`the_messages_are_data_to_select_from`;
+`approval::transcript::tests::pushed_out_messages_are_candidates_and_the_chosen_are_kept_verbatim`,
+`stored_kept_messages_give_the_same_view_after_a_restart`;
+`classifier_transcript::the_older_messages_the_model_chooses_are_kept_verbatim_and_survive_a_restart`
+(a prohibition kept, a one-off left out, every candidate a typed message,
+the same set after a restart),
+`classifier_transcript::a_failed_selection_falls_back_to_dropping_the_oldest`
+(a number out of range, an unparseable answer, model errors).
+
 Tests: `approval::transcript::tests::the_user_s_request_outlives_any_number_of_tool_calls`,
 `the_user_s_words_have_their_caps`, `budget_trims_oldest`,
 `newest_entry_survives_tiny_budget`,

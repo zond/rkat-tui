@@ -33,6 +33,7 @@ use meerkat_mob_mcp::MobMcpState;
 use serde::{Deserialize, Serialize};
 
 use super::{AGENT_PROFILE, MOB_ID};
+use crate::approval::transcript::StoredWords;
 use crate::mobs::{HelperKey, HelperRegistry};
 
 /// The conversation log's file name in the realm.
@@ -59,6 +60,10 @@ pub const WORDS_DIR: &str = "tui_user_words";
 struct WordsFile {
     version: u32,
     words: Vec<String>,
+    /// The user's older messages kept from those the budget pushed out
+    /// (`approval::standing`); absent means none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    kept: Vec<String>,
 }
 
 /// How many conversations [`Conversations::list`] reads at once.
@@ -690,7 +695,7 @@ impl Conversations {
         {
             Ok(Some(stored)) => {
                 let words = self.stored_user_words(session);
-                engine.seed_transcript(&words, &stored);
+                engine.seed_transcript(&words.kept, &words.words, &stored);
             }
             Ok(None) => {}
             Err(err) => {
@@ -708,9 +713,13 @@ impl Conversations {
     /// `session` keeps now ([`crate::approval::ApprovalEngine::user_words`]).
     /// A failed write is logged: the live transcript keeps them, only a
     /// restart before the next write would not.
-    pub fn store_user_words(&self, session: &SessionId, words: Vec<String>) {
+    pub fn store_user_words(&self, session: &SessionId, words: StoredWords) {
         let path = self.words_path(session);
-        let file = WordsFile { version: 1, words };
+        let file = WordsFile {
+            version: 1,
+            words: words.words,
+            kept: words.kept,
+        };
         let written = serde_json::to_vec(&file)
             .map_err(|err| err.to_string())
             .and_then(|bytes| {
@@ -724,25 +733,32 @@ impl Conversations {
 
     /// The user's words stored for `session` ([`Self::store_user_words`]);
     /// none when there is no file, or one that cannot be read (logged).
-    fn stored_user_words(&self, session: &SessionId) -> Vec<String> {
+    fn stored_user_words(&self, session: &SessionId) -> StoredWords {
         let path = self.words_path(session);
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return StoredWords::default();
+            }
             Err(err) => {
                 tracing::warn!(%session, file = %path.display(), error = %err, "cannot read the user's stored words; the classifier sees only those the conversation shows");
-                return Vec::new();
+                return StoredWords::default();
             }
         };
-        match serde_json::from_slice::<WordsFile>(&bytes) {
-            Ok(file) => file
-                .words
+        let present = |words: Vec<String>| -> Vec<String> {
+            words
                 .into_iter()
                 .filter(|word| !word.trim().is_empty())
-                .collect(),
+                .collect()
+        };
+        match serde_json::from_slice::<WordsFile>(&bytes) {
+            Ok(file) => StoredWords {
+                kept: present(file.kept),
+                words: present(file.words),
+            },
             Err(err) => {
                 tracing::warn!(%session, file = %path.display(), error = %err, "the user's stored words do not parse; the classifier sees only those the conversation shows");
-                Vec::new()
+                StoredWords::default()
             }
         }
     }

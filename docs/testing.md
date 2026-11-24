@@ -522,6 +522,13 @@ output now says why; report it rather than retrying silently:
   reproduce it; the cause is read from a passing run's log and the
   engine's source. No timeout was raised.
 
+- `classifier_transcript::a_request_before_a_long_run_of_calls_reaches_the_review_of_a_later_call`:
+  failed once in a full local gate (2026-11-24) on the order of two
+  writes after the gap. The test's: the forty writes of one scripted
+  step are decided in parallel, so the transcript records them in no
+  fixed order. It now asserts what is fixed (the gap before every kept
+  write, fewer than forty kept). No timeout was raised.
+
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a
 deadline after reacquiring any lock.

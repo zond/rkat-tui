@@ -591,6 +591,18 @@ pub trait ActionClassifier: Send + Sync {
             "no classifier model is configured".to_string(),
         ))
     }
+
+    /// Choose which of the user's older messages stay in the transcript
+    /// ([`super::standing`]): the indices of `input.messages` to keep. A
+    /// classifier that has no model chooses none: the oldest are dropped.
+    async fn select_standing(
+        &self,
+        _input: super::standing::StandingInput<'_>,
+    ) -> Result<Vec<usize>, ClassifierError> {
+        Err(ClassifierError::Provider(
+            "no classifier model is configured".to_string(),
+        ))
+    }
 }
 
 /// Placeholder used until an LLM classifier is configured: every Tier-3 action
@@ -1275,6 +1287,18 @@ impl ActionClassifier for LlmClassifier {
         let verdict = super::checkpoint::parse_checkpoint(&answer);
         tracing::debug!(model = %self.model, ?verdict, "checkpoint review");
         verdict
+    }
+
+    async fn select_standing(
+        &self,
+        input: super::standing::StandingInput<'_>,
+    ) -> Result<Vec<usize>, ClassifierError> {
+        let (system, user) = super::standing::render_standing(&input);
+        let request = self.request(system, user, super::standing::STANDING_MAX_TOKENS);
+        let answer = self.complete_stage1(input.session_id, request).await?;
+        let kept = super::standing::parse_standing(&answer, input.messages.len());
+        tracing::debug!(model = %self.model, ?kept, "selection of the user's older messages");
+        kept
     }
 }
 

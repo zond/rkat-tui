@@ -99,7 +99,7 @@ use super::statements::{
     MAX_STATEMENTS, StatementOrigin, StatementRefusal, StatementRow, Statements,
 };
 use super::stats::Stats;
-use super::transcript::{ApprovalTranscript, InputKey};
+use super::transcript::{ApprovalTranscript, InputKey, Selection, StoredWords};
 use super::{ApprovalEvent, DenyReason, Verdict, prompts, shell};
 use crate::config::registry::Level;
 use crate::config::{self, AutoSettings};
@@ -258,6 +258,9 @@ impl StopCause {
 #[derive(Debug, Default)]
 struct SessionState {
     transcript: ApprovalTranscript,
+    /// A selection of the user's older messages is under way
+    /// ([`ApprovalEngine::standing_selection`]).
+    selecting: bool,
     allow_cache: HashSet<CacheKey>,
     stop: StopState,
     /// The session's runs, and which of them a user started.
@@ -842,23 +845,78 @@ impl ApprovalEngine {
     /// (on resume): seed its transcript from typed authorship (the human's
     /// turn inputs and tool calls, never assistant prose, tool output or
     /// peer messages).
-    /// `words` are the user's words the daemon stored for the conversation
-    /// ([`Self::user_words`]; [`ApprovalTranscript::seed_with_words`]).
-    pub fn seed_transcript(&self, words: &[String], session: &Session) {
+    /// `kept` and `words` are the user's words the daemon stored for the
+    /// conversation ([`Self::user_words`];
+    /// [`ApprovalTranscript::seed_stored`]).
+    pub fn seed_transcript(&self, kept: &[String], words: &[String], session: &Session) {
         let mut transcript = ApprovalTranscript::default();
-        transcript.seed_with_words(words, session);
+        transcript.seed_stored(kept, words, session);
         self.session(session.id()).transcript = transcript;
     }
 
     /// The user's words the classifier's transcript of `session` keeps
-    /// now, oldest first (what the daemon stores for it).
+    /// now, oldest first (what the daemon stores for it): the older
+    /// messages kept from those the budget pushed out, and the recent
+    /// ones.
     #[must_use]
-    pub fn user_words(&self, session_id: &SessionId) -> Vec<String> {
+    pub fn user_words(&self, session_id: &SessionId) -> StoredWords {
         self.sessions
             .lock()
             .get(session_id)
-            .map(|state| state.transcript.user_words())
+            .map(|state| StoredWords {
+                kept: state.transcript.standing().to_vec(),
+                words: state.transcript.user_words(),
+            })
             .unwrap_or_default()
+    }
+
+    /// A selection of the user's older messages `session_id`'s transcript
+    /// asks for, when its budget pushed some out and none is under way
+    /// ([`super::standing`]); the caller runs it with
+    /// [`Self::select_standing`] off the review's path.
+    pub fn standing_selection(&self, session_id: &SessionId) -> Option<Selection> {
+        let mut state = self.session(session_id);
+        if state.selecting {
+            return None;
+        }
+        let selection = state.transcript.take_selection()?;
+        state.selecting = true;
+        Some(selection)
+    }
+
+    /// Run `selection` on the classifier the reviews use now and keep the
+    /// messages it chose, exactly as they were, in their order. A failure
+    /// (an error, a timeout, an answer that does not parse or names a
+    /// number out of range) keeps what was kept before; it is logged and
+    /// audited, and never fails or holds a review.
+    pub async fn select_standing(&self, session_id: &SessionId, selection: Selection) {
+        let classifier = self.reviewer.current();
+        let answer = classifier
+            .select_standing(super::standing::StandingInput {
+                session_id,
+                messages: &selection.messages,
+                budget: super::transcript::KEPT_BYTE_BUDGET,
+            })
+            .await;
+        let mut state = self.session(session_id);
+        state.selecting = false;
+        match answer {
+            Ok(chosen) => {
+                let kept: Vec<String> = chosen
+                    .iter()
+                    .filter_map(|&at| selection.messages.get(at).cloned())
+                    .collect();
+                state.transcript.keep(kept);
+            }
+            Err(err) => {
+                drop(state);
+                tracing::warn!(%session_id, error = %err, "the user's older messages were not selected; the oldest were dropped");
+                self.audit_event(
+                    "standing_selection_failed",
+                    format!("{session_id}: {err}; the user's oldest messages were dropped"),
+                );
+            }
+        }
     }
 
     /// Record words the human submitted to a session (a prompt or a steer)

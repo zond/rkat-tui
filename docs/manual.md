@@ -433,7 +433,13 @@ Your messages have a budget of their own (32 KiB; a message longer than
 the 32 KiB of actions and notes, so a long run of tool calls never pushes
 out the request that asked for them: each budget drops its own oldest
 entries and always keeps its newest, the transcript stays in order, and
-one `[omitted]` line stands where entries were left out. The classifier is
+one `[omitted]` line stands where entries were left out. When your
+messages overrun their budget, the classifier's model is shown only your
+own older messages, numbered, and names those that still hold (standing
+requests, permissions, prohibitions, constraints); they stay word for word
+under `[user, earlier, kept]` ahead of the rest, within 8 KiB of the 32,
+and nothing it writes is ever kept. When it fails or answers badly the
+oldest are simply dropped. The classifier is
 told that a request, permission or prohibition you gave earlier stands
 unless a later message of yours withdraws it. The daemon stores the
 messages it keeps for each conversation in the workspace's state
