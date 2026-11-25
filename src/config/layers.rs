@@ -130,6 +130,20 @@ pub enum Notice {
     /// `helpers.model` names a model `helpers.allow_models` or
     /// `deny_models` refuses (the text names both settings).
     HelperModelRefused(String),
+    /// The project-level file set `[instructions]`; only the user's own
+    /// layers put text in the agents' prompt.
+    ProjectInstructionsIgnored {
+        /// Project rules file.
+        path: PathBuf,
+    },
+    /// A file of `instructions.files` is missing, unreadable or empty: the
+    /// prompts are built without it.
+    InstructionFileSkipped {
+        /// The file.
+        path: PathBuf,
+        /// Why.
+        why: String,
+    },
 }
 
 impl fmt::Display for Notice {
@@ -208,6 +222,16 @@ impl fmt::Display for Notice {
                 "[auto] compact_warn_percent = {warn}, compact_auto_percent = {auto} are out of range (1..=100, auto ≥ warn); using {applied_warn} and {applied_auto}"
             ),
             Self::HelperModelRefused(text) => f.write_str(text),
+            Self::ProjectInstructionsIgnored { path } => write!(
+                f,
+                "ignored [instructions] in {}: only your own tui.toml files (or --set) add instruction files",
+                path.display()
+            ),
+            Self::InstructionFileSkipped { path, why } => write!(
+                f,
+                "instructions.files: {} is skipped ({why}); new conversations and helpers are built without it",
+                path.display()
+            ),
         }
     }
 }
@@ -328,6 +352,15 @@ pub fn load_layered_with(
         .map_err(RulesError::HelperModels)?;
     if let Some(conflict) = helper_models.default_conflict() {
         layered.notices.push(Notice::HelperModelRefused(conflict));
+    }
+    // An instruction file that will not load is said once here; the
+    // session builds skip it.
+    for path in super::registry::instruction_files_in_force(&layered.layers) {
+        if let Some(why) = crate::bootstrap::instructions::unloadable(&path) {
+            layered
+                .notices
+                .push(Notice::InstructionFileSkipped { path, why });
+        }
     }
     Ok(layered)
 }
@@ -570,6 +603,13 @@ impl Layered {
         }
         if project.daemon.is_some() {
             self.notices.push(Notice::DaemonIgnored {
+                path: project_path.clone(),
+            });
+        }
+        // Nor the agents' prompt: a cloned repository could put any text
+        // there.
+        if project.instructions.is_some() {
+            self.notices.push(Notice::ProjectInstructionsIgnored {
                 path: project_path.clone(),
             });
         }

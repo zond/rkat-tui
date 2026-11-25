@@ -139,6 +139,7 @@ impl Local {
             tools: self.core.origins.sizes(&session_id),
             hidden: self.core.deferral.hidden(&session_id),
             skills: self.skills().await?,
+            instruction_files: self.core.instruction_files.read().clone(),
             session_id,
         })
     }

@@ -164,6 +164,72 @@ pub struct HelpersSection {
     pub deny_models: Option<Vec<super::helper_models::ModelPattern>>,
 }
 
+/// `[instructions]` section of a rules file: files whose text every new
+/// agent conversation and every fresh helper gets in its system prompt
+/// (`instructions.files`; the registry says what it takes). User layers
+/// only: a project file's is ignored with a notice.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstructionsSection {
+    /// `instructions.files`: each layer's list adds to the lower ones'.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<InstructionPath>>,
+}
+
+/// One `instructions.files` entry: a path as written, absolute once a
+/// leading `~` is expanded ([`crate::paths::expand_tilde_in`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct InstructionPath {
+    /// As written (what the file keeps).
+    written: String,
+    /// Expanded.
+    path: std::path::PathBuf,
+}
+
+impl InstructionPath {
+    /// `text` as an `instructions.files` entry.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with it, naming the key and the value: not absolute
+    /// after `~` expands, or `~` with no home directory.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let key = super::registry::INSTRUCTION_FILES.key;
+        let path = crate::paths::expand_tilde_in(text, dirs::home_dir().as_deref())
+            .map_err(|_| format!("{key}: `{text}` starts with `~`, but there is no home directory to expand it to"))?;
+        if !path.is_absolute() {
+            return Err(format!(
+                "{key}: `{text}` is not an absolute path; name the file from the root (`/…`) or from your home directory (`~/…`)"
+            ));
+        }
+        Ok(Self {
+            written: text.to_string(),
+            path,
+        })
+    }
+
+    /// The expanded path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl TryFrom<String> for InstructionPath {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::parse(&text)
+    }
+}
+
+impl From<InstructionPath> for String {
+    fn from(entry: InstructionPath) -> Self {
+        entry.written
+    }
+}
+
 /// `[agent]` section of a rules file: the checkpoints of long runs
 /// ([`crate::daemon::checkpoint`]; the registry's `agent.*` settings say
 /// what each takes). User layers only.
@@ -472,6 +538,9 @@ pub struct RulesFile {
     /// The checkpoints of long runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentSection>,
+    /// Instruction files of the user's own (user layers only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<InstructionsSection>,
     /// Helper (sub-agent) limits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub helpers: Option<HelpersSection>,

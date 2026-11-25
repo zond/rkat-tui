@@ -83,6 +83,11 @@ fn rules_file_round_trip() {
             checkpoint_steps: Some(40),
             checkpoint_continues: Some(0),
         }),
+        instructions: Some(InstructionsSection {
+            files: Some(vec![
+                InstructionPath::parse("/opt/wrapper/notes.md").unwrap(),
+            ]),
+        }),
         helpers: Some(HelpersSection {
             max_depth: Some(2),
             ..HelpersSection::default()
@@ -1021,6 +1026,133 @@ fn trusted_hosts_come_from_the_user_s_layers_only() {
         n.to_string()
             .contains("only your own tui.toml or this workspace's says which hosts you trust")
     }));
+}
+
+/// `instructions.files` come from the user's own layers only and add up:
+/// the user's file, the realm's, then the command line's (`--set` appends
+/// to the user's list); a project file's are ignored with a notice; a
+/// missing or empty file is a notice, not a refusal; `~` expands.
+#[test]
+fn instruction_files_add_up_over_the_user_s_layers_only() {
+    use super::registry::instruction_files_in_force;
+    use clap::Parser as _;
+    let tmp = tempfile::tempdir().unwrap();
+    let realm = tmp.path().join("realm");
+    let project = tmp.path().join("project");
+    let notes = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    let (user_file, realm_file, cli_file, empty) = (
+        notes.join("user.md"),
+        notes.join("realm.md"),
+        notes.join("cli.md"),
+        notes.join("empty.md"),
+    );
+    for path in [&user_file, &realm_file, &cli_file] {
+        std::fs::write(path, "rules\n").unwrap();
+    }
+    std::fs::write(&empty, "\n").unwrap();
+    let missing = notes.join("missing.md");
+    let global = tmp.path().join("global.toml");
+    std::fs::write(
+        &global,
+        format!(
+            "[instructions]\nfiles = [{:?}, {:?}]\n",
+            user_file.display().to_string(),
+            empty.display().to_string()
+        ),
+    )
+    .unwrap();
+    write(
+        &realm,
+        &format!(
+            "[instructions]\nfiles = [{:?}]\n",
+            realm_file.display().to_string()
+        ),
+    );
+    write(&project, "[instructions]\nfiles = [\"/etc/evil.md\"]\n");
+    // `--set` arrays append, here to the user's list.
+    let args = crate::cli::Args::parse_from([
+        "rkat-tui".to_string(),
+        "--set".to_string(),
+        format!("instructions.files=[{:?}]", cli_file.display().to_string()),
+        "--set".to_string(),
+        format!("instructions.files=[{:?}]", missing.display().to_string()),
+    ]);
+    let overlay = crate::overlay::ConfigOverlay::from_args(&args)
+        .unwrap()
+        .rules_file()
+        .unwrap();
+    let layered = load_layered_with(&realm, Some(&global), &project, overlay.as_ref()).unwrap();
+    assert_eq!(
+        instruction_files_in_force(&layered.layers),
+        [
+            user_file,
+            empty.clone(),
+            realm_file,
+            cli_file,
+            missing.clone()
+        ]
+    );
+    let notices: Vec<String> = layered.notices.iter().map(ToString::to_string).collect();
+    assert!(
+        layered
+            .notices
+            .iter()
+            .any(|n| matches!(n, Notice::ProjectInstructionsIgnored { .. })),
+        "{notices:?}"
+    );
+    for (path, why) in [(&empty, "it is empty"), (&missing, "there is no such file")] {
+        assert!(
+            notices.contains(&format!(
+                "instructions.files: {} is skipped ({why}); new conversations and helpers are built without it",
+                path.display()
+            )),
+            "{notices:?}"
+        );
+    }
+    assert!(
+        !notices.iter().any(|n| n.contains("user.md")),
+        "{notices:?}"
+    );
+    // Without the command line, the user's and the realm's.
+    let layered = load_layered_with(&realm, Some(&global), &project, None).unwrap();
+    assert_eq!(instruction_files_in_force(&layered.layers).len(), 3);
+    // `~` expands; the file keeps the entry as written.
+    let home = InstructionPath::parse("~/wrapper.md").unwrap();
+    if let Some(dir) = dirs::home_dir() {
+        assert_eq!(home.path(), dir.join("wrapper.md"));
+    }
+    assert_eq!(String::from(home), "~/wrapper.md");
+}
+
+/// A relative `instructions.files` entry is refused, naming the key and
+/// the value: on the command line (fatal at start), in a file (the file
+/// does not read, so the start is refused as for any bad file) and in
+/// `/set`.
+#[test]
+fn a_relative_instruction_file_is_refused() {
+    use clap::Parser as _;
+    let refusal = "instructions.files: `notes/x.md` is not an absolute path";
+    let args =
+        crate::cli::Args::parse_from(["rkat-tui", "--set", "instructions.files=[\"notes/x.md\"]"]);
+    let err = crate::overlay::ConfigOverlay::from_args(&args).unwrap_err();
+    assert!(err.to_string().contains(refusal), "{err}");
+    let tmp = tempfile::tempdir().unwrap();
+    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+    write(&realm, "[instructions]\nfiles = [\"notes/x.md\"]\n");
+    write(&project, "");
+    let err = load_layered_with(&realm, None, &project, None).unwrap_err();
+    assert!(
+        err.to_string().contains(refusal) || format!("{err:?}").contains(refusal),
+        "{err:?}"
+    );
+    let setting = super::registry::Setting::find("instructions.files").unwrap();
+    let err = setting.parse("/abs/a.md, notes/x.md").unwrap_err();
+    assert!(err.contains(refusal), "{err}");
+    assert_eq!(
+        setting.parse("/abs/a.md, /abs/b.md").unwrap(),
+        toml::Value::Array(vec!["/abs/a.md".into(), "/abs/b.md".into()])
+    );
 }
 
 /// `[auto] allow` statements come from the user's own layers only: the

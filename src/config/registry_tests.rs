@@ -25,6 +25,10 @@ fn samples(setting: &Setting) -> [Value; 2] {
             Value::Array(vec![text("claude-haiku-*")]),
             Value::Array(vec![text("gpt-5.5"), text("claude-*")]),
         ],
+        "instructions.files" => [
+            Value::Array(vec![text("/opt/wrapper/notes.md")]),
+            Value::Array(vec![text("/a.md"), text("/b.md")]),
+        ],
         "agent.checkpoint_steps" => [int(40), int(250)],
         "agent.checkpoint_continues" => [int(0), int(3)],
         "shell.user_timeout_secs" => [int(30), int(300)],
@@ -107,6 +111,18 @@ fn typed_value(key: &str, layered: &Layered) -> Option<Value> {
         "agent.checkpoint_steps" | "agent.checkpoint_continues" | "helpers.max_live" => {
             int(int_in_force(Setting::find(key).unwrap(), &layered.layers))
         }
+        // Read where they apply, expanded (the samples are absolute).
+        "instructions.files" => {
+            let files = instruction_files_in_force(&layered.layers);
+            (!files.is_empty()).then(|| {
+                Value::Array(
+                    files
+                        .iter()
+                        .map(|path| Value::String(path.display().to_string()))
+                        .collect(),
+                )
+            })
+        }
         "shell.user_timeout_secs" => int(layered.shell.user_timeout_secs),
         "search.budget_secs" => int(layered.search.budget.as_secs()),
         "search.max_entries" => int(layered.search.max_entries),
@@ -134,7 +150,13 @@ fn oracle(
         (Level::CommandLine, cli),
     ] {
         if let Some(layer) = layer {
-            value = Some(layer.clone());
+            // A list of paths adds to the lower layers'.
+            value = Some(match (setting.kind, value, layer) {
+                (Kind::Paths, Some(Value::Array(lower)), Value::Array(more)) => {
+                    Value::Array(lower.into_iter().chain(more.iter().cloned()).collect())
+                }
+                _ => layer.clone(),
+            });
             source = level;
         }
     }

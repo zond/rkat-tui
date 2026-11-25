@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-25
+
+### Added
+
+- `instructions.files`, a list of absolute file paths (`~` expands) whose
+  text every new conversation and every fresh helper gets in its system
+  prompt, each as an `# Instructions (from <path>)` section after your
+  own `AGENTS.md`, under the same caps. A wrapper that starts rkat-tui in
+  an outer sandbox can tell the agents about it without touching your
+  `AGENTS.md`: `rkat-tui --set 'instructions.files=["/opt/wrapper/agent-notes.md"]'`.
+  Your `tui.toml`'s, the workspace's and the command line's lists add up;
+  a project's `.rkat/tui.toml` may not set it (ignored with a notice); a
+  relative path is refused; a missing or empty file is skipped with a
+  warning at start. A change while the daemon runs applies from the next
+  conversation and helper. `/context` lists the files.
+
+### Fixed
+
+- Five unit tests assumed an ordinary host (`/bin/sleep`, `/bin/false`,
+  `/usr/lib`, a root directory owned by root) and failed in a packager's
+  isolated build environment; they no longer do.
+
 ## [0.1.0] - 2026-11-25
 
 ### Changed

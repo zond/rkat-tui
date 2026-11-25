@@ -2135,6 +2135,10 @@ pub struct ContextReport {
     pub hidden: Vec<super::context::FamilySize>,
     /// The skills directories a session build lists skills from.
     pub skills: crate::bootstrap::skills::SkillsReport,
+    /// The `instructions.files` a session build reads now (the daemon's
+    /// settings, its command line's included).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instruction_files: Vec<std::path::PathBuf>,
 }
 
 /// [`method::Usage`]'s result.

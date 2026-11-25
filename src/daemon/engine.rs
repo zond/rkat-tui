@@ -131,6 +131,9 @@ pub struct Composed {
     /// `helpers.model`, `allow_models` and `deny_models` in force (the
     /// customizer reads them per spawn).
     pub helper_models: crate::config::helper_models::SharedHelperModels,
+    /// `instructions.files` in force (the agents' session builds and the
+    /// customizer read them per build; the settings hook replaces them).
+    pub instruction_files: crate::bootstrap::instructions::SharedFiles,
     /// The mobs' definitions the customizer seats members by; followed
     /// once the workspace's mob is ensured ([`crate::mobs::profiles`]).
     pub profiles: Arc<crate::mobs::profiles::MobProfiles>,
@@ -332,6 +335,9 @@ pub fn compose(
         Arc::new(parking_lot::RwLock::new(
             crate::config::helper_models::HelperModels::of(&layers).unwrap_or_default(),
         ));
+    let instruction_files: crate::bootstrap::instructions::SharedFiles = Arc::new(
+        parking_lot::RwLock::new(crate::config::registry::instruction_files_in_force(&layers)),
+    );
     let daemon_endpoints = endpoints.clone();
     // `assign` for every agent and helper, held to `helpers.max_live`; it
     // seats through the mob state made below.
@@ -359,6 +365,7 @@ pub fn compose(
         thinking: thinking.clone(),
         endpoints,
         instructions,
+        instruction_files: Arc::clone(&instruction_files),
         search_limits,
         prepare: Arc::clone(&prepare),
         helper_models: Arc::clone(&helper_models),
@@ -408,6 +415,7 @@ pub fn compose(
     .with_root(root)
     .with_endpoints(helper_endpoints)
     .with_models(Arc::clone(&helper_models))
+    .with_instruction_files(Arc::clone(&instruction_files))
     .with_profiles(Arc::clone(&profiles))
     .with_realm_config(realm_config.path().to_path_buf())
     .with_helper_persona(
@@ -566,6 +574,7 @@ pub fn compose(
             prepare,
             layers,
             helper_models,
+            instruction_files,
             profiles,
             revisions,
             contacts,
@@ -1029,6 +1038,8 @@ struct AgentHost {
     thinking: ThinkingTable,
     endpoints: crate::endpoints::EndpointRegistry,
     instructions: crate::bootstrap::InstructionSources,
+    /// `instructions.files` in force now.
+    instruction_files: crate::bootstrap::instructions::SharedFiles,
     /// `[search]`: how far the file tools' searches go.
     search_limits: crate::tools::SearchLimits,
     /// Where the agents' `compact_ready` goes.
@@ -1097,7 +1108,12 @@ impl crate::mobs::customizer::RootHost for AgentHost {
         // One line; a change of the settings later reaches a live agent as
         // a note.
         sections.push(self.helper_models.read().instruction());
-        sections.extend(self.instructions.render());
+        sections.extend(
+            self.instructions
+                .clone()
+                .with_files(self.instruction_files.read().clone())
+                .render(),
+        );
         sections.extend(prompt_index(self.notes.user(), self.notes.workspace()));
         sections
     }

@@ -1316,6 +1316,7 @@ says when a change made while the daemon runs applies.
 | `helpers.deny_models`: Models a fresh helper started with `assign` or `mob_spawn_member` may not run on (not with `allow_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: none | may not set it | at once | — |
 | `agent.checkpoint_steps`: The model calls one run of an agent or a helper makes before a checkpoint: it is asked for a short status, the classifier's model judges whether going on is sensible, and it continues or stops (the conversations and helpers started from then on). | a whole number from 10 to 100000 | 100 | may not set it | from the next conversation | — |
 | `agent.checkpoint_continues`: How many checkpoints in a row may continue automatically before the run stops and waits for you (0: every checkpoint stops); a message of yours starts the count again. | a whole number from 0 to 1000 | 5 | may not set it | at once | — |
+| `instructions.files`: Files whose text every new conversation and every fresh helper gets in its system prompt, each as an `# Instructions (from <path>)` section after your own AGENTS.md (each capped at 32 KiB, as AGENTS.md is); a file missing or empty is skipped with a warning at start. For a wrapper that tells the agents about the environment it starts rkat-tui in. | a list of absolute file paths, `~` expanded (`["~/notes.md"]`; `/set` also takes `a, b`); the user's, the workspace's and the command line's lists add up | none | may not set it | from the next conversation | — |
 | `shell.user_timeout_secs`: How long a `!` command may run, in seconds. | a whole number from 1 | 120 | may only lower it | at the next start | — |
 | `search.budget_secs`: How long one `glob` or `grep` may run before it answers with what it found, in seconds. | a whole number from 1 | 10 | may only lower it | at the next start | — |
 | `search.max_entries`: How many files and directories one `glob` or `grep` may examine. | a whole number from 1 | 500000 | may only lower it | at the next start | — |
@@ -1478,11 +1479,22 @@ A new session's system prompt is built from, in order:
 2. **The workspace `AGENTS.md`** (or `.rkat/AGENTS.md`) and the skill
    list ([Skills](#skills)).
 3. **rkat-tui's coding persona**, then your own `AGENTS.md` (config
-   directory), every `AGENTS.md` (or `.rkat/AGENTS.md`) from the git root
-   down to the workspace's parent, and the workspace's `AGENTS.local.md`
-   (or `.rkat/AGENTS.local.md`, meant to stay uncommitted). Each file is
-   cut at 32 KiB, all together at 96 KiB. The git root is the nearest
+   directory), the files of `instructions.files` (below), every
+   `AGENTS.md` (or `.rkat/AGENTS.md`) from the git root down to the
+   workspace's parent, and the workspace's `AGENTS.local.md` (or
+   `.rkat/AGENTS.local.md`, meant to stay uncommitted). Each file is cut
+   at 32 KiB, all together at 96 KiB. The git root is the nearest
    directory with `.git`; your home directory is never one.
+   `instructions.files` lists absolute paths (`~` expands) of files a
+   wrapper or you want every new conversation to read, for example what a
+   sandbox that starts rkat-tui tells its agents:
+   `rkat-tui --set 'instructions.files=["/opt/wrapper/agent-notes.md"]'`.
+   Your file's, the workspace's and the command line's lists add up; a
+   project's `.rkat/tui.toml` may not set it. A fresh helper gets these
+   files too (not the other instruction files); a fork has its parent's
+   prompt. A missing or empty file is skipped with a warning at start.
+   `--set` reaches the daemon only when that run starts it: a client
+   attaching to a daemon already running keeps the daemon's list.
 4. **The notes index** (below), labelled as untrusted, model-written
    context, not instructions.
 

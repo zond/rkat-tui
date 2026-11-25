@@ -15256,3 +15256,54 @@ appended to, and the caller logs the error once its logging is up. The
 client renames the daemon's stderr log while an earlier daemon may
 still write it; that daemon goes on writing to the renamed file. Test:
 `paths::tests::a_log_over_the_limit_is_rotated_when_it_is_opened`.
+
+## `instructions.files` (2026-11-25)
+
+A wrapper that starts rkat-tui inside an outer sandbox tells the agents
+about it with `--set 'instructions.files=["/opt/wrapper/agent-notes.md"]'`
+instead of editing the user's `AGENTS.md`. Decisions:
+
+- **A scalar setting whose lists add up.** It is in the registry
+  (`config::registry::INSTRUCTION_FILES`, `Kind::Paths`), so `/set`,
+  `/settings`, a file change and the manual's table handle it as the
+  others. Unlike `helpers.allow_models`, whose highest layer wins,
+  `Setting::resolve` adds a `Paths` list to the lower layers' (user,
+  workspace, command line), so a wrapper's `--set` stacks on the user's
+  own list. A project file may not set it (`ProjectRule::Never`, and
+  `Notice::ProjectInstructionsIgnored`): a cloned repository must not put
+  text in the prompt.
+- **A relative path refuses the start**, as a bad `helpers.allow_models`
+  pattern does: `config::file::InstructionPath` (`~` expanded by
+  `paths::expand_tilde_in`) refuses it when it is read, so `--set` stops
+  the start (`OverlayError`), a file with one does not read (the start
+  is refused; a running daemon keeps the file's last good values and says
+  why), and `/set` refuses it. The message names the key and the value.
+- **A file that does not load is a warning**, said once at start through
+  the layering's notices (`Notice::InstructionFileSkipped`, with the
+  helper-model warning), and as the warning of a `/set` or file change
+  that names it; the session builds skip it as they skip an empty
+  `AGENTS.md`.
+- **From the next conversation and helper**, through the machinery
+  `helpers.*` uses: a shared list (`bootstrap::instructions::SharedFiles`)
+  the agents' session builds (`daemon::engine::AgentHost::instructions`)
+  and the customizer (fresh, non-fork helpers only) read on every build,
+  replaced by `Hook::InstructionFiles`.
+- **Placement.** `SectionKind::Setting`, directly after the user-global
+  `AGENTS.md`, under the same 32 KiB and 96 KiB caps. A fresh helper gets
+  these sections alone, after its persona (`setting_sections`); a fork
+  copies its parent's prompt. The sections begin with `# `, which
+  `daemon::instructions::begins_other` takes as the start of a foreign
+  section, so a bring-up of an earlier build's persona leaves them as
+  they were. `/context` names the daemon's list
+  (`ContextReport::instruction_files`), since a client attached to a
+  running daemon may have been started with another command line.
+
+Tests: `bootstrap::instructions::tests::setting_files_follow_the_user_global_file_and_skip_what_does_not_load`,
+`setting_files_are_capped_as_the_others`,
+`config::tests::instruction_files_add_up_over_the_user_s_layers_only`,
+`config::tests::a_relative_instruction_file_is_refused`,
+`daemon::instructions::tests::a_helper_s_instruction_files_stay_as_they_were`,
+`config::registry::tests::every_setting_layers_as_it_always_did` (its
+oracle adds the lists up),
+`instructions::instruction_files_of_the_command_line_reach_agents_and_fresh_helpers`,
+`instructions::a_set_of_instruction_files_applies_from_the_next_conversation`.

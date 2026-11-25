@@ -640,6 +640,7 @@ impl Daemon {
             audit,
             prepare: Arc::clone(&composed.prepare),
             helper_models: Arc::clone(&composed.helper_models),
+            instruction_files: Arc::clone(&composed.instruction_files),
             settings: Arc::new(settings::Settings::new(
                 composed.files.clone(),
                 std::mem::take(&mut composed.layers),

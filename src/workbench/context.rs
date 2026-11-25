@@ -15,7 +15,8 @@ use crate::bootstrap::instructions::{InstructionSources, SectionKind, remember_t
 use crate::bootstrap::skills::{Inventory, SkillPlace, SkillsReport};
 
 /// The instruction files `/context` names for `scope`: the user's
-/// `SYSTEM.md`, the workspace `AGENTS.md` and every discovered section.
+/// `SYSTEM.md`, the workspace `AGENTS.md`, every discovered section, and
+/// a file of `instructions.files` that does not load.
 #[must_use]
 pub fn instruction_files(
     scope: &RuntimeScope,
@@ -42,9 +43,23 @@ pub fn instruction_files(
         path: agents,
         truncated: false,
     });
-    for section in sources.discover() {
+    let sections = sources.discover();
+    // A listed file that does not load is named too (absent, or empty).
+    let skipped: Vec<InstructionFile> = sources
+        .files
+        .iter()
+        .filter(|path| !sections.iter().any(|section| &section.path == *path))
+        .map(|path| InstructionFile {
+            label: "instructions.files (skipped)".into(),
+            bytes: size(path),
+            path: path.clone(),
+            truncated: false,
+        })
+        .collect();
+    for section in sections {
         let label = match section.kind {
             SectionKind::UserGlobal => "user AGENTS.md",
+            SectionKind::Setting => "instructions.files",
             SectionKind::Ancestor => "parent AGENTS.md",
             SectionKind::Local => "AGENTS.local.md",
         };
@@ -55,6 +70,7 @@ pub fn instruction_files(
             truncated: section.truncated,
         });
     }
+    files.extend(skipped);
     files
 }
 
@@ -273,6 +289,7 @@ mod tests {
                     threshold: 32,
                 }),
             },
+            instruction_files: Vec::new(),
         };
         let files = [
             InstructionFile {

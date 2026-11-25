@@ -5,6 +5,8 @@
 //! (git root found through a `.git` file) and `AGENTS.local.md` (capped)
 //! follow in that order; `/remember` appends to the workspace `AGENTS.md`,
 //! reaches the live session at once and the next session through the file.
+//! The files of `instructions.files` follow the user's own `AGENTS.md`, and
+//! a fresh helper gets them too.
 //! A conversation the daemon restores after a restart keeps the
 //! instructions it was created with: the persona once, edited files only
 //! from the next new conversation.
@@ -73,6 +75,128 @@ async fn instruction_files_reach_the_prompt_in_order() {
         !system.contains(meerkat_core::prompt::DEFAULT_SYSTEM_PROMPT),
         "{system}"
     );
+    rig.quit().await;
+}
+
+/// A daemon started with `--set instructions.files=[…]` puts the file in
+/// a new agent's system prompt, after the user's own `AGENTS.md` and
+/// before the ancestors, and in a fresh helper's (alone: not the user's
+/// `AGENTS.md`); `/context` names it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn instruction_files_of_the_command_line_reach_agents_and_fresh_helpers() {
+    use meerkat_core::Message;
+    let ws = Workspace::new();
+    let git_root = ws.root.parent().unwrap();
+    write(&git_root.join(".git"), "gitdir: /elsewhere\n");
+    write(&git_root.join("AGENTS.md"), "ANCESTOR-RULES apply.\n");
+    let global = common::config_dir_for(&ws.root);
+    write(&global.join("AGENTS.md"), "GLOBAL-RULES apply.\n");
+    let notes = git_root.join("wrapper").join("agent-notes.md");
+    write(&notes, "WRAPPER-RULES apply.\n");
+
+    let step = Step::Dynamic(std::sync::Arc::new(|messages: &[Message]| {
+        if common::is_helper(messages, "FRESH-TASK") {
+            return Step::Text("fresh done");
+        }
+        if !format!("{messages:?}").contains("\"a1\"") {
+            return common::assign("a1", "fresh", "FRESH-TASK");
+        }
+        Step::Text("ok")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 10]);
+    let set = format!("instructions.files=[{:?}]", notes.display().to_string());
+    let mut rig = Attached::start_with(&ws.root, &llm, rig::Setup::args(&["--set", &set])).await;
+    rig.send(Effect::StartTurn("go".into()));
+    let _ = rig.turn_finished().await;
+    common::until(|| common::parent_told(&llm, "FRESH-TASK", "fresh")).await;
+
+    let heading = format!("# Instructions (from {})", notes.display());
+    let recorded = llm.recorded();
+    let agent = recorded[0].system();
+    let order = [
+        at(&agent, "GLOBAL-RULES"),
+        at(&agent, &heading),
+        at(&agent, "WRAPPER-RULES"),
+        at(&agent, "ANCESTOR-RULES"),
+    ];
+    assert!(order.is_sorted(), "{order:?}\n{agent}");
+    let helper = recorded
+        .iter()
+        .find(|r| common::is_helper(&r.messages, "FRESH-TASK"))
+        .expect("a request of the fresh helper")
+        .system();
+    assert_eq!(helper.matches(&heading).count(), 1, "{helper}");
+    assert!(helper.contains("WRAPPER-RULES apply."), "{helper}");
+    assert!(!helper.contains("GLOBAL-RULES"), "{helper}");
+    assert!(!helper.contains("ANCESTOR-RULES"), "{helper}");
+
+    rig.send(Effect::ContextReport("context: files".into()));
+    let msg = rig
+        .wait_for(
+            |msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("context: files")),
+        )
+        .await;
+    let Msg::Notice { text, .. } = msg else {
+        unreachable!()
+    };
+    assert!(
+        text.contains(&format!(
+            "instructions.files: {} — 20 bytes",
+            notes.display()
+        )),
+        "{text}"
+    );
+    rig.daemon.idle(&rig.daemon.agent).await;
+    rig.quit().await;
+}
+
+/// `/set instructions.files` while the daemon runs applies from the next
+/// conversation (the one under way keeps its prompt) and warns of a file
+/// that does not load.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_set_of_instruction_files_applies_from_the_next_conversation() {
+    let ws = Workspace::new();
+    let notes = ws.root.parent().unwrap().join("wrapper").join("notes.md");
+    write(&notes, "LATER-RULES apply.\n");
+    let missing = notes.with_file_name("missing.md");
+    let llm = ScriptedLlmClient::new(vec![Step::Text("one"), Step::Text("two")]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    let first = rig.current_session().await.to_string();
+    let value = format!("{}, {}", notes.display(), missing.display());
+    let answer = rig
+        .daemon
+        .connect_bound()
+        .await
+        .call(
+            "rkat/set_setting",
+            serde_json::json!({"key": "instructions.files", "value": value, "user": false}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answer["ok"], true, "{answer}");
+    let text = answer["text"].as_str().unwrap();
+    assert!(
+        text.contains("it applies from the next conversation; the conversations and fresh helpers started from now on read 2 instruction files"),
+        "{text}"
+    );
+    let warning = answer["warning"].as_str().unwrap();
+    assert!(
+        warning.contains(&format!(
+            "instructions.files: {} is skipped (there is no such file)",
+            missing.display()
+        )),
+        "{warning}"
+    );
+    rig.send(Effect::StartTurn("hi".into()));
+    let _ = rig.turn_finished().await;
+    assert!(!llm.recorded()[0].system().contains("LATER-RULES"));
+    rig.send(Effect::NewSession);
+    rig.wait_for(|msg| matches!(msg, Msg::Status(StatusUpdate::Session(s)) if *s != first))
+        .await;
+    rig.send(Effect::StartTurn("again".into()));
+    let _ = rig.turn_finished().await;
+    let system = llm.recorded()[1].system();
+    assert!(system.contains("LATER-RULES apply."), "{system}");
     rig.quit().await;
 }
 

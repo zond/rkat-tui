@@ -168,6 +168,9 @@ pub struct HelperCustomizer {
     profiles: Arc<super::profiles::MobProfiles>,
     /// The section every helper's instructions carry ([`HELPER_PERSONA`]).
     helper_persona: String,
+    /// `instructions.files` in force: a fresh helper's sections of them
+    /// are read at its spawn.
+    instruction_files: crate::bootstrap::instructions::SharedFiles,
 }
 
 impl std::fmt::Debug for HelperCustomizer {
@@ -203,7 +206,19 @@ impl HelperCustomizer {
             realm_config: None,
             profiles: Arc::default(),
             helper_persona: HELPER_PERSONA.to_string(),
+            instruction_files: crate::bootstrap::instructions::SharedFiles::default(),
         }
+    }
+
+    /// Give fresh helpers the files of `files` (shared: a change of
+    /// `instructions.files` applies to the helpers spawned from then on).
+    #[must_use]
+    pub fn with_instruction_files(
+        mut self,
+        files: crate::bootstrap::instructions::SharedFiles,
+    ) -> Self {
+        self.instruction_files = files;
+        self
     }
 
     /// Give helpers `persona` as their instructions section instead of
@@ -966,6 +981,14 @@ impl HelperCustomizer {
                 persona: &self.helper_persona,
             },
         );
+        // A fresh helper gets the user's `instructions.files`, read now; a
+        // fork has them in the prompt it copies from its parent.
+        if fresh && !kind.is_fork() {
+            let files = self.instruction_files.read().clone();
+            spec.additional_instructions
+                .get_or_insert_with(Vec::new)
+                .extend(crate::bootstrap::instructions::setting_sections(&files));
+        }
         // The helper shares its agent's scratch directory; its persona is
         // given again on every build, and so is this line.
         if let Some(dir) = self.registry.scratch_of_session(&owner.session) {

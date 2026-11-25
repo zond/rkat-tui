@@ -747,7 +747,8 @@ impl Runner {
     /// ([`crate::workbench::context`]): the conversation's messages and
     /// tool definitions as the daemon reports them (`rkat/context`), the
     /// instruction files the daemon's session builds read (this
-    /// workspace's, found here).
+    /// workspace's, found here; the `instructions.files` the daemon
+    /// reports).
     pub(super) fn context_report(&self, header: String) {
         let link = self.conn.link().map(|link| Arc::clone(&link.connection));
         let scope = self.config.scope.clone();
@@ -763,7 +764,14 @@ impl Runner {
                 .map_err(|err| err.to_string()),
                 None => Err(unattached),
             };
-            let sources = crate::bootstrap::InstructionSources::of(&scope);
+            // The daemon's `instructions.files` (its command line may
+            // name some this client's does not).
+            let sources = crate::bootstrap::InstructionSources::of(&scope).with_files(
+                report
+                    .as_ref()
+                    .map(|report| report.instruction_files.clone())
+                    .unwrap_or_default(),
+            );
             let files = context::instruction_files(&scope, &sources);
             let text =
                 context::context_breakdown(&header, report.as_ref().map_err(Clone::clone), &files);

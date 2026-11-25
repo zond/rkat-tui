@@ -193,6 +193,10 @@ pub enum Kind {
     Model,
     /// A list of model patterns ([`super::helper_models::ModelPattern`]).
     Patterns,
+    /// A list of absolute file paths, `~` expanded
+    /// ([`super::file::InstructionPath`]); the lists of the user's file,
+    /// the workspace's and the command line add up.
+    Paths,
 }
 
 impl Kind {
@@ -215,6 +219,9 @@ impl Kind {
             Self::Model => "a model, `[endpoint:]model`".to_string(),
             Self::Patterns => {
                 "a list of model names, each exact or a prefix ending in one `*` (`[\"claude-haiku-*\"]`; `/set` also takes `a, b*`)".to_string()
+            }
+            Self::Paths => {
+                "a list of absolute file paths, `~` expanded (`[\"~/notes.md\"]`; `/set` also takes `a, b`); the user's, the workspace's and the command line's lists add up".to_string()
             }
         }
     }
@@ -335,6 +342,9 @@ pub enum Hook {
     /// The `assign` calls from then on are held to the new
     /// `helpers.max_live`; nothing seated is retired.
     HelperLimit,
+    /// The conversations and fresh helpers started from then on get the
+    /// files of `instructions.files`.
+    InstructionFiles,
 }
 
 /// Every scalar setting in force over `layers` as one table, each value at
@@ -589,6 +599,14 @@ impl Setting {
         };
         for level in [Level::User, Level::Workspace, Level::CommandLine] {
             if let Some(value) = read(level) {
+                let value = match (self.kind, resolved.value.take(), value) {
+                    // A list of paths adds to the lower layers'.
+                    (Kind::Paths, Some(Value::Array(mut lower)), Value::Array(more)) => {
+                        lower.extend(more);
+                        Value::Array(lower)
+                    }
+                    (_, _, value) => value,
+                };
                 resolved = Resolved {
                     value: Some(value),
                     source: level,
@@ -656,6 +674,18 @@ impl Setting {
             (Kind::Patterns, value) => {
                 super::helper_models::check_patterns(self.key, value).map(|_| value.clone())
             }
+            (Kind::Paths, Value::Array(items)) => {
+                for item in items {
+                    let Value::String(text) = item else {
+                        return Err(format!(
+                            "{}: the entry {item} is not a path (a string)",
+                            self.key
+                        ));
+                    };
+                    super::file::InstructionPath::parse(text)?;
+                }
+                Ok(value.clone())
+            }
             _ => Err(bad()),
         }
     }
@@ -685,7 +715,7 @@ impl Setting {
             }
             Kind::Text { .. } => Value::String(unquote(text).to_string()),
             Kind::Choice(_) | Kind::Model => Value::String(unquote(text).to_string()),
-            Kind::Patterns => super::helper_models::list_value(text),
+            Kind::Patterns | Kind::Paths => super::helper_models::list_value(text),
         };
         self.check(&value)
     }
@@ -831,6 +861,38 @@ pub const MAX_HELPERS_LIVE: u64 = 64;
 pub fn helpers_live_in_force(layers: &Layers) -> usize {
     let limit = int_in_force(&MAX_LIVE, layers).clamp(1, MAX_HELPERS_LIVE);
     usize::try_from(limit).unwrap_or(usize::MAX)
+}
+
+/// The files whose text new agent conversations and fresh helpers get in
+/// their system prompt ([`crate::bootstrap::instructions`]): the user's,
+/// the workspace's and the command line's lists, in that order. User
+/// layers only: a cloned repository's file must not put text in the
+/// prompt.
+pub const INSTRUCTION_FILES: Setting = Setting {
+    key: "instructions.files",
+    kind: Kind::Paths,
+    default: Fallback::Unset("none"),
+    project: ProjectRule::Never,
+    applies: Applies::NextConversation,
+    about: "Files whose text every new conversation and every fresh helper gets in its system prompt, each as an `# Instructions (from <path>)` section after your own AGENTS.md (each capped at 32 KiB, as AGENTS.md is); a file missing or empty is skipped with a warning at start. For a wrapper that tells the agents about the environment it starts rkat-tui in.",
+    flags: &[],
+    command: None,
+    hook: Hook::InstructionFiles,
+};
+
+/// [`INSTRUCTION_FILES`] in force over `layers`, expanded (an entry that
+/// does not read as a path is left out: the layering refused it before).
+#[must_use]
+pub fn instruction_files_in_force(layers: &Layers) -> Vec<std::path::PathBuf> {
+    let Some(Value::Array(items)) = INSTRUCTION_FILES.resolve(layers).value else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(Value::as_str)
+        .filter_map(|text| super::file::InstructionPath::parse(text).ok())
+        .map(|entry| entry.path().to_path_buf())
+        .collect()
 }
 
 /// A whole-number setting's value in force over `layers` (its default
@@ -1020,6 +1082,7 @@ pub static SETTINGS: &[Setting] = &[
     },
     CHECKPOINT_STEPS,
     CHECKPOINT_CONTINUES,
+    INSTRUCTION_FILES,
     Setting {
         key: "shell.user_timeout_secs",
         kind: Kind::Int {

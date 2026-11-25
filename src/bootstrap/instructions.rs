@@ -6,9 +6,12 @@
 //! the persona and in this order:
 //!
 //! 1. the user-global `AGENTS.md` in the [`GlobalDirs`] config directory,
-//! 2. ancestor `AGENTS.md` (or `.rkat/AGENTS.md`) files from the git root
+//! 2. the files of the user's `instructions.files` setting, in its order
+//!    ([`InstructionSources::files`]; a fresh helper gets these alone,
+//!    [`setting_sections`]),
+//! 3. ancestor `AGENTS.md` (or `.rkat/AGENTS.md`) files from the git root
 //!    down to the workspace's parent directory,
-//! 3. the workspace `AGENTS.local.md` (or `.rkat/AGENTS.local.md`).
+//! 4. the workspace `AGENTS.local.md` (or `.rkat/AGENTS.local.md`).
 //!
 //! Each file is capped at [`AGENTS_MD_MAX_BYTES`] (upstream's
 //! [`normalize_agents_md_content`]), empty and unreadable files are skipped,
@@ -30,6 +33,10 @@ use meerkat_core::prompt::{AGENTS_MD_MAX_BYTES, normalize_agents_md_content};
 
 use super::dirs::GlobalDirs;
 
+/// The `instructions.files` in force, shared: the daemon's settings hook
+/// replaces them, every session build and fresh helper reads them.
+pub type SharedFiles = std::sync::Arc<parking_lot::RwLock<Vec<PathBuf>>>;
+
 /// Cap on the combined rendered size of all discovered sections.
 pub const TOTAL_MAX_BYTES: usize = 96 * 1024;
 
@@ -48,6 +55,8 @@ pub const REMEMBERED_HEADING: &str = "# Remembered instruction";
 pub enum SectionKind {
     /// The user-global `AGENTS.md`.
     UserGlobal,
+    /// A file of the user's `instructions.files` setting.
+    Setting,
     /// An `AGENTS.md` in a directory between the git root and the workspace.
     Ancestor,
     /// The workspace `AGENTS.local.md`.
@@ -104,6 +113,9 @@ pub struct InstructionSources {
     /// The home directory: never adopted as a git root (a dotfiles
     /// repository in `$HOME` must not pull `~/AGENTS.md` into every project).
     pub home: Option<PathBuf>,
+    /// The files of `instructions.files` in force, expanded
+    /// ([`crate::config::registry::instruction_files_in_force`]).
+    pub files: Vec<PathBuf>,
 }
 
 impl InstructionSources {
@@ -116,7 +128,15 @@ impl InstructionSources {
             workspace: scope.context_root.clone(),
             global: Some(scope.global.clone()),
             home: super::dirs_home(),
+            files: Vec::new(),
         }
+    }
+
+    /// These sources with `files` as the `instructions.files` in force.
+    #[must_use]
+    pub fn with_files(mut self, files: Vec<PathBuf>) -> Self {
+        self.files = files;
+        self
     }
 
     /// Discover instruction sections (see the module docs for the order and
@@ -131,6 +151,11 @@ impl InstructionSources {
                 candidates.push((SectionKind::UserGlobal, path));
             }
         }
+        candidates.extend(
+            self.files
+                .iter()
+                .map(|path| (SectionKind::Setting, path.clone())),
+        );
         if let Some(root) = git_root(&self.workspace, self.home.as_deref()) {
             let ancestors: Vec<&Path> = self
                 .workspace
@@ -159,6 +184,37 @@ impl InstructionSources {
     #[must_use]
     pub fn render(&self) -> Vec<String> {
         self.discover().iter().map(Section::render).collect()
+    }
+}
+
+/// The sections of `files` (the `instructions.files` in force) alone, in
+/// their order and under the same caps as [`InstructionSources::discover`]:
+/// what a fresh helper gets of the instruction files.
+#[must_use]
+pub fn setting_sections(files: &[PathBuf]) -> Vec<String> {
+    cap_total(
+        files
+            .iter()
+            .filter_map(|path| load_section(SectionKind::Setting, path.clone())),
+    )
+    .iter()
+    .map(Section::render)
+    .collect()
+}
+
+/// Why the instruction file `path` would be skipped (missing, unreadable,
+/// empty), or `None` when it loads.
+#[must_use]
+pub fn unloadable(path: &Path) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(content) if normalize_agents_md_content(content.trim_end()).is_none() => {
+            Some("it is empty".to_string())
+        }
+        Ok(_) => None,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Some("there is no such file".to_string())
+        }
+        Err(err) => Some(format!("it cannot be read: {err}")),
     }
 }
 
@@ -369,6 +425,7 @@ mod tests {
                 workspace: self.ws.clone(),
                 global: global.then(|| self.global.clone()),
                 home: None,
+                files: Vec::new(),
             }
         }
     }
@@ -427,6 +484,77 @@ mod tests {
                 t.ws.join(LOCAL_FILE_NAME).display()
             )
         );
+    }
+
+    /// The `instructions.files` come right after the user's own
+    /// `AGENTS.md`, in their order, before the ancestors; a missing or
+    /// empty one is skipped (and said why), and a fresh helper's sections
+    /// are these alone.
+    #[test]
+    fn setting_files_follow_the_user_global_file_and_skip_what_does_not_load() {
+        let t = tree();
+        let one = t.root.join("outside/one.md");
+        let empty = t.root.join("outside/empty.md");
+        let two = t.root.join("outside/two.md");
+        let missing = t.root.join("outside/missing.md");
+        write(&one, "wrapper rules\n");
+        write(&empty, " \n\n");
+        write(&two, "more wrapper rules\n");
+        let files = vec![one.clone(), empty.clone(), missing.clone(), two.clone()];
+        let sections = t.sources(true).with_files(files.clone()).discover();
+        let found: Vec<_> = sections.iter().map(|s| (s.kind, s.path.clone())).collect();
+        assert_eq!(
+            found,
+            [
+                (SectionKind::UserGlobal, t.global.agents_md()),
+                (SectionKind::Setting, one.clone()),
+                (SectionKind::Setting, two),
+                (SectionKind::Ancestor, t.root.join("AGENTS.md")),
+                (SectionKind::Ancestor, t.a.join(".rkat/AGENTS.md")),
+                (SectionKind::Local, t.ws.join(LOCAL_FILE_NAME)),
+            ]
+        );
+        assert_eq!(
+            sections[1].render(),
+            format!("# Instructions (from {})\n\nwrapper rules", one.display())
+        );
+        assert_eq!(
+            setting_sections(&files),
+            [sections[1].render(), sections[2].render()]
+        );
+        assert_eq!(unloadable(&one), None);
+        assert_eq!(unloadable(&empty).as_deref(), Some("it is empty"));
+        assert_eq!(
+            unloadable(&missing).as_deref(),
+            Some("there is no such file")
+        );
+    }
+
+    /// The files are under the same caps: one cut at 32 KiB, and the
+    /// total stops the list (for a helper's sections too).
+    #[test]
+    fn setting_files_are_capped_as_the_others() {
+        let t = tree();
+        let big = t.root.join("outside/big.md");
+        let next = t.root.join("outside/next.md");
+        write(&big, &"x".repeat(AGENTS_MD_MAX_BYTES + 100));
+        write(&next, &"y".repeat(AGENTS_MD_MAX_BYTES - 10));
+        write(&t.global.agents_md(), &"g".repeat(AGENTS_MD_MAX_BYTES - 10));
+        let sections = t
+            .sources(true)
+            .with_files(vec![big.clone(), next.clone()])
+            .discover();
+        let kinds: Vec<_> = sections.iter().map(|s| s.kind).collect();
+        assert_eq!(
+            kinds,
+            [SectionKind::UserGlobal, SectionKind::Setting],
+            "a third ~32 KiB section passes the total"
+        );
+        assert!(sections[1].truncated);
+        assert!(sections[1].render().ends_with("[truncated at 32 KiB]"));
+        let alone = setting_sections(&[big.clone(), next, big]);
+        assert_eq!(alone.len(), 2, "a third passes the total: {}", alone.len());
+        assert!(alone.iter().map(String::len).sum::<usize>() <= TOTAL_MAX_BYTES);
     }
 
     #[test]

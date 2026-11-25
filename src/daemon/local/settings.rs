@@ -86,7 +86,8 @@ impl Local {
             | Hook::Ui
             | Hook::HelperModels
             | Hook::CheckpointSteps
-            | Hook::HelperLimit => {
+            | Hook::HelperLimit
+            | Hook::InstructionFiles => {
                 return Ok(());
             }
         }
@@ -208,6 +209,32 @@ impl Local {
                         crate::text::count(limit, "helper")
                     )],
                     None,
+                )
+            }
+            Hook::InstructionFiles => {
+                let files = crate::config::registry::instruction_files_in_force(
+                    &self.core.settings.layers(),
+                );
+                let warnings: Vec<String> = files
+                    .iter()
+                    .filter_map(|path| {
+                        crate::bootstrap::instructions::unloadable(path).map(|why| {
+                            crate::config::Notice::InstructionFileSkipped {
+                                path: path.clone(),
+                                why,
+                            }
+                            .to_string()
+                        })
+                    })
+                    .collect();
+                let count = files.len();
+                *self.core.instruction_files.write() = files;
+                (
+                    vec![format!(
+                        "the conversations and fresh helpers started from now on read {}",
+                        crate::text::count(count, "instruction file")
+                    )],
+                    (!warnings.is_empty()).then(|| warnings.join("\n")),
                 )
             }
             Hook::None | Hook::Mode | Hook::ClassifierModel | Hook::TrustBuilds | Hook::Ui => {

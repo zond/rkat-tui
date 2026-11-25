@@ -60,6 +60,9 @@ pub struct Core {
     /// `helpers.model`, `allow_models` and `deny_models` in force: the
     /// spawn customizer reads them, the settings hook replaces them.
     pub helper_models: crate::config::helper_models::SharedHelperModels,
+    /// `instructions.files` in force: the agents' session builds and the
+    /// spawn customizer read them, the settings hook replaces them.
+    pub instruction_files: crate::bootstrap::instructions::SharedFiles,
     /// Every `tui.toml` layer's values now and the one path a change of a
     /// setting takes.
     pub settings: Arc<super::settings::Settings>,

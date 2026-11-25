@@ -516,6 +516,29 @@ mod tests {
         );
     }
 
+    /// A fresh helper's `instructions.files` sections follow its persona:
+    /// they begin with `# `, so an earlier build's persona ends where they
+    /// begin, and a bring-up keeps them word for word.
+    #[test]
+    fn a_helper_s_instruction_files_stay_as_they_were() {
+        let sections = helper_sections(true);
+        let file =
+            "# Instructions (from /opt/wrapper/notes.md)\n\nWRAPPER-RULES apply.\nsecond line";
+        let old: Vec<String> = sections.iter().map(|s| stale(s)).collect();
+        let prompt = format!(
+            "You are a base prompt.\n\n{}\n\n{file}\n\nHelper models: on your own.\n",
+            old.join("\n\n")
+        );
+        let new = brought_up(&prompt, &sections).unwrap();
+        assert!(!new.contains("OLD-BUILD-LINE"), "{new}");
+        assert_eq!(new.matches(file).count(), 1, "{new}");
+        assert!(
+            new.find(sections[0].trim_end()).unwrap() < new.find(file).unwrap(),
+            "{new}"
+        );
+        assert_eq!(brought_up(&new, &sections), None);
+    }
+
     fn system(content: &str) -> Message {
         Message::System(meerkat_core::types::SystemMessage::new(content))
     }
