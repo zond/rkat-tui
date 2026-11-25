@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.24] - 2026-11-25
+
 ### Fixed
 
 - A read-only git command (`git status`, `git log` and the like) in a
