@@ -1257,7 +1257,7 @@ fn block_lines_raw(block: &Block, width: u16) -> Vec<Line<'static>> {
             }
         }
         Block::Tool {
-            name,
+            tool,
             args,
             head,
             outcome,
@@ -1268,6 +1268,7 @@ fn block_lines_raw(block: &Block, width: u16) -> Vec<Line<'static>> {
             note,
             depth,
             collapsed,
+            ..
         } => {
             let indent = "  ".repeat(*depth);
             let parts = tool_line::Parts::of(head, state, outcome, *ticked, diff.as_ref());
@@ -1346,7 +1347,7 @@ fn block_lines_raw(block: &Block, width: u16) -> Vec<Line<'static>> {
                         &mut out,
                     );
                 }
-                if let Some(args) = tool_line::expanded_args(name, args) {
+                if let Some(args) = tool_line::expanded_args(tool, args) {
                     let args_prefix = format!("{indent}  ┊ ");
                     prefixed(&args, w, &args_prefix, &args_prefix, dim, &mut out);
                 }
@@ -2046,9 +2047,11 @@ mod tests {
     #[test]
     fn tool_block_layout() {
         let mut block = Block::Tool {
-            name: "read_file".into(),
+            tool: "read_file".into(),
+            tag: None,
             head: super::super::transcript::tool_line::head(
                 "read_file",
+                None,
                 &serde_json::json!({"path": "a.rs"}),
                 &super::super::transcript::tool_line::PathView::default(),
             ),
@@ -2130,9 +2133,11 @@ mod tests {
     #[test]
     fn a_bidi_control_in_a_diffs_path_is_replaced() {
         let block = Block::Tool {
-            name: "write_file".into(),
+            tool: "write_file".into(),
+            tag: None,
             head: super::super::transcript::tool_line::head(
                 "write_file",
+                None,
                 &serde_json::json!({"path": "a"}),
                 &super::super::transcript::tool_line::PathView::default(),
             ),
@@ -2185,9 +2190,11 @@ mod tests {
     #[test]
     fn tool_without_output_has_no_hint() {
         let block = Block::Tool {
-            name: "shell".into(),
+            tool: "shell".into(),
+            tag: None,
             head: super::super::transcript::tool_line::head(
                 "shell",
+                None,
                 &serde_json::json!({}),
                 &super::super::transcript::tool_line::PathView::default(),
             ),
@@ -2399,9 +2406,11 @@ mod tests {
             unified.push_str(&format!("+l{i}\n"));
         }
         let block = Block::Tool {
-            name: "edit_file".into(),
+            tool: "edit_file".into(),
+            tag: None,
             head: super::super::transcript::tool_line::head(
                 "edit_file",
+                None,
                 &serde_json::json!({}),
                 &super::super::transcript::tool_line::PathView::default(),
             ),

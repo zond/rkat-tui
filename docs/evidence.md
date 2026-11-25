@@ -15221,3 +15221,38 @@ written at the stop and before a read (`WordsWriter`); one lookup of a
 tool's origin without building the session's catalog
 (`ToolOrigins::origin`); one "until seated" retry
 (`links::until_seated`).
+
+## Review 8, batch D (2026-11-25)
+
+**A tool block's tool and tag apart (F99 b).** `Block::Tool` holds the
+tool's own name (`tool`) and a helper's tag (`tag: Option<String>`)
+instead of one `"[scout · m] glob"` string cut back by its last space:
+`tool_line::head(tool, tag, ..)` puts the tag in front, `outcome` and
+`expanded_args` take the tool, a run of calls is keyed by tool and tag
+(`RunKey::Tools`), and the one place the joined form is shown (a hook
+denial's approval line) joins them. What is drawn and exported is
+unchanged: the rendering and export tests kept their expected text.
+
+**One forwarding macro (F78).** `deferral/mod.rs` `forward_dispatcher!`
+writes `impl AgentToolDispatcher for Routed` and `for Hiding`: each names
+the methods it passes to `inner` unchanged in a `forward [..]` list and
+writes the rest by hand (both `bind_ops_lifecycle`; `Hiding`'s `tools`
+and `tool_catalog`). The macro gathers the methods and writes the impl
+last, since `async_trait` does not expand a macro inside the impl it
+rewrites. The guard
+`layout::forwarding_wrappers_override_every_method_of_their_engine_trait`
+reads the list and the hand-written methods and compares their union
+with the engine trait's methods; with `observes_bindings_only` dropped
+from `Hiding`'s list it fails with `impl AgentToolDispatcher for Hiding
+(src/daemon/deferral/mod.rs) does not forward ["observes_bindings_only"]`.
+`SchemaCompat` (`AgentLlmClient`) is another trait with one wrapper: a
+macro of its own would forward the same methods with more text, so it
+stays written out.
+
+**Logs rotated at start (F104, F43).** `paths::open_log` is the one open
+of the three realm logs: over `LOG_ROTATE_BYTES` (10 MiB) a log is
+renamed to `<name>.1` and started afresh; a failed rename leaves it
+appended to, and the caller logs the error once its logging is up. The
+client renames the daemon's stderr log while an earlier daemon may
+still write it; that daemon goes on writing to the renamed file. Test:
+`paths::tests::a_log_over_the_limit_is_rotated_when_it_is_opened`.

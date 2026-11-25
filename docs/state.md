@@ -86,7 +86,7 @@ reads (refused when group or others may read it).
 | `tui_unsent.txt` | text, blocks starting `--- unsent message ---` | client appends (its unsent messages, at quit); daemon appends (the user's messages the engine would lose at its stop: not read yet, or read in a request the stop cut off) | unsent messages |
 | `drafts/draft-*.md` | the external editor's temporary file | client, removed after the edit | nothing |
 | `export-<session>-<secs>.txt` | plain-text transcript (`/export` without a path) | client, atomic Private | the export |
-| `logs/rkat-tui.log`, `logs/rkat-tui-mob.log`, `logs/rkat-tui-mob.stderr.log` | text logs | client; a daemon whose stderr is a terminal (started by hand); the daemon's stdout/stderr when a client starts it (opened by that client; the daemon's only log then) | nothing |
+| `logs/rkat-tui.log`, `logs/rkat-tui-mob.log`, `logs/rkat-tui-mob.stderr.log` (and each one's `.1`) | text logs; each rotated when it is opened over 10 MiB (`paths::open_log`: renamed to `<name>.1`, replacing an older one, and started afresh), one generation kept | client; a daemon whose stderr is a terminal (started by hand); the daemon's stdout/stderr when a client starts it (opened by that client; the daemon's only log then) | nothing |
 
 ## `<realm>`: Meerkat's files (rkat-tui points the engine at the realm)
 

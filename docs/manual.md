@@ -1895,8 +1895,9 @@ directory a *realm*. It is owner-only and holds everything rkat-tui
 keeps for the workspace: the conversations and the engine's stores,
 endpoint connections (never a key), the workspace's `tui.toml`, usage
 records, helpers' bookkeeping, wires and their sockets, input history,
-unsent messages, workspace notes, logs (`logs/rkat-tui.log`), `/export`'s
-default files and the audit log. Neither the agent's shell nor a cloned
+unsent messages, workspace notes, logs (`logs/rkat-tui.log`; a log over
+10 MiB is moved to `<name>.1` when it is next opened and started afresh,
+one old generation kept), `/export`'s default files and the audit log. Neither the agent's shell nor a cloned
 repository can reach it. The workspace itself keeps only what the
 project owns: `.rkat/tui.toml`, `.rkat/mcp.toml`, `.rkat/config.toml`
 (hooks) and `AGENTS.md`, untrusted until `/trust`. A `.rkat/tui/` in the

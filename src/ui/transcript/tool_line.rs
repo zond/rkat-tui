@@ -709,11 +709,6 @@ fn json_count(result: &str) -> Option<usize> {
     }
 }
 
-/// The tool's own name, without a helper's tag (`[scout · m] glob`).
-pub(super) fn base(name: &str) -> &str {
-    name.rsplit(' ').next().unwrap_or(name)
-}
-
 /// A `send_message`'s recipient as its line, header and note name it: the
 /// peer's name when known, else its id.
 pub(super) fn recipient(args: &Value) -> &str {
@@ -724,14 +719,9 @@ pub(super) fn recipient(args: &Value) -> &str {
 }
 
 /// A call's head, from its row, else `<tool>: <first string argument>`.
-/// A helper's call keeps its tag in front (`[scout] read a.rs`).
+/// A helper's call keeps its `tag` in front (`[scout] read a.rs`).
 #[must_use]
-pub fn head(name: &str, args: &Value, paths: &PathView) -> Head {
-    let tool = base(name);
-    let tag = name
-        .strip_suffix(tool)
-        .map(str::trim_end)
-        .unwrap_or_default();
+pub fn head(tool: &str, tag: Option<&str>, args: &Value, paths: &PathView) -> Head {
     let mut head = RULES
         .iter()
         .find(|rule| rule.tools.contains(&tool))
@@ -748,7 +738,7 @@ pub fn head(name: &str, args: &Value, paths: &PathView) -> Head {
     if head.verb.ends_with(':') && head.object.is_empty() {
         head.verb.pop();
     }
-    if !tag.is_empty() {
+    if let Some(tag) = tag.filter(|tag| !tag.is_empty()) {
         head.verb = format!("{tag} {}", head.verb);
     }
     head
@@ -756,8 +746,7 @@ pub fn head(name: &str, args: &Value, paths: &PathView) -> Head {
 
 /// A finished call's outcome from its whole result text.
 #[must_use]
-pub fn outcome(name: &str, args: &Value, result: &str) -> Outcome {
-    let tool = base(name);
+pub fn outcome(tool: &str, args: &Value, result: &str) -> Outcome {
     RULES
         .iter()
         .find(|rule| rule.tools.contains(&tool))
@@ -999,8 +988,8 @@ impl Parts {
 /// whole text as written, else the arguments pretty-printed; `None` for
 /// none.
 #[must_use]
-pub fn expanded_args(name: &str, args: &Value) -> Option<String> {
-    if base(name) == "shell"
+pub fn expanded_args(tool: &str, args: &Value) -> Option<String> {
+    if tool == "shell"
         && let Some(command) = args.get("command").and_then(Value::as_str)
     {
         return Some(command.trim_end().to_string());
@@ -1043,7 +1032,7 @@ mod tests {
     use serde_json::json;
 
     fn line(name: &str, args: Value) -> String {
-        head(name, &args, &PathView::default()).text()
+        head(name, None, &args, &PathView::default()).text()
     }
 
     #[test]
@@ -1153,7 +1142,13 @@ mod tests {
         assert_eq!(line("mcp_ping", json!({})), "mcp_ping");
         // A helper's call keeps its tag.
         assert_eq!(
-            line("[scout · m] read_file", json!({"path": "a"})),
+            head(
+                "read_file",
+                Some("[scout · m]"),
+                &json!({"path": "a"}),
+                &PathView::default()
+            )
+            .text(),
             "[scout · m] read a"
         );
     }

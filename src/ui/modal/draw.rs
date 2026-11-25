@@ -736,7 +736,7 @@ fn call_line(prompt: &RecordedPrompt) -> Option<String> {
         .ok()
         .filter(serde_json::Value::is_object)?;
     let paths = crate::ui::transcript::tool_line::PathView::default();
-    Some(crate::ui::transcript::tool_line::head(&prompt.tool, &args, &paths).text())
+    Some(crate::ui::transcript::tool_line::head(&prompt.tool, None, &args, &paths).text())
 }
 
 #[cfg(test)]

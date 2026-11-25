@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The logs in a workspace's realm (`logs/rkat-tui.log`,
+  `logs/rkat-tui-mob.log`, `logs/rkat-tui-mob.stderr.log`) no longer
+  grow for ever: a log over 10 MiB when it is opened (a start of the
+  TUI or of the daemon) is moved to `<name>.1`, replacing an older one,
+  and started afresh.
+
 ## [0.0.24] - 2026-11-25
 
 ### Fixed

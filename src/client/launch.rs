@@ -266,11 +266,17 @@ pub fn spawn_daemon(
     if let Some(dir) = log.parent() {
         std::fs::create_dir_all(dir).map_err(spawn_error)?;
     }
-    let out = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log)
-        .map_err(spawn_error)?;
+    // Rotated when it is over the limit. A daemon of an earlier start may
+    // still hold the old file open: the rename is safe all the same, that
+    // daemon goes on writing to the renamed file (`.1`) and this start's
+    // lines go to the fresh one.
+    let crate::paths::OpenedLog {
+        file: out,
+        not_rotated,
+    } = crate::paths::open_log(log).map_err(spawn_error)?;
+    if let Some(err) = not_rotated {
+        tracing::warn!(error = %err, log = %log.display(), "the daemon's log was not rotated: appending to it");
+    }
     let err = out.try_clone().map_err(spawn_error)?;
     // What this start writes to the log begins here.
     let start = out.metadata().map_or(0, |meta| meta.len());

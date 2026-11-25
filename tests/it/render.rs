@@ -390,8 +390,9 @@ fn render_buffer(app: &mut App, width: u16, height: u16) -> Buffer {
 fn diff_block_snapshot() {
     let mut app = App::new(StatusInfo::default());
     app.transcript.push(Block::Tool {
-        name: "edit_file".into(),
-        head: rkat_tui::ui::transcript::tool_line::head("edit_file", &json!({"path": "src/a.rs"}), &rkat_tui::ui::transcript::tool_line::PathView::default()),
+        tool: "edit_file".into(),
+        tag: None,
+        head: rkat_tui::ui::transcript::tool_line::head("edit_file", None, &json!({"path": "src/a.rs"}), &rkat_tui::ui::transcript::tool_line::PathView::default()),
         outcome: rkat_tui::ui::transcript::tool_line::Outcome::default(),
         ticked: 0,
         args: json!({"path": "src/a.rs"}),

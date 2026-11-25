@@ -1585,8 +1585,9 @@ impl LogPlan {
 }
 
 /// Log to stderr and, when it is a terminal, also to
-/// `<realm>/logs/rkat-tui-mob.log` ([`LogPlan`]; the file is skipped, with
-/// a warning, when it cannot be opened).
+/// `<realm>/logs/rkat-tui-mob.log` ([`LogPlan`]; rotated when it is over
+/// the limit, [`crate::paths::open_log`]; the file is skipped, with a
+/// warning, when it cannot be opened).
 fn init_logging(realm_root: &Path) {
     use std::io::IsTerminal as _;
     use tracing_subscriber::Layer as _;
@@ -1599,22 +1600,20 @@ fn init_logging(realm_root: &Path) {
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
     };
     let log_dir = realm_root.join("logs");
-    let file = plan
+    let opened = plan
         .file
         .then(|| {
             std::fs::create_dir_all(&log_dir)
-                .and_then(|()| {
-                    std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(log_dir.join("rkat-tui-mob.log"))
-                })
+                .and_then(|()| crate::paths::open_log(&log_dir.join("rkat-tui-mob.log")))
                 .map_err(|err| {
                     eprintln!("rkat-tui-mob: no log file in {}: {err}", log_dir.display());
                 })
                 .ok()
         })
         .flatten();
+    let (file, not_rotated) = opened.map_or((None, None), |opened| {
+        (Some(opened.file), opened.not_rotated)
+    });
     let stderr = tracing_subscriber::fmt::layer()
         .with_ansi(plan.ansi)
         .with_writer(std::io::stderr)
@@ -1629,6 +1628,9 @@ fn init_logging(realm_root: &Path) {
         .with(stderr)
         .with(file)
         .try_init();
+    if let Some(err) = not_rotated {
+        tracing::warn!(error = %err, "rkat-tui-mob.log was not rotated: appending to it");
+    }
 }
 
 #[cfg(test)]

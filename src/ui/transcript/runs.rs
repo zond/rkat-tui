@@ -103,11 +103,12 @@ enum RunKey {
         owner: Option<BlockId>,
         to: Option<String>,
     },
-    /// Finished calls of one tool (its name with a helper's tag), of one
-    /// scope; a shell call's with its command line.
+    /// Finished calls of one tool by one caller (a helper's by its tag),
+    /// of one scope; a shell call's with its command line.
     Tools {
         owner: Option<BlockId>,
-        name: String,
+        tool: String,
+        tag: Option<String>,
         command: Option<String>,
     },
 }
@@ -137,7 +138,8 @@ impl Transcript {
                 })
             }
             Block::Tool {
-                name,
+                tool,
+                tag,
                 args,
                 outcome,
                 state: ToolState::Done {
@@ -147,8 +149,9 @@ impl Transcript {
                 ..
             } if (*collapsed || open) && !outcome.failed => Some(RunKey::Tools {
                 owner: entry.owner,
-                name: name.clone(),
-                command: (tool_line::base(name) == SHELL_TOOL).then(|| {
+                tool: tool.clone(),
+                tag: tag.clone(),
+                command: (tool == SHELL_TOOL).then(|| {
                     args.get("command")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
@@ -340,7 +343,7 @@ fn tools_line(blocks: &[&Block]) -> RunLine {
     let (mut added, mut removed, mut diffs) = (0, 0, 0);
     for block in blocks {
         if let Block::Tool {
-            name: tool,
+            tool,
             head,
             diff,
             depth: at,
@@ -369,7 +372,7 @@ fn tools_line(blocks: &[&Block]) -> RunLine {
     let text = if same {
         let head = heads.first().map(|head| head.text()).unwrap_or_default();
         format!("{head} ×{count}")
-    } else if FILE_TOOLS.contains(&tool_line::base(name)) {
+    } else if FILE_TOOLS.contains(&name) {
         let files = crate::text::count(objects.len(), "file");
         let times = if objects.len() < count {
             format!(" ×{count}")

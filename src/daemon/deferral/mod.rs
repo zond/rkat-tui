@@ -97,188 +97,324 @@ impl ForkRoutes {
     }
 }
 
+/// `impl AgentToolDispatcher for <wrapper> { forward [..]; <methods> }`:
+/// the wrapper's own `<methods>` as written and, for each method named in
+/// the `forward` list, one that passes the call to `self.inner` unchanged.
+/// A name it has no arm for does not compile. Every method of the trait
+/// is in the list or written by hand: `tests/it/layout.rs` reads both and
+/// fails when the engine's trait declares a method that neither names (a
+/// method the engine adds with a default would otherwise be answered by
+/// that default instead of by `inner`).
+///
+/// The methods are gathered first and the impl written last, so that
+/// `async_trait` sees every method (it does not expand a macro inside the
+/// impl it rewrites).
+macro_rules! forward_dispatcher {
+    (impl AgentToolDispatcher for $ty:ident { forward [$($name:ident),* $(,)?]; $($own:tt)* }) => {
+        forward_dispatcher!(@each $ty [$($own)*] [$($name)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] []) => {
+        #[async_trait]
+        impl AgentToolDispatcher for $ty {
+            $($done)*
+        }
+    };
+    (@each $ty:ident [$($done:tt)*] [tools $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn tools(&self) -> Arc<[Arc<ToolDef>]> {
+                self.inner.tools()
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [resolve_tool_application $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            async fn resolve_tool_application(
+                &self,
+                source_tool: &str,
+                request: &meerkat_core::ToolApplicationRequest,
+                invocation: &serde_json::Value,
+                context: &ToolDispatchContext,
+            ) -> Result<meerkat_core::tool_application::ToolApplicationResolution, ToolError> {
+                self.inner
+                    .resolve_tool_application(source_tool, request, invocation, context)
+                    .await
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [tool_catalog_capabilities $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn tool_catalog_capabilities(&self) -> ToolCatalogCapabilities {
+                self.inner.tool_catalog_capabilities()
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [tool_catalog $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn tool_catalog(&self) -> Arc<[ToolCatalogEntry]> {
+                self.inner.tool_catalog()
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [tool_mutation_class $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn tool_mutation_class(&self, tool_name: &str) -> meerkat_core::ToolMutationClass {
+                self.inner.tool_mutation_class(tool_name)
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [live_bridge_effect_kind $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn live_bridge_effect_kind(
+                &self,
+                tool_name: &str,
+            ) -> meerkat_core::LiveBridgeEffectKind {
+                self.inner.live_bridge_effect_kind(tool_name)
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [review_entry_support $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn review_entry_support(
+                &self,
+                tool_name: &str,
+            ) -> meerkat_core::approval::review::ReviewEntrySupport {
+                self.inner.review_entry_support(tool_name)
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [execution_binding_epoch $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn execution_binding_epoch(&self, tool_name: &str) -> u64 {
+                self.inner.execution_binding_epoch(tool_name)
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [execution_binding_fingerprint $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn execution_binding_fingerprint(
+                &self,
+                tool_name: &str,
+            ) -> Result<
+                meerkat_core::EphemeralToolBindingFingerprint,
+                meerkat_core::ToolExecutionResolutionError,
+            > {
+                self.inner.execution_binding_fingerprint(tool_name)
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [resolve_execution_plan $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn resolve_execution_plan(
+                &self,
+                call: ToolCallView<'_>,
+                dispatch_context: &ToolDispatchContext,
+                resolution_context: &meerkat_core::ToolExecutionResolutionContext,
+            ) -> Result<
+                meerkat_core::ResolvedToolExecutionPlan,
+                meerkat_core::ToolExecutionResolutionError,
+            > {
+                self.inner
+                    .resolve_execution_plan(call, dispatch_context, resolution_context)
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [validate_resolved_execution_plan $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn validate_resolved_execution_plan(
+                &self,
+                call: ToolCallView<'_>,
+                resolution_context: &meerkat_core::ToolExecutionResolutionContext,
+                plan: &meerkat_core::ResolvedToolExecutionPlan,
+            ) -> Result<(), meerkat_core::ToolExecutionResolutionError> {
+                self.inner
+                    .validate_resolved_execution_plan(call, resolution_context, plan)
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [pending_catalog_sources $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn pending_catalog_sources(&self) -> Arc<[String]> {
+                self.inner.pending_catalog_sources()
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [adjudicates_tool_grants $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn adjudicates_tool_grants(&self) -> bool {
+                self.inner.adjudicates_tool_grants()
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [dispatch $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            async fn dispatch(
+                &self,
+                call: ToolCallView<'_>,
+            ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
+                self.inner.dispatch(call).await
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [dispatch_with_context $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            async fn dispatch_with_context(
+                &self,
+                call: ToolCallView<'_>,
+                context: &ToolDispatchContext,
+            ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
+                self.inner.dispatch_with_context(call, context).await
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [dispatch_resolved_with_context $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            async fn dispatch_resolved_with_context(
+                &self,
+                call: ToolCallView<'_>,
+                context: &ToolDispatchContext,
+                plan: &meerkat_core::ResolvedToolExecutionPlan,
+            ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
+                self.inner
+                    .dispatch_resolved_with_context(call, context, plan)
+                    .await
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [poll_external_updates $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            async fn poll_external_updates(&self) -> meerkat_core::ExternalToolUpdate {
+                self.inner.poll_external_updates().await
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [external_tool_surface_snapshot $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn external_tool_surface_snapshot(
+                &self,
+            ) -> Option<meerkat_core::ExternalToolSurfaceSnapshot> {
+                self.inner.external_tool_surface_snapshot()
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [capabilities $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
+                self.inner.capabilities()
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [completion_enrichment $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn completion_enrichment(
+                &self,
+            ) -> Option<Arc<dyn meerkat_core::completion_feed::CompletionEnrichmentProvider>> {
+                self.inner.completion_enrichment()
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [bind_mcp_server_lifecycle_handle $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn bind_mcp_server_lifecycle_handle(
+                &self,
+                handle: Arc<dyn meerkat_core::handles::McpServerLifecycleHandle>,
+            ) {
+                self.inner.bind_mcp_server_lifecycle_handle(handle);
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [bind_external_tool_surface_handle $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn bind_external_tool_surface_handle(
+                &self,
+                handle: Arc<dyn meerkat_core::handles::ExternalToolSurfaceHandle>,
+            ) {
+                self.inner.bind_external_tool_surface_handle(handle);
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [bind_session_mob_tool_authority $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn bind_session_mob_tool_authority(
+                &self,
+                authority: Option<
+                    Arc<std::sync::RwLock<meerkat_core::service::MobToolAuthorityContext>>,
+                >,
+            ) {
+                self.inner.bind_session_mob_tool_authority(authority);
+            }
+        ] [$($rest)*]);
+    };
+    (@each $ty:ident [$($done:tt)*] [observes_bindings_only $($rest:ident)*]) => {
+        forward_dispatcher!(@each $ty [$($done)*
+            fn observes_bindings_only(&self) -> bool {
+                self.inner.observes_bindings_only()
+            }
+        ] [$($rest)*]);
+    };
+}
+
 /// A member's engine mob tool surface, reachable from [`ForkRoutes`] (it
 /// holds only a weak reference, so binding the surface to its lifecycle,
 /// which needs sole ownership, still can). Everything is `inner`'s: every
-/// method of the trait must be forwarded (`tests/it/layout.rs`).
+/// method of the trait but the binding, which wraps the bound surface
+/// again, is forwarded unchanged (`forward_dispatcher!`).
 pub struct Routed {
     inner: Arc<dyn AgentToolDispatcher>,
     session: SessionId,
     routes: Arc<ForkRoutes>,
 }
 
-#[async_trait]
-impl AgentToolDispatcher for Routed {
-    fn tools(&self) -> Arc<[Arc<ToolDef>]> {
-        self.inner.tools()
-    }
+forward_dispatcher! {
+    impl AgentToolDispatcher for Routed {
+        forward [
+            tools,
+            resolve_tool_application,
+            tool_catalog_capabilities,
+            tool_catalog,
+            tool_mutation_class,
+            live_bridge_effect_kind,
+            review_entry_support,
+            execution_binding_epoch,
+            execution_binding_fingerprint,
+            resolve_execution_plan,
+            validate_resolved_execution_plan,
+            pending_catalog_sources,
+            adjudicates_tool_grants,
+            dispatch,
+            dispatch_with_context,
+            dispatch_resolved_with_context,
+            poll_external_updates,
+            external_tool_surface_snapshot,
+            capabilities,
+            completion_enrichment,
+            bind_mcp_server_lifecycle_handle,
+            bind_external_tool_surface_handle,
+            bind_session_mob_tool_authority,
+            observes_bindings_only,
+        ];
 
-    async fn resolve_tool_application(
-        &self,
-        source_tool: &str,
-        request: &meerkat_core::ToolApplicationRequest,
-        invocation: &serde_json::Value,
-        context: &ToolDispatchContext,
-    ) -> Result<meerkat_core::tool_application::ToolApplicationResolution, ToolError> {
-        self.inner
-            .resolve_tool_application(source_tool, request, invocation, context)
-            .await
-    }
-
-    fn tool_catalog_capabilities(&self) -> ToolCatalogCapabilities {
-        self.inner.tool_catalog_capabilities()
-    }
-
-    fn tool_catalog(&self) -> Arc<[ToolCatalogEntry]> {
-        self.inner.tool_catalog()
-    }
-
-    fn tool_mutation_class(&self, tool_name: &str) -> meerkat_core::ToolMutationClass {
-        self.inner.tool_mutation_class(tool_name)
-    }
-
-    fn live_bridge_effect_kind(&self, tool_name: &str) -> meerkat_core::LiveBridgeEffectKind {
-        self.inner.live_bridge_effect_kind(tool_name)
-    }
-
-    fn review_entry_support(
-        &self,
-        tool_name: &str,
-    ) -> meerkat_core::approval::review::ReviewEntrySupport {
-        self.inner.review_entry_support(tool_name)
-    }
-
-    fn execution_binding_epoch(&self, tool_name: &str) -> u64 {
-        self.inner.execution_binding_epoch(tool_name)
-    }
-
-    fn execution_binding_fingerprint(
-        &self,
-        tool_name: &str,
-    ) -> Result<
-        meerkat_core::EphemeralToolBindingFingerprint,
-        meerkat_core::ToolExecutionResolutionError,
-    > {
-        self.inner.execution_binding_fingerprint(tool_name)
-    }
-
-    fn resolve_execution_plan(
-        &self,
-        call: ToolCallView<'_>,
-        dispatch_context: &ToolDispatchContext,
-        resolution_context: &meerkat_core::ToolExecutionResolutionContext,
-    ) -> Result<meerkat_core::ResolvedToolExecutionPlan, meerkat_core::ToolExecutionResolutionError>
-    {
-        self.inner
-            .resolve_execution_plan(call, dispatch_context, resolution_context)
-    }
-
-    fn validate_resolved_execution_plan(
-        &self,
-        call: ToolCallView<'_>,
-        resolution_context: &meerkat_core::ToolExecutionResolutionContext,
-        plan: &meerkat_core::ResolvedToolExecutionPlan,
-    ) -> Result<(), meerkat_core::ToolExecutionResolutionError> {
-        self.inner
-            .validate_resolved_execution_plan(call, resolution_context, plan)
-    }
-
-    fn pending_catalog_sources(&self) -> Arc<[String]> {
-        self.inner.pending_catalog_sources()
-    }
-
-    fn adjudicates_tool_grants(&self) -> bool {
-        self.inner.adjudicates_tool_grants()
-    }
-
-    async fn dispatch(
-        &self,
-        call: ToolCallView<'_>,
-    ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
-        self.inner.dispatch(call).await
-    }
-
-    async fn dispatch_with_context(
-        &self,
-        call: ToolCallView<'_>,
-        context: &ToolDispatchContext,
-    ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
-        self.inner.dispatch_with_context(call, context).await
-    }
-
-    async fn dispatch_resolved_with_context(
-        &self,
-        call: ToolCallView<'_>,
-        context: &ToolDispatchContext,
-        plan: &meerkat_core::ResolvedToolExecutionPlan,
-    ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
-        self.inner
-            .dispatch_resolved_with_context(call, context, plan)
-            .await
-    }
-
-    async fn poll_external_updates(&self) -> meerkat_core::ExternalToolUpdate {
-        self.inner.poll_external_updates().await
-    }
-
-    fn external_tool_surface_snapshot(&self) -> Option<meerkat_core::ExternalToolSurfaceSnapshot> {
-        self.inner.external_tool_surface_snapshot()
-    }
-
-    fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
-        self.inner.capabilities()
-    }
-
-    fn bind_ops_lifecycle(
-        self: Arc<Self>,
-        registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
-        owner_bridge_session_id: SessionId,
-    ) -> Result<meerkat_core::agent::BindOutcome, meerkat_core::agent::OpsLifecycleBindError> {
-        use meerkat_core::agent::{BindOutcome, OpsLifecycleBindError};
-        let this = Arc::try_unwrap(self).map_err(|_| OpsLifecycleBindError::SharedOwnership)?;
-        let Self {
-            inner,
-            session,
-            routes,
-        } = this;
-        let wrap = |inner| routes.wrap(session, inner);
-        Ok(
-            match inner.bind_ops_lifecycle(registry, owner_bridge_session_id)? {
-                BindOutcome::Bound(inner) => BindOutcome::Bound(wrap(inner)),
-                BindOutcome::Skipped(inner) => BindOutcome::Skipped(wrap(inner)),
-            },
-        )
-    }
-
-    fn completion_enrichment(
-        &self,
-    ) -> Option<Arc<dyn meerkat_core::completion_feed::CompletionEnrichmentProvider>> {
-        self.inner.completion_enrichment()
-    }
-
-    fn bind_mcp_server_lifecycle_handle(
-        &self,
-        handle: Arc<dyn meerkat_core::handles::McpServerLifecycleHandle>,
-    ) {
-        self.inner.bind_mcp_server_lifecycle_handle(handle);
-    }
-
-    fn bind_external_tool_surface_handle(
-        &self,
-        handle: Arc<dyn meerkat_core::handles::ExternalToolSurfaceHandle>,
-    ) {
-        self.inner.bind_external_tool_surface_handle(handle);
-    }
-
-    fn bind_session_mob_tool_authority(
-        &self,
-        authority: Option<Arc<std::sync::RwLock<meerkat_core::service::MobToolAuthorityContext>>>,
-    ) {
-        self.inner.bind_session_mob_tool_authority(authority);
-    }
-
-    fn observes_bindings_only(&self) -> bool {
-        self.inner.observes_bindings_only()
+        fn bind_ops_lifecycle(
+            self: Arc<Self>,
+            registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+            owner_bridge_session_id: SessionId,
+        ) -> Result<meerkat_core::agent::BindOutcome, meerkat_core::agent::OpsLifecycleBindError>
+        {
+            use meerkat_core::agent::{BindOutcome, OpsLifecycleBindError};
+            let this =
+                Arc::try_unwrap(self).map_err(|_| OpsLifecycleBindError::SharedOwnership)?;
+            let Self {
+                inner,
+                session,
+                routes,
+            } = this;
+            let wrap = |inner| routes.wrap(session, inner);
+            Ok(
+                match inner.bind_ops_lifecycle(registry, owner_bridge_session_id)? {
+                    BindOutcome::Bound(inner) => BindOutcome::Bound(wrap(inner)),
+                    BindOutcome::Skipped(inner) => BindOutcome::Skipped(wrap(inner)),
+                },
+            )
+        }
     }
 }
 
@@ -423,10 +559,8 @@ impl Deferrable {
 /// ones left out of the list unless `session` shows them: a hidden tool is
 /// neither declared nor callable (the engine refuses a call to an
 /// undeclared tool as not found before it reaches a dispatcher).
-/// Everything else is `inner`'s: every method of the trait must be
-/// forwarded, or a method the engine adds with a default would be answered
-/// by that default instead of by `inner`; `tests/it/layout.rs` fails when the
-/// trait declares a method this impl does not.
+/// Everything else is `inner`'s, forwarded unchanged
+/// (`forward_dispatcher!`).
 pub struct Hiding {
     inner: Arc<dyn AgentToolDispatcher>,
     direct: &'static [&'static str],
@@ -457,193 +591,78 @@ impl Hiding {
     }
 }
 
-#[async_trait]
-impl AgentToolDispatcher for Hiding {
-    fn tools(&self) -> Arc<[Arc<ToolDef>]> {
-        self.inner
-            .tools()
-            .iter()
-            .filter(|def| self.declared(def))
-            .cloned()
-            .collect::<Vec<_>>()
-            .into()
-    }
+forward_dispatcher! {
+    impl AgentToolDispatcher for Hiding {
+        forward [
+            resolve_tool_application,
+            tool_catalog_capabilities,
+            tool_mutation_class,
+            live_bridge_effect_kind,
+            review_entry_support,
+            execution_binding_epoch,
+            execution_binding_fingerprint,
+            resolve_execution_plan,
+            validate_resolved_execution_plan,
+            pending_catalog_sources,
+            adjudicates_tool_grants,
+            dispatch,
+            dispatch_with_context,
+            dispatch_resolved_with_context,
+            poll_external_updates,
+            external_tool_surface_snapshot,
+            capabilities,
+            completion_enrichment,
+            bind_mcp_server_lifecycle_handle,
+            bind_external_tool_surface_handle,
+            bind_session_mob_tool_authority,
+            observes_bindings_only,
+        ];
 
-    async fn resolve_tool_application(
-        &self,
-        source_tool: &str,
-        request: &meerkat_core::ToolApplicationRequest,
-        invocation: &serde_json::Value,
-        context: &ToolDispatchContext,
-    ) -> Result<meerkat_core::tool_application::ToolApplicationResolution, ToolError> {
-        self.inner
-            .resolve_tool_application(source_tool, request, invocation, context)
-            .await
-    }
+        fn tools(&self) -> Arc<[Arc<ToolDef>]> {
+            self.inner
+                .tools()
+                .iter()
+                .filter(|def| self.declared(def))
+                .cloned()
+                .collect::<Vec<_>>()
+                .into()
+        }
 
-    fn tool_catalog_capabilities(&self) -> ToolCatalogCapabilities {
-        self.inner.tool_catalog_capabilities()
-    }
+        fn tool_catalog(&self) -> Arc<[ToolCatalogEntry]> {
+            self.inner
+                .tool_catalog()
+                .iter()
+                .filter(|entry| self.declared(&entry.tool))
+                .cloned()
+                .collect::<Vec<_>>()
+                .into()
+        }
 
-    fn tool_catalog(&self) -> Arc<[ToolCatalogEntry]> {
-        self.inner
-            .tool_catalog()
-            .iter()
-            .filter(|entry| self.declared(&entry.tool))
-            .cloned()
-            .collect::<Vec<_>>()
-            .into()
-    }
-
-    fn tool_mutation_class(&self, tool_name: &str) -> meerkat_core::ToolMutationClass {
-        self.inner.tool_mutation_class(tool_name)
-    }
-
-    fn live_bridge_effect_kind(&self, tool_name: &str) -> meerkat_core::LiveBridgeEffectKind {
-        self.inner.live_bridge_effect_kind(tool_name)
-    }
-
-    fn review_entry_support(
-        &self,
-        tool_name: &str,
-    ) -> meerkat_core::approval::review::ReviewEntrySupport {
-        self.inner.review_entry_support(tool_name)
-    }
-
-    fn execution_binding_epoch(&self, tool_name: &str) -> u64 {
-        self.inner.execution_binding_epoch(tool_name)
-    }
-
-    fn execution_binding_fingerprint(
-        &self,
-        tool_name: &str,
-    ) -> Result<
-        meerkat_core::EphemeralToolBindingFingerprint,
-        meerkat_core::ToolExecutionResolutionError,
-    > {
-        self.inner.execution_binding_fingerprint(tool_name)
-    }
-
-    fn resolve_execution_plan(
-        &self,
-        call: ToolCallView<'_>,
-        dispatch_context: &ToolDispatchContext,
-        resolution_context: &meerkat_core::ToolExecutionResolutionContext,
-    ) -> Result<meerkat_core::ResolvedToolExecutionPlan, meerkat_core::ToolExecutionResolutionError>
-    {
-        self.inner
-            .resolve_execution_plan(call, dispatch_context, resolution_context)
-    }
-
-    fn validate_resolved_execution_plan(
-        &self,
-        call: ToolCallView<'_>,
-        resolution_context: &meerkat_core::ToolExecutionResolutionContext,
-        plan: &meerkat_core::ResolvedToolExecutionPlan,
-    ) -> Result<(), meerkat_core::ToolExecutionResolutionError> {
-        self.inner
-            .validate_resolved_execution_plan(call, resolution_context, plan)
-    }
-
-    fn pending_catalog_sources(&self) -> Arc<[String]> {
-        self.inner.pending_catalog_sources()
-    }
-
-    fn adjudicates_tool_grants(&self) -> bool {
-        self.inner.adjudicates_tool_grants()
-    }
-
-    async fn dispatch(
-        &self,
-        call: ToolCallView<'_>,
-    ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
-        self.inner.dispatch(call).await
-    }
-
-    async fn dispatch_with_context(
-        &self,
-        call: ToolCallView<'_>,
-        context: &ToolDispatchContext,
-    ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
-        self.inner.dispatch_with_context(call, context).await
-    }
-
-    async fn dispatch_resolved_with_context(
-        &self,
-        call: ToolCallView<'_>,
-        context: &ToolDispatchContext,
-        plan: &meerkat_core::ResolvedToolExecutionPlan,
-    ) -> Result<meerkat_core::ToolDispatchOutcome, ToolError> {
-        self.inner
-            .dispatch_resolved_with_context(call, context, plan)
-            .await
-    }
-
-    async fn poll_external_updates(&self) -> meerkat_core::ExternalToolUpdate {
-        self.inner.poll_external_updates().await
-    }
-
-    fn external_tool_surface_snapshot(&self) -> Option<meerkat_core::ExternalToolSurfaceSnapshot> {
-        self.inner.external_tool_surface_snapshot()
-    }
-
-    fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
-        self.inner.capabilities()
-    }
-
-    fn bind_ops_lifecycle(
-        self: Arc<Self>,
-        registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
-        owner_bridge_session_id: SessionId,
-    ) -> Result<meerkat_core::agent::BindOutcome, meerkat_core::agent::OpsLifecycleBindError> {
-        use meerkat_core::agent::{BindOutcome, OpsLifecycleBindError};
-        let this = Arc::try_unwrap(self).map_err(|_| OpsLifecycleBindError::SharedOwnership)?;
-        let Self {
-            inner,
-            direct,
-            session,
-            shown,
-        } = this;
-        let wrap = |inner| {
-            Arc::new(Self::new(inner, direct, session, shown)) as Arc<dyn AgentToolDispatcher>
-        };
-        Ok(
-            match inner.bind_ops_lifecycle(registry, owner_bridge_session_id)? {
-                BindOutcome::Bound(inner) => BindOutcome::Bound(wrap(inner)),
-                BindOutcome::Skipped(inner) => BindOutcome::Skipped(wrap(inner)),
-            },
-        )
-    }
-
-    fn completion_enrichment(
-        &self,
-    ) -> Option<Arc<dyn meerkat_core::completion_feed::CompletionEnrichmentProvider>> {
-        self.inner.completion_enrichment()
-    }
-
-    fn bind_mcp_server_lifecycle_handle(
-        &self,
-        handle: Arc<dyn meerkat_core::handles::McpServerLifecycleHandle>,
-    ) {
-        self.inner.bind_mcp_server_lifecycle_handle(handle);
-    }
-
-    fn bind_external_tool_surface_handle(
-        &self,
-        handle: Arc<dyn meerkat_core::handles::ExternalToolSurfaceHandle>,
-    ) {
-        self.inner.bind_external_tool_surface_handle(handle);
-    }
-
-    fn bind_session_mob_tool_authority(
-        &self,
-        authority: Option<Arc<std::sync::RwLock<meerkat_core::service::MobToolAuthorityContext>>>,
-    ) {
-        self.inner.bind_session_mob_tool_authority(authority);
-    }
-
-    fn observes_bindings_only(&self) -> bool {
-        self.inner.observes_bindings_only()
+        fn bind_ops_lifecycle(
+            self: Arc<Self>,
+            registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+            owner_bridge_session_id: SessionId,
+        ) -> Result<meerkat_core::agent::BindOutcome, meerkat_core::agent::OpsLifecycleBindError>
+        {
+            use meerkat_core::agent::{BindOutcome, OpsLifecycleBindError};
+            let this =
+                Arc::try_unwrap(self).map_err(|_| OpsLifecycleBindError::SharedOwnership)?;
+            let Self {
+                inner,
+                direct,
+                session,
+                shown,
+            } = this;
+            let wrap = |inner| {
+                Arc::new(Self::new(inner, direct, session, shown)) as Arc<dyn AgentToolDispatcher>
+            };
+            Ok(
+                match inner.bind_ops_lifecycle(registry, owner_bridge_session_id)? {
+                    BindOutcome::Bound(inner) => BindOutcome::Bound(wrap(inner)),
+                    BindOutcome::Skipped(inner) => BindOutcome::Skipped(wrap(inner)),
+                },
+            )
+        }
     }
 }
 

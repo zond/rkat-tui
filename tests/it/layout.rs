@@ -163,12 +163,38 @@ fn methods(source: &str, header: &str) -> BTreeSet<String> {
     panic!("`{header}` does not close")
 }
 
+/// The names a `forward_dispatcher!` impl's `forward [..]` list names,
+/// when the block that opens on the line holding `header` starts with one
+/// (each becomes a method that forwards unchanged); none otherwise.
+fn forward_list(source: &str, header: &str) -> BTreeSet<String> {
+    let start = source
+        .find(header)
+        .unwrap_or_else(|| panic!("no `{header}`"));
+    let body = source[start..]
+        .split_once('{')
+        .map_or("", |(_, body)| body)
+        .trim_start();
+    let Some(list) = body.strip_prefix("forward [") else {
+        return BTreeSet::new();
+    };
+    let list = list
+        .split_once(']')
+        .unwrap_or_else(|| panic!("`{header}`: the forward list does not close"))
+        .0;
+    list.split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// The wrappers that forward an engine trait to an inner implementation
-/// override every method of it: a method the engine adds later with a
-/// default would otherwise be answered by that default, silently, instead
-/// of by the wrapped implementation. When this fails after an engine
-/// upgrade, forward the new method (and look at what it does to the
-/// wrapper's purpose).
+/// override every method of it, by hand or in `forward_dispatcher!`'s
+/// `forward [..]` list: a method the engine adds later with a default
+/// would otherwise be answered by that default, silently, instead of by
+/// the wrapped implementation. When this fails after an engine upgrade,
+/// forward the new method (add its arm to the macro and its name to the
+/// list, and look at what it does to the wrapper's purpose).
 #[test]
 fn forwarding_wrappers_override_every_method_of_their_engine_trait() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -200,7 +226,8 @@ fn forwarding_wrappers_override_every_method_of_their_engine_trait() {
         let declared = methods(&engine, header);
         assert!(declared.len() > 1, "{header}: {declared:?}");
         let ours = std::fs::read_to_string(root.join(file)).unwrap();
-        let forwarded = methods(&ours, implementation);
+        let mut forwarded = methods(&ours, implementation);
+        forwarded.extend(forward_list(&ours, implementation));
         let missing: Vec<_> = declared.difference(&forwarded).collect();
         assert!(
             missing.is_empty(),

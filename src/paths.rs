@@ -874,6 +874,51 @@ fn check_no_symlinks_from(base: &Path, rel: &Path, path: &Path) -> Result<(), At
     Ok(())
 }
 
+/// The size past which a log is started afresh when it is opened
+/// ([`open_log`]).
+pub const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// A log [`open_log`] opened for appending.
+#[derive(Debug)]
+pub struct OpenedLog {
+    /// The log, appended to.
+    pub file: std::fs::File,
+    /// Why a log over [`LOG_ROTATE_BYTES`] was not moved aside (it is
+    /// appended to instead), for the caller to log once its logging is
+    /// up.
+    pub not_rotated: Option<std::io::Error>,
+}
+
+/// Open the log at `path` for appending, created when missing. A log
+/// larger than [`LOG_ROTATE_BYTES`] is first renamed to `<name>.1`
+/// (replacing an older one) and a fresh file is started: one old
+/// generation is kept, as the audit log keeps one. A rename that fails is
+/// never a reason not to log: the old file is appended to and the error
+/// is in [`OpenedLog::not_rotated`]. The new file is created with the
+/// mode a plain create gives it (the umask's), as before.
+///
+/// # Errors
+///
+/// When the file cannot be opened.
+pub fn open_log(path: &Path) -> std::io::Result<OpenedLog> {
+    open_log_rotating_at(path, LOG_ROTATE_BYTES)
+}
+
+/// [`open_log`], rotating past `limit` bytes.
+fn open_log_rotating_at(path: &Path, limit: u64) -> std::io::Result<OpenedLog> {
+    let mut not_rotated = None;
+    if std::fs::metadata(path).is_ok_and(|meta| meta.len() > limit) {
+        let mut old = path.as_os_str().to_owned();
+        old.push(".1");
+        not_rotated = std::fs::rename(path, PathBuf::from(old)).err();
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    Ok(OpenedLog { file, not_rotated })
+}
+
 /// This machine's host name.
 #[must_use]
 pub fn local_host() -> Option<String> {
@@ -1317,5 +1362,63 @@ mod tests {
         let r = root.resolve("alias/main.rs").unwrap();
         assert!(r.inside());
         assert_eq!(r.relative.as_deref(), Some(Path::new("src/main.rs")));
+    }
+
+    /// A log over [`LOG_ROTATE_BYTES`] is moved to `<name>.1` when it is
+    /// opened and a fresh one started; one under it is appended to; a
+    /// second rotation replaces the `.1`; a rename that fails leaves the
+    /// log appended to, with the error for the caller.
+    #[test]
+    fn a_log_over_the_limit_is_rotated_when_it_is_opened() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("x.log");
+        let old = dir.path().join("x.log.1");
+        let read = |path: &Path| std::fs::read(path).unwrap();
+        // Missing: created.
+        let mut opened = open_log(&log).unwrap();
+        assert!(opened.not_rotated.is_none());
+        opened.file.write_all(b"first\n").unwrap();
+        drop(opened);
+        // Under the limit: appended to.
+        let mut opened = open_log(&log).unwrap();
+        opened.file.write_all(b"second\n").unwrap();
+        drop(opened);
+        assert_eq!(read(&log), b"first\nsecond\n");
+        assert!(!old.exists());
+        // Over it (a sparse file past the limit): rotated at open.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&log)
+            .unwrap()
+            .set_len(LOG_ROTATE_BYTES + 1)
+            .unwrap();
+        let mut opened = open_log(&log).unwrap();
+        assert!(opened.not_rotated.is_none());
+        opened.file.write_all(b"third\n").unwrap();
+        drop(opened);
+        assert_eq!(read(&log), b"third\n");
+        assert!(read(&old).starts_with(b"first\nsecond\n"));
+        // A second rotation replaces the `.1`.
+        let mut big = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        big.write_all(&[b'x'; 64]).unwrap();
+        drop(big);
+        let opened = open_log_rotating_at(&log, 16).unwrap();
+        assert!(opened.not_rotated.is_none());
+        drop(opened);
+        assert!(read(&old).starts_with(b"third\nxx"));
+        assert_eq!(read(&old).len(), 6 + 64);
+        assert!(read(&log).is_empty());
+        // A rename that fails (the `.1` is a directory with something in
+        // it): the log goes on being appended to.
+        std::fs::remove_file(&old).unwrap();
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("keep"), "k").unwrap();
+        std::fs::write(&log, [b'y'; 32]).unwrap();
+        let mut opened = open_log_rotating_at(&log, 16).unwrap();
+        assert!(opened.not_rotated.is_some());
+        opened.file.write_all(b"z").unwrap();
+        drop(opened);
+        assert_eq!(read(&log).len(), 33);
     }
 }

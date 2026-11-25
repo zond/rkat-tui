@@ -221,7 +221,7 @@ fn outcome_blocks(notice: &meerkat_core::SystemNoticeMessage) -> Vec<Block> {
 /// its outcome and its preview, as a live result sets them.
 fn restore_result(block: &mut Block, text: &str, is_error: bool) {
     let Block::Tool {
-        name,
+        tool,
         args,
         state,
         outcome,
@@ -238,15 +238,16 @@ fn restore_result(block: &mut Block, text: &str, is_error: bool) {
     *result_preview = Some(text)
         .filter(|text| !text.is_empty())
         .map(super::Preview::of);
-    *outcome = super::Transcript::outcome_of(name, args, state, text);
+    *outcome = super::Transcript::outcome_of(tool, args, state, text);
 }
 
 /// A stored call as a done tool block (its line's paths are made again
 /// with the transcript's path view, [`super::Transcript::reset`]).
-fn restored_tool_block(name: &str, args: serde_json::Value) -> Block {
-    let head = super::tool_line::head(name, &args, &super::tool_line::PathView::default());
+fn restored_tool_block(tool: &str, args: serde_json::Value) -> Block {
+    let head = super::tool_line::head(tool, None, &args, &super::tool_line::PathView::default());
     Block::Tool {
-        name: name.to_string(),
+        tool: tool.to_string(),
+        tag: None,
         args,
         head,
         outcome: super::tool_line::Outcome::default(),
@@ -504,7 +505,7 @@ mod tests {
                 md: "> The old reader was removed; the new one stays.".into()
             }
         );
-        assert!(matches!(&restored[1], Block::Tool { name, .. } if name == "read_file"));
+        assert!(matches!(&restored[1], Block::Tool { tool, .. } if tool == "read_file"));
     }
 
     /// A stored text block that opens with the line `thought` (a model's
@@ -567,7 +568,7 @@ mod tests {
         );
         let restored = blocks_from_messages(&[Message::BlockAssistant(call)]);
         assert!(
-            matches!(restored.as_slice(), [Block::Tool { name, .. }] if name == "reply_to_peer"),
+            matches!(restored.as_slice(), [Block::Tool { tool, .. }] if tool == "reply_to_peer"),
             "{restored:#?}"
         );
         let lines = crate::ui::render::block_lines(&restored[0], 80);

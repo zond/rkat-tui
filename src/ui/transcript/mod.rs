@@ -334,8 +334,11 @@ pub enum Block {
     },
     /// A tool call and its lifecycle.
     Tool {
-        /// Tool name (sub-agent calls carry a scope label prefix).
-        name: String,
+        /// The tool's own name (`glob`).
+        tool: String,
+        /// The helper's tag as its line shows it in front of the call
+        /// (`[scout · model]`); `None` for the agent's own call.
+        tag: Option<String>,
         /// Arguments as requested by the model.
         args: Value,
         /// Its line's verb and object ([`tool_line::head`]).
@@ -777,7 +780,7 @@ impl Transcript {
                     }
                 }
                 Block::Tool {
-                    name,
+                    tool,
                     args,
                     head,
                     outcome,
@@ -798,7 +801,7 @@ impl Transcript {
                         if let ToolState::Denied { reason } = state {
                             body(&mut out, reason);
                         }
-                        if let Some(args) = tool_line::expanded_args(name, args) {
+                        if let Some(args) = tool_line::expanded_args(tool, args) {
                             body(&mut out, &args);
                         }
                         if let Some(preview) = result_preview {
@@ -1004,11 +1007,11 @@ impl Transcript {
                     fold.state = HelperState::Done;
                 }
             }
-            if let Block::Tool { name, args, .. } = &block {
+            if let Block::Tool { tool, args, .. } = &block {
                 // The helpers its calls started are its helpers (their
                 // messages fold into runs).
-                let (name, args) = (name.clone(), args.clone());
-                self.note_spawn(&name, &args);
+                let (tool, args) = (tool.clone(), args.clone());
+                self.note_spawn(&tool, &args);
             }
             self.push_raw(block);
         }
@@ -1398,10 +1401,14 @@ impl Transcript {
     fn refresh_tool_heads(&mut self) {
         for index in 0..self.entries.len() {
             if let Block::Tool {
-                name, args, head, ..
+                tool,
+                tag,
+                args,
+                head,
+                ..
             } = &self.entries[index].block
             {
-                let fresh = tool_line::head(name, args, &self.paths);
+                let fresh = tool_line::head(tool, tag.as_deref(), args, &self.paths);
                 if fresh != *head
                     && let Some(Entry {
                         block: Block::Tool { head, .. },
@@ -1709,7 +1716,14 @@ impl Transcript {
             }
             AgentEvent::ToolCallRequested { id, name, args } => match helper {
                 None => {
-                    self.request_tool(None, id.clone(), name.clone(), args.as_value().clone(), 0);
+                    self.request_tool(
+                        None,
+                        id.clone(),
+                        name.clone(),
+                        None,
+                        args.as_value().clone(),
+                        0,
+                    );
                 }
                 Some(h) => {
                     let preview = helper_args_preview(args.as_value());
@@ -1723,7 +1737,8 @@ impl Transcript {
                     self.request_tool(
                         scope,
                         key(id),
-                        format!("{} {name}", h.tag),
+                        name.clone(),
+                        Some(h.tag.clone()),
                         args.as_value().clone(),
                         h.depth,
                     );
@@ -2112,12 +2127,13 @@ impl Transcript {
     }
 
     /// A tool call of `scope` (the session's, or a helper's under its
-    /// header): it closes that scope's prose only.
+    /// header, `tag` its tag): it closes that scope's prose only.
     fn request_tool(
         &mut self,
         scope: Option<BlockId>,
         key: String,
-        name: String,
+        tool: String,
+        tag: Option<String>,
         args: Value,
         depth: usize,
     ) -> BlockId {
@@ -2125,12 +2141,13 @@ impl Transcript {
             key.rsplit_once('/')
                 .and_then(|(_, call)| self.pending_notes.shift_remove(call))
         });
-        let args = self.with_peer_name(&name, args);
-        let head = tool_line::head(&name, &args, &self.paths);
+        let args = self.with_peer_name(&tool, args);
+        let head = tool_line::head(&tool, tag.as_deref(), &args, &self.paths);
         let id = self.push_scoped(
             scope,
             Block::Tool {
-                name,
+                tool,
+                tag,
                 args,
                 head,
                 outcome: tool_line::Outcome::default(),
@@ -2150,8 +2167,8 @@ impl Transcript {
     /// A `send_message`'s arguments with the recipient's name the
     /// transcript knows (`display_name`, which the tool itself only logs),
     /// for its header; other calls' unchanged.
-    fn with_peer_name(&self, name: &str, mut args: Value) -> Value {
-        if send_tool(name)
+    fn with_peer_name(&self, tool: &str, mut args: Value) -> Value {
+        if tool == SEND_TOOL
             && args.get("display_name").is_none_or(Value::is_null)
             && let Some(known) = args
                 .get("peer_id")
@@ -2172,7 +2189,7 @@ impl Transcript {
     /// parse), when it has come.
     fn learn_from_result(&mut self, id: BlockId, whole: Option<&str>) {
         let Some(Block::Tool {
-            name, args, state, ..
+            tool, args, state, ..
         }) = self.block(id)
         else {
             return;
@@ -2180,10 +2197,7 @@ impl Transcript {
         let result = whole.and_then(|text| serde_json::from_str::<Value>(text).ok());
         // `contacts` (and an earlier build's `peers`): every entry naming a
         // peer id, in whichever group it is.
-        if matches!(
-            tool_line::base(name),
-            "peers" | crate::daemon::contacts::CONTACTS
-        ) {
+        if matches!(tool.as_str(), "peers" | crate::daemon::contacts::CONTACTS) {
             fn entries(value: &Value, out: &mut Vec<Value>) {
                 match value {
                     Value::Object(map) => {
@@ -2210,7 +2224,7 @@ impl Transcript {
             }
             return;
         }
-        if !send_tool(name) {
+        if tool != SEND_TOOL {
             return;
         }
         let failed = matches!(state, ToolState::Done { is_error: true, .. });
@@ -2261,7 +2275,7 @@ impl Transcript {
             if let (
                 Some(text),
                 Some(Block::Tool {
-                    name,
+                    tool,
                     args,
                     state,
                     outcome,
@@ -2269,7 +2283,7 @@ impl Transcript {
                 }),
             ) = (result, self.block_mut(id))
             {
-                *outcome = Self::outcome_of(name, args, state, text);
+                *outcome = Self::outcome_of(tool, args, state, text);
             }
         }
         self.learn_from_result(id, result);
@@ -2278,8 +2292,8 @@ impl Transcript {
     /// A finished call's outcome from its whole `result`: the tool's row
     /// ([`tool_line::outcome`]), and for a call that reported an error
     /// without one, the result's first line as the reason.
-    fn outcome_of(name: &str, args: &Value, state: &ToolState, result: &str) -> tool_line::Outcome {
-        let mut outcome = tool_line::outcome(name, args, result);
+    fn outcome_of(tool: &str, args: &Value, state: &ToolState, result: &str) -> tool_line::Outcome {
+        let mut outcome = tool_line::outcome(tool, args, result);
         if matches!(state, ToolState::Done { is_error: true, .. }) && outcome.text.is_none() {
             outcome.text = tool_line::failure_reason(result);
         }
@@ -2292,7 +2306,7 @@ impl Transcript {
             return;
         };
         if let Some(Block::Tool {
-            name,
+            tool,
             args,
             state,
             outcome,
@@ -2301,7 +2315,7 @@ impl Transcript {
         }) = self.block_mut(id)
         {
             *result_preview = Some(result).filter(|r| !r.is_empty()).map(Preview::of);
-            *outcome = Self::outcome_of(name, args, state, result);
+            *outcome = Self::outcome_of(tool, args, state, result);
         }
         self.learn_from_result(id, Some(result));
     }
@@ -2341,13 +2355,22 @@ impl Transcript {
             });
         let mut tool = payload_str("tool").unwrap_or_default();
         if let Some(id) = target
-            && let Some(Block::Tool { name, state, .. }) = self.block_mut(id)
+            && let Some(Block::Tool {
+                tool: called,
+                tag,
+                state,
+                ..
+            }) = self.block_mut(id)
         {
             *state = ToolState::Denied {
                 reason: message.to_string(),
             };
             if tool.is_empty() {
-                tool.clone_from(name);
+                // A helper's call as its line shows it: its tag in front.
+                tool = match tag {
+                    Some(tag) => format!("{tag} {called}"),
+                    None => called.clone(),
+                };
             }
         }
         let tier = payload_str("tier").unwrap_or_else(|| hook_id.to_string());
@@ -2360,10 +2383,8 @@ impl Transcript {
     }
 }
 
-/// Whether `name` is the comms tool that sends a peer a message.
-fn send_tool(name: &str) -> bool {
-    tool_line::base(name) == "send_message"
-}
+/// The comms tool that sends a peer a message.
+const SEND_TOOL: &str = "send_message";
 
 /// Which of its two reports showed a run nobody here typed
 /// ([`Transcript::remote_input`]).
@@ -2657,9 +2678,11 @@ mod tests {
             collapsed: true,
         });
         let tool = |collapsed| Block::Tool {
-            name: "read_file".into(),
+            tool: "read_file".into(),
+            tag: None,
             head: tool_line::head(
                 "read_file",
+                None,
                 &json!({"path": "a.rs"}),
                 &tool_line::PathView::default(),
             ),
@@ -3072,7 +3095,12 @@ mod tests {
                 Block::User { .. } => "user".to_string(),
                 Block::Assistant { md } => format!("prose {md}"),
                 Block::Helper(fold) => format!("header {}", fold.label),
-                Block::Tool { name, .. } => format!("tool {name}"),
+                Block::Tool {
+                    tool,
+                    tag: Some(tag),
+                    ..
+                } => format!("tool {tag} {tool}"),
+                Block::Tool { tool, .. } => format!("tool {tool}"),
                 other => format!("{other:?}"),
             })
             .collect();
@@ -3419,7 +3447,8 @@ mod tests {
         assert!(matches!(&t.blocks()[0], Block::Helper(fold) if fold.label == "helper"));
         assert!(matches!(
             &t.blocks()[1],
-            Block::Tool { name, depth: 1, .. } if name == "[helper] glob"
+            Block::Tool { tool, tag: Some(tag), depth: 1, .. }
+                if tool == "glob" && tag == "[helper]"
         ));
         // Primary-only scope is ignored.
         t.apply_scoped_event(&ScopedAgentEvent::primary("s", text("dup")));
@@ -3439,7 +3468,8 @@ mod tests {
         t.apply_scoped_event(&nested);
         assert!(matches!(
             &t.blocks()[3],
-            Block::Tool { name, depth: 2, .. } if name == "[inner · gpt-5.5] glob"
+            Block::Tool { tool, tag: Some(tag), depth: 2, .. }
+                if tool == "glob" && tag == "[inner · gpt-5.5]"
         ));
     }
 
@@ -3666,7 +3696,8 @@ mod tests {
             matches!(&view[0], Block::Reasoning { text, collapsed: true } if text == "Look around.")
         );
         assert!(matches!(&view[1], Block::Assistant { md } if md == "First finding.\nMore."));
-        assert!(matches!(&view[2], Block::Tool { name, .. } if name == "[scout] glob"));
+        assert!(matches!(&view[2], Block::Tool { tool, tag: Some(tag), .. }
+            if tool == "glob" && tag == "[scout]"));
         assert!(matches!(&view[3], Block::Reasoning { text, .. } if text == "Done looking."));
         assert!(matches!(&view[4], Block::Assistant { md } if md == "Second."));
         // The session's text is its own block, outside the helper.
@@ -4228,6 +4259,7 @@ mod tests {
         assert_eq!(
             tool_line::head(
                 "read_file",
+                None,
                 &json!({"path": "a"}),
                 &tool_line::PathView::default()
             )

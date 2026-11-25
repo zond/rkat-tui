@@ -155,21 +155,27 @@ impl std::io::Write for LogFile {
     }
 }
 
-/// The client's log file in the realm at `realm_root`.
-fn open_log(realm_root: &Path) -> Result<std::fs::File, TuiError> {
+/// The client's log file in the realm at `realm_root`, rotated when it
+/// is over the limit ([`crate::paths::open_log`]).
+fn open_log(realm_root: &Path) -> Result<crate::paths::OpenedLog, TuiError> {
     let log_dir = realm_root.join("logs");
     std::fs::create_dir_all(&log_dir).map_err(|e| TuiError::io("create log directory", e))?;
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_dir.join("rkat-tui.log"))
+    crate::paths::open_log(&log_dir.join("rkat-tui.log"))
         .map_err(|e| TuiError::io("open log file", e))
+}
+
+/// Log that a log over the limit was not rotated, when it was not.
+fn warn_not_rotated(not_rotated: Option<&std::io::Error>) {
+    if let Some(err) = not_rotated {
+        tracing::warn!(error = %err, "the log was not rotated: appending to it");
+    }
 }
 
 /// Route tracing to a log file inside the realm so nothing writes to the
 /// terminal while the UI owns it.
 pub(crate) fn init_logging(realm_root: &Path) -> Result<(), TuiError> {
-    *LOG_FILE.lock() = Some(open_log(realm_root)?);
+    let crate::paths::OpenedLog { file, not_rotated } = open_log(realm_root)?;
+    *LOG_FILE.lock() = Some(file);
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     // A second init (tests) is not an error worth failing the run for.
@@ -178,6 +184,7 @@ pub(crate) fn init_logging(realm_root: &Path) -> Result<(), TuiError> {
         .with_ansi(false)
         .with_writer(|| LogFile)
         .try_init();
+    warn_not_rotated(not_rotated.as_ref());
     Ok(())
 }
 
@@ -190,7 +197,11 @@ pub(crate) fn reroute_logging(realm_root: &Path) {
         return;
     }
     match open_log(realm_root) {
-        Ok(file) => *log = Some(file),
+        Ok(crate::paths::OpenedLog { file, not_rotated }) => {
+            *log = Some(file);
+            drop(log);
+            warn_not_rotated(not_rotated.as_ref());
+        }
         Err(err) => {
             drop(log);
             tracing::warn!(error = %err, "the log stays where it was");
