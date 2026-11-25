@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-25
+
 ### Changed
 
 - The logs in a workspace's realm (`logs/rkat-tui.log`,

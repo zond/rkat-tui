@@ -44,7 +44,8 @@ On Linux the sandbox needs unprivileged user namespaces. If the host does
 not allow them, rkat-tui refuses to start and says how to enable them;
 `--no-confinement` runs without the sandbox.
 
-0.0.x is the maintainer's daily-use line. Expect sharp edges, and read the
+0.1 is the first release meant for use beyond its maintainer. It is in
+daily use and its stored state keeps opening across versions; read the
 [changelog](CHANGELOG.md) before you upgrade.
 
 ## Start
