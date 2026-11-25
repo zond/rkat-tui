@@ -83,6 +83,7 @@ fn rules_file_round_trip() {
             checkpoint_steps: Some(40),
             checkpoint_continues: Some(0),
             web_search: Some(false),
+            web_fetch: Some(false),
         }),
         instructions: Some(InstructionsSection {
             files: Some(vec![
@@ -1175,6 +1176,62 @@ fn web_search_is_on_unless_a_layer_turns_it_off_and_a_project_only_turns_it_off(
     let setting = super::registry::Setting::find("agent.web_search").unwrap();
     assert_eq!(setting.parse("false").unwrap(), toml::Value::Boolean(false));
     assert!(setting.parse("sometimes").is_err());
+}
+
+/// `agent.web_fetch` is on by default; the user's file and `--set` set
+/// it; a project file may only turn it off; and it is a setting apart
+/// from `agent.web_search` (turning one off leaves the other on).
+#[test]
+fn web_fetch_is_on_unless_a_layer_turns_it_off_and_is_apart_from_web_search() {
+    use super::registry::{web_fetch_in_force, web_search_in_force};
+    use clap::Parser as _;
+    let tmp = tempfile::tempdir().unwrap();
+    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+    let global = tmp.path().join("global.toml");
+    let layered = |global_text: &str, project_text: &str, set: &[&str]| {
+        std::fs::write(&global, global_text).unwrap();
+        write(&realm, "");
+        write(&project, project_text);
+        let mut argv = vec!["rkat-tui".to_string()];
+        for value in set {
+            argv.push("--set".to_string());
+            argv.push((*value).to_string());
+        }
+        let overlay = crate::overlay::ConfigOverlay::from_args(&crate::cli::Args::parse_from(argv))
+            .unwrap()
+            .rules_file()
+            .unwrap();
+        let layered = load_layered_with(&realm, Some(&global), &project, overlay.as_ref()).unwrap();
+        (
+            web_fetch_in_force(&layered.layers),
+            web_search_in_force(&layered.layers),
+        )
+    };
+    assert_eq!(layered("", "", &[]), (true, true));
+    assert_eq!(
+        layered("[agent]\nweb_fetch = false\n", "", &[]),
+        (false, true)
+    );
+    assert_eq!(layered("", "", &["agent.web_fetch=false"]), (false, true));
+    assert_eq!(layered("", "", &["agent.web_search=false"]), (true, false));
+    assert_eq!(
+        layered(
+            "[agent]\nweb_fetch = false\n",
+            "[agent]\nweb_fetch = true\n",
+            &[]
+        ),
+        (false, true)
+    );
+    assert_eq!(
+        layered(
+            "",
+            "[agent]\nweb_fetch = false\n",
+            &["agent.web_fetch=true"]
+        ),
+        (false, true)
+    );
+    let setting = super::registry::Setting::find("agent.web_fetch").unwrap();
+    assert_eq!(setting.parse("false").unwrap(), toml::Value::Boolean(false));
 }
 
 /// A relative `instructions.files` entry is refused, naming the key and

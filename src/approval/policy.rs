@@ -343,6 +343,14 @@ pub enum ActionKind {
     /// `assign` or `connect_helpers`: starting or wiring the caller's own
     /// helpers, whose every call passes the caller's gate.
     Delegation,
+    /// `web_fetch` ([`crate::tools::WEB_FETCH`]): one GET of `url`. Never
+    /// tier 1: it changes nothing here, but the URL itself can carry data
+    /// out, so it is reviewed like the other outbound tools (`web_search`,
+    /// an MCP tool), and plan mode denies it unless an allow rule names it.
+    WebFetch {
+        /// The URL as the model sent it.
+        url: String,
+    },
     /// `note_list` / `note_read`.
     NoteRead,
     /// `note_save` / `note_forget` with a valid scope.
@@ -382,6 +390,12 @@ struct SearchArgs {
     path: Option<String>,
     #[serde(default)]
     pattern: Option<String>,
+}
+
+/// Typed arguments of `web_fetch`.
+#[derive(Deserialize)]
+struct UrlArgs {
+    url: String,
 }
 
 /// Typed arguments of `note_save` / `note_forget`.
@@ -480,6 +494,10 @@ impl<'a> Action<'a> {
             (ToolFamily::Files, crate::tools::SKILL_READ) if !declared_mutating => {
                 ActionKind::ReadOnlyBuiltin
             }
+            // One GET of a URL: reviewed (the URL can carry data out), its
+            // URL the subject a rule names.
+            (ToolFamily::Files, crate::tools::WEB_FETCH) => typed::<UrlArgs>(args)
+                .map_or(ActionKind::Other, |a| ActionKind::WebFetch { url: a.url }),
             (ToolFamily::Files, READ_FILE) if !declared_mutating => typed::<PathArgs>(args)
                 .map_or(ActionKind::Other, |a| ActionKind::FileRead { path: a.path }),
             (ToolFamily::Files, GLOB | GREP) if !declared_mutating => typed::<SearchArgs>(args)
@@ -506,7 +524,9 @@ impl<'a> Action<'a> {
     }
 
     /// Canonical rule subjects: the command for `shell`, display paths for file
-    /// tools, `<scope>/<slug>` for note writes, pretty JSON for everything else.
+    /// tools, `<scope>/<slug>` for note writes, the URL for `web_fetch` (as
+    /// the tool parses it, so `https://Docs.rs` is `https://docs.rs/`),
+    /// pretty JSON for everything else.
     /// Computed once per decision by the engine.
     pub fn subjects(&self, root: &ProjectRoot) -> Vec<String> {
         let display = |raw: &str| match root.resolve(raw) {
@@ -524,6 +544,7 @@ impl<'a> Action<'a> {
                 let name = slug(name).unwrap_or_else(|_| name.clone());
                 vec![format!("{scope}/{name}")]
             }
+            ActionKind::WebFetch { url } => vec![web_subject(url)],
             ActionKind::ReadOnlyBuiltin
             | ActionKind::Withheld
             | ActionKind::ShellJob
@@ -574,6 +595,12 @@ pub fn schedule_summary(name: &str, args: &RawValue) -> Option<String> {
         line.push_str(&format!(", runs {target}"));
     }
     Some(line)
+}
+
+/// The rule subject of a `web_fetch` of `url`: the URL as the tool parses
+/// and fetches it, else as written (the tool refuses it then).
+fn web_subject(url: &str) -> String {
+    reqwest::Url::parse(url.trim()).map_or_else(|_| url.to_string(), |parsed| parsed.to_string())
 }
 
 /// Pretty JSON of raw arguments (their raw text when they are not JSON).
@@ -889,6 +916,14 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
                 "read-only shell command",
             ))
         }
+        ActionKind::WebFetch { url } => Err(format!(
+            "`{}` sends a request to {}: the URL itself can carry data out",
+            action.name,
+            reqwest::Url::parse(url.trim())
+                .ok()
+                .and_then(|parsed| parsed.host_str().map(str::to_string))
+                .unwrap_or_else(|| "the web".to_string())
+        )),
         ActionKind::Other if action.family == ToolFamily::Foreign => Err(format!(
             "`{}` is not a tool rkat-tui or the engine provides",
             action.name
@@ -1070,6 +1105,8 @@ mod tests {
             Some(ToolOrigin::tui(FILE_TOOLS_SOURCE, name))
         } else if NOTE_TOOL_NAMES.contains(&name) {
             Some(ToolOrigin::tui(NOTES_SOURCE, name))
+        } else if name == crate::tools::WEB_FETCH {
+            Some(ToolOrigin::tui(crate::tools::WEB_TOOLS_SOURCE, name))
         } else if let Some(rest) = name.strip_prefix("mcp__") {
             Some(ToolOrigin::mcp(rest.split("__").next().unwrap_or_default()))
         } else if matches!(name, "unknown_tool" | "agent_spawn") {
@@ -1631,6 +1668,85 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// `web_fetch` is reviewed, never tier 1; its subject is the URL as
+    /// parsed, so a rule names it by URL (`https://docs.rs/*`), a deny
+    /// rule first; a foreign tool of its name is judged as foreign.
+    #[test]
+    fn web_fetch_is_reviewed_and_a_rule_matches_its_url() {
+        let (_dir, root) = project();
+        let docs = json!({"url": "https://Docs.rs/serde/latest/serde/"});
+        let args = raw(&docs);
+        let parsed = parse(crate::tools::WEB_FETCH, &args);
+        assert_eq!(
+            parsed.kind,
+            ActionKind::WebFetch {
+                url: "https://Docs.rs/serde/latest/serde/".into()
+            }
+        );
+        assert_eq!(
+            parsed.subjects(&root),
+            ["https://docs.rs/serde/latest/serde/"]
+        );
+        let none = RuleSet::default();
+        assert_eq!(
+            tier(&root, &none, true, crate::tools::WEB_FETCH, &docs),
+            Tier::Classifier
+        );
+        let mut rules = RuleSet::default();
+        rules.push(
+            Rule::new(
+                RuleKind::Allow,
+                crate::tools::WEB_FETCH,
+                Some("https://docs.rs/*"),
+                RuleOrigin::Realm,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            tier(&root, &rules, true, crate::tools::WEB_FETCH, &docs),
+            Tier::AlwaysAllow
+        );
+        // Another host, or a look-alike, is not the rule's.
+        for other in [
+            "https://docs.rs.example.net/serde",
+            "https://example.net/?u=https://docs.rs/x",
+        ] {
+            assert_eq!(
+                tier(
+                    &root,
+                    &rules,
+                    true,
+                    crate::tools::WEB_FETCH,
+                    &json!({ "url": other })
+                ),
+                Tier::Classifier,
+                "{other}"
+            );
+        }
+        rules.push(
+            Rule::new(
+                RuleKind::Deny,
+                crate::tools::WEB_FETCH,
+                Some("https://docs.rs/private/*"),
+                RuleOrigin::Realm,
+            )
+            .unwrap(),
+        );
+        assert!(matches!(
+            tier(
+                &root,
+                &rules,
+                true,
+                crate::tools::WEB_FETCH,
+                &json!({"url": "https://docs.rs/private/x"})
+            ),
+            Tier::UserDeny(_)
+        ));
+        // An MCP server's tool of the same name is foreign.
+        let foreign = Action::parse(crate::tools::WEB_FETCH, &args, Some(&ToolOrigin::mcp("x")));
+        assert_eq!(foreign.kind, ActionKind::Other);
     }
 
     #[test]

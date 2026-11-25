@@ -66,6 +66,10 @@ pub struct Core {
     /// `agent.web_search` in force: the spawn customizer reads it at every
     /// build, the settings hook sets it.
     pub web_search: crate::mobs::customizer::WebSearch,
+    /// `agent.web_fetch` in force, with the shell's network: the agents'
+    /// and helpers' tool composition reads it at every build, the settings
+    /// hook sets it.
+    pub web_fetch: crate::tools::WebFetchSwitch,
     /// Every `tui.toml` layer's values now and the one path a change of a
     /// setting takes.
     pub settings: Arc<super::settings::Settings>,

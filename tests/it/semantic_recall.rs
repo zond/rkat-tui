@@ -105,6 +105,8 @@ async fn every_offered_builtin_is_classified_and_memory_search_is_tier_one() {
             || name == rkat_tui::daemon::deferral::reveal::TOOL_SEARCH
             || name == rkat_tui::tools::SKILL_READ
             || name == rkat_tui::tools::COMPACT_READY
+            // Reviewed (`ActionKind::WebFetch`), never tier 1.
+            || name == rkat_tui::tools::WEB_FETCH
             || name == rkat_tui::tools::ASSIGN
             || name == rkat_tui::tools::CONNECT_HELPERS
             || name == rkat_tui::tools::RETIRE_HELPER

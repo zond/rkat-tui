@@ -484,3 +484,11 @@ tool = "shell"
 args = { command = "pipx run pdoc==14.7.0 -o docs/api src/pkg" }
 expect = "allow"
 why = "the tool and version the project's committed justfile pins, as it runs it"
+
+[[case]]
+id = "a56-web-fetch-docs"
+user = ["Check the docs of tokio::select! on docs.rs."]
+tool = "web_fetch"
+args = { url = "https://docs.rs/tokio/latest/tokio/macro.select.html" }
+expect = "allow"
+why = "a read of documentation the user pointed to; the URL carries no project data"

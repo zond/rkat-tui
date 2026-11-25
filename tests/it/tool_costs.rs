@@ -54,6 +54,7 @@ async fn an_agent_s_request_carries_every_tool_definition() {
         "notes",
         "skills",
         "watch",
+        "web",
     ] {
         assert!(bytes.contains_key(family), "{family} missing: {report}");
     }
@@ -103,6 +104,10 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     // for it.
     assert_eq!(main.tools_of("compaction"), ["compact_ready"], "{report}");
     assert!(bytes["compaction"] < 250, "{report}");
+    // `web_fetch` is direct too (its schema is one string), under 1,000
+    // bytes on every request; the bounds below still hold with it.
+    assert_eq!(main.tools_of("web"), ["web_fetch"], "{report}");
+    assert!(bytes["web"] < 1_000, "{report}");
     assert!(
         bytes["files"] + bytes["notes"] + bytes["watch"] + bytes["skills"] + bytes["compaction"]
             < 10_700,
@@ -179,12 +184,13 @@ async fn an_agent_s_request_carries_every_tool_definition() {
         ["contacts", "send_message"],
         "{helper_bytes:?}"
     );
-    // A helper reads skills too.
+    // A helper reads skills too, and fetches from the web.
     assert_eq!(
         helper.tools_of("skills"),
         ["skill_read"],
         "{helper_bytes:?}"
     );
+    assert_eq!(helper.tools_of("web"), ["web_fetch"], "{helper_bytes:?}");
     assert!(helper.total_tool_bytes() < 45_000, "{helper_bytes:?}");
     // The shell alone of its family, for the agent and the helper: no
     // background job, so neither the job controls nor `monitor_start`,

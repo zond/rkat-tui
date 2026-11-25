@@ -2797,11 +2797,12 @@ fn args_full(action: &Action<'_>) -> Option<String> {
     (text.len() > ARGS_PREVIEW_BYTES).then_some(text)
 }
 
-/// The arguments as the dialog shows them: a shell call's command, else
-/// the arguments pretty-printed.
+/// The arguments as the dialog shows them: a shell call's command, a
+/// `web_fetch`'s URL, else the arguments pretty-printed.
 fn args_text(action: &Action<'_>) -> String {
     match &action.kind {
         ActionKind::Shell { command, .. } => command.clone(),
+        ActionKind::WebFetch { url } => url.clone(),
         _ => {
             let args = super::policy::pretty_args(action.args);
             match super::policy::schedule_summary(action.name, action.args) {
@@ -2973,6 +2974,8 @@ mod tests {
             ToolOrigin::tui(NOTES_SOURCE, name)
         } else if name == crate::tools::SKILL_READ {
             ToolOrigin::tui(crate::tools::SKILL_TOOLS_SOURCE, name)
+        } else if name == crate::tools::WEB_FETCH {
+            ToolOrigin::tui(crate::tools::WEB_TOOLS_SOURCE, name)
         } else if let Some(rest) = name.strip_prefix("mcp__") {
             ToolOrigin::mcp(rest.split("__").next().unwrap_or_default())
         } else {
@@ -3054,6 +3057,16 @@ mod tests {
         timeout: Duration,
         granted: super::super::classifier::GrantedDirs,
     ) -> Rig {
+        settings_rig(verdicts, timeout, granted, auto_defaults())
+    }
+
+    /// [`granted_rig`] with `settings` for the `[auto]` defaults.
+    fn settings_rig(
+        verdicts: Vec<Result<ClassifierVerdict, ClassifierError>>,
+        timeout: Duration,
+        granted: super::super::classifier::GrantedDirs,
+        settings: AutoSettings,
+    ) -> Rig {
         let dir = tempfile::tempdir().unwrap();
         let root = ProjectRoot::new(dir.path()).unwrap();
         let classifier = Scripted::new(verdicts);
@@ -3062,7 +3075,7 @@ mod tests {
         let engine = ApprovalEngine::new(ApprovalConfig {
             root: root.clone(),
             rules: RuleSet::default(),
-            settings: auto_defaults(),
+            settings,
             mode: PermissionMode::Auto,
             classifier: Arc::clone(&classifier) as Arc<dyn ActionClassifier>,
             broker: Some(broker),
@@ -6554,6 +6567,89 @@ mod tests {
         assert!(rig.engine.agent_written(&rig.session).is_empty());
         assert!(rig.engine.transcript(&rig.session).is_none());
         assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    /// `web_fetch` per mode: auto mode's classifier reviews it with the
+    /// project's and the trusted hosts in front of it (as for a shell
+    /// command naming a host), manual mode asks with the URL as the
+    /// dialog's text, plan mode denies it; a review's allow is not served
+    /// to another URL.
+    #[tokio::test]
+    async fn web_fetch_is_reviewed_in_auto_asked_in_manual_and_denied_in_plan() {
+        let mut settings = auto_defaults();
+        settings.trusted_hosts = vec![super::super::hosts::TrustedHost {
+            pattern: "*.corp.example".into(),
+            origins: vec![super::super::hosts::HostOrigin::User],
+        }];
+        let mut rig = settings_rig(
+            vec![],
+            DEFAULT_ESCALATION_TIMEOUT,
+            super::super::classifier::GrantedDirs::default(),
+            settings,
+        );
+        rig.present = attended(&rig.engine);
+        let docs = json!({"url": "https://docs.example.org/guide"});
+        assert!(
+            call(&rig, "w1", crate::tools::WEB_FETCH, &docs)
+                .await
+                .is_allowed()
+        );
+        assert_eq!(rig.classifier.calls(), 1);
+        let prompt = rig.classifier.prompts.lock()[0].clone();
+        assert!(
+            prompt.contains(super::super::prompts::TRUSTED_HOSTS_NOTE),
+            "{prompt}"
+        );
+        assert!(prompt.contains("- *.corp.example"), "{prompt}");
+        assert!(
+            prompt.contains(super::super::prompts::REMOTE_CHANGE_NOTE),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("https://docs.example.org/guide"),
+            "{prompt}"
+        );
+        let other = json!({"url": "https://paste.example.net/?d=secret"});
+        let _ = call(&rig, "w2", crate::tools::WEB_FETCH, &other).await;
+        assert_eq!(rig.classifier.calls(), 2, "another URL is reviewed again");
+
+        rig.engine.set_mode(PermissionMode::Manual);
+        let task = {
+            let engine = Arc::clone(&rig.engine);
+            let session = rig.session.clone();
+            tokio::spawn(async move {
+                call_as(
+                    &engine,
+                    &session,
+                    "w3",
+                    crate::tools::WEB_FETCH,
+                    &json!({"url": "https://docs.example.org/other"}),
+                )
+                .await
+            })
+        };
+        let request = rig.escalations.recv().await.unwrap();
+        assert_eq!(request.prompt.shown.tool, crate::tools::WEB_FETCH);
+        assert_eq!(
+            request.prompt.shown.args_preview,
+            "https://docs.example.org/other"
+        );
+        assert_eq!(
+            request.prompt.shown.subjects,
+            ["https://docs.example.org/other"]
+        );
+        request.respond.send(HumanDecision::AllowOnce).unwrap();
+        assert!(task.await.unwrap().is_allowed());
+        assert_eq!(rig.classifier.calls(), 2, "manual mode asks, never reviews");
+
+        rig.engine.set_mode(PermissionMode::Plan);
+        assert!(matches!(
+            call(&rig, "w4", crate::tools::WEB_FETCH, &docs).await,
+            Verdict::Deny {
+                reason: DenyReason::PlanMode,
+                ..
+            }
+        ));
     }
 
     /// A shell command padded past 1 KiB, its payload at the end, reaches the classifier

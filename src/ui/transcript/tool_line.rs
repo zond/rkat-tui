@@ -376,6 +376,11 @@ const RULES: &[Rule] = &[
         outcome: no_outcome,
     },
     Rule {
+        tools: &[crate::tools::WEB_FETCH],
+        head: |_, args, _| Head::new("fetch", str_arg(args, "url"), Cut::Middle),
+        outcome: |_, _, result| web_outcome(result),
+    },
+    Rule {
         tools: &["tool_search"],
         head: |_, args, _| {
             let query = args
@@ -460,6 +465,29 @@ const RULES: &[Rule] = &[
         outcome: no_outcome,
     },
 ];
+
+/// A `web_fetch`'s status and content type from its first line
+/// (`<url> — 200 OK, text/html`): a status outside 2xx is a failure, a
+/// redirect to another host says it was not followed.
+fn web_outcome(result: &str) -> Outcome {
+    let Some((_, rest)) = result
+        .lines()
+        .next()
+        .and_then(|first| first.split_once(answers::STATUS_SEPARATOR))
+    else {
+        return Outcome::default();
+    };
+    if let Some((status, _)) = rest.split_once(&format!(", {}", answers::NOT_FOLLOWED)) {
+        return Outcome::said(format!("{status}, not followed: another host"));
+    }
+    let rest = rest.split(": ").next().unwrap_or(rest);
+    let rest = rest.trim_end_matches(" (converted to Markdown)");
+    if rest.starts_with('2') {
+        Outcome::said(rest)
+    } else {
+        Outcome::failure(rest)
+    }
+}
 
 fn no_outcome(_: &str, _: &Value, _: &str) -> Outcome {
     Outcome::default()
@@ -1119,6 +1147,10 @@ mod tests {
         assert_eq!(line("note_save", json!({"name": "style"})), "note style");
         assert_eq!(line("skill_read", json!({})), "skills");
         assert_eq!(
+            line("web_fetch", json!({"url": "https://docs.rs/serde"})),
+            "fetch https://docs.rs/serde"
+        );
+        assert_eq!(
             line("tool_search", json!({"query": "mob"})),
             "tools \"mob\""
         );
@@ -1210,6 +1242,40 @@ mod tests {
         let failed = outcome("shell", &json!({}), "exit code 101 (3.0s)\nerror");
         assert_eq!(failed.text.as_deref(), Some("exit 101"));
         assert!(failed.failed);
+        // `web_fetch`: the status and the type from its first line.
+        assert_eq!(
+            o(
+                "web_fetch",
+                json!({}),
+                "https://docs.rs/ — 200 OK, text/html (converted to Markdown)\n[untrusted]"
+            ),
+            Some("200 OK, text/html".into())
+        );
+        let missing = outcome(
+            "web_fetch",
+            &json!({}),
+            "https://docs.rs/x — 404 Not Found, text/plain\n",
+        );
+        assert_eq!(missing.text.as_deref(), Some("404 Not Found, text/plain"));
+        assert!(missing.failed);
+        assert_eq!(
+            o(
+                "web_fetch",
+                json!({}),
+                "https://a.example/ — 302 Found, redirect to another host, not followed: https://b.example/\n"
+            ),
+            Some("302 Found, not followed: another host".into())
+        );
+        assert_eq!(
+            outcome(
+                "web_fetch",
+                &json!({}),
+                "https://a.example/i.png — 200 OK, image/png, 8 bytes: web_fetch returns text only"
+            )
+            .text
+            .as_deref(),
+            Some("200 OK, image/png, 8 bytes")
+        );
         assert_eq!(
             o(
                 "shell",

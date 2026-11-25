@@ -114,6 +114,8 @@ globset = "0.4"
 notify = "8"
 regex = "1"
 similar = "2"
+# `web_fetch`: an HTML page as Markdown (html5ever's parser, Apache-2.0).
+htmd = "0.6"
 
 # Ctrl+Z: stop the process with SIGTSTP (job control).
 [target.'cfg(unix)'.dependencies]

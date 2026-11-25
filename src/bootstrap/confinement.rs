@@ -1100,6 +1100,16 @@ pub fn confined_environment(
 }
 
 impl ConfinementPlan {
+    /// Whether the agents' shell may reach the IP network: the trusted host
+    /// (`off`, `external`) and a requirement with the network unrestricted
+    /// (`workspace`) may; `strict` (denied) and any narrower network grant
+    /// may not. `web_fetch` runs in the daemon, outside the sandbox, so it
+    /// is offered only where this holds ([`shell_network`]).
+    #[must_use]
+    pub fn shell_network(&self) -> bool {
+        shell_network(&self.shell)
+    }
+
     /// The lowered requirement, `None` for `off`.
     #[must_use]
     #[cfg(test)]
@@ -1108,6 +1118,19 @@ impl ConfinementPlan {
             ShellConfinement::Required { requirement } => Some(requirement),
             ShellConfinement::TrustedHost => None,
         }
+    }
+}
+
+/// Whether a shell confined by `shell` may reach the IP network
+/// ([`ConfinementPlan::shell_network`]).
+#[must_use]
+pub fn shell_network(shell: &ShellConfinement) -> bool {
+    match shell {
+        ShellConfinement::TrustedHost => true,
+        ShellConfinement::Required { requirement } => matches!(
+            requirement.specification().network,
+            IpNetworkAccess::Unrestricted
+        ),
     }
 }
 
@@ -1399,6 +1422,33 @@ mod tests {
         );
         // No Cargo home: nothing granted.
         assert_eq!(CargoHome::of(&home.join("missing")), CargoHome::default());
+    }
+
+    /// The network fact `web_fetch` is offered by: the trusted host and
+    /// `workspace` have the network, `strict` and a narrower grant do not.
+    #[test]
+    fn the_shell_has_the_network_unless_its_sandbox_denies_it() {
+        let f = fixture();
+        assert!(shell_network(&ShellConfinement::TrustedHost));
+        for (mode, network) in [
+            (ConfinementArg::Workspace, true),
+            (ConfinementArg::Strict, false),
+        ] {
+            let requirement = lower(mode, &f.ws, &f.host).unwrap().unwrap();
+            assert_eq!(
+                shell_network(&ShellConfinement::Required {
+                    requirement: requirement.clone()
+                }),
+                network,
+                "{mode:?}"
+            );
+            let mut narrowed = requirement.specification().clone();
+            narrowed.network = IpNetworkAccess::Connect(vec!["127.0.0.1:1".parse().unwrap()]);
+            let narrowed = ExecutionConfinement::try_from(narrowed).unwrap();
+            assert!(!shell_network(&ShellConfinement::Required {
+                requirement: narrowed
+            }));
+        }
     }
 
     #[test]

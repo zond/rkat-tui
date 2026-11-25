@@ -48,6 +48,8 @@ use rkat_tui::tools::{FILE_TOOL_NAMES, FILE_TOOLS_SOURCE};
 fn origin(name: &str) -> ToolOrigin {
     if FILE_TOOL_NAMES.contains(&name) {
         ToolOrigin::tui(FILE_TOOLS_SOURCE, name)
+    } else if name == rkat_tui::tools::WEB_FETCH {
+        ToolOrigin::tui(rkat_tui::tools::WEB_TOOLS_SOURCE, name)
     } else {
         ToolOrigin::native(ToolSourceKind::Builtin)
     }

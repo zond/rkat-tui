@@ -348,6 +348,9 @@ pub enum Hook {
     /// The conversations and helpers built from then on take
     /// `agent.web_search`.
     WebSearch,
+    /// The conversations and helpers built from then on take
+    /// `agent.web_fetch`.
+    WebFetch,
 }
 
 /// Every scalar setting in force over `layers` as one table, each value at
@@ -856,6 +859,34 @@ pub fn web_search_in_force(layers: &Layers) -> bool {
         .unwrap_or(true)
 }
 
+/// Whether the agents and helpers are offered `web_fetch`
+/// ([`crate::tools::WEB_FETCH`]): `false` builds every conversation and
+/// helper without it; `true` offers it where the shell's sandbox has the
+/// network. Web search is [`WEB_SEARCH`]'s, and neither touches the other.
+/// A project file may only turn it off.
+pub const WEB_FETCH: Setting = Setting {
+    key: "agent.web_fetch",
+    kind: Kind::Bool,
+    default: Fallback::Bool(true),
+    project: ProjectRule::OnlyFalse,
+    applies: Applies::NextConversation,
+    about: "The `web_fetch` tool (one reviewed HTTP GET of a web page or text document, run by the daemon): `false` builds every conversation and helper started from then on, and a resumed one at its next build, without it; `true` offers it, except where `--confinement strict` denies the shell the network. No effect on web search (`agent.web_search`).",
+    flags: &[],
+    command: None,
+    hook: Hook::WebFetch,
+};
+
+/// [`WEB_FETCH`] in force over `layers`.
+#[must_use]
+pub fn web_fetch_in_force(layers: &Layers) -> bool {
+    WEB_FETCH
+        .resolve(layers)
+        .value
+        .as_ref()
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
 /// [`CHECKPOINT_STEPS`]'s default: the engine's own turn limit.
 pub const DEFAULT_CHECKPOINT_STEPS: u64 = 100;
 /// The fewest model calls a run may make before its checkpoint.
@@ -1114,6 +1145,7 @@ pub static SETTINGS: &[Setting] = &[
     CHECKPOINT_STEPS,
     CHECKPOINT_CONTINUES,
     WEB_SEARCH,
+    WEB_FETCH,
     INSTRUCTION_FILES,
     Setting {
         key: "shell.user_timeout_secs",

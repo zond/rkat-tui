@@ -1,5 +1,6 @@
 //! rkat-tui's own HTTP requests (model lists, LiteLLM model info, the
-//! community price list): the one client builder, bounded body reads (the
+//! community price list, the agents' `web_fetch`): the one client
+//! builder, bounded body reads (the
 //! body is read chunk by chunk and refused once it passes a cap, so a
 //! missing or lying `Content-Length` cannot exhaust memory), and the
 //! lenient reading of fields of documents rkat-tui does not own.
@@ -16,13 +17,39 @@ use serde::Deserialize as _;
 ///
 /// When the client cannot be built.
 pub fn client(url: Option<&str>, timeout: Duration) -> reqwest::Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
+    builder(url, timeout).build()
+}
+
+/// The user agent of `web_fetch`'s requests: the program and its version,
+/// nothing of the user or the project.
+pub const USER_AGENT: &str = concat!("rkat-tui/", env!("CARGO_PKG_VERSION"));
+
+/// [`client`] for `web_fetch` (`crate::tools::web_fetch`) of `url`: the
+/// same proxy and TLS roots, a generic [`USER_AGENT`], and no redirect
+/// followed by the client (the tool follows a redirect within the same
+/// origin itself and reports any other).
+///
+/// # Errors
+///
+/// When the client cannot be built.
+pub fn fetch_client(url: &str, timeout: Duration) -> reqwest::Result<reqwest::Client> {
+    builder(Some(url), timeout)
+        .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}
+
+/// The one client builder: `timeout` for the request and the connect, no
+/// proxy for a loopback `url`.
+fn builder(url: Option<&str>, timeout: Duration) -> reqwest::ClientBuilder {
+    let builder = reqwest::Client::builder()
         .timeout(timeout)
         .connect_timeout(timeout);
     if url.is_some_and(is_loopback_url) {
-        builder = builder.no_proxy();
+        builder.no_proxy()
+    } else {
+        builder
     }
-    builder.build()
 }
 
 /// Whether `url` points at this machine (`localhost`, `127.0.0.0/8`, `::1`).

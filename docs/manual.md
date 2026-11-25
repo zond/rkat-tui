@@ -335,7 +335,8 @@ what its configuration names.
 
 An allow rule for the path allows the write; a deny rule denies it.
 
-**Tier 3**: other shell commands, MCP tools, web search, other messages,
+**Tier 3**: other shell commands, MCP tools, web search, `web_fetch`
+(its subject is the URL), other messages,
 mutating `mob_*` tools, schedule changes, paths outside the project and
 your granted directories, and user-level notes (they reach every
 project's system prompt). A tool counts as a builtin, file or note tool
@@ -347,7 +348,8 @@ the classifier.
 prefixes such as `env`, `command`, `sudo`, `nice`, `timeout`, leading
 `VAR=value`, a program's directory (`/usr/bin/git` → `git`) and git's
 global options (`-C <dir>`) stripped; for a file tool, the
-project-relative path. It does not see through a script, `sh -c` or
+project-relative path; for `web_fetch`, the URL as parsed (the host in
+lower case, `https://docs.rs` as `https://docs.rs/`). It does not see through a script, `sh -c` or
 another interpreter, an alias, a function or a variable. Deny rules are a
 convenience; the classifier and the sandbox contain an action.
 
@@ -1317,6 +1319,7 @@ says when a change made while the daemon runs applies.
 | `agent.checkpoint_steps`: The model calls one run of an agent or a helper makes before a checkpoint: it is asked for a short status, the classifier's model judges whether going on is sensible, and it continues or stops (the conversations and helpers started from then on). | a whole number from 10 to 100000 | 100 | may not set it | from the next conversation | — |
 | `agent.checkpoint_continues`: How many checkpoints in a row may continue automatically before the run stops and waits for you (0: every checkpoint stops); a message of yours starts the count again. | a whole number from 0 to 1000 | 5 | may not set it | at once | — |
 | `agent.web_search`: Web search through the model provider: `false` builds every conversation and helper started from then on with the engine's web search off (no provider-native search tool, no fallback `web_search` tool; a conversation built so keeps it off when resumed); `true` leaves it to the engine, which sends none under rkat-tui's approval gate today. | `true` or `false` | true | may only set `false` | from the next conversation | — |
+| `agent.web_fetch`: The `web_fetch` tool (one reviewed HTTP GET of a web page or text document, run by the daemon): `false` builds every conversation and helper started from then on, and a resumed one at its next build, without it; `true` offers it, except where `--confinement strict` denies the shell the network. No effect on web search (`agent.web_search`). | `true` or `false` | true | may only set `false` | from the next conversation | — |
 | `instructions.files`: Files whose text every new conversation and every fresh helper gets in its system prompt, each as an `# Instructions (from <path>)` section after your own AGENTS.md (each capped at 32 KiB, as AGENTS.md is); a file missing or empty is skipped with a warning at start. For a wrapper that tells the agents about the environment it starts rkat-tui in. | a list of absolute file paths, `~` expanded (`["~/notes.md"]`; `/set` also takes `a, b`); the user's, the workspace's and the command line's lists add up | none | may not set it | from the next conversation | — |
 | `shell.user_timeout_secs`: How long a `!` command may run, in seconds. | a whole number from 1 | 120 | may only lower it | at the next start | — |
 | `search.budget_secs`: How long one `glob` or `grep` may run before it answers with what it found, in seconds. | a whole number from 1 | 10 | may only lower it | at the next start | — |
@@ -1430,6 +1433,41 @@ conversation built with `false` keeps it off when it is resumed, also
 after you set `true` again; one built before keeps the engine's choice
 until the daemon builds it again (after a restart), which then turns it
 off.
+
+**Web fetch.** The agents and helpers read a web page or a text document
+with `web_fetch`, so they need not run `curl` in the shell for it. It
+makes one HTTP GET (no headers, no body) of an absolute `http://` or
+`https://` URL through rkat-tui's own HTTP client (your proxy
+environment applies; the user agent is `rkat-tui/<version>`). HTML comes
+back as Markdown, other text (plain, JSON, XML) as it is; images,
+archives, PDFs and other binary types are refused with their type and
+size, for the shell to download. A redirect within the same scheme,
+host and port is followed, at most 5; one to anywhere else is reported
+with its target and not followed, so the agent calls `web_fetch` again
+with that URL and that call is reviewed on its own. A call ends after
+30 seconds, reads at most 5 MiB and returns at most 100000 characters,
+saying when it cut; it ends with the run when you interrupt. The result
+starts with the URL, the status and the content type, and marks the body
+as untrusted content from the web. A status outside 2xx is a result,
+not an error.
+
+Every call is reviewed, never allowed as read-only, because the URL
+itself can carry data out: auto mode's classifier judges it (with the
+project's own hosts and your `auto.trusted_hosts` in front of it, as for
+a shell command naming a host), manual and accept-edits mode ask (the
+dialog and the transcript line show the URL), plan mode denies it. A
+rule names it by its URL: `allow = [{ tool = "web_fetch", arg =
+"https://docs.rs/*" }]` (a deny rule likewise).
+
+`web_fetch` runs in the daemon, outside the shell's sandbox, so it is
+never a way around it: under `--confinement strict`, where the shell has
+no network, it is not offered at all. `workspace` (the default),
+`--no-confinement` and `--confinement external` offer it.
+`agent.web_fetch = false` (`--set agent.web_fetch=false`, `/set`,
+`tui.toml`; a project file may only set `false`) builds every
+conversation and helper started from then on, and a resumed one at its
+next build, without it. It is a setting apart from `agent.web_search`:
+neither changes what the other does.
 
 ### Choosing a model
 

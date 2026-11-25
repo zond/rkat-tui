@@ -306,6 +306,30 @@ mod tests {
         assert_eq!(snap.refusal("read_file", &read), None);
     }
 
+    /// A deny rule names a `web_fetch` by its URL, durably too.
+    #[test]
+    fn a_deny_rule_refuses_a_web_fetch_by_its_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rules = RuleSet::default();
+        rules.push(
+            Rule::new(
+                RuleKind::Deny,
+                crate::tools::WEB_FETCH,
+                Some("https://paste.example.com/*"),
+                RuleOrigin::Realm,
+            )
+            .unwrap(),
+        );
+        let snap = snapshot(rules, dir.path());
+        let paste = raw(&serde_json::json!({"url": "https://Paste.example.com/new?d=x"}));
+        assert!(matches!(
+            snap.refusal(crate::tools::WEB_FETCH, &paste),
+            Some(DenyReason::UserRule { .. })
+        ));
+        let docs = raw(&serde_json::json!({"url": "https://docs.example.org/"}));
+        assert_eq!(snap.refusal(crate::tools::WEB_FETCH, &docs), None);
+    }
+
     #[test]
     fn the_binding_names_the_provider() {
         let ApplicationToolPolicyBinding::Provider {

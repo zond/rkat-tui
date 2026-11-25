@@ -137,6 +137,10 @@ pub struct Composed {
     /// `agent.web_search` in force (the customizer reads it per build; the
     /// settings hook sets it).
     pub web_search: crate::mobs::customizer::WebSearch,
+    /// `agent.web_fetch` in force with the shell's network (the agents'
+    /// and helpers' tool composition reads it per build; the settings hook
+    /// sets it).
+    pub web_fetch: crate::tools::WebFetchSwitch,
     /// The mobs' definitions the customizer seats members by; followed
     /// once the workspace's mob is ensured ([`crate::mobs::profiles`]).
     pub profiles: Arc<crate::mobs::profiles::MobProfiles>,
@@ -344,6 +348,13 @@ pub fn compose(
     let web_search = crate::mobs::customizer::WebSearch::new(
         crate::config::registry::web_search_in_force(&layers),
     );
+    // `agent.web_fetch`, and whether the shell's sandbox has the network:
+    // `web_fetch` runs here, outside it, so it is offered only where the
+    // shell could reach the web itself.
+    let web_fetch_switch =
+        crate::tools::WebFetchSwitch::new(crate::config::registry::web_fetch_in_force(&layers))
+            .with_shell_network(confinement.shell_network());
+    let web_fetch = Arc::new(crate::tools::WebFetchDispatcher::new());
     let daemon_endpoints = endpoints.clone();
     // `assign` for every agent and helper, held to `helpers.max_live`; it
     // seats through the mob state made below.
@@ -376,6 +387,8 @@ pub fn compose(
         prepare: Arc::clone(&prepare),
         helper_models: Arc::clone(&helper_models),
         revisions: Arc::clone(&revisions),
+        web_fetch_switch: web_fetch_switch.clone(),
+        web_fetch: Arc::clone(&web_fetch),
     });
     let root_plan = RootPlan {
         model: choice.engine_model.clone(),
@@ -399,10 +412,13 @@ pub fn compose(
     };
     let project_root = scope.project_root.clone();
     let helper_skills = Arc::clone(&skill_tools);
+    let helper_web_fetch = web_fetch_switch.clone();
     let helper_tools: HelperTools = Arc::new(move || {
         let files =
             FileToolDispatcher::new(project_root.clone(), None).with_search_limits(search_limits);
-        helper_external_tools(files, &helper_skills, &assign_tools)
+        // `agent.web_fetch` as it is at this helper's build.
+        let fetch = helper_web_fetch.offered().then(|| Arc::clone(&web_fetch));
+        helper_external_tools(files, &helper_skills, &assign_tools, fetch)
     });
     // The daemon follows its helpers: the
     // registry's running set (and how each ends), and each helper's
@@ -583,6 +599,7 @@ pub fn compose(
             helper_models,
             instruction_files,
             web_search,
+            web_fetch: web_fetch_switch,
             profiles,
             revisions,
             contacts,
@@ -801,11 +818,14 @@ fn tool_origins(
     ),
     DaemonError,
 > {
+    // `web_fetch` named whatever `agent.web_fetch` is now: a later change of it
+    // offers the tool to the builds from then on.
     let catalog = agent_tools(
         FileToolDispatcher::new(scope.project_root.clone(), None),
         notes,
         skills,
         None,
+        Some(Arc::new(crate::tools::WebFetchDispatcher::new())),
     )?;
     let deferrable = Arc::new(super::deferral::Deferrable::new());
     let reveals = Arc::new(super::deferral::reveal::Reveals::new(&scope.realm_root()));
@@ -1057,10 +1077,15 @@ struct AgentHost {
     /// How this build's own sections are seated (tests: an earlier
     /// build's).
     revisions: Arc<super::instructions::Instructions>,
+    /// `agent.web_fetch` in force, with the shell's network.
+    web_fetch_switch: crate::tools::WebFetchSwitch,
+    /// `web_fetch` (one for every agent and helper: it holds no state).
+    web_fetch: Arc<crate::tools::WebFetchDispatcher>,
 }
 
 impl crate::mobs::customizer::RootHost for AgentHost {
-    /// The agent's file, note, skill and watch tools.
+    /// The agent's file, note, skill and watch tools, and `web_fetch` when
+    /// `agent.web_fetch` and the shell's sandbox allow it at this build.
     fn tools(&self, identity: &meerkat_mob::AgentIdentity) -> Arc<dyn AgentToolDispatcher> {
         let diffs = tagged_diffs(
             identity.to_string(),
@@ -1094,6 +1119,9 @@ impl crate::mobs::customizer::RootHost for AgentHost {
             &self.notes,
             &self.skills,
             Some((watch, compact, Arc::clone(&self.assign))),
+            self.web_fetch_switch
+                .offered()
+                .then(|| Arc::clone(&self.web_fetch)),
         ) {
             Ok(tools) => tools,
             Err(err) => {
@@ -1154,21 +1182,25 @@ impl crate::mobs::customizer::RootHost for AgentHost {
     }
 }
 
-/// A helper's external tools: its file tools and the shared skill tool
-/// (a helper's prompt lists the skills too). The file tools alone when
-/// the two cannot be composed (they could at start, for the agents).
+/// A helper's external tools: its file tools, the shared skill tool (a
+/// helper's prompt lists the skills too), `assign`, and `web_fetch` when
+/// `fetch` holds it. The file tools alone when they cannot be composed
+/// (they could at start, for the agents).
 fn helper_external_tools(
     files: FileToolDispatcher,
     skills: &Arc<crate::tools::SkillToolDispatcher>,
     assign: &Arc<crate::tools::AssignToolDispatcher>,
+    fetch: Option<Arc<crate::tools::WebFetchDispatcher>>,
 ) -> Arc<dyn AgentToolDispatcher> {
     let files = Arc::new(files);
-    match ToolGatewayBuilder::new()
+    let mut builder = ToolGatewayBuilder::new()
         .add_dispatcher(Arc::clone(&files) as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(Arc::clone(skills) as Arc<dyn AgentToolDispatcher>)
-        .add_dispatcher(Arc::clone(assign) as Arc<dyn AgentToolDispatcher>)
-        .build()
-    {
+        .add_dispatcher(Arc::clone(assign) as Arc<dyn AgentToolDispatcher>);
+    if let Some(fetch) = fetch {
+        builder = builder.add_dispatcher(fetch as Arc<dyn AgentToolDispatcher>);
+    }
+    match builder.build() {
         Ok(gateway) => Arc::new(gateway),
         Err(err) => {
             tracing::error!(error = %err, "a helper's skill tool could not be composed");
@@ -1187,13 +1219,15 @@ type AgentOwn = (
 /// One agent's external tools: its own file tools (`files`, reporting
 /// every change they make as a diff the clients show), the shared note
 /// and skill tools, its watch tools and its `compact_ready`, behind one
-/// gateway. Without `own` (the catalog read at start) the watch tools
-/// and `compact_ready` are named over hosts that do nothing.
+/// gateway, and `web_fetch` when `fetch` holds it. Without `own` (the
+/// catalog read at start) the watch tools and `compact_ready` are named
+/// over hosts that do nothing.
 fn agent_tools(
     files: FileToolDispatcher,
     notes: &Arc<NoteToolDispatcher>,
     skills: &Arc<crate::tools::SkillToolDispatcher>,
     own: Option<AgentOwn>,
+    fetch: Option<Arc<crate::tools::WebFetchDispatcher>>,
 ) -> Result<Arc<dyn AgentToolDispatcher>, DaemonError> {
     let files = Arc::new(files);
     let (watch, compact, assign) = own.unwrap_or_else(|| {
@@ -1211,15 +1245,17 @@ fn agent_tools(
             )),
         )
     });
-    let gateway = ToolGatewayBuilder::new()
+    let mut builder = ToolGatewayBuilder::new()
         .add_dispatcher(files as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(Arc::clone(notes) as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(Arc::clone(skills) as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(watch as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(compact as Arc<dyn AgentToolDispatcher>)
-        .add_dispatcher(assign as Arc<dyn AgentToolDispatcher>)
-        .build()
-        .map_err(TuiError::ToolGateway)?;
+        .add_dispatcher(assign as Arc<dyn AgentToolDispatcher>);
+    if let Some(fetch) = fetch {
+        builder = builder.add_dispatcher(fetch as Arc<dyn AgentToolDispatcher>);
+    }
+    let gateway = builder.build().map_err(TuiError::ToolGateway)?;
     Ok(Arc::new(gateway))
 }
 

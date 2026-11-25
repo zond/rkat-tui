@@ -112,6 +112,7 @@ fn typed_value(key: &str, layered: &Layered) -> Option<Value> {
             int(int_in_force(Setting::find(key).unwrap(), &layered.layers))
         }
         "agent.web_search" => to(Value::Boolean(web_search_in_force(&layered.layers))),
+        "agent.web_fetch" => to(Value::Boolean(web_fetch_in_force(&layered.layers))),
         // Read where they apply, expanded (the samples are absolute).
         "instructions.files" => {
             let files = instruction_files_in_force(&layered.layers);

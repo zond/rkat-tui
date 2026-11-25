@@ -88,7 +88,8 @@ impl Local {
             | Hook::CheckpointSteps
             | Hook::HelperLimit
             | Hook::InstructionFiles
-            | Hook::WebSearch => {
+            | Hook::WebSearch
+            | Hook::WebFetch => {
                 return Ok(());
             }
         }
@@ -245,6 +246,22 @@ impl Local {
                     "the conversations and helpers started from now on are built with the engine's web search as it comes (a conversation built with it off keeps it off)"
                 } else {
                     "the conversations and helpers started from now on, and a resumed one at its next build, are built with web search off"
+                };
+                (vec![line.to_string()], None)
+            }
+            Hook::WebFetch => {
+                let on = crate::config::registry::web_fetch_in_force(&self.core.settings.layers());
+                self.core.web_fetch.set(on);
+                let line = match (on, self.core.web_fetch.shell_network()) {
+                    (true, true) => {
+                        "the conversations and helpers started from now on, and a resumed one at its next build, get web_fetch"
+                    }
+                    (true, false) => {
+                        "web_fetch stays off: the shell's sandbox denies the network (--confinement strict), and web_fetch would be a way around it"
+                    }
+                    (false, _) => {
+                        "the conversations and helpers started from now on, and a resumed one at its next build, are built without web_fetch"
+                    }
                 };
                 (vec![line.to_string()], None)
             }

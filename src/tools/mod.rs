@@ -1,7 +1,8 @@
 //! In-crate file tools: `read_file`, `write_file`, `edit_file`, `glob`, `grep`,
 //! the watch tools `watch_paths` and `unwatch` ([`WatchToolDispatcher`]),
-//! the skill tool `skill_read` ([`SkillToolDispatcher`]) and the agents'
-//! `compact_ready` ([`CompactToolDispatcher`]).
+//! the skill tool `skill_read` ([`SkillToolDispatcher`]), the agents'
+//! `compact_ready` ([`CompactToolDispatcher`]) and `web_fetch`
+//! ([`WebFetchDispatcher`]).
 //!
 //! [`FileToolDispatcher`] implements [`AgentToolDispatcher`] and is injected
 //! into sessions as an external tool source. It is deliberately policy-free:
@@ -31,6 +32,7 @@ mod read_only;
 mod scan;
 mod skill;
 mod watch;
+mod web_fetch;
 mod write;
 
 pub use assign::{
@@ -56,6 +58,7 @@ pub(crate) mod answers {
     pub(crate) use super::grep::NO_MATCHES;
     pub(crate) use super::read::{EMPTY_FILE, FILE_TRUNCATED, SHOWING_LINES};
     pub(crate) use super::scan::{NOTE, PARTIAL, STOPPED_BEFORE};
+    pub(crate) use super::web_fetch::{NOT_FOLLOWED, STATUS_SEPARATOR};
     pub(crate) use super::write::CREATED;
 }
 pub use scan::{DEFAULT_SEARCH_BUDGET_SECS, DEFAULT_SEARCH_MAX_ENTRIES};
@@ -66,6 +69,7 @@ pub use skill::{
     with_runtime as with_skill_runtime,
 };
 pub use watch::{UNWATCH, WATCH_PATHS, WATCH_TOOLS_SOURCE, WatchHost, WatchToolDispatcher};
+pub use web_fetch::{WEB_FETCH, WEB_TOOLS_SOURCE, WebFetchDispatcher, WebFetchSwitch};
 
 /// The catalog support of a dispatcher whose tool list is fixed when it is
 /// built: its `tool_catalog` (the default, mirroring `tools`) is exact.
@@ -348,6 +352,7 @@ pub fn example_call(tool: &str) -> Option<&'static str> {
         crate::memory::NOTE_LIST => r#"{"scope": "workspace"}"#,
         watch::WATCH_PATHS => r#"{"patterns": ["src/**/*.rs"], "once": true}"#,
         watch::UNWATCH => r#"{"id": 1}"#,
+        web_fetch::WEB_FETCH => r#"{"url": "https://docs.rs/serde/latest/serde/"}"#,
         _ => return None,
     })
 }

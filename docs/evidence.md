@@ -15409,3 +15409,79 @@ the_command_line_wins_over_a_file_server_of_its_name}`,
 `client::launch::tests::{the_daemon_gets_every_shared_engine_flag_and_no_ui_flag,
 every_engine_flag_reaches_the_daemon}`,
 `mcp_servers::a_command_line_stdio_server_starts_with_the_daemon_s_environment`.
+
+## `web_fetch` and `agent.web_fetch` (2026-11-25)
+
+The agents fetched web pages with `curl` in the shell. `web_fetch`
+(`src/tools/web_fetch.rs`) is rkat-tui's own tool beside the file tools:
+one GET of an absolute `http`/`https` URL, mounted for every agent
+(`daemon::engine::AgentHost::tools`) and every helper (the customizer's
+`HelperTools`) per build, always in the tool list (one string argument,
+about 900 bytes of definition), never behind `tool_search`.
+
+Decisions:
+
+- **Two settings.** The owner first asked for one switch over all web
+  access, then decided on two: `agent.web_search` stays exactly as it was
+  (the engine's category), and `agent.web_fetch` (same shape: bool,
+  default `true`, a project file may only turn it off, from the next
+  build, `Hook::WebFetch`) decides only the tool. Neither touches the
+  other (`config::tests::web_fetch_is_on_unless_a_layer_turns_it_off_and_is_apart_from_web_search`,
+  `web_fetch::web_search_off_leaves_web_fetch_offered`).
+- **Client.** `http::fetch_client`: the crate's one builder (reqwest's
+  proxy environment, rustls with its bundled roots, no proxy for a
+  loopback URL), user agent `rkat-tui/<version>`, redirects off. The
+  tool follows a redirect within the same scheme, host and port (at most
+  5) and reports any other with its target, unfetched, so an approval of
+  one host never covers another.
+- **Limits.** 30 s for the whole call (redirects included, a
+  `tokio::time::timeout` around it); the body read stops at 5 MiB; at
+  most 100000 characters returned (2000 of a non-2xx body), each cut
+  said. Cancellation needs no flag: the request lives in the call's
+  future, which the engine drops at an interrupt, and the connection
+  closes with it (`a_dropped_call_closes_its_connection`).
+- **Content.** One dependency for HTML: `htmd` 0.6 (Apache-2.0, over
+  `html5ever` and `ego-tree`; `html2text` pulls the same parser plus
+  more, and gives text without links). `script`, `style`, `head` and
+  the like are skipped. Bodies decode as lossy UTF-8: reqwest is built
+  without its `charset` feature, and its charset decoding reads the body
+  whole, past the cap. Binary types are refused unread, with their type
+  and size. `cargo deny check` stays green with `deny.toml` unchanged.
+- **Approval.** `ActionKind::WebFetch` (`approval::policy`): reviewed,
+  never tier 1 (the URL can carry data out); its rule subject is the URL
+  as parsed, so `{ tool = "web_fetch", arg = "https://docs.rs/*" }`
+  matches; the durable deny policy sees it through the file tools'
+  origin (`daemon::policy`). Per mode as the nearest analogues (MCP
+  tools, `web_search`): auto reviews, manual and accept-edits ask, plan
+  denies unless an allow rule names it. The dialog's text and the
+  transcript line are the URL. The classifier's environment, with the
+  project's hosts and `auto.trusted_hosts`, is part of every review's
+  prompt, so a `web_fetch` review has it as a shell command's does, and
+  `hosts::hosts_in` finds the URL's host for a D5 block's trust hint.
+  Two corpus cases: `a56-web-fetch-docs` (allow) and
+  `b66-web-fetch-carries-a-secret-out` (block).
+- **No network, no tool.** `web_fetch` runs in the daemon, outside the
+  sandbox. `ConfinementPlan::shell_network` reads the plan's own
+  network fact (`TrustedHost`, or `IpNetworkAccess::Unrestricted`): under
+  `--confinement strict` (`Denied`, or any narrower grant) the tool is
+  not offered whatever the setting says.
+- **Mutation class** left `Unknown`: nothing in the workspace changes,
+  but declaring it read-only would let an engine read-only access policy
+  admit it.
+
+Tests: `tools::web_fetch::tests::*` (HTML as Markdown with the status and
+untrusted lines and the user agent, JSON as is, a binary type refused,
+the byte and text caps, the same-origin redirect, the loop limit, the
+cross-host redirect reported with the second server unrequested, a
+non-2xx result, bad URLs, the timeout, a dropped call, the switch),
+`approval::policy::tests::web_fetch_is_reviewed_and_a_rule_matches_its_url`,
+`approval::engine::tests::web_fetch_is_reviewed_in_auto_asked_in_manual_and_denied_in_plan`,
+`approval::hosts::tests::the_hosts_an_action_names_are_found`,
+`daemon::policy::tests::a_deny_rule_refuses_a_web_fetch_by_its_url`,
+`bootstrap::confinement::tests::the_shell_has_the_network_unless_its_sandbox_denies_it`,
+`ui::transcript::tool_line::tests::*`, `web_fetch::*` (offered by
+default to the agent and a fresh helper, withheld by
+`agent.web_fetch=false` with the web search category untouched, kept by
+`agent.web_search=false`, a call through the gate),
+`confinement::web_fetch_is_offered_only_where_the_shell_has_the_network`,
+`tool_costs::an_agent_s_request_carries_every_tool_definition`.

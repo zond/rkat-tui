@@ -195,6 +195,11 @@ repository). Open upstream issues this code waits on:
 - #2560 (filed 2026-11-25): the OpenAI dialect clients replaying another
   provider's tool-call id unchanged (a long one is refused: `call_id` max
   64). Our filter `src/daemon/call_ids.rs` goes when it ships.
+- #2579 (filed 2026-11-25): a host opt-in that keeps provider-native web
+  search for a build with a tool dispatch admission (the engine strips
+  every provider-native tool under our gate, so no agent searches).
+  `agent.web_search = true` (`src/mobs/customizer.rs` `WebSearch`) sets
+  the opt-in when it ships; until then it only leaves the engine's choice.
 - #2432 (filed 2026-11-19): a host switch for the comms tools' usage
   section and the preloaded `mob-communication` skill, which teach
   `reply_to_peer`, `send_request`, `send_response` and `peers` to

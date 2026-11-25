@@ -254,6 +254,29 @@ async fn strict_mode_denies_the_network_and_workspace_mode_allows_it() {
     assert!(open.contains("NET-OPEN"), "{open}");
 }
 
+/// `web_fetch` runs in the daemon, outside the sandbox: where the shell
+/// has no network (`strict`) it is not offered, so it is no way around
+/// the sandbox; `workspace` (network allowed) offers it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn web_fetch_is_offered_only_where_the_shell_has_the_network() {
+    for (mode, offered) in [("strict", false), ("workspace", true)] {
+        let ws = Workspace::new();
+        let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
+        let Some(mut rig) = confined_rig(&ws, &llm, mode).await else {
+            return;
+        };
+        rig.send(Effect::StartTurn("hi".into()));
+        let _ = rig.turn_finished().await;
+        let tools = llm.recorded()[0].tools.clone();
+        rig.quit().await;
+        assert_eq!(
+            tools.iter().any(|tool| tool == rkat_tui::tools::WEB_FETCH),
+            offered,
+            "{mode}: {tools:?}"
+        );
+    }
+}
+
 /// A Rust toolchain runs confined: the sandbox gives the launch its own pid
 /// namespace with a fresh `/proc` (the rustup proxies, rustc's library
 /// lookup and the linker wrapper all read `/proc/self/exe`) and the

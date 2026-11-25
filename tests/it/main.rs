@@ -79,4 +79,5 @@ mod typed_steers;
 mod upgrades;
 mod usage;
 mod watches;
+mod web_fetch;
 mod web_search;

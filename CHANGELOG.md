@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.1.2] - 2026-11-25
+## [0.1.2] - 2026-11-26
 
 ### Added
 
@@ -15,6 +15,23 @@
   resumed. Today's builds already send no provider-native tool (the
   engine leaves them out under rkat-tui's approval gate); the setting
   makes that your recorded choice.
+- `web_fetch`: the agents and helpers read a web page or a text document
+  without the shell. One HTTP GET of an `http://` or `https://` URL
+  through rkat-tui's HTTP client (your proxy settings apply); HTML comes
+  back as Markdown, other text as it is, binary types are refused for
+  the shell to download. A redirect within the same host is followed (at
+  most 5), one to another host is reported and not followed; 30 s, 5 MiB
+  read and 100000 characters returned at most; the body is marked as
+  untrusted web content. Every call is reviewed (auto mode's classifier,
+  a question in manual mode, denied in plan mode), and a rule names it
+  by URL: `allow = [{ tool = "web_fetch", arg = "https://docs.rs/*" }]`.
+  It is not offered where `--confinement strict` denies the shell the
+  network.
+- `agent.web_fetch` (default `true`): `false` builds every conversation
+  and helper started from then on without `web_fetch`
+  (`--set agent.web_fetch=false`); a project's `.rkat/tui.toml` may only
+  set `false`. It has no effect on web search, nor `agent.web_search` on
+  it.
 - `--mcp-server '<fields>'` adds an MCP server for the run, stdio or HTTP,
   given as the body of one TOML inline table with the fields of an
   `mcp.toml` `[[servers]]` entry:

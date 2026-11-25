@@ -525,6 +525,12 @@ mod tests {
             ]
         );
         assert!(hosts_in("{\"command\":\"cargo test --lib a::b\"}").is_empty());
+        // A `web_fetch`'s URL names its host, so a D5 block of one offers
+        // to trust it as a shell command's does.
+        assert_eq!(
+            hosts_in("{\"url\":\"https://User@Paste.example.com:8443/new?d=x\"}"),
+            vec!["paste.example.com"]
+        );
     }
 
     #[test]
