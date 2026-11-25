@@ -26,6 +26,12 @@
   belongs. A value that does not read stops the start naming which flag
   and why, never what it holds; a `${VAR}` in it is refused.
 
+### Fixed
+
+- The unit test of the workspace's file watch failed on a build machine
+  with no inotify instance or file descriptor left; it stops there now
+  instead of failing.
+
 ## [0.1.1] - 2026-11-25
 
 ### Added

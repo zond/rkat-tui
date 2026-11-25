@@ -490,7 +490,7 @@ async fn batch(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -642,27 +642,48 @@ mod tests {
 
     /// The recursive file-system watch goes when the last watch goes: by
     /// `unwatch`, at the turn's end, with the retired agent, and after a
-    /// `once` watch fired.
+    /// `once` watch fired. Each first watch takes a file-system watcher of
+    /// the host's: where the host has none left (a build machine at its
+    /// limit of inotify instances or open files) the test stops there.
     #[tokio::test]
     async fn the_workspace_watch_is_dropped_with_the_last_watch() {
         let dir = tempfile::tempdir().unwrap();
         let (w, mut rx) = Watches::new(dir.path().to_path_buf());
         let patterns = vec!["*.txt".to_string()];
+        // EMFILE and ENOSPC: the host's limits, not the code's answer.
+        let watch = |agent: &str, once: bool| match w.watch(agent, &patterns, once) {
+            Ok(id) => Some(id),
+            Err(err) if err.ends_with("(os error 24)") || err.ends_with("(os error 28)") => {
+                eprintln!("SKIPPED: this host has no file-system watcher to give: {err}");
+                None
+            }
+            Err(err) => panic!("{err}"),
+        };
         assert!(!w.watching());
-        let id = w.watch("main-a", &patterns, false).unwrap();
-        let other = w.watch("main-a", &patterns, false).unwrap();
+        let Some(id) = watch("main-a", false) else {
+            return;
+        };
+        let Some(other) = watch("main-a", false) else {
+            return;
+        };
         assert!(w.watching());
         assert_eq!(w.unwatch("main-a", Some(id)), 1);
         assert!(w.watching(), "one watch is left");
         assert_eq!(w.unwatch("main-a", Some(other)), 1);
         assert!(!w.watching());
-        w.watch("main-a", &patterns, false).unwrap();
+        if watch("main-a", false).is_none() {
+            return;
+        }
         w.end_turn("main-a");
         assert!(!w.watching());
-        w.watch("main-b", &patterns, false).unwrap();
+        if watch("main-b", false).is_none() {
+            return;
+        }
         w.forget("main-b");
         assert!(!w.watching());
-        w.watch("main-a", &patterns, true).unwrap();
+        if watch("main-a", true).is_none() {
+            return;
+        }
         w.observe(&dir.path().join("a.txt"), Change::Other);
         assert_eq!(rx.recv().await.unwrap().paths, ["a.txt"]);
         assert!(!w.watching(), "the once watch fired and went");
