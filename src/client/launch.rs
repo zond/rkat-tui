@@ -151,8 +151,12 @@ pub fn daemon_argv(args: &Args, workspace: &Path) -> Vec<OsString> {
         args.classifier_model.as_ref().map(os).as_ref(),
     );
     value("--confinement", value_name(args.confinement).as_ref());
-    let repeated: [(&str, Vec<OsString>); 6] = [
+    let repeated: [(&str, Vec<OsString>); 7] = [
         ("--set", args.set.iter().map(OsString::from).collect()),
+        (
+            "--mcp-server",
+            args.mcp_server.iter().map(OsString::from).collect(),
+        ),
         ("--allow", args.allow.iter().map(OsString::from).collect()),
         ("--deny", args.deny.iter().map(OsString::from).collect()),
         (
@@ -523,6 +527,10 @@ mod tests {
             "auto.compact=auto",
             "--set",
             "a=1",
+            "--mcp-server",
+            r#"name="search", command="/opt/wrapper/tool", args=["mcp", "search"]"#,
+            "--mcp-server",
+            r#"name="docs", url="http://127.0.0.1:9/mcp""#,
             "--allow",
             "shell=ls*",
             "--deny",

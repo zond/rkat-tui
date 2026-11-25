@@ -555,7 +555,9 @@ pub async fn assemble(
         &options.approval,
     )
     .await?;
-    let mcp = mcp::load(&scope, &config, &project_inputs).await?;
+    let mcp = mcp::load(&scope, &config, &project_inputs)
+        .await?
+        .with_command_line(mcp::command_line_servers(&args.mcp_server)?);
     let mut refused = mcp.refused;
     // What the project's inputs would add that is not trusted.
     for item in project_inputs.guard(&mut config.clone()).await {

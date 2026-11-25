@@ -345,6 +345,9 @@ pub enum Hook {
     /// The conversations and fresh helpers started from then on get the
     /// files of `instructions.files`.
     InstructionFiles,
+    /// The conversations and helpers built from then on take
+    /// `agent.web_search`.
+    WebSearch,
 }
 
 /// Every scalar setting in force over `layers` as one table, each value at
@@ -825,6 +828,34 @@ pub const CHECKPOINT_CONTINUES: Setting = Setting {
     hook: Hook::None,
 };
 
+/// Whether the agents and helpers may search the web through the model
+/// provider: `false` builds every conversation and helper with the
+/// engine's web search category off ([`crate::mobs::customizer`]), which
+/// leaves out both the provider-native search tool and the engine's
+/// fallback `web_search` tool. A project file may only turn it off.
+pub const WEB_SEARCH: Setting = Setting {
+    key: "agent.web_search",
+    kind: Kind::Bool,
+    default: Fallback::Bool(true),
+    project: ProjectRule::OnlyFalse,
+    applies: Applies::NextConversation,
+    about: "Web search through the model provider: `false` builds every conversation and helper started from then on with the engine's web search off (no provider-native search tool, no fallback `web_search` tool; a conversation built so keeps it off when resumed); `true` leaves it to the engine, which sends none under rkat-tui's approval gate today.",
+    flags: &[],
+    command: None,
+    hook: Hook::WebSearch,
+};
+
+/// [`WEB_SEARCH`] in force over `layers`.
+#[must_use]
+pub fn web_search_in_force(layers: &Layers) -> bool {
+    WEB_SEARCH
+        .resolve(layers)
+        .value
+        .as_ref()
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
 /// [`CHECKPOINT_STEPS`]'s default: the engine's own turn limit.
 pub const DEFAULT_CHECKPOINT_STEPS: u64 = 100;
 /// The fewest model calls a run may make before its checkpoint.
@@ -1082,6 +1113,7 @@ pub static SETTINGS: &[Setting] = &[
     },
     CHECKPOINT_STEPS,
     CHECKPOINT_CONTINUES,
+    WEB_SEARCH,
     INSTRUCTION_FILES,
     Setting {
         key: "shell.user_timeout_secs",

@@ -641,6 +641,7 @@ impl Daemon {
             prepare: Arc::clone(&composed.prepare),
             helper_models: Arc::clone(&composed.helper_models),
             instruction_files: Arc::clone(&composed.instruction_files),
+            web_search: composed.web_search.clone(),
             settings: Arc::new(settings::Settings::new(
                 composed.files.clone(),
                 std::mem::take(&mut composed.layers),

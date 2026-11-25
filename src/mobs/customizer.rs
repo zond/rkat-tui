@@ -171,6 +171,50 @@ pub struct HelperCustomizer {
     /// `instructions.files` in force: a fresh helper's sections of them
     /// are read at its spawn.
     instruction_files: crate::bootstrap::instructions::SharedFiles,
+    /// `agent.web_search` in force: read at every build of an agent or a
+    /// helper.
+    web_search: WebSearch,
+}
+
+/// `agent.web_search` in force, shared by the customizer and the daemon's
+/// settings hook (a change applies to the builds from then on).
+#[derive(Debug, Clone)]
+pub struct WebSearch(Arc<std::sync::atomic::AtomicBool>);
+
+impl Default for WebSearch {
+    /// On, the setting's default.
+    fn default() -> Self {
+        Self::new(true)
+    }
+}
+
+impl WebSearch {
+    /// The setting at `on`.
+    #[must_use]
+    pub fn new(on: bool) -> Self {
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(on)))
+    }
+
+    /// Whether it is on now.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Turn it on or off for the builds from now on.
+    pub fn set(&self, on: bool) {
+        self.0.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Off: `spec` is built with the engine's web search category off,
+    /// which leaves out the provider-native search tool and the engine's
+    /// fallback `web_search` tool. On: `spec` is left as it is (`Inherit`,
+    /// never `Enable`, which would ask the engine for its fallback tool).
+    fn apply(&self, spec: &mut SpawnMemberSpec) {
+        if !self.on() {
+            spec.tool_category_overrides.web_search = meerkat_core::ToolCategoryOverride::Disable;
+        }
+    }
 }
 
 impl std::fmt::Debug for HelperCustomizer {
@@ -207,7 +251,16 @@ impl HelperCustomizer {
             profiles: Arc::default(),
             helper_persona: HELPER_PERSONA.to_string(),
             instruction_files: crate::bootstrap::instructions::SharedFiles::default(),
+            web_search: WebSearch::default(),
         }
+    }
+
+    /// Build agents and helpers by `web_search` (shared: a change of
+    /// `agent.web_search` applies to the builds from then on).
+    #[must_use]
+    pub fn with_web_search(mut self, web_search: WebSearch) -> Self {
+        self.web_search = web_search;
+        self
     }
 
     /// Give fresh helpers the files of `files` (shared: a change of
@@ -1005,6 +1058,9 @@ impl HelperCustomizer {
         } else {
             drop_mob_tools(spec);
         }
+        // Every helper, fresh, forked or a council's participant, at every
+        // build.
+        self.web_search.apply(spec);
         self.bind_policy(spec);
         let _ = self.spawning.send(Spawning { key, tag, wired });
         Ok(())
@@ -1044,6 +1100,7 @@ impl SpawnMemberCustomizer for HelperCustomizer {
                 )));
             }
             shape_root(spec, &key, root, self.shell_env.as_ref(), fresh);
+            self.web_search.apply(spec);
             // Its instructions are given once, at its first seat; the
             // directory's name stays the same for it.
             if let Some(dir) = self
@@ -1111,6 +1168,10 @@ impl SpawnMemberCustomizer for HelperCustomizer {
                 spec.auth_binding = binding;
             }
             shape_root(spec, &key, root, self.shell_env.as_ref(), false);
+            // A rebuild that leaves the category `Inherit` keeps what the
+            // session was created with (the engine restores it); `Disable`
+            // turns it off from this build.
+            self.web_search.apply(spec);
             if let Some(dir) = self
                 .registry
                 .scratch_for_agent(key.member.as_str(), |path| {
@@ -1886,6 +1947,33 @@ mod tests {
             panic!("{:?}", last.tool_access_policy);
         };
         assert!(names.contains(crate::tools::ASSIGN), "{names:?}");
+    }
+
+    /// `agent.web_search` on leaves a spec's web search category as the
+    /// engine's (`Inherit`, never `Enable`); off turns it off; a change
+    /// reaches every holder of the shared switch.
+    #[test]
+    fn web_search_off_turns_the_category_off_and_on_leaves_it_alone() {
+        use meerkat_core::ToolCategoryOverride;
+        let web_search = WebSearch::default();
+        let shared = web_search.clone();
+        let mut spec = SpawnMemberSpec::host_root("main", "main");
+        web_search.apply(&mut spec);
+        assert_eq!(
+            spec.tool_category_overrides.web_search,
+            ToolCategoryOverride::Inherit
+        );
+        shared.set(false);
+        for mut spec in [
+            SpawnMemberSpec::host_root("main", "main"),
+            SpawnMemberSpec::new("delegate", "worker"),
+        ] {
+            web_search.apply(&mut spec);
+            assert_eq!(
+                spec.tool_category_overrides.web_search,
+                ToolCategoryOverride::Disable
+            );
+        }
     }
 
     #[test]

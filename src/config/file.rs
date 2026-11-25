@@ -231,8 +231,10 @@ impl From<InstructionPath> for String {
 }
 
 /// `[agent]` section of a rules file: the checkpoints of long runs
-/// ([`crate::daemon::checkpoint`]; the registry's `agent.*` settings say
-/// what each takes). User layers only.
+/// ([`crate::daemon::checkpoint`]) and web search through the provider
+/// (the registry's `agent.*` settings say what each takes and what a
+/// project file may do: the checkpoints are the user's layers' only, web
+/// search it may only turn off).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSection {
@@ -242,6 +244,9 @@ pub struct AgentSection {
     /// `agent.checkpoint_continues`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_continues: Option<u64>,
+    /// `agent.web_search`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<bool>,
 }
 
 /// `[shell]` section of a rules file: `!` shell mode. Unset fields inherit

@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-25
+
+### Added
+
+- `agent.web_search` (default `true`): `false` builds every conversation
+  and helper started from then on with the engine's web search off, so
+  no request carries a provider-native search tool and the engine's
+  fallback `web_search` tool is not offered. A wrapper switches it off
+  with `--set agent.web_search=false`; a project's `.rkat/tui.toml` may
+  only set `false`. A conversation built with `false` keeps it when
+  resumed. Today's builds already send no provider-native tool (the
+  engine leaves them out under rkat-tui's approval gate); the setting
+  makes that your recorded choice.
+- `--mcp-server '<fields>'` adds an MCP server for the run, stdio or HTTP,
+  given as the body of one TOML inline table with the fields of an
+  `mcp.toml` `[[servers]]` entry:
+  `rkat-tui --mcp-server 'name="search", command="/opt/wrapper/tool", args=["mcp","search"]'`.
+  Repeatable; it is yours, so no trust question, and it wins over a
+  server of the same name from an `mcp.toml` or the realm config (with a
+  start-up notice). It reaches the daemon when the run starts it; a
+  stdio server inherits the daemon's environment, where a secret
+  belongs. A value that does not read stops the start naming which flag
+  and why, never what it holds; a `${VAR}` in it is refused.
+
 ## [0.1.1] - 2026-11-25
 
 ### Added

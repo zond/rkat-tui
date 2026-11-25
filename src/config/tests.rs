@@ -82,6 +82,7 @@ fn rules_file_round_trip() {
         agent: Some(AgentSection {
             checkpoint_steps: Some(40),
             checkpoint_continues: Some(0),
+            web_search: Some(false),
         }),
         instructions: Some(InstructionsSection {
             files: Some(vec![
@@ -1123,6 +1124,57 @@ fn instruction_files_add_up_over_the_user_s_layers_only() {
         assert_eq!(home.path(), dir.join("wrapper.md"));
     }
     assert_eq!(String::from(home), "~/wrapper.md");
+}
+
+/// `agent.web_search` is on by default; the user's file, the realm's and
+/// `--set` set it; a project file may only turn it off (its `true` over a
+/// user's `false` is ignored, its `false` wins even over the command
+/// line's `true`); `/set` takes `false`.
+#[test]
+fn web_search_is_on_unless_a_layer_turns_it_off_and_a_project_only_turns_it_off() {
+    use super::registry::web_search_in_force;
+    use clap::Parser as _;
+    let tmp = tempfile::tempdir().unwrap();
+    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+    let global = tmp.path().join("global.toml");
+    let layered = |global_text: &str, project_text: &str, set: &[&str]| {
+        std::fs::write(&global, global_text).unwrap();
+        write(&realm, "");
+        write(&project, project_text);
+        let mut argv = vec!["rkat-tui".to_string()];
+        for value in set {
+            argv.push("--set".to_string());
+            argv.push((*value).to_string());
+        }
+        let overlay = crate::overlay::ConfigOverlay::from_args(&crate::cli::Args::parse_from(argv))
+            .unwrap()
+            .rules_file()
+            .unwrap();
+        let layered = load_layered_with(&realm, Some(&global), &project, overlay.as_ref()).unwrap();
+        web_search_in_force(&layered.layers)
+    };
+    assert!(layered("", "", &[]));
+    assert!(!layered("[agent]\nweb_search = false\n", "", &[]));
+    assert!(!layered("", "", &["agent.web_search=false"]));
+    assert!(layered(
+        "[agent]\nweb_search = false\n",
+        "",
+        &["agent.web_search=true"]
+    ));
+    // The project's `true` is ignored; its `false` applies over all.
+    assert!(!layered(
+        "[agent]\nweb_search = false\n",
+        "[agent]\nweb_search = true\n",
+        &[]
+    ));
+    assert!(!layered(
+        "",
+        "[agent]\nweb_search = false\n",
+        &["agent.web_search=true"]
+    ));
+    let setting = super::registry::Setting::find("agent.web_search").unwrap();
+    assert_eq!(setting.parse("false").unwrap(), toml::Value::Boolean(false));
+    assert!(setting.parse("sometimes").is_err());
 }
 
 /// A relative `instructions.files` entry is refused, naming the key and

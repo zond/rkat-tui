@@ -63,6 +63,9 @@ pub struct Core {
     /// `instructions.files` in force: the agents' session builds and the
     /// spawn customizer read them, the settings hook replaces them.
     pub instruction_files: crate::bootstrap::instructions::SharedFiles,
+    /// `agent.web_search` in force: the spawn customizer reads it at every
+    /// build, the settings hook sets it.
+    pub web_search: crate::mobs::customizer::WebSearch,
     /// Every `tui.toml` layer's values now and the one path a change of a
     /// setting takes.
     pub settings: Arc<super::settings::Settings>,

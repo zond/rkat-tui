@@ -134,6 +134,9 @@ pub struct Composed {
     /// `instructions.files` in force (the agents' session builds and the
     /// customizer read them per build; the settings hook replaces them).
     pub instruction_files: crate::bootstrap::instructions::SharedFiles,
+    /// `agent.web_search` in force (the customizer reads it per build; the
+    /// settings hook sets it).
+    pub web_search: crate::mobs::customizer::WebSearch,
     /// The mobs' definitions the customizer seats members by; followed
     /// once the workspace's mob is ensured ([`crate::mobs::profiles`]).
     pub profiles: Arc<crate::mobs::profiles::MobProfiles>,
@@ -338,6 +341,9 @@ pub fn compose(
     let instruction_files: crate::bootstrap::instructions::SharedFiles = Arc::new(
         parking_lot::RwLock::new(crate::config::registry::instruction_files_in_force(&layers)),
     );
+    let web_search = crate::mobs::customizer::WebSearch::new(
+        crate::config::registry::web_search_in_force(&layers),
+    );
     let daemon_endpoints = endpoints.clone();
     // `assign` for every agent and helper, held to `helpers.max_live`; it
     // seats through the mob state made below.
@@ -416,6 +422,7 @@ pub fn compose(
     .with_endpoints(helper_endpoints)
     .with_models(Arc::clone(&helper_models))
     .with_instruction_files(Arc::clone(&instruction_files))
+    .with_web_search(web_search.clone())
     .with_profiles(Arc::clone(&profiles))
     .with_realm_config(realm_config.path().to_path_buf())
     .with_helper_persona(
@@ -575,6 +582,7 @@ pub fn compose(
             layers,
             helper_models,
             instruction_files,
+            web_search,
             profiles,
             revisions,
             contacts,

@@ -32,6 +32,13 @@
 //! server of an untrusted `mcp.toml` (unless a trusted source states the
 //! same definition), and [`LoadedMcp::refused`] lists them for the
 //! start-up notice.
+//!
+//! `--mcp-server` adds servers of the command line's
+//! ([`command_line_servers`], joined by [`LoadedMcp::with_command_line`]):
+//! the user's own like the user's `mcp.toml`, so no trust question, and
+//! each wins over a server of the same name from the files or the realm
+//! config, with a start-up notice. They are taken as written: no `${VAR}`
+//! is expanded (a stdio server inherits the daemon's environment).
 
 use std::path::Path;
 
@@ -130,6 +137,122 @@ async fn load_judged(
     })
 }
 
+impl LoadedMcp {
+    /// This set with the command line's `servers` joined: each replaces a
+    /// server of its name (said in a notice), the others are added.
+    #[must_use]
+    pub fn with_command_line(mut self, servers: Vec<McpServerConfig>) -> Self {
+        for server in servers {
+            if let Some(index) = self.servers.iter().position(|s| s.name == server.name) {
+                self.notices.push(format!(
+                    "--mcp-server `{}` replaces the MCP server of that name from mcp.toml or the realm config",
+                    server.name
+                ));
+                self.servers[index] = server;
+            } else {
+                self.servers.push(server);
+            }
+        }
+        self
+    }
+}
+
+/// The servers of the `--mcp-server` values `values`: each the body of one
+/// TOML inline table with the fields of one `[[servers]]` entry of
+/// `mcp.toml` (the engine's [`McpServerConfig`], stdio or HTTP), checked
+/// as the engine checks a file's (its access policy, its working
+/// directory) and taken as written: a value holding `${` is refused,
+/// since nothing expands it.
+///
+/// # Errors
+///
+/// [`TuiError::McpServerFlag`] naming which value and why, never a value
+/// of it (an `env` or header value may be a secret): it does not read as
+/// one server, a check refuses it, or two values name one server.
+pub fn command_line_servers(values: &[String]) -> Result<Vec<McpServerConfig>, TuiError> {
+    /// The document a value is read as: `server = { <value> }`.
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct One {
+        server: McpServerConfig,
+    }
+    const OPEN: &str = "server = { ";
+    let mut servers: Vec<McpServerConfig> = Vec::with_capacity(values.len());
+    for (index, value) in values.iter().enumerate() {
+        let refuse = |reason: String| TuiError::McpServerFlag {
+            position: index + 1,
+            reason,
+        };
+        // One line: a newline in the value would end the inline table.
+        if value.contains(['\n', '\r']) {
+            return Err(refuse(
+                "it holds a line break; give the table's fields on one line".to_string(),
+            ));
+        }
+        let One { server } = toml::from_str(&format!("{OPEN}{value} }}"))
+            .map_err(|err| refuse(toml_reason(&err, OPEN.len())))?;
+        let named = |reason: &dyn std::fmt::Display| refuse(format!("{reason}"));
+        server.validate_access().map_err(|err| named(&err))?;
+        server.validate_cwd().map_err(|err| named(&err))?;
+        if let Err(reference) = meerkat_core::mcp_config::reject_realm_server_env_references(
+            std::slice::from_ref(&server),
+        ) {
+            return Err(refuse(format!(
+                "server `{}` has `${{` in its {}; a command-line server is taken as written and never expanded (a stdio server inherits the daemon's environment: let it read the variable itself)",
+                server.name, reference.field
+            )));
+        }
+        if servers.iter().any(|s| s.name == server.name) {
+            return Err(refuse(format!(
+                "a server named `{}` is given by an earlier --mcp-server too; give each server once",
+                server.name
+            )));
+        }
+        servers.push(server);
+    }
+    Ok(servers)
+}
+
+/// A TOML reader's error on a `--mcp-server` value read after `offset`
+/// bytes of its document: the column in the value and what is wrong,
+/// without the value the reader quotes (as the engine words a file's,
+/// `meerkat_core::redact`, whose helper is the crate's own).
+fn toml_reason(err: &toml::de::Error, offset: usize) -> String {
+    let message = err.message();
+    let mut what = message.to_string();
+    for prefix in ["invalid type: ", "invalid value: "] {
+        if let Some(rest) = message.strip_prefix(prefix) {
+            // `<kind> <value>, expected <what>`: the kind is the words
+            // before the value's opening quote.
+            let (unexpected, expected) = match rest.rsplit_once(", expected ") {
+                Some((unexpected, expected)) => (unexpected, Some(expected)),
+                None => (rest, None),
+            };
+            let kind = unexpected
+                .split(['`', '"'])
+                .next()
+                .unwrap_or_default()
+                .trim_end();
+            what = match expected {
+                Some(expected) => format!("{prefix}{kind}, expected {expected}"),
+                None => format!("{prefix}{kind}"),
+            };
+        }
+    }
+    if let Some(rest) = message.strip_prefix("unknown variant `") {
+        what = match rest.rsplit_once("`, expected ") {
+            Some((_, expected)) => format!("unknown variant, expected {expected}"),
+            None => "unknown variant".to_string(),
+        };
+    }
+    match err.span() {
+        Some(span) if span.start >= offset => {
+            format!("at column {}: {what}", span.start - offset + 1)
+        }
+        _ => what,
+    }
+}
+
 /// A private copy of the trusted project `mcp.toml`'s bytes, laid out as a
 /// conventions root (`<dir>/.rkat/mcp.toml`) in a fresh directory under the
 /// realm, which neither the agent's shell nor its file tools reach. Removed
@@ -160,7 +283,7 @@ impl Snapshot {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::bootstrap::trust::HostTrustRecord;
@@ -293,5 +416,113 @@ mod tests {
         let loaded = load(&scope, &Config::default(), &inputs).await.unwrap();
         assert_eq!(names(&loaded), ["usr"]);
         assert_eq!(loaded.refused, [Refused::mcp_server(&project, "evil")]);
+    }
+
+    fn values(values: &[&str]) -> Vec<String> {
+        values.iter().map(ToString::to_string).collect()
+    }
+
+    /// A `--mcp-server` value is one `[[servers]]` entry as an inline
+    /// table: stdio with its args and env, HTTP with its headers.
+    #[test]
+    fn a_command_line_server_reads_as_one_mcp_toml_entry() {
+        use meerkat_core::mcp_config::McpTransportConfig;
+        let servers = command_line_servers(&values(&[
+            r#"name="search", command="/opt/wrapper/tool", args=["mcp","search"], env={ MODE="ci" }"#,
+            r#"name = "docs", url = "https://docs.example/mcp", headers = { X-Team = "t" }"#,
+        ]))
+        .unwrap();
+        assert_eq!(servers.len(), 2);
+        let McpTransportConfig::Stdio(stdio) = &servers[0].transport else {
+            panic!("{:?}", servers[0]);
+        };
+        assert_eq!(servers[0].name, "search");
+        assert_eq!(stdio.command, "/opt/wrapper/tool");
+        assert_eq!(stdio.args, ["mcp", "search"]);
+        assert_eq!(stdio.env.get("MODE").map(String::as_str), Some("ci"));
+        let McpTransportConfig::Http(http) = &servers[1].transport else {
+            panic!("{:?}", servers[1]);
+        };
+        assert_eq!(http.url, "https://docs.example/mcp");
+        assert!(command_line_servers(&[]).unwrap().is_empty());
+    }
+
+    /// A value that is not one server is refused naming which flag and
+    /// why, and never quoting what it holds; so are `${`, a line break,
+    /// a key beside the table and a name given twice.
+    #[test]
+    fn a_bad_command_line_server_is_refused_without_its_values() {
+        let reason = |given: &[&str]| match command_line_servers(&values(given)) {
+            Err(err @ TuiError::McpServerFlag { .. }) => err.to_string(),
+            other => panic!("{given:?}: {other:?}"),
+        };
+        let secret = "s3cr3t-value";
+        for given in [
+            format!(r#"name="search", command="/opt/wrapper/tool", env="{secret}""#),
+            format!(r#"name="search", command="/opt/wrapper/tool", args="{secret}""#),
+            format!(r#"name="search", command=["{secret}"]"#),
+            format!(r#"name="search", url="https://h/mcp", headers={{ A="{secret}" }}, nope=1"#),
+            format!(r#"name="search", command="/opt/wrapper/tool", env={{ T="{secret}" "#),
+        ] {
+            let text = reason(&[&given]);
+            assert!(text.starts_with("--mcp-server (number 1"), "{text}");
+            assert!(!text.contains(secret), "{text}");
+        }
+        assert!(reason(&["name=\"search\"\ncommand=\"/x\""]).contains("line break"));
+        let text = reason(&[r#"name="search", command="/opt/wrapper/tool", env={ T="${TOKEN}" }"#]);
+        assert!(text.contains("`${` in its env"), "{text}");
+        let text = reason(&[
+            r#"name="search", command="/a""#,
+            r#"name="search", command="/b""#,
+        ]);
+        assert!(text.starts_with("--mcp-server (number 2"), "{text}");
+        assert!(text.contains("given by an earlier --mcp-server"), "{text}");
+        // A value that closes the table to add keys beside it does not
+        // read: the document is one key and its table.
+        let text = reason(&[r#"name="search", command="/a" }, other = { x = 1"#]);
+        assert!(
+            text.contains("at column 30: unexpected key or value"),
+            "{text}"
+        );
+        let text = reason(&[r#"name="search", command="/a" }
+other = { x = 1"#]);
+        assert!(text.contains("line break"), "{text}");
+    }
+
+    /// The command line's servers join the files': one of a name already
+    /// there replaces it, with a notice; the others are added.
+    #[tokio::test]
+    async fn the_command_line_wins_over_a_file_server_of_its_name() {
+        let (_dir, _ws, scope) = fixture();
+        let flagged = inputs(
+            &scope,
+            HostTrustRecord::in_memory(&scope.context_root),
+            true,
+        );
+        let loaded = load(&scope, &Config::default(), &flagged)
+            .await
+            .unwrap()
+            .with_command_line(
+                command_line_servers(&values(&[
+                    r#"name="usr", command="/opt/wrapper/usr""#,
+                    r#"name="search", command="/opt/wrapper/tool""#,
+                ]))
+                .unwrap(),
+            );
+        assert_eq!(names(&loaded), ["search", "usr"]);
+        let usr = loaded.servers.iter().find(|s| s.name == "usr").unwrap();
+        assert!(
+            matches!(&usr.transport, meerkat_core::mcp_config::McpTransportConfig::Stdio(s) if s.command == "/opt/wrapper/usr"),
+            "{usr:?}"
+        );
+        assert!(
+            loaded
+                .notices
+                .iter()
+                .any(|n| n.starts_with("--mcp-server `usr` replaces")),
+            "{:?}",
+            loaded.notices
+        );
+        assert!(!loaded.notices.iter().any(|n| n.contains("`search`")));
     }
 }

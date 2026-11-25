@@ -75,6 +75,16 @@ pub enum TuiError {
     /// server and a file server share a name with different definitions.
     #[error("MCP config error: {0}")]
     McpConfig(#[from] meerkat_core::mcp_config::EffectiveMcpServersError),
+    /// A `--mcp-server` value is not one MCP server
+    /// ([`crate::bootstrap::mcp::command_line_servers`]); the reason never
+    /// holds a value of it.
+    #[error("--mcp-server (number {position} on the command line): {reason}")]
+    McpServerFlag {
+        /// Which `--mcp-server` it is, from 1.
+        position: usize,
+        /// What is wrong with it.
+        reason: String,
+    },
     /// No endpoint/model could be selected, an endpoint is unusable, or the
     /// endpoint projection into the realm config failed.
     #[error(transparent)]
@@ -180,6 +190,7 @@ impl TuiError {
             | Self::ConfigRuntime { .. }
             | Self::Endpoint(_)
             | Self::McpConfig(_)
+            | Self::McpServerFlag { .. }
             | Self::Overlay(_)
             | Self::Approval(_)
             | Self::Confinement(_)

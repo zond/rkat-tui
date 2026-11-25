@@ -248,6 +248,9 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
     if let Some(limit) = args.classifier_check {
         return client::check::run(&args, limit).await;
     }
+    // A `--mcp-server` that does not read is refused before a daemon is
+    // started with it (the daemon reads them again, as it reads `--set`).
+    bootstrap::mcp::command_line_servers(&args.mcp_server)?;
     // The workspace and its `tui.toml` layers are read once, here, and
     // handed to the client.
     let layers = bootstrap::read_layers(&args)?;

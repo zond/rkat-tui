@@ -1316,6 +1316,7 @@ says when a change made while the daemon runs applies.
 | `helpers.deny_models`: Models a fresh helper started with `assign` or `mob_spawn_member` may not run on (not with `allow_models`). | a list of model names, each exact or a prefix ending in one `*` (`["claude-haiku-*"]`; `/set` also takes `a, b*`) | unset: none | may not set it | at once | — |
 | `agent.checkpoint_steps`: The model calls one run of an agent or a helper makes before a checkpoint: it is asked for a short status, the classifier's model judges whether going on is sensible, and it continues or stops (the conversations and helpers started from then on). | a whole number from 10 to 100000 | 100 | may not set it | from the next conversation | — |
 | `agent.checkpoint_continues`: How many checkpoints in a row may continue automatically before the run stops and waits for you (0: every checkpoint stops); a message of yours starts the count again. | a whole number from 0 to 1000 | 5 | may not set it | at once | — |
+| `agent.web_search`: Web search through the model provider: `false` builds every conversation and helper started from then on with the engine's web search off (no provider-native search tool, no fallback `web_search` tool; a conversation built so keeps it off when resumed); `true` leaves it to the engine, which sends none under rkat-tui's approval gate today. | `true` or `false` | true | may only set `false` | from the next conversation | — |
 | `instructions.files`: Files whose text every new conversation and every fresh helper gets in its system prompt, each as an `# Instructions (from <path>)` section after your own AGENTS.md (each capped at 32 KiB, as AGENTS.md is); a file missing or empty is skipped with a warning at start. For a wrapper that tells the agents about the environment it starts rkat-tui in. | a list of absolute file paths, `~` expanded (`["~/notes.md"]`; `/set` also takes `a, b`); the user's, the workspace's and the command line's lists add up | none | may not set it | from the next conversation | — |
 | `shell.user_timeout_secs`: How long a `!` command may run, in seconds. | a whole number from 1 | 120 | may only lower it | at the next start | — |
 | `search.budget_secs`: How long one `glob` or `grep` may run before it answers with what it found, in seconds. | a whole number from 1 | 10 | may only lower it | at the next start | — |
@@ -1338,10 +1339,13 @@ says when a change made while the daemon runs applies.
 Flags not in the table: `--model`/`-m`, `--endpoint`, `--resume`,
 `-c`/`--continue`, `-w`/`--workspace`, `--config-dir`,
 `--user-config-root`, `--confinement`, `--external-no-network`,
-`--no-confinement`, `--wait-for-mcp`, `--trust-project`, `--attach`,
-`--attach-token-file`, `--attach-insecure`, `--list`, `--rehome`,
-`--remove-state <ref> [--yes]`, `--audit`, `--classifier-check`
-(`rkat-tui --help`).
+`--no-confinement`, `--wait-for-mcp`, `--mcp-server` (an MCP server for
+the run; [Instructions and memory](#instructions-and-memory)),
+`--trust-project`, `--attach`, `--attach-token-file`,
+`--attach-insecure`, `--list`, `--rehome`, `--remove-state <ref>
+[--yes]`, `--audit`, `--classifier-check` (`rkat-tui --help`). Like
+`--set`, the flags that shape the engine reach the daemon only when the
+run starts it.
 
 ## Models, endpoints and cost
 
@@ -1409,6 +1413,23 @@ configure the server as an `openai` endpoint instead.
 A configured endpoint's own figures (window, limits, prices) win over
 the catalog, which fills only what the endpoint leaves out. They drive
 the context gauge, `/context` and the compaction threshold.
+
+**Web search.** The agents and helpers do not search the web through the
+model provider, on any endpoint: each is built with rkat-tui's approval
+gate in front of its tools, and with such a gate Meerkat sends no
+provider-native tool (Anthropic's web search, OpenAI's `web_search`,
+Gemini's Google search) on any request, retries, compaction summaries
+and model switches included. The engine's fallback `web_search` tool,
+which searches through a provider too, is offered only when a host asks
+for it, and rkat-tui does not. `agent.web_search = false` (`--set
+agent.web_search=false`, `/set`, `tui.toml`; a project file may only set
+`false`) makes that your recorded choice rather than the engine's
+current composition: every conversation and helper started from then on
+is built with the engine's web search off, which refuses both. A
+conversation built with `false` keeps it off when it is resumed, also
+after you set `true` again; one built before keeps the engine's choice
+until the daemon builds it again (after a restart), which then turns it
+off.
 
 ### Choosing a model
 
@@ -1540,6 +1561,25 @@ unless a rule names them. Servers from the project's `.rkat/mcp.toml` may
 come with the repository and run with your privileges, so they start
 only once you trust the file (`/trust` or `--trust-project`;
 [What runs as the host](#what-runs-as-the-host)).
+
+`--mcp-server '<fields>'` adds one server for a run, for a wrapper that
+starts rkat-tui with a server of its own: the fields of one `[[servers]]`
+entry of `mcp.toml` as the body of a TOML inline table, on one line,
+stdio or HTTP, repeatable:
+
+    rkat-tui --mcp-server 'name="search", command="/opt/wrapper/tool", args=["mcp","search"]'
+
+It is yours, like your own `mcp.toml`, so no trust question is asked,
+and it wins over a server of the same name from an `mcp.toml` or the
+realm config (a start-up notice says so). It reaches the daemon only
+when this run starts it: a daemon that is already running keeps the
+servers it started with. The value is taken as
+written (a `${VAR}` in it is refused, since nothing expands it), and a
+value that does not read stops the start naming which `--mcp-server` and
+why, never what it holds. A secret belongs in the environment, not in
+the flag: a stdio server inherits the daemon's environment, which is the
+environment of the `rkat-tui` that started it. There is no `tui.toml`
+key for MCP servers; `mcp.toml` stays the one file format.
 
 ### Context and compaction
 

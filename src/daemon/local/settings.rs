@@ -87,7 +87,8 @@ impl Local {
             | Hook::HelperModels
             | Hook::CheckpointSteps
             | Hook::HelperLimit
-            | Hook::InstructionFiles => {
+            | Hook::InstructionFiles
+            | Hook::WebSearch => {
                 return Ok(());
             }
         }
@@ -236,6 +237,16 @@ impl Local {
                     )],
                     (!warnings.is_empty()).then(|| warnings.join("\n")),
                 )
+            }
+            Hook::WebSearch => {
+                let on = crate::config::registry::web_search_in_force(&self.core.settings.layers());
+                self.core.web_search.set(on);
+                let line = if on {
+                    "the conversations and helpers started from now on are built with the engine's web search as it comes (a conversation built with it off keeps it off)"
+                } else {
+                    "the conversations and helpers started from now on, and a resumed one at its next build, are built with web search off"
+                };
+                (vec![line.to_string()], None)
             }
             Hook::None | Hook::Mode | Hook::ClassifierModel | Hook::TrustBuilds | Hook::Ui => {
                 (Vec::new(), None)

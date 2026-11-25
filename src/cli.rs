@@ -164,6 +164,17 @@ pub struct Args {
     #[arg(long)]
     pub wait_for_mcp: bool,
 
+    /// Add an MCP server for this run: the body of one TOML inline table
+    /// with the fields of an mcp.toml `[[servers]]` entry
+    /// (`name="search", command="/opt/wrapper/tool", args=["mcp"]`, or
+    /// `name="search", url="https://…"`). It is yours like the user's
+    /// mcp.toml and wins over a server of the same name from mcp.toml or
+    /// the realm config. It reaches the daemon only when this run starts
+    /// it. Taken as written (no `${VAR}`); a stdio server inherits the
+    /// daemon's environment, which is where a secret belongs. Repeatable.
+    #[arg(long = "mcp-server", value_name = "TOML")]
+    pub mcp_server: Vec<String>,
+
     /// Compact the context automatically once it reaches the `[auto]`
     /// `compact_auto_percent` (overrides `compact` in tui.toml).
     #[arg(long, conflicts_with = "no_auto_compact")]

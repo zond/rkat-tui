@@ -15307,3 +15307,105 @@ Tests: `bootstrap::instructions::tests::setting_files_follow_the_user_global_fil
 oracle adds the lists up),
 `instructions::instruction_files_of_the_command_line_reach_agents_and_fresh_helpers`,
 `instructions::a_set_of_instruction_files_applies_from_the_next_conversation`.
+
+## `agent.web_search` and `--mcp-server` (2026-11-25)
+
+Two switches for a wrapper that starts rkat-tui in a managed
+environment, from the command line alone: no web search through the
+provider, and an MCP server of its own, with no secret on the command
+line.
+
+**What the engine does with web search (Meerkat 0.9.18, read in the
+sources).**
+
+- `meerkat` `factory.rs` `provider_request_defaults_for` builds a
+  session's provider-native search tag (Anthropic `web_search_20250305`,
+  OpenAI `{"type":"web_search"}`, Gemini `google_search`) when the build's
+  `override_web_search` is not `Disable`, the model profile has
+  `supports_web_search` and `config.provider_tools.<provider>` is on; a
+  self-hosted (`openai`-dialect endpoint) session gets none (`_ => None`).
+- But `assemble_agent` derives `governed_tool_inputs_disable_native` from
+  `tool_dispatch_admission.is_some()` (and the consequence policy, the
+  execution policy, a grant gate over `web_search`), and then sets
+  `ProviderNativeToolPolicy::DisableAll`. `meerkat-core`
+  `agent/state.rs` `provider_params_under_native_tool_policy` strips every
+  provider-native tool from each request's params under `DisableAll`
+  (first request, retry, fallback model), `compaction_provider_params`
+  does it for a compaction summary, and `apply_llm_request_policy` only
+  narrows the policy on a model switch. Every rkat-tui agent
+  (`daemon::engine::AgentHost::admission`, always `Some`) and every helper
+  (`mobs::customizer::shape`) is built with an admission, so no request of
+  rkat-tui's has carried a provider-native search tool, whatever this
+  setting. The brief's expectation (search on the built-in endpoints and
+  on catalog-known gateway models) holds only for an ungated build; the
+  manual says what holds for rkat-tui.
+- The fallback builtin `web_search` (`meerkat-tools`
+  `builtin/web_search.rs`) is registered only with an executor: the host's
+  `web_search_executor_override` or the factory's
+  `auto_web_search_executor`, built only when the override is `Enable`
+  (`browser_fallback_web_search_required`). rkat-tui sets neither, so it
+  was never offered; `Disable` also resolves its visibility off.
+- `Disable` therefore removes both, and no deny-list step
+  (`src/daemon/policy.rs`) is needed. `/btw` and the classifier call
+  `LlmClient` directly, outside any session build: `/btw` with
+  `provider_params: None` and no tools (`daemon::btw::ask`), the
+  classifier with only a reasoning tag (`low_reasoning_params`) and its
+  own read-only file tools. The provider clients send search only from
+  the request's tag (`meerkat-anthropic` `client.rs`), so they carry none
+  either, and nothing there needs the setting.
+- Resume: `apply_resumed_session_metadata` restores the stored category
+  unless the build's own is not `Inherit` (`resume_override_mask`), and the
+  resumed build records what it used in `metadata.tooling.web_search`. So a
+  conversation built with `Disable` stays off when rebuilt with
+  `Inherit`, and one built with `Inherit` is turned off by a rebuild with
+  `Disable`.
+
+**Decisions.**
+
+- `agent.web_search` is a registry bool (`config::registry::WEB_SEARCH`,
+  `ProjectRule::OnlyFalse`, as `pricing.fetch`), applying from the next
+  conversation. `true` leaves the spec's category `Inherit`, never
+  `Enable` (which asks the engine for its fallback tool). `false` sets
+  `tool_category_overrides.web_search = Disable` on every member spec the
+  customizer builds: an agent's spawn and restore (`customize_spawn`,
+  `customize_resume`) and every helper's build (`admit`: fresh, fork,
+  council participant). A fork takes the customizer's categories as
+  default-depth forks already did (`drop_mob_tools`). The switch is shared
+  (`mobs::customizer::WebSearch`), set by `Hook::WebSearch`. Kept although
+  the gate already strips the provider tag: it is the user's recorded
+  choice, independent of how the engine composes a gated build.
+- `--mcp-server` values are the body of an inline table, read as
+  `server = { <value> }` into the engine's `McpServerConfig`
+  (`bootstrap::mcp::command_line_servers`), checked as a file's
+  (`validate_access`, `validate_cwd`) and refused with `${` (the realm
+  rule, `reject_realm_server_env_references`): nothing expands a
+  command-line value. The reason names the flag's position and never a
+  value (`toml_reason`, after the engine's `redact::toml_error_text`,
+  which is crate-private there). The client checks them before it
+  starts a daemon (`lib::run`); the daemon reads them again in
+  `bootstrap::assemble`, joined after the files' and realm's set
+  (`LoadedMcp::with_command_line`): a name clash replaces the other
+  server with a start-up notice; two flags with one name are refused.
+  Forwarded by `client::launch::daemon_argv` like `--set`.
+- Environment: `spawn_daemon` clears nothing (it only sets or removes
+  the start token), and the engine's stdio launch (`meerkat-mcp`
+  `connection.rs`) has no `env_clear`. The test rig's daemon runs in the
+  test process, which cannot set a variable on itself (`set_var` is
+  unsafe), so the test reruns itself with the variable set, as
+  `confinement::workspace_mode_passes_the_curated_environment` does; its
+  "server" is a shell that writes the variable and exits.
+- `/status` lists no MCP server by name; the tools of a command-line
+  server count in `/context`'s `mcp` family like any other's.
+
+Tests: `config::tests::web_search_is_on_unless_a_layer_turns_it_off_and_a_project_only_turns_it_off`,
+`config::registry::tests` (the oracle and the manual's table),
+`mobs::customizer::tests::web_search_off_turns_the_category_off_and_on_leaves_it_alone`,
+`web_search::web_search_off_builds_the_agent_and_a_fresh_helper_without_it`,
+`web_search::by_default_the_category_is_the_engine_s_and_no_request_searches`,
+`web_search::a_restored_conversation_is_turned_off_and_stays_off`,
+`bootstrap::mcp::tests::{a_command_line_server_reads_as_one_mcp_toml_entry,
+a_bad_command_line_server_is_refused_without_its_values,
+the_command_line_wins_over_a_file_server_of_its_name}`,
+`client::launch::tests::{the_daemon_gets_every_shared_engine_flag_and_no_ui_flag,
+every_engine_flag_reaches_the_daemon}`,
+`mcp_servers::a_command_line_stdio_server_starts_with_the_daemon_s_environment`.
