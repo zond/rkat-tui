@@ -7,11 +7,13 @@
 //! also takes goes in with the file's write as one ([`PermissionFiles`]).
 
 use super::*;
-use crate::approval::desk::{EDIT_CLI, EDIT_PROJECT};
+use crate::approval::desk::{EDIT_CLI, EDIT_PROJECT, RuleEdit, describe_rule};
+use crate::approval::grants::{GrantOrigin, grant_dir_for};
 use crate::approval::hosts::{
     HostOrigin, HostPattern, HostRows, MAX_TRUSTED_HOSTS, TRUSTED_HOSTS_KEY, TrustedHost,
     VALID_HOST,
 };
+use crate::approval::{hosts, statements};
 
 /// Who holds the settings files' permission sections beside the engine
 /// (the daemon's settings, `crate::daemon::settings::Settings`). The
@@ -62,6 +64,7 @@ impl ApprovalEngine {
     /// Returns [`RulesError`] when the file was not written (the rule stays
     /// active).
     pub fn add_rule(&self, rule: Rule, level: Level) -> Result<(), RulesError> {
+        refuse_broad(&rule)?;
         self.audit_event("rule_added", describe_rule(&rule));
         let rule = self.of_level(rule, level);
         let _writing = self.writing();
@@ -143,12 +146,7 @@ impl ApprovalEngine {
     /// file or the command line (only the user's own and the workspace's
     /// file are written), another rule says that already, the file could
     /// not be written (the engine keeps the old rule then).
-    pub fn edit_rule(
-        &self,
-        id: RuleId,
-        mut rule: Rule,
-    ) -> Result<super::super::desk::RuleEdit, String> {
-        use super::super::desk::RuleEdit;
+    pub fn edit_rule(&self, id: RuleId, mut rule: Rule) -> Result<RuleEdit, String> {
         let _writing = self.writing();
         let old = self
             .rules
@@ -165,15 +163,16 @@ impl ApprovalEngine {
             RuleOrigin::Cli => return Err(EDIT_CLI.to_string()),
         };
         rule.origin = old.origin;
-        if rule.kind == old.kind && rule.tool == old.tool && rule.arg == old.arg {
+        if rule.says(&old) {
             return Ok(RuleEdit::Unchanged);
         }
+        refuse_broad(&rule).map_err(|err| err.to_string())?;
         let now = {
             let mut rules = self.rules.write();
             if let Some(same) = rules.says_already(&rule, id) {
                 return Err(format!(
                     "another rule says that already ({}, {})",
-                    describe_rule(same),
+                    rule_text(same),
                     same.origin.as_str()
                 ));
             }
@@ -404,7 +403,7 @@ impl ApprovalEngine {
     /// # Errors
     ///
     /// Why it was not added, for the user: refused by
-    /// [`super::super::statements::normalize`], [`MAX_STATEMENTS`] active, the same
+    /// [`statements::normalize`], [`MAX_STATEMENTS`] active, the same
     /// one active, "once" asked, or the realm file not written.
     pub fn allow_statement(
         &self,
@@ -425,7 +424,7 @@ impl ApprovalEngine {
         scope: GrantScope,
         tell: bool,
     ) -> Result<(Approved, String), String> {
-        let text = super::super::statements::normalize(raw).map_err(|why| why.to_string())?;
+        let text = statements::normalize(raw).map_err(|why| why.to_string())?;
         let active = self.statements_for(session_id);
         if active.iter().any(|known| known.eq_ignore_ascii_case(&text)) {
             return Err(StatementRefusal::Duplicate.to_string());
@@ -557,9 +556,7 @@ impl ApprovalEngine {
             self.statements.remove_lasting(id);
             (row.text, row.origin)
         };
-        for state in self.sessions.lock().values_mut() {
-            state.allow_cache.clear();
-        }
+        self.drop_cached_allows();
         self.audit_event("statement_removed", format!("{} {text:?}", origin.word()));
         Ok(format!("no longer allowed: \"{text}\""))
     }
@@ -695,9 +692,9 @@ impl ApprovalEngine {
                 "blocked call #{id} names no host to trust; n in /permissions' Hosts section trusts one you type"
             ));
         }
-        let held = super::super::hosts::patterns(&self.trusted_hosts.read());
+        let held = hosts::patterns(&self.trusted_hosts.read());
         for host in &call.hosts {
-            if !super::super::hosts::is_trusted(&held, host) {
+            if !hosts::is_trusted(&held, host) {
                 self.trust_host_as(host, level)?;
             }
         }
@@ -780,9 +777,7 @@ impl ApprovalEngine {
                 host.origins = left.clone();
             }
         }
-        for state in self.sessions.lock().values_mut() {
-            state.allow_cache.clear();
-        }
+        self.drop_cached_allows();
         self.audit_event(
             "trusted_host_removed",
             format!("{pattern} ({})", from.join(", ")),
@@ -808,7 +803,7 @@ impl ApprovalEngine {
     /// statements stay. An entry is refused as at start (a broad allow
     /// rule, a directory the start's plan would refuse) and, for a
     /// directory not held before, as a grant by command is (one that
-    /// reaches the settings files, or [`super::super::grants::grant_dir_for`]
+    /// reaches the settings files, or [`grant_dir_for`]
     /// refuses); a refused one is skipped and named. Each item added or
     /// removed is audited with `why` ("your tui.toml changed"); a removal
     /// drops the cached allows (one may have rested on it).
@@ -832,7 +827,7 @@ impl ApprovalEngine {
                 if let Some(reason) = broad {
                     change
                         .skipped
-                        .push(format!("the rule allow {} ({reason})", describe_rule(rule)));
+                        .push(format!("the rule {} ({reason})", describe_rule(rule)));
                 }
                 broad.is_none()
             })
@@ -842,14 +837,8 @@ impl ApprovalEngine {
             .rules
             .write()
             .replace(&[RuleOrigin::Global, RuleOrigin::Realm], rules);
-        change.rules_added = added
-            .iter()
-            .map(super::super::desk::describe_rule)
-            .collect();
-        change.rules_removed = removed
-            .iter()
-            .map(super::super::desk::describe_rule)
-            .collect();
+        change.rules_added = added.iter().map(describe_rule).collect();
+        change.rules_removed = removed.iter().map(describe_rule).collect();
         // Statements.
         let (added, removed) = self.statements.replace(&lasting.statements, || {
             self.next_id.fetch_add(1, Ordering::Relaxed)
@@ -860,8 +849,8 @@ impl ApprovalEngine {
         {
             let mut held = self.trusted_hosts.write();
             let (before, after) = (
-                super::super::hosts::patterns(&held),
-                super::super::hosts::patterns(&lasting.trusted_hosts),
+                hosts::patterns(&held),
+                hosts::patterns(&lasting.trusted_hosts),
             );
             change.hosts_added = after
                 .iter()
@@ -905,10 +894,7 @@ impl ApprovalEngine {
                     continue;
                 }
                 // An existing directory (the plan's checks): its own grant.
-                if let Err(refusal) = super::super::grants::grant_dir_for(
-                    &self.root,
-                    &grant.path.display().to_string(),
-                ) {
+                if let Err(refusal) = grant_dir_for(&self.root, &grant.path.display().to_string()) {
                     change
                         .skipped
                         .push(format!("the directory {}: {refusal}", grant.path.display()));
@@ -916,9 +902,9 @@ impl ApprovalEngine {
                 }
             }
             let origin = if grant.from_cli {
-                super::super::grants::GrantOrigin::Flag
+                GrantOrigin::Flag
             } else {
-                super::super::grants::GrantOrigin::Config
+                GrantOrigin::Config
             };
             dirs.push((grant.path, grant.writable, origin));
         }
@@ -950,11 +936,22 @@ impl ApprovalEngine {
             }
         }
         if change.removed() {
-            for state in self.sessions.lock().values_mut() {
-                state.allow_cache.clear();
-            }
+            self.drop_cached_allows();
         }
         change
+    }
+}
+
+/// Refuse an allow rule too broad to keep: [`ApprovalEngine::replace_lasting`]
+/// (after every rule command) and the start drop one, so an add or edit
+/// that took it would say "added" of a rule never in force.
+fn refuse_broad(rule: &Rule) -> Result<(), RulesError> {
+    match rule.broad_reason() {
+        Some(reason) => Err(RulesError::TooBroad {
+            rule: describe_rule(rule),
+            reason,
+        }),
+        None => Ok(()),
     }
 }
 

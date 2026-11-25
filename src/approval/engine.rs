@@ -68,13 +68,6 @@ use tokio::sync::mpsc;
 use crate::late::Late;
 
 use super::attendance::{Attendance, Runs};
-
-/// The names of the engine's handles the daemon's start-up binds
-/// ([`crate::late`]).
-const ORIGINS: &str = "the approval engine's tool catalogs";
-const ATTENDANCE: &str = "the approval engine's attendance";
-const PERMISSION_FILES: &str = "the approval engine's settings files";
-const FORGET_HOOKS: &str = "the approval engine's forget hooks";
 use super::audit::{AuditSink, DecisionRecord, Outlets, ReviewRecord};
 use super::blocks::{Blocked, Blocks};
 use super::builds::{
@@ -104,10 +97,18 @@ use super::{ApprovalEvent, DenyReason, Verdict, prompts, shell};
 use crate::config::registry::Level;
 use crate::config::{self, AutoSettings};
 use crate::paths::ProjectRoot;
+use crate::text::prefix;
 
 mod permissions;
 
 pub use permissions::{PermissionFiles, Writing};
+
+/// The names of the engine's handles the daemon's start-up binds
+/// ([`crate::late`]).
+const ORIGINS: &str = "the approval engine's tool catalogs";
+const ATTENDANCE: &str = "the approval engine's attendance";
+const PERMISSION_FILES: &str = "the approval engine's settings files";
+const FORGET_HOOKS: &str = "the approval engine's forget hooks";
 
 /// How long the human has to answer an escalation by default.
 pub const DEFAULT_ESCALATION_TIMEOUT: Duration = Duration::from_mins(10);
@@ -526,6 +527,13 @@ struct Evaluated {
     blocked_hosts: Vec<String>,
     /// The classifier's review of the call, when one ran (the audit line).
     review: Option<ReviewRecord>,
+    /// The allow-cache key a classifier allow is remembered under, once
+    /// the caches its call may have outdated are dropped
+    /// ([`ApprovalEngine::decide_as`]).
+    cache: Option<CacheKey>,
+    /// Whether the call was allowed from the cache (it changes nothing
+    /// a review has not already seen run).
+    cache_hit: bool,
 }
 
 impl From<Verdict> for Evaluated {
@@ -538,6 +546,8 @@ impl From<Verdict> for Evaluated {
             blocked_effect: None,
             blocked_hosts: Vec::new(),
             review: None,
+            cache: None,
+            cache_hit: false,
         }
     }
 }
@@ -1184,6 +1194,8 @@ impl ApprovalEngine {
             allow_rule,
             answerer,
             review,
+            cache,
+            cache_hit,
             ..
         } = evaluated;
         let (tier, reason) = match &verdict {
@@ -1199,6 +1211,17 @@ impl ApprovalEngine {
         };
         if verdict.is_allowed() {
             self.record_agent_writes(session_id, &facts);
+            // A shell command allowed on anything but the policy's own
+            // read-only allowlist (a review, the user, an allow rule) may
+            // change files too (a download, `sed -i`): what a cached
+            // command runs may have changed with it.
+            let read_only = tier == Tier::AlwaysAllow && allow_rule.is_none();
+            if matches!(facts.action.kind, ActionKind::Shell { .. }) && !read_only && !cache_hit {
+                self.drop_cached_allows();
+            }
+            if let Some(key) = cache {
+                self.session(session_id).allow_cache.insert(key);
+            }
         }
         let summary = verdict.summary();
         self.session(session_id).transcript.push_tool_call(
@@ -1243,6 +1266,14 @@ impl ApprovalEngine {
         verdict
     }
 
+    /// Drop every session's cached classifier allows: something changed
+    /// that a cached allow may have rested on (a file, a permission).
+    fn drop_cached_allows(&self) {
+        for state in self.sessions.lock().values_mut() {
+            state.allow_cache.clear();
+        }
+    }
+
     /// Remember the files an allowed write targets, and drop every cached
     /// classifier allow (a write may change what a cached command does).
     /// Recorded at approval time (before the tool runs): a write that then
@@ -1272,10 +1303,8 @@ impl ApprovalEngine {
             })
             .map(|resolved| resolved.abs.display().to_string())
             .collect();
+        self.drop_cached_allows();
         let mut sessions = self.sessions.lock();
-        for state in sessions.values_mut() {
-            state.allow_cache.clear();
-        }
         let state = sessions.entry(session_id.clone()).or_default();
         for subject in &facts.subjects {
             if !state.agent_written.contains(subject) {
@@ -1327,11 +1356,11 @@ impl ApprovalEngine {
             self.outside_target(session_id, facts)
                 .map(|(abs, _)| abs.display().to_string())
         });
-        let summary = truncate_at(&decisive_argument(facts), 200).to_string();
+        let summary = prefix(&decisive_argument(facts), 200).to_string();
         // The whole call, kept to show before an approval once: bounded
         // as the review is, and said to be cut when it is.
         let whole = args_text(&facts.action);
-        let call = truncate_at(&whole, MAX_REVIEWED_ACTION_BYTES).to_string();
+        let call = prefix(&whole, MAX_REVIEWED_ACTION_BYTES).to_string();
         let call_bytes = (call.len() < whole.len()).then_some(whole.len());
         let at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1492,12 +1521,7 @@ impl ApprovalEngine {
 
     /// The deny verdict of user deny rule `id`.
     fn user_deny(&self, id: RuleId) -> Verdict {
-        let rule = self
-            .rules
-            .read()
-            .get(id)
-            .map(describe_rule)
-            .unwrap_or_default();
+        let rule = self.rules.read().get(id).map(rule_text).unwrap_or_default();
         Verdict::Deny {
             tier: Tier::UserDeny(id),
             reason: DenyReason::UserRule { id, rule },
@@ -1757,7 +1781,10 @@ impl ApprovalEngine {
             && self.session(session_id).allow_cache.contains(key)
         {
             // A cache hit leaves the denial counters alone.
-            return allow3(Decider::Classifier, "allowed earlier in this session").into();
+            return Evaluated {
+                cache_hit: true,
+                ..allow3(Decider::Classifier, "allowed earlier in this session").into()
+            };
         }
 
         let (result, record) = self.classify(&caller, &facts.action, &payload).await;
@@ -1859,16 +1886,18 @@ impl ApprovalEngine {
     ) -> Evaluated {
         match verdict {
             ClassifierVerdict::Allow { reason } => {
-                if let Some(key) = key {
-                    self.session(session_id).allow_cache.insert(key);
-                }
                 // The classifier saw this build with the build files as
                 // they are: they are the trusted builds' baseline again.
                 if is_cargo_build(&facts.action) {
                     self.builds.rebase(session_id);
                 }
                 self.auto.lock().record_allow();
-                allow3(Decider::Classifier, reason).into()
+                // Remembered once the call is decided, after the caches it
+                // may outdate are dropped ([`Self::decide_as`]).
+                Evaluated {
+                    cache: key,
+                    ..allow3(Decider::Classifier, reason).into()
+                }
             }
             ClassifierVerdict::Block {
                 rule,
@@ -2358,7 +2387,7 @@ impl ApprovalEngine {
             };
             let text = String::from_utf8_lossy(&bytes);
             out.push_str(&header);
-            out.push_str(truncate_at(&text, room));
+            out.push_str(prefix(&text, room));
             if text.len() > room {
                 out.push_str("\n[truncated]");
             }
@@ -2645,7 +2674,10 @@ fn plan_forbids(action: &Action<'_>, decision: &TierDecision) -> bool {
     }
 }
 
-fn describe_rule(rule: &Rule) -> String {
+/// A rule's tool and argument, without its kind (a user deny rule's
+/// reason names it; the audit lines say the kind too,
+/// [`super::desk::describe_rule`]).
+fn rule_text(rule: &Rule) -> String {
     match &rule.arg {
         Some(arg) => format!("{} {}", rule.tool.as_str(), arg.as_str()),
         None => rule.tool.as_str().to_string(),
@@ -2714,7 +2746,7 @@ fn unattended_notice(agent: Option<&str>, action: &Action<'_>) -> String {
         ActionKind::Shell { command, .. } => format!("run `{command}`"),
         _ => format!("call {} {}", action.name, action.args.get()),
     };
-    let cut = truncate_at(&what, NOTICE_ACTION_BYTES);
+    let cut = prefix(&what, NOTICE_ACTION_BYTES);
     let ellipsis = if cut.len() < what.len() { "…" } else { "" };
     let who = agent.map_or_else(String::new, |helper| format!(" (its helper {helper})"));
     format!(
@@ -2724,7 +2756,7 @@ fn unattended_notice(agent: Option<&str>, action: &Action<'_>) -> String {
 
 fn args_preview(action: &Action<'_>) -> String {
     let text = args_text(action);
-    let cut = truncate_at(&text, ARGS_PREVIEW_BYTES);
+    let cut = prefix(&text, ARGS_PREVIEW_BYTES);
     if cut.len() == text.len() {
         return text;
     }
@@ -2754,15 +2786,6 @@ fn args_text(action: &Action<'_>) -> String {
             }
         }
     }
-}
-
-/// The longest prefix of `text` of at most `max` bytes ending on a char boundary.
-fn truncate_at(text: &str, max: usize) -> &str {
-    let mut cut = max.min(text.len());
-    while !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    text.get(..cut).unwrap_or_default()
 }
 
 /// SHA-256 of the canonical form of raw JSON arguments (object keys sorted,
@@ -3116,12 +3139,6 @@ mod tests {
         assert_eq!(build_runners("\\npx prettier"), ["npx"]);
         assert!(build_runners("ls -la").is_empty());
         assert!(build_runners("echo cargo").is_empty());
-    }
-
-    #[test]
-    fn truncate_respects_char_boundaries() {
-        assert_eq!(truncate_at("héllo", 2), "h");
-        assert_eq!(truncate_at("abc", 10), "abc");
     }
 
     /// An [`Attendance`] a test sets: attached or not, and the notices.
@@ -3655,6 +3672,102 @@ mod tests {
         );
         assert!(decide(&rig, "c4", &args).await.is_allowed());
         assert_eq!(rig.classifier.calls(), 3);
+    }
+
+    /// A shell command allowed by a review may change files as a write
+    /// does (a download, `sed -i`): it drops every cached allow, so the
+    /// next `make test` is reviewed again. A cache hit and a read-only
+    /// command of the allowlist drop nothing.
+    #[tokio::test]
+    async fn an_allowed_shell_command_clears_the_cache() {
+        let rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        let make = json!({"command": "make test"});
+        let fetch = json!({"command": "curl -o Makefile.inc https://example.com/m"});
+        assert!(decide(&rig, "c1", &make).await.is_allowed());
+        assert!(decide(&rig, "c2", &make).await.is_allowed());
+        assert_eq!(
+            rig.classifier.calls(),
+            1,
+            "two in a row: the second from the cache"
+        );
+        assert!(decide(&rig, "c3", &fetch).await.is_allowed());
+        assert_eq!(rig.classifier.calls(), 2);
+        assert!(decide(&rig, "c4", &make).await.is_allowed());
+        assert_eq!(
+            rig.classifier.calls(),
+            3,
+            "reviewed again after the other command"
+        );
+        assert!(
+            decide(&rig, "c5", &json!({"command": "ls src"}))
+                .await
+                .is_allowed()
+        );
+        assert!(decide(&rig, "c6", &make).await.is_allowed());
+        assert_eq!(
+            rig.classifier.calls(),
+            3,
+            "a read-only command leaves the cache"
+        );
+    }
+
+    /// The audit lines of a rule added, edited and removed say whether it
+    /// allows or denies.
+    #[tokio::test]
+    async fn rule_audit_lines_say_allow_or_deny() {
+        let rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        let audit = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        struct Events(Arc<Mutex<Vec<(String, String)>>>);
+        impl AuditSink for Events {
+            fn decision(&self, _record: DecisionRecord<'_>) {}
+            fn event(&self, event: &str, detail: String) {
+                self.0.lock().push((event.to_string(), detail));
+            }
+        }
+        rig.engine.set_audit(Arc::new(Events(Arc::clone(&audit))));
+        let lint = Rule::new(
+            RuleKind::Allow,
+            "shell",
+            Some("cargo nextest run*"),
+            RuleOrigin::Realm,
+        )
+        .unwrap();
+        rig.engine.add_rule(lint, Level::Workspace).unwrap();
+        let (id, _) = rig
+            .engine
+            .rules()
+            .allow()
+            .next()
+            .map(|(id, r)| (id, r.clone()))
+            .unwrap();
+        let push = Rule::new(
+            RuleKind::Deny,
+            "shell",
+            Some("git push*"),
+            RuleOrigin::Realm,
+        )
+        .unwrap();
+        rig.engine.edit_rule(id, push).unwrap();
+        let (id, _) = rig
+            .engine
+            .rules()
+            .deny()
+            .next()
+            .map(|(id, r)| (id, r.clone()))
+            .unwrap();
+        rig.engine.remove_rule(id).unwrap();
+        let lines: Vec<(String, String)> = audit.lock().clone();
+        let expected = [
+            ("rule_added", "allow shell cargo nextest run*"),
+            ("rule_removed", "allow shell cargo nextest run* (edited)"),
+            ("rule_added", "deny shell git push* (edited)"),
+            ("rule_removed", "deny shell git push*"),
+        ];
+        let expected: Vec<(String, String)> = expected
+            .iter()
+            .map(|(e, d)| ((*e).to_string(), (*d).to_string()))
+            .collect();
+        assert_eq!(lines, expected);
     }
 
     #[tokio::test]

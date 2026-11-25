@@ -268,13 +268,13 @@ pub enum RuleCommand {
     /// `/permissions remove <n>`.
     Remove {
         /// The number `/permissions list` shows.
-        n: usize,
+        n: u64,
     },
     /// The `/permissions` dialog's `e` on a rule: replace rule `n`, which
     /// reads `old`, with `new`, in place in its own file.
     Edit {
         /// The number `/permissions list` shows.
-        n: usize,
+        n: u64,
         /// The rule as the dialog showed it (a rule renumbered since is
         /// not edited by mistake).
         old: RuleSpec,
@@ -370,26 +370,22 @@ pub fn run_rule_command(engine: &ApprovalEngine, command: &RuleCommand) -> RuleO
             user,
             literal,
         } => {
-            let kind = if *deny {
-                RuleKind::Deny
-            } else {
-                RuleKind::Allow
-            };
             let level = if *user {
                 crate::config::registry::Level::User
             } else {
                 crate::config::registry::Level::Workspace
             };
-            let rule = match (pattern, literal) {
-                (Some(text), true) => Rule::literal(kind, tool, text.clone(), RuleOrigin::Realm),
-                (None, true) => {
-                    return RuleOutcome::failed(
-                        "rule not added: a literal rule needs the exact text to match",
-                    );
-                }
-                (pattern, false) => Rule::new(kind, tool, pattern.as_deref(), RuleOrigin::Realm),
+            let spec = RuleSpec {
+                deny: *deny,
+                tool: tool.clone(),
+                pattern: pattern.clone(),
+                literal: *literal,
             };
-            match rule.and_then(|rule| engine.add_rule(rule, level)) {
+            let rule = match spec.rule(RuleOrigin::Realm) {
+                Ok(rule) => rule,
+                Err(why) => return RuleOutcome::failed(format!("rule not added: {why}")),
+            };
+            match engine.add_rule(rule, level) {
                 Ok(()) if *user => RuleOutcome::ok("rule added to your tui.toml (every workspace)"),
                 Ok(()) => RuleOutcome::ok("rule added"),
                 Err(err) => RuleOutcome::failed(format!("rule not added: {err}")),
@@ -563,8 +559,7 @@ pub fn numbered_rules(rules: &RuleSet) -> impl Iterator<Item = (u64, &Rule)> {
 
 /// The id of the rule `/permissions list` numbers `n`.
 #[must_use]
-pub fn nth_rule_id(rules: &RuleSet, n: usize) -> Option<RuleId> {
-    let serial = u64::try_from(n).ok()?;
+pub fn nth_rule_id(rules: &RuleSet, serial: u64) -> Option<RuleId> {
     rules
         .allow()
         .chain(rules.deny())

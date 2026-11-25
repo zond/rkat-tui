@@ -109,6 +109,6 @@ pub trait AuditSink: Send + Sync {
     fn decision(&self, record: DecisionRecord<'_>);
 
     /// The engine changed what is allowed: `event` (`mode`, `rule_added`,
-    /// `rule_removed`, `rules_trusted`) with `detail`.
+    /// `rule_removed`, `grant_added` and the like) with `detail`.
     fn event(&self, event: &str, detail: String);
 }

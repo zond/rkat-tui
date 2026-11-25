@@ -350,44 +350,36 @@ impl DenyReason {
 /// Model-facing denial message.
 #[must_use]
 pub fn deny_message(reason: &DenyReason) -> String {
-    let user_reason = reason;
-    let reason = user_reason.for_model();
-    if let DenyReason::Unavailable { .. } = user_reason {
+    let text = reason.for_model();
+    match reason {
         // Not a judgement of the action: nothing here can run it.
-        return format!("Not available: {reason}.");
-    }
-    if let DenyReason::ReviewIncomplete(_) = user_reason {
+        DenyReason::Unavailable { .. } => format!("Not available: {text}."),
         // Not a judgement of the action either: the review failed.
-        return format!("Not run: {reason}.");
-    }
-    if let DenyReason::Human {
-        comment: Some(_), ..
-    } = user_reason
-    {
+        DenyReason::ReviewIncomplete(_) => format!("Not run: {text}."),
         // The user said what to do instead: that is the way forward, not a
         // detour around the denial.
-        return format!(
-            "Blocked by auto-mode safety policy: {reason}. Do what the user says instead; do not \
+        DenyReason::Human {
+            comment: Some(_), ..
+        } => format!(
+            "Blocked by auto-mode safety policy: {text}. Do what the user says instead; do not \
              try to achieve the denied action's effect another way."
-        );
-    }
-    if let DenyReason::Classifier { hint: Some(_), .. } = user_reason {
+        ),
         // The way forward is named: the user's grant, or a place inside
         // the allowed scope.
-        return format!(
-            "Blocked by auto-mode safety policy: {reason}. Tell the user what would allow it, or \
+        DenyReason::Classifier { hint: Some(_), .. } => format!(
+            "Blocked by auto-mode safety policy: {text}. Tell the user what would allow it, or \
              take the alternative named; do not try to reach the same place another way \
              (different tool, rewritten or encoded command, or a script)."
-        );
+        ),
+        DenyReason::Classifier { .. } => {
+            format!("Blocked by auto-mode safety policy: {text}. {BLOCK_GUIDANCE}.")
+        }
+        _ => format!(
+            "Blocked by auto-mode safety policy: {text}. Do not try to achieve the same effect \
+             another way (different tool, rewritten or encoded command, or a script). Choose a safer \
+             approach within the user's request, or stop and ask the user."
+        ),
     }
-    if let DenyReason::Classifier { .. } = user_reason {
-        return format!("Blocked by auto-mode safety policy: {reason}. {BLOCK_GUIDANCE}.");
-    }
-    format!(
-        "Blocked by auto-mode safety policy: {reason}. Do not try to achieve the same effect \
-         another way (different tool, rewritten or encoded command, or a script). Choose a safer \
-         approach within the user's request, or stop and ask the user."
-    )
 }
 
 /// What would allow a call the classifier blocked because `path` lies

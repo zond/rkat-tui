@@ -529,7 +529,7 @@ fn in_force_page(rules: &[RuleRow], grants: &[GrantRow], statements: &[Statement
                 RuleOrigin::Project => "It is written in the project's .rkat/tui.toml, so it is removed until the daemon restarts (edit that file to drop it for good)".to_string(),
                 RuleOrigin::Cli => "It comes from the daemon's command line, so it is removed until the daemon restarts".to_string(),
             };
-            let n = usize::try_from(rule.n).unwrap_or(usize::MAX);
+            let n = rule.n;
             let edit = match rule.origin {
                 RuleOrigin::Realm | RuleOrigin::Session => PickKey::field(
                     KeyCode::Char('e'),

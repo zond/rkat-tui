@@ -118,15 +118,8 @@ fn cut(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
     }
-    let mut end = max;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!(
-        "{} … ({} more bytes left out)",
-        &text[..end],
-        text.len() - end
-    )
+    let head = crate::text::prefix(text, max);
+    format!("{head} … ({} more bytes left out)", text.len() - head.len())
 }
 
 /// The session's record for the side call, at most about `budget` bytes:

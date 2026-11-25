@@ -17,9 +17,9 @@
 //!   arguments), `tier`, `verdict` (`allow`/`deny`), `decider` (`rule:<id>`,
 //!   `classifier`, `human:<connection>`, `human` (a Stop), `mode`,
 //!   `policy`, `unattended`, `timeout`) and, for a denial, `reason`;
-//! - `"mode"`, `"rule_added"`, `"rule_removed"`, `"rules_trusted"`,
-//!   `"project_trusted"`, `"agent_retired"`, `"daemon_start"`,
-//!   `"daemon_stop"`: `detail`, and `agent` where one is concerned;
+//! - `"mode"`, `"rule_added"`, `"rule_removed"`, `"project_trusted"`,
+//!   `"agent_retired"`, `"daemon_start"`, `"daemon_stop"`: `detail`, and
+//!   `agent` where one is concerned;
 //! - `"classifier_check"` (`/auto check`): `detail`, the model and the
 //!   totals, or how far a check got that its client left;
 //! - `"interrupt"` (`rkat/interrupt`): `agent`, and in `detail` the run,

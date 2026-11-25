@@ -19,15 +19,6 @@ pub enum RulesError {
     /// The settings writer refused or failed.
     #[error(transparent)]
     Settings(#[from] crate::config::write::WriteError),
-    /// A rules file could not be written.
-    #[error("cannot write {}: {source}", path.display())]
-    Write {
-        /// The rules file.
-        path: PathBuf,
-        /// Why.
-        #[source]
-        source: crate::paths::AtomicWriteError,
-    },
     /// A glob pattern failed to compile.
     #[error("invalid pattern `{pattern}`: {source}")]
     Pattern {
@@ -66,9 +57,17 @@ pub enum RulesError {
     /// set).
     #[error(transparent)]
     HelperModels(#[from] crate::config::helper_models::HelperModelsError),
-    /// Serializing a rules file failed.
-    #[error("failed to serialize rules: {0}")]
-    Serialize(#[from] toml::ser::Error),
+    /// An allow rule too broad to keep ([`Rule::broad_reason`]): the
+    /// engine drops such a rule wherever it comes from, so it is not added.
+    #[error(
+        "`{rule}` is too broad to keep ({reason}): such an allow rule is dropped at once and at every start; allow a narrower pattern"
+    )]
+    TooBroad {
+        /// The rule as `/permissions` writes it.
+        rule: String,
+        /// Why it is too broad.
+        reason: &'static str,
+    },
     /// A rule entry set both `arg` and `literal`.
     #[error("rule for `{tool}` sets both `arg` and `literal`")]
     ArgAndLiteral {
@@ -367,6 +366,13 @@ impl Rule {
         }
     }
 
+    /// Whether this rule says what `other` says: its kind, tool and
+    /// argument (the layer it came from aside).
+    #[must_use]
+    pub fn says(&self, other: &Rule) -> bool {
+        self.kind == other.kind && self.tool == other.tool && self.arg == other.arg
+    }
+
     /// The serialized form.
     pub fn to_entry(&self) -> RuleEntry {
         let (arg, literal) = match &self.arg {
@@ -553,11 +559,7 @@ impl RuleSet {
     /// the id of the rule (the existing one for a duplicate).
     pub fn push(&mut self, rule: Rule) -> RuleId {
         let kind = rule.kind;
-        if let Some((serial, _)) = self
-            .list(kind)
-            .iter()
-            .find(|(_, r)| r.tool == rule.tool && r.arg == rule.arg)
-        {
+        if let Some((serial, _)) = self.list(kind).iter().find(|(_, r)| r.says(&rule)) {
             return RuleId {
                 kind,
                 serial: *serial,
@@ -594,7 +596,7 @@ impl RuleSet {
     #[must_use]
     pub fn says_already(&self, rule: &Rule, except: RuleId) -> Option<&Rule> {
         self.with_ids(rule.kind)
-            .find(|(id, held)| *id != except && held.tool == rule.tool && held.arg == rule.arg)
+            .find(|(id, held)| *id != except && held.says(rule))
             .map(|(_, held)| held)
     }
 
@@ -608,23 +610,32 @@ impl RuleSet {
     /// Make the rules of `origins` the ones of `rules` that are of
     /// `origins`: a rule held already keeps its id, one no longer there
     /// goes, a new one is pushed (as [`Self::push`]: not when a rule of
-    /// another origin is the same). The rules of other origins stay.
-    /// Returns the rules added and the rules removed.
+    /// another origin is the same). A rule held that now comes only from
+    /// another of `origins` (moved from the workspace's file to the
+    /// user's) takes that origin, so an edit or removal reaches the file it
+    /// is in. The rules of other origins stay. Returns the rules added and
+    /// the rules removed.
     pub fn replace(&mut self, origins: &[RuleOrigin], rules: Vec<Rule>) -> (Vec<Rule>, Vec<Rule>) {
-        let same = |a: &Rule, b: &Rule| a.kind == b.kind && a.tool == b.tool && a.arg == b.arg;
         let rules: Vec<Rule> = rules
             .into_iter()
             .filter(|rule| origins.contains(&rule.origin))
             .collect();
         let mut removed = Vec::new();
         for kind in [RuleKind::Allow, RuleKind::Deny] {
-            self.list_mut(kind).retain(|(_, held)| {
-                let stays =
-                    !origins.contains(&held.origin) || rules.iter().any(|rule| same(rule, held));
-                if !stays {
-                    removed.push(held.clone());
+            self.list_mut(kind).retain_mut(|(_, held)| {
+                if !origins.contains(&held.origin) {
+                    return true;
                 }
-                stays
+                let mut same = rules.iter().filter(|rule| rule.says(held));
+                let Some(first) = same.next() else {
+                    removed.push(held.clone());
+                    return false;
+                };
+                let origin = held.origin;
+                if first.origin != origin && !same.any(|rule| rule.origin == origin) {
+                    held.origin = first.origin;
+                }
+                true
             });
         }
         let mut added = Vec::new();
@@ -632,7 +643,7 @@ impl RuleSet {
             let held = self
                 .list(rule.kind)
                 .iter()
-                .any(|(_, held)| held.tool == rule.tool && held.arg == rule.arg);
+                .any(|(_, held)| held.says(&rule));
             if !held {
                 self.push(rule.clone());
                 added.push(rule);
@@ -861,5 +872,30 @@ mod tests {
         assert_eq!(set.get(kept).unwrap().tool.as_str(), "read_file");
         assert_eq!(set.get(cli).unwrap().origin, RuleOrigin::Cli);
         assert_eq!(set.allow().len(), 3);
+    }
+
+    /// A rule held from one file that now comes only from the other keeps
+    /// its id and takes the other's origin (an edit or removal then
+    /// reaches the file it is in); one in both files keeps its own.
+    #[test]
+    fn a_rule_that_moved_to_another_file_takes_its_origin() {
+        let rule = |tool: &str, origin| Rule::new(RuleKind::Allow, tool, None, origin).unwrap();
+        let mut set = RuleSet::default();
+        let moved = set.push(rule("read_file", RuleOrigin::Realm));
+        let both = set.push(rule("grep", RuleOrigin::Realm));
+        let (added, removed) = set.replace(
+            &[RuleOrigin::Global, RuleOrigin::Realm],
+            vec![
+                rule("read_file", RuleOrigin::Global),
+                rule("grep", RuleOrigin::Global),
+                rule("grep", RuleOrigin::Realm),
+            ],
+        );
+        assert!(
+            added.is_empty() && removed.is_empty(),
+            "{added:?} {removed:?}"
+        );
+        assert_eq!(set.get(moved).unwrap().origin, RuleOrigin::Global);
+        assert_eq!(set.get(both).unwrap().origin, RuleOrigin::Realm);
     }
 }

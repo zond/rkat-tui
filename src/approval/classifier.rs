@@ -339,7 +339,7 @@ fn origin_url(config: &str) -> Option<String> {
     for line in config.lines() {
         let line = line.trim();
         if line.starts_with('[') {
-            in_origin = line == "[remote \"origin\"]";
+            in_origin = super::hosts::remote_section(line).as_deref() == Some("origin");
             continue;
         }
         if !in_origin {
@@ -1116,13 +1116,10 @@ fn truncate_result(text: &str, max: usize) -> std::borrow::Cow<'_, str> {
     if text.len() <= max {
         return std::borrow::Cow::Borrowed(text);
     }
-    let mut cut = max;
-    while !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
+    let head = crate::text::prefix(text, max);
     std::borrow::Cow::Owned(format!(
-        "{}\n[truncated: showing {cut} of {} bytes]",
-        text.get(..cut).unwrap_or_default(),
+        "{head}\n[truncated: showing {} of {} bytes]",
+        head.len(),
         text.len()
     ))
 }
@@ -1378,6 +1375,12 @@ mod tests {
         let facts = GitFacts::read(dir.path());
         assert_eq!(facts.origin_url.as_deref(), Some("host:me/x.git"));
         assert_eq!(facts.default_branch.as_deref(), Some("main"));
+        // The section header read as the project's hosts read it (git's
+        // section names ignore case).
+        assert_eq!(
+            origin_url("[Remote  \"origin\"]\n\turl = https://h/x\n").as_deref(),
+            Some("https://h/x")
+        );
 
         // A linked work tree points at its git dir, which points at the common dir.
         let worktree = dir.path().join("wt");

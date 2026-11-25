@@ -1,6 +1,7 @@
 //! The small formatters every message shares: a count with its noun
 //! (`1 tool`, `3 tools`), a length of time (`5m6s`, `5m`) and a
-//! conversation's short id, a token count (`84k`).
+//! conversation's short id, a token count (`84k`), a text's prefix cut on
+//! a character boundary.
 
 use std::fmt::{Display, Write as _};
 
@@ -51,6 +52,13 @@ pub fn span(seconds: u64, units: usize) -> String {
     out
 }
 
+/// The longest prefix of `s` that is at most `max` bytes and ends on a
+/// character boundary: `prefix("héllo", 2)` is `h`.
+#[must_use]
+pub fn prefix(s: &str, max: usize) -> &str {
+    s.get(..s.floor_char_boundary(max)).unwrap_or_default()
+}
+
 /// Short token count for the context gauge: `950`, `8.5k`, `84k`, `1M`, `1.2M`.
 #[must_use]
 pub fn tokens(n: u64) -> String {
@@ -83,5 +91,15 @@ mod tests {
         assert_eq!(span(3_599, 1), "59m");
         assert_eq!(span(86_399, 1), "23h");
         assert_eq!(span(3 * 86_400, 1), "3d");
+    }
+
+    #[test]
+    fn a_prefix_ends_on_a_character_boundary() {
+        assert_eq!(prefix("héllo", 0), "");
+        assert_eq!(prefix("héllo", 1), "h");
+        assert_eq!(prefix("héllo", 2), "h");
+        assert_eq!(prefix("héllo", 3), "hé");
+        assert_eq!(prefix("héllo", 6), "héllo");
+        assert_eq!(prefix("héllo", 100), "héllo");
     }
 }

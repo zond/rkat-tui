@@ -1111,7 +1111,7 @@ pub(super) enum Picked {
     /// Withdraw the approval once of call `id`.
     Withdraw(u64),
     /// Remove rule `n` (as `/permissions rm <n>`).
-    RemoveRule(usize),
+    RemoveRule(u64),
     /// Remove session grant `id`.
     RemoveGrant(u64),
     /// Remove statement `id`.
@@ -1123,7 +1123,7 @@ pub(super) enum Picked {
     /// Replace rule `n`, which read `old`, with `new` (`e`).
     EditRule {
         /// The rule's number.
-        n: usize,
+        n: u64,
         /// The rule as the dialog showed it.
         old: crate::approval::desk::RuleSpec,
         /// The rule as edited.

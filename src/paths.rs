@@ -100,25 +100,33 @@ pub const SEALED_IN_GRANTS: &[&str] = &[
     "**/.rkat/**",
 ];
 
-fn content_set(fold_case: bool) -> &'static ProtectedSet {
-    static SET: OnceLock<ProtectedSet> = OnceLock::new();
-    static FOLDED: OnceLock<ProtectedSet> = OnceLock::new();
-    if fold_case {
-        FOLDED.get_or_init(|| ProtectedSet::build_with(CONTENT_PATTERNS, true))
-    } else {
-        SET.get_or_init(|| ProtectedSet::build(CONTENT_PATTERNS))
+/// One list of patterns, compiled on first use once each way: as written,
+/// and ignoring case ([`folds_case`]).
+struct PatternSets {
+    patterns: &'static [&'static str],
+    plain: OnceLock<ProtectedSet>,
+    folded: OnceLock<ProtectedSet>,
+}
+
+impl PatternSets {
+    const fn new(patterns: &'static [&'static str]) -> Self {
+        Self {
+            patterns,
+            plain: OnceLock::new(),
+            folded: OnceLock::new(),
+        }
+    }
+
+    fn get(&self, fold_case: bool) -> &ProtectedSet {
+        let cell = if fold_case { &self.folded } else { &self.plain };
+        cell.get_or_init(|| ProtectedSet::build_with(self.patterns, fold_case))
     }
 }
 
-fn sealed_in_grants_set(fold_case: bool) -> &'static ProtectedSet {
-    static SET: OnceLock<ProtectedSet> = OnceLock::new();
-    static FOLDED: OnceLock<ProtectedSet> = OnceLock::new();
-    if fold_case {
-        FOLDED.get_or_init(|| ProtectedSet::build_with(SEALED_IN_GRANTS, true))
-    } else {
-        SET.get_or_init(|| ProtectedSet::build(SEALED_IN_GRANTS))
-    }
-}
+static CONTENT_SETS: PatternSets = PatternSets::new(CONTENT_PATTERNS);
+static SEALED_IN_GRANTS_SETS: PatternSets = PatternSets::new(SEALED_IN_GRANTS);
+static PROTECTED_SETS: PatternSets = PatternSets::new(PROTECTED_PATTERNS);
+static SEALED_SETS: PatternSets = PatternSets::new(SEALED_PATTERNS);
 
 /// Compiled protected patterns. `All` is the fail-closed state used when any
 /// pattern fails to compile: every path counts as protected.
@@ -129,10 +137,6 @@ enum ProtectedSet {
 }
 
 impl ProtectedSet {
-    fn build(patterns: &[&str]) -> Self {
-        Self::build_with(patterns, false)
-    }
-
     /// The patterns matched ignoring case when `fold_case` (for a project
     /// on a case-insensitive file system).
     fn build_with(patterns: &[&str], fold_case: bool) -> Self {
@@ -168,16 +172,6 @@ impl ProtectedSet {
     }
 }
 
-fn protected_set(fold_case: bool) -> &'static ProtectedSet {
-    static SET: OnceLock<ProtectedSet> = OnceLock::new();
-    static FOLDED: OnceLock<ProtectedSet> = OnceLock::new();
-    if fold_case {
-        FOLDED.get_or_init(|| ProtectedSet::build_with(PROTECTED_PATTERNS, true))
-    } else {
-        SET.get_or_init(|| ProtectedSet::build(PROTECTED_PATTERNS))
-    }
-}
-
 /// Root-relative glob patterns a file tool never writes, whatever the
 /// classifier or an allow rule would say: the approval gate's own state
 /// and configuration (`.rkat/`: the realm's `config.toml` with its endpoint
@@ -203,16 +197,6 @@ pub const SEALED_PATTERNS: &[&str] = &[
     "**/.git",
     "**/.git/**",
 ];
-
-fn sealed_set(fold_case: bool) -> &'static ProtectedSet {
-    static SET: OnceLock<ProtectedSet> = OnceLock::new();
-    static FOLDED: OnceLock<ProtectedSet> = OnceLock::new();
-    if fold_case {
-        FOLDED.get_or_init(|| ProtectedSet::build_with(SEALED_PATTERNS, true))
-    } else {
-        SET.get_or_init(|| ProtectedSet::build(SEALED_PATTERNS))
-    }
-}
 
 /// Whether the file system holding `dir` resolves names ignoring case
 /// (macOS's default APFS and HFS+, Windows shares): a name of `dir` or of
@@ -384,7 +368,7 @@ impl ProjectRoot {
     /// system.
     #[must_use]
     pub fn is_sealed_relative(&self, relative: &Path) -> bool {
-        sealed_set(self.fold_case).is_match(relative)
+        SEALED_SETS.get(self.fold_case).is_match(relative)
     }
 
     /// Whether `relative` (a path relative to the root, or to another
@@ -393,7 +377,7 @@ impl ProjectRoot {
     /// system.
     #[must_use]
     pub fn is_protected_relative(&self, relative: &Path) -> bool {
-        protected_set(self.fold_case).is_match(relative)
+        PROTECTED_SETS.get(self.fold_case).is_match(relative)
     }
 
     /// Whether the protected `relative` path is protected for its content
@@ -401,14 +385,14 @@ impl ProjectRoot {
     /// access.
     #[must_use]
     pub fn is_content_relative(&self, relative: &Path) -> bool {
-        content_set(self.fold_case).is_match(relative)
+        CONTENT_SETS.get(self.fold_case).is_match(relative)
     }
 
     /// Whether `relative` (inside a directory the user granted) is sealed
     /// there ([`SEALED_IN_GRANTS`]).
     #[must_use]
     pub fn is_sealed_in_grant(&self, relative: &Path) -> bool {
-        sealed_in_grants_set(self.fold_case).is_match(relative)
+        SEALED_IN_GRANTS_SETS.get(self.fold_case).is_match(relative)
     }
 
     /// Whether `path` lies at or below one of `dirs`, as this root's file
@@ -480,7 +464,7 @@ impl ProjectRoot {
         let relative = self.relative_of(&abs);
         let protected = relative
             .as_deref()
-            .is_some_and(|rel| protected_set(self.fold_case).is_match(rel));
+            .is_some_and(|rel| PROTECTED_SETS.get(self.fold_case).is_match(rel));
         let sealed = relative
             .as_deref()
             .is_some_and(|rel| self.is_sealed_relative(rel))
@@ -1215,10 +1199,10 @@ mod tests {
 
     #[test]
     fn protected_set_fails_closed() {
-        let bad = ProtectedSet::build(&["src/**", "[unclosed"]);
+        let bad = ProtectedSet::build_with(&["src/**", "[unclosed"], false);
         assert!(matches!(bad, ProtectedSet::All));
         assert!(bad.is_match(Path::new("anything.txt")));
-        let good = ProtectedSet::build(&["src/**"]);
+        let good = ProtectedSet::build_with(&["src/**"], false);
         assert!(good.is_match(Path::new("src/main.rs")));
         assert!(!good.is_match(Path::new("README.md")));
     }
@@ -1282,8 +1266,16 @@ mod tests {
 
     #[test]
     fn all_builtin_protected_patterns_compile() {
-        assert!(matches!(protected_set(false), ProtectedSet::Globs(_)));
-        assert!(matches!(protected_set(true), ProtectedSet::Globs(_)));
+        for sets in [
+            &PROTECTED_SETS,
+            &SEALED_SETS,
+            &CONTENT_SETS,
+            &SEALED_IN_GRANTS_SETS,
+        ] {
+            for fold_case in [false, true] {
+                assert!(matches!(sets.get(fold_case), ProtectedSet::Globs(_)));
+            }
+        }
     }
 
     #[cfg(unix)]

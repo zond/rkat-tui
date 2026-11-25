@@ -210,7 +210,7 @@ pub fn remote_hosts(config: &str) -> Vec<ProjectHost> {
 
 /// The remote a section header names (`[remote "origin"]`, any case of
 /// `remote`).
-fn remote_section(header: &str) -> Option<String> {
+pub(super) fn remote_section(header: &str) -> Option<String> {
     let inner = header.strip_prefix('[')?.strip_suffix(']')?.trim();
     let (kind, rest) = inner.split_once(char::is_whitespace)?;
     if !kind.eq_ignore_ascii_case("remote") {

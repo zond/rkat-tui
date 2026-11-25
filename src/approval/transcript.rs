@@ -151,11 +151,7 @@ impl TranscriptEntry {
                 let _ = writeln!(out, "{user_label} {}", escape(text));
             }
             Self::Context { text } => {
-                let _ = writeln!(
-                    out,
-                    "[context] {}",
-                    escape(text).replace('\r', "\\r").replace('\n', "\\n")
-                );
+                let _ = writeln!(out, "[context] {}", one_line(text));
             }
             Self::ToolCall {
                 name,
@@ -168,7 +164,12 @@ impl TranscriptEntry {
                     Some(_) => " -> blocked",
                     None => "",
                 };
-                let _ = writeln!(out, "[action] {name} {}{outcome}", escape(args));
+                let _ = writeln!(
+                    out,
+                    "[action] {} {}{outcome}",
+                    one_line(name),
+                    one_line(args)
+                );
             }
         }
     }
@@ -247,10 +248,7 @@ fn cap_user_text(text: String) -> String {
     if text.len() <= MAX_USER_MESSAGE {
         return text;
     }
-    let mut head = MAX_USER_MESSAGE - USER_MESSAGE_TAIL;
-    while !text.is_char_boundary(head) {
-        head -= 1;
-    }
+    let head = crate::text::prefix(&text, MAX_USER_MESSAGE - USER_MESSAGE_TAIL).len();
     let mut tail = text.len() - USER_MESSAGE_TAIL;
     while !text.is_char_boundary(tail) {
         tail += 1;
@@ -267,6 +265,29 @@ fn cap_user_text(text: String) -> String {
 /// `<transcript>` section in the classifier prompt.
 pub fn escape(text: &str) -> String {
     text.replace("</", "<\\/")
+}
+
+/// [`escape`], and kept to one line: every control character (line
+/// breaks, `\u{85}` included) and the Unicode line and paragraph
+/// separators shown as an escape (`\n`, `\r`, `\t`, `\u{2028}`). For every
+/// string the agent or a file it can write chooses (a path, a host, a
+/// remote, a branch, a tool name, a note that is not the user's) that the
+/// classifier prompt renders: such a string cannot start a line of its own
+/// and pass for a user line or a fact of the environment.
+pub fn one_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in escape(text).chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() || c == '\u{2028}' || c == '\u{2029}' => {
+                let _ = write!(out, "\\u{{{:x}}}", u32::from(c));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Compact JSON with long strings truncated.
@@ -289,11 +310,8 @@ pub(crate) fn truncate_text(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
     }
-    let mut cut = max;
-    while !s.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    format!("{}… [{} more bytes]", &s[..cut], s.len() - cut)
+    let head = crate::text::prefix(s, max);
+    format!("{head}… [{} more bytes]", s.len() - head.len())
 }
 
 fn truncate_strings(value: &Value) -> Value {
@@ -696,12 +714,11 @@ impl ApprovalTranscript {
             match message {
                 Message::User(user) => {
                     let text = user.text_content();
-                    let held = matches!(
-                        authorship(user),
-                        Authorship::Marked | Authorship::Unverified
-                    )
-                    .then(|| words[next..].iter().position(|w| text.contains(w.as_str())))
-                    .flatten();
+                    let who = authorship(user);
+                    let marked = matches!(who, Authorship::Marked | Authorship::Unverified);
+                    let held = marked
+                        .then(|| words[next..].iter().position(|w| text.contains(w.as_str())))
+                        .flatten();
                     if let Some(at) = held {
                         for word in &words[next..=next + at] {
                             self.push_user(word.clone());
@@ -710,14 +727,10 @@ impl ApprovalTranscript {
                         continue;
                     }
                     // One of the kept older messages: shown as kept, first.
-                    let marked = matches!(
-                        authorship(user),
-                        Authorship::Marked | Authorship::Unverified
-                    );
                     if marked && self.standing.iter().any(|k| text.contains(k.as_str())) {
                         continue;
                     }
-                    self.seed_user_message(user);
+                    self.seed_user_message(who, &text);
                 }
                 Message::BlockAssistant(assistant) => {
                     for call in assistant.tool_calls() {
@@ -732,9 +745,10 @@ impl ApprovalTranscript {
         }
     }
 
-    /// A stored user-role message no recorded word of the user's names.
-    fn seed_user_message(&mut self, user: &UserMessage) {
-        match authorship(user) {
+    /// A stored user-role message (its authorship `who`, its text `text`)
+    /// no recorded word of the user's names.
+    fn seed_user_message(&mut self, who: Authorship, text: &str) {
+        match who {
             Authorship::CompactionSummary => {
                 self.push_context("(compaction summary omitted)");
             }
@@ -742,11 +756,10 @@ impl ApprovalTranscript {
                 self.push_context("(a peer or async message, not the user's words)");
             }
             Authorship::Marked | Authorship::Unverified => {
-                let text = user.text_content();
                 if !text.trim().is_empty() {
                     self.push_context(format!(
                         "(earlier input of unverified authorship, not the user's words) {}",
-                        truncate_text(&text, MAX_CONTEXT_TEXT)
+                        truncate_text(text, MAX_CONTEXT_TEXT)
                     ));
                 }
             }

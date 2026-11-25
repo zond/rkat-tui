@@ -331,11 +331,7 @@ pub fn cap_clipboard(text: &str) -> (&str, bool) {
     if text.len() <= max {
         return (text, false);
     }
-    let mut end = max;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    (text.get(..end).unwrap_or(""), true)
+    (crate::text::prefix(text, max), true)
 }
 
 /// The terminal multiplexer the UI runs in, as its environment says: what

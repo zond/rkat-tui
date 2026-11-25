@@ -214,6 +214,66 @@ async fn a_rule_added_by_hand_to_the_workspace_file_applies() {
     rig.quit().await;
 }
 
+/// A broad allow rule (`/permissions add allow shell *`, or an edit to
+/// one) is refused up front, saying why. Before, it was told "rule added"
+/// and written to the workspace's file, and the hold of the files that
+/// follows every rule command dropped it at once (as every start does):
+/// never in force.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_broad_allow_rule_is_refused_not_added_and_dropped() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let rig = Attached::start_with(&ws.root, &llm, Setup::default()).await;
+    let rules_call = |params: serde_json::Value| {
+        let daemon = &rig.daemon;
+        async move {
+            daemon
+                .connect_bound()
+                .await
+                .call("rkat/rules", params)
+                .await
+                .unwrap()
+        }
+    };
+    let outcome =
+        rules_call(json!({"op": "add", "deny": false, "tool": "shell", "pattern": "*"})).await;
+    assert_eq!(outcome["ok"], false, "{outcome}");
+    let text = outcome["text"].as_str().unwrap();
+    assert!(
+        text.starts_with(
+            "rule not added: `allow shell *` is too broad to keep (matches any shell command)"
+        ),
+        "{text}"
+    );
+    let realm_file = common::realm_of(&ws.root).join("tui.toml");
+    let file = std::fs::read_to_string(&realm_file).unwrap_or_default();
+    assert!(!file.contains("[[allow]]"), "{file}");
+    // An edit to a broad rule is refused the same way, the rule kept.
+    let added = rules_call(
+        json!({"op": "add", "deny": false, "tool": "shell", "pattern": "cargo nextest run*"}),
+    )
+    .await;
+    assert_eq!(added["ok"], true, "{added}");
+    let n = rows(&rig.daemon).await.rules[0].n;
+    let spec = |pattern: &str| json!({"deny": false, "tool": "shell", "pattern": pattern});
+    let edited = rules_call(json!({
+        "op": "edit", "n": n, "old": spec("cargo nextest run*"), "new": spec("make *")
+    }))
+    .await;
+    assert_eq!(edited["ok"], false, "{edited}");
+    assert!(
+        edited["text"]
+            .as_str()
+            .unwrap()
+            .contains("is too broad to keep (runs project-defined scripts)"),
+        "{edited}"
+    );
+    let rules = rows(&rig.daemon).await.rules;
+    assert_eq!(rules.len(), 1, "{rules:?}");
+    assert_eq!(rules[0].arg.as_deref(), Some("cargo nextest run*"));
+    rig.quit().await;
+}
+
 /// The project's `.rkat/tui.toml` is writable by the agent's own shell: a
 /// change of its sections changes nothing live (its deny rule is not in
 /// force, no statement of it ever is); it is named as applying at the

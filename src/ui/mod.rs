@@ -820,7 +820,7 @@ pub enum Effect {
         user: bool,
     },
     /// Remove rule number `n`.
-    RemoveRule(usize),
+    RemoveRule(u64),
     /// List rules; answer with [`Msg::Notice`].
     ListRules,
     /// `/permissions`: open its dialog on the section given, else on
@@ -829,7 +829,7 @@ pub enum Effect {
     RequestPermissions(Option<Section>),
     /// The `/permissions` dialog's confirmed removal of rule `n`: as
     /// `/permissions rm <n>`, then the dialog's lists again.
-    PickedRuleRemoval(usize),
+    PickedRuleRemoval(u64),
     /// The dialog's confirmed removal of session grant `id`, then its
     /// lists again.
     PickedGrantRemoval(u64),
@@ -851,7 +851,7 @@ pub enum Effect {
     /// open field).
     PickedRuleEdit {
         /// The rule's number.
-        n: usize,
+        n: u64,
         /// The rule as the dialog showed it.
         old: crate::approval::desk::RuleSpec,
         /// The rule as edited.

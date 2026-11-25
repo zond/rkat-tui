@@ -88,7 +88,7 @@ pub enum PickAct {
     /// `/schedules pause|resume|delete <id>`, then the list again.
     Schedule(ScheduleOp, String),
     /// `/permissions rm <n>`, then the list again.
-    RemoveRule(usize),
+    RemoveRule(u64),
     /// Remove session grant `id`, then the list again.
     RemoveGrant(u64),
     /// Remove statement `id`, then the list again.
@@ -111,7 +111,7 @@ pub enum PickAct {
     /// refusal shows in it, its text kept).
     EditRule {
         /// The rule's number.
-        n: usize,
+        n: u64,
         /// The rule as the dialog showed it.
         old: RuleSpec,
         /// The rule as edited.
@@ -364,7 +364,7 @@ pub enum FieldFor {
     /// with its text.
     EditRule {
         /// The rule's number.
-        n: usize,
+        n: u64,
         /// The rule as the dialog showed it.
         old: RuleSpec,
         /// A deny rule.
@@ -623,7 +623,7 @@ impl FieldFor {
     /// The field that edits rule `n`, which reads `old`, of the user's own
     /// file (`user`) or the workspace's, its text the rule's own.
     #[must_use]
-    pub fn edit_rule(n: usize, old: RuleSpec, user: bool) -> Field {
+    pub fn edit_rule(n: u64, old: RuleSpec, user: bool) -> Field {
         let text = match &old.pattern {
             Some(pattern) => format!("{} {pattern}", old.tool),
             None => old.tool.clone(),

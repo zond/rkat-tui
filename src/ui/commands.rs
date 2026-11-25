@@ -35,7 +35,7 @@ pub enum RulesCommand {
         user: bool,
     },
     /// Remove rule number `n` (as shown by `/permissions list`).
-    Remove(usize),
+    Remove(u64),
 }
 
 /// `/auto` subcommands.
@@ -1372,7 +1372,7 @@ fn parse_rules(args: &[&str]) -> Option<RulesCommand> {
                 user,
             })
         }
-        ["rm" | "remove", n] => n.parse::<usize>().ok().map(RulesCommand::Remove),
+        ["rm" | "remove", n] => n.parse::<u64>().ok().map(RulesCommand::Remove),
         _ => None,
     }
 }

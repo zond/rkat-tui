@@ -88,13 +88,7 @@ pub fn render_standing(input: &StandingInput<'_>) -> (String, String) {
 /// [`ClassifierError::Unparseable`] when no line says `KEEP:`, a number
 /// is not one, or one is out of range: nothing of such an answer is used.
 pub fn parse_standing(text: &str, count: usize) -> Result<Vec<usize>, ClassifierError> {
-    let unparseable = || {
-        let mut cut = text.len().min(200);
-        while !text.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        ClassifierError::Unparseable(text[..cut].to_string())
-    };
+    let unparseable = || ClassifierError::Unparseable(crate::text::prefix(text, 200).to_string());
     let line = text
         .lines()
         .rev()

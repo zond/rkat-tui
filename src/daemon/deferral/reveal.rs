@@ -191,11 +191,7 @@ fn one_line(description: &str) -> String {
     if sentence.len() <= LINE {
         return sentence.to_string();
     }
-    let mut cut = LINE;
-    while !sentence.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    format!("{}…", &sentence[..cut])
+    format!("{}…", crate::text::prefix(sentence, LINE))
 }
 
 /// One conversation's search tool.

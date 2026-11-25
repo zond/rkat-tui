@@ -21,7 +21,7 @@
 //! allowed scope is why the call was blocked (a file tool's own target, or
 //! the classifier's `PATH:` line): the path's own directory, or its parent
 //! ([`grant_dir_for`]), never wider, never a secret or sealed root, `/`,
-//! the home directory itself or a system directory. A directory grant joins
+//! the home directory or one holding it, or a system directory. A directory grant joins
 //! the directories the user named for writing (`GrantedDirs::user_write`):
 //! a file-tool write there is an in-project edit and the classifier is told
 //! the user allows it. Without such a path the grant is a literal allow
@@ -239,7 +239,8 @@ const SYSTEM_DIRS: &[&str] = &[
 /// The directory a grant for `raw` (a path the call writes or reads)
 /// names: the path itself when it is an existing directory, else its
 /// parent when that is one. Never wider than the parent, and refused for
-/// the root, the home directory itself, a system directory, the project
+/// the root, the home directory or a directory holding it, a system
+/// directory, the project
 /// itself and the gate's sealed and secret roots.
 ///
 /// # Errors
@@ -269,9 +270,9 @@ pub fn grant_dir_for(root: &ProjectRoot, raw: &str) -> Result<PathBuf, GrantRefu
     }
     if dirs::home_dir()
         .and_then(|home| std::fs::canonicalize(home).ok())
-        .is_some_and(|home| home == dir)
+        .is_some_and(|home| home.starts_with(&dir))
     {
-        return refuse("the home directory itself");
+        return refuse("the home directory or a directory holding it");
     }
     if SYSTEM_DIRS.iter().any(|system| dir.starts_with(system)) {
         return refuse("a system directory");
@@ -667,6 +668,31 @@ mod tests {
                 Err(GrantRefusal::Refused(..))
             ));
         }
+    }
+
+    /// A directory that holds the home directory (`/home`, `/Users`) is
+    /// refused as the home directory is, with the project elsewhere.
+    #[test]
+    fn a_directory_holding_the_home_directory_is_refused() {
+        let Some(home) = dirs::home_dir().and_then(|h| std::fs::canonicalize(h).ok()) else {
+            return;
+        };
+        let Some(above) = home.parent().filter(|p| *p != Path::new("/")) else {
+            return;
+        };
+        let project = tempfile::tempdir().unwrap();
+        let root = ProjectRoot::new(project.path()).unwrap();
+        if root.as_path().starts_with(above) {
+            // The project under it is refused for that already.
+            return;
+        }
+        assert_eq!(
+            grant_dir_for(&root, &above.display().to_string()).unwrap_err(),
+            GrantRefusal::Refused(
+                above.display().to_string(),
+                "the home directory or a directory holding it"
+            )
+        );
     }
 
     #[test]

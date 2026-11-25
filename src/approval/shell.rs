@@ -1015,7 +1015,8 @@ const ALLOWLIST: &[Allowed] = &[
     tool("file", FILE_LONGS, FILE_SHORT, &['C', 'z', 'Z']),
     tool("stat", STAT_LONGS, &[('c', Arg::Plain)], &[]),
     tool("du", DU_LONGS, DU_SHORT, &['X']),
-    tool("tree", TREE_LONGS, TREE_SHORT, &['o', 'H', 'R', 'T']),
+    // `-l` follows directory symlinks, out of the project.
+    tool("tree", TREE_LONGS, TREE_SHORT, &['o', 'H', 'R', 'T', 'l']),
     tool("diff", DIFF_LONGS, DIFF_SHORT, &['X']),
     tool("cmp", CMP_LONGS, CMP_SHORT, &[]),
     tool("realpath", REALPATH_LONGS, &[], &[]),
@@ -1025,7 +1026,8 @@ const ALLOWLIST: &[Allowed] = &[
         Extra::UniqSingleInput,
     ),
     tool("rg", RG_LONGS, RG_SHORT, &['z', 'L']),
-    tool("grep", GREP_LONGS, GREP_SHORT, &[]),
+    // `-R` follows every directory symlink, out of the project.
+    tool("grep", GREP_LONGS, GREP_SHORT, &['R']),
     with_extra(tool("find", &[], &[], &[]), Extra::Find),
     git("status", GIT_STATUS_LONGS, GIT_STATUS_SHORT, Extra::None),
     git("diff", GIT_LOG_LONGS, GIT_LOG_SHORT, Extra::None),
@@ -1197,7 +1199,42 @@ fn check_segment(
     }
 
     let (entry, rest) = match_subcommand(&candidates, &name.text, args)?;
+    if name.text == "git" {
+        refuse_own_git_dir(base, ctx.root.as_path())?;
+    }
     check_entry(entry, rest, base, ctx)
+}
+
+/// Refuse a read-only git run whose working directory, or a directory
+/// above it up to and including the project root, is itself a git
+/// directory (`HEAD` beside `objects`, `refs` or `commondir`: the shape of
+/// a bare repository). Git discovers such a directory as the repository
+/// before it looks for a `.git`, and its `config` (written by any
+/// in-project file write, or shipped in a clone) can name programs git
+/// runs, `core.fsmonitor` or `diff.external`. The root's own `.git` is the
+/// user's and is not looked at here.
+fn refuse_own_git_dir(
+    base: &std::path::Path,
+    root: &std::path::Path,
+) -> Result<(), NotAllowlisted> {
+    // The base lies inside the root (checked by the caller); counting
+    // components, not comparing names, also holds on a file system that
+    // folds case.
+    let levels = base
+        .components()
+        .count()
+        .saturating_sub(root.components().count());
+    for dir in base.ancestors().take(levels + 1) {
+        let marked = ["objects", "refs", "commondir"]
+            .iter()
+            .any(|entry| dir.join(entry).exists());
+        if dir.join("HEAD").is_file() && marked {
+            return Err(NotAllowlisted::new(
+                "a directory git would read as a repository of its own (HEAD with objects or refs)",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Pick the allowlist entry for this invocation and return the args after the subcommand.
@@ -1975,6 +2012,41 @@ mod tests {
         assert!(allowlisted("git status\r\n", &ctx).is_err());
     }
 
+    /// Git reads a directory holding `HEAD`, `objects` and `refs` as a
+    /// repository of its own, `config` included: a read-only git run in or
+    /// below one is reviewed, while the project root's own `.git` is fine.
+    #[test]
+    fn git_in_a_directory_that_is_a_git_directory_is_not_allowlisted() {
+        let (dir, root) = project();
+        std::fs::create_dir_all(dir.path().join(".git/objects")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".git/refs")).unwrap();
+        std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir_all(sub.join("objects")).unwrap();
+        std::fs::create_dir_all(sub.join("refs")).unwrap();
+        std::fs::create_dir_all(sub.join("deeper")).unwrap();
+        std::fs::write(sub.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let c = ctx(&root, false);
+        assert!(allowlisted_in("git status", None, &c).is_ok());
+        assert!(allowlisted_in("git status", Some("src"), &c).is_ok());
+        assert!(allowlisted_in("ls", Some("sub"), &c).is_ok());
+        for wd in ["sub", "sub/deeper"] {
+            let err = allowlisted_in("git status", Some(wd), &c).unwrap_err();
+            assert!(err.0.contains("repository of its own"), "{wd}: {}", err.0);
+            assert!(
+                allowlisted_in("ls && git log", Some(wd), &c).is_err(),
+                "{wd}"
+            );
+        }
+        // The root itself in the shape of a bare repository.
+        let (bare, bare_root) = project();
+        std::fs::create_dir_all(bare.path().join("objects")).unwrap();
+        std::fs::write(bare.path().join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let c = ctx(&bare_root, false);
+        assert!(allowlisted_in("git status", None, &c).is_err());
+        assert!(allowlisted_in("git status", Some("src"), &c).is_err());
+    }
+
     /// `#` starts a comment only where a word would start, as in bash, dash
     /// and zsh (`printf 'echo a#b "#" \\#c ;#d\n' | sh` prints `a#b # #c`).
     #[test]
@@ -2052,6 +2124,11 @@ mod tests {
             ("rg --pre cat TODO", false),
             ("rg --pre-glob '*.gz' TODO", false),
             ("grep -rn foo src", true),
+            // `-R` and `tree -l` follow directory symlinks out of the project.
+            ("grep -R foo src", false),
+            ("grep -nR foo src", false),
+            ("tree -l src", false),
+            ("tree -dl src", false),
             ("find . -name '*.rs'", true),
             ("find . -exec rm {} \\;", false),
             ("find . -execdir ls ';'", false),

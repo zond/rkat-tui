@@ -185,14 +185,11 @@ fn capped(body: &str) -> String {
     if body.len() <= MAX_SKILL_BYTES {
         return body.to_string();
     }
-    let mut cut = MAX_SKILL_BYTES;
-    while !body.is_char_boundary(cut) {
-        cut -= 1;
-    }
+    let head = crate::text::prefix(body, MAX_SKILL_BYTES);
     format!(
-        "{}\n[truncated: the skill's body is {} bytes; the first {cut} are shown]",
-        &body[..cut],
-        body.len()
+        "{head}\n[truncated: the skill's body is {} bytes; the first {} are shown]",
+        body.len(),
+        head.len()
     )
 }
 

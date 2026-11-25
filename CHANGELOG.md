@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A read-only git command (`git status`, `git log` and the like) in a
+  directory git reads as a repository of its own (a `HEAD` beside
+  `objects` or `refs`, the shape of a bare repository, which a clone or
+  the agent's file writes can make) is reviewed instead of run without
+  review: git runs the programs that directory's `config` names.
+- Paths, hosts, the git remote and branch, and tool names reach the safety
+  classifier's prompt on one line each, their line breaks and other
+  control characters shown as escapes: a file name or tool name the agent
+  chose can no longer start a line that reads as the user's or as a fact
+  of the environment.
+- A classifier allow remembered for a command (`make test`) is forgotten
+  after any other shell command is allowed, as after a file write: that
+  command may have changed what the remembered one runs.
+- `/permissions` no longer grants a directory that holds your home
+  directory (`/home`, `/Users`), as it already refused the home
+  directory itself.
+- `grep -R` and `tree -l`, which follow symlinks out of the project, are
+  reviewed instead of allowed as read-only commands.
+- `/permissions add` and the dialog's edit refuse an allow rule too broad
+  to keep (`allow shell *`, `make *`) and say why, instead of saying
+  "rule added" of a rule that was dropped at once and never applied.
+- A rule moved by hand from the workspace's `tui.toml` to your own (or
+  back) is edited and removed in the file it is in now.
+
+### Changed
+
+- The audit log's `rule_added` and `rule_removed` lines say whether the
+  rule allows or denies (`allow shell cargo nextest run*`).
+
 ## [0.0.23] - 2026-11-24
 
 ### Changed

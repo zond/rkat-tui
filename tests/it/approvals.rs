@@ -595,7 +595,7 @@ async fn an_edited_deny_rule_applies_in_place_of_the_old_one() {
             .unwrap_or_else(|| panic!("no row {says}: {:?}", picker.rows))
     };
     let row = at(&picker, "deny read_file pattern `*a.txt` · realm");
-    let n: usize = picker.rows[row]
+    let n: u64 = picker.rows[row]
         .text
         .split_once('.')
         .unwrap()

@@ -77,12 +77,9 @@ pub fn render_checkpoint(input: &CheckpointInput<'_>) -> (String, String) {
     let mut user = String::new();
     super::prompts::render_transcript(&mut user, input.transcript);
     user.push_str("\n<status>\n");
-    let mut cut = input.status.len().min(MAX_STATUS_BYTES);
-    while !input.status.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    user.push_str(&escape(input.status[..cut].trim()));
-    if cut < input.status.len() {
+    let shown = crate::text::prefix(input.status, MAX_STATUS_BYTES);
+    user.push_str(&escape(shown.trim()));
+    if shown.len() < input.status.len() {
         user.push_str("\n[truncated]");
     }
     user.push_str("\n</status>\n\n");
@@ -103,13 +100,7 @@ pub fn render_checkpoint(input: &CheckpointInput<'_>) -> (String, String) {
 ///
 /// [`ClassifierError::Unparseable`] for anything else.
 pub fn parse_checkpoint(text: &str) -> Result<CheckpointVerdict, ClassifierError> {
-    let unparseable = || {
-        let mut cut = text.len().min(200);
-        while !text.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        ClassifierError::Unparseable(text[..cut].to_string())
-    };
+    let unparseable = || ClassifierError::Unparseable(crate::text::prefix(text, 200).to_string());
     let line = text
         .lines()
         .map(|line| line.trim().trim_matches(['*', '#', '-', '`', ' ']))

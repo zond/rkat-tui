@@ -190,7 +190,6 @@ impl Blocks {
     }
 }
 
-/// Why call `id`, approved once already, is not approved again.
 /// Why blocked call `id`, `bytes` long, is not approved once: more of it
 /// than can be shown.
 pub(crate) fn too_long_to_approve(id: u64, bytes: usize) -> String {
@@ -200,6 +199,7 @@ pub(crate) fn too_long_to_approve(id: u64, bytes: usize) -> String {
     )
 }
 
+/// Why call `id`, approved once already, is not approved again.
 fn waiting(id: u64) -> String {
     format!(
         "call #{id} is approved once already and waits for the agent to run it again; withdraw the approval (w) to approve it otherwise"
