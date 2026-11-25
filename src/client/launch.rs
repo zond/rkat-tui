@@ -632,8 +632,13 @@ mod tests {
     async fn a_started_daemon_leaves_the_terminals_session_when_setsid_exists() {
         let dir = tempfile::tempdir().unwrap();
         let log = daemon_log(dir.path());
-        let (pid, mut exited) =
-            spawn_daemon(Path::new("/bin/sleep"), &["5".into()], &log, None).unwrap();
+        let (pid, mut exited) = spawn_daemon(
+            Path::new("/bin/sh"),
+            &["-c".into(), "exec sleep 5".into()],
+            &log,
+            None,
+        )
+        .unwrap();
         // Once `setsid` has run (it execs the program in place).
         for _ in 0..200 {
             let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
@@ -703,7 +708,13 @@ mod tests {
     async fn a_daemon_that_exits_is_reported_with_its_log() {
         let dir = tempfile::tempdir().unwrap();
         let log = daemon_log(dir.path());
-        let (_, mut exited) = spawn_daemon(Path::new("/bin/false"), &[], &log, None).unwrap();
+        let (_, mut exited) = spawn_daemon(
+            Path::new("/bin/sh"),
+            &["-c".into(), "exit 1".into()],
+            &log,
+            None,
+        )
+        .unwrap();
         let waited = wait_for_endpoint(
             &[dir.path().join("mob.endpoint")],
             Duration::from_secs(10),

@@ -650,7 +650,7 @@ mod tests {
             store
         );
         // Never the root, a system directory, the project or its parent.
-        for refused in ["/", "/etc/passwd", "/usr/lib"] {
+        for refused in ["/", "/etc/passwd", "/proc"] {
             assert!(
                 matches!(
                     grant_dir_for(&root, refused),

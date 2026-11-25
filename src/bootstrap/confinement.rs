@@ -964,9 +964,6 @@ fn trusted_final_link(
     link: &std::fs::Metadata,
     reserved: impl Fn(&Path) -> bool,
 ) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    const STICKY: u32 = 0o1000;
-    const GROUP_OR_OTHER_WRITE: u32 = 0o022;
     let (Ok(canonical), Ok(text)) = (std::fs::canonicalize(path), std::fs::read_link(path)) else {
         return false;
     };
@@ -988,18 +985,29 @@ fn trusted_final_link(
     if named != canonical {
         return false;
     }
-    let user = nix::unistd::geteuid().as_raw();
-    let trusted_owner =
-        |metadata: &std::fs::Metadata| metadata.uid() == 0 || metadata.uid() == user;
-    trusted_owner(link)
-        && parent.ancestors().all(|ancestor| {
-            std::fs::symlink_metadata(ancestor).is_ok_and(|metadata| {
-                metadata.is_dir()
-                    && trusted_owner(&metadata)
-                    && (metadata.mode() & GROUP_OR_OTHER_WRITE == 0
-                        || metadata.mode() & STICKY != 0)
-            })
+    owned_by_root_or_user(link) && only_root_or_user_can_rename_in(parent)
+}
+
+/// Whether root or this user owns what `metadata` describes.
+fn owned_by_root_or_user(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    metadata.uid() == 0 || metadata.uid() == nix::unistd::geteuid().as_raw()
+}
+
+/// Whether only root or this user can replace a name in `dir` or in any
+/// directory from `/` down to it: each is a directory one of them owns,
+/// none writable by group or others unless sticky.
+fn only_root_or_user_can_rename_in(dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    const STICKY: u32 = 0o1000;
+    const GROUP_OR_OTHER_WRITE: u32 = 0o022;
+    dir.ancestors().all(|ancestor| {
+        std::fs::symlink_metadata(ancestor).is_ok_and(|metadata| {
+            metadata.is_dir()
+                && owned_by_root_or_user(&metadata)
+                && (metadata.mode() & GROUP_OR_OTHER_WRITE == 0 || metadata.mode() & STICKY != 0)
         })
+    })
 }
 
 /// What the TUI installs for the shell, and what to tell the user.
@@ -1607,7 +1615,17 @@ mod tests {
         std::os::unix::fs::symlink(&run, &dir_link).unwrap();
         let alias = root.join("alias");
         std::os::unix::fs::symlink(&etc, &alias).unwrap();
-        let linux = cfg!(target_os = "linux");
+        // The rule reads every directory from `/` down, so the link is
+        // granted only where the host's own are root's or this user's (a
+        // build sandbox whose `/` belongs to another user refuses it; the
+        // refusals below hold there all the same).
+        let host_trusted = root.parent().is_some_and(only_root_or_user_can_rename_in);
+        if !host_trusted {
+            eprintln!(
+                "SKIPPED the accepted link: a directory above the temp dir is another user's"
+            );
+        }
+        let linux = cfg!(target_os = "linux") && host_trusted;
 
         assert_eq!(canonical(&link, false), linux.then(|| link.clone()));
         // A link another user could retarget (a group-writable directory) is
@@ -1846,7 +1864,7 @@ mod tests {
             (vec![root.join("missing")], ExtraGrantProblem::Missing),
             (vec![link], ExtraGrantProblem::NotCanonical(data.clone())),
             (vec![file], ExtraGrantProblem::NotADirectory),
-            (vec![PathBuf::from("/usr/lib")], ExtraGrantProblem::Reserved),
+            (vec![PathBuf::from("/proc")], ExtraGrantProblem::Reserved),
             (vec![PathBuf::from("/")], ExtraGrantProblem::Reserved),
             (
                 vec![f.ws.join("..").join("ws")],
