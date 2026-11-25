@@ -29,8 +29,9 @@ pub struct AutoSettings {
     /// `crate::approval::ApprovalEngine`). Builds execute project code
     /// (`build.rs`, tests, proc macros).
     pub trust_project_builds: Option<bool>,
-    /// What to do when the context fills up: warn (default) or run
-    /// `/compact` automatically.
+    /// What to do when the context fills up: the engine's own threshold
+    /// (`native`, the default), warn only (`warn`), or compact at
+    /// `compact_auto_percent` (`auto`).
     pub compact: CompactMode,
     /// Context usage (percent of the window) at which to warn once.
     pub compact_warn_percent: u8,
@@ -90,7 +91,7 @@ pub struct AutoSection {
     /// See [`AutoSettings::trust_project_builds`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_project_builds: Option<bool>,
-    /// See [`AutoSettings::compact`] (`"warn"` or `"auto"`).
+    /// See [`AutoSettings::compact`] (`"native"`, `"warn"` or `"auto"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact: Option<CompactMode>,
     /// See [`AutoSettings::compact_warn_percent`].
@@ -521,8 +522,7 @@ impl RulesFile {
     }
 
     /// The file as a TOML table: the keys it sets, each as the file holds
-    /// it after reading (an older spelling kept, a threshold as
-    /// `300000` or `"70%"`).
+    /// it after reading (a threshold as `300000` or `"70%"`).
     #[must_use]
     pub fn table(&self) -> toml::Table {
         toml::Table::try_from(self).unwrap_or_default()

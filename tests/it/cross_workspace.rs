@@ -479,8 +479,12 @@ async fn wired_agents_of_two_workspaces_message_both_ways_across_restarts() {
     })
     .await;
     // The refresh is the client's own task: wait for the other side to
-    // hold the new key (its send below fails until then).
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // hold the new key in its wires (its send below fails until then).
+    let b_wires = common::realm_of(&b_root).join("wires.json");
+    common::until(|| {
+        std::fs::read_to_string(&b_wires).is_ok_and(|text| text.contains(&after.pubkey))
+    })
+    .await;
     assert!(
         !c.notices()
             .contains("does not know this agent's new conversation"),
@@ -1131,6 +1135,8 @@ async fn a_wire_message_wakes_the_agent_whenever_it_arrives() {
         .await
         .unwrap();
     let member = json!({"mob_id": "tui", "agent_identity": a.agent});
+    // Each send below waits for the daemon's ack (it took the envelope)
+    // before the held call is released: never a sleep.
     let send_input = |text: &str| {
         let mut params = member.clone();
         params["content"] = json!(text);
@@ -1147,13 +1153,13 @@ async fn a_wire_message_wakes_the_agent_whenever_it_arrives() {
     let before = llm.requests().len();
     send_input("HOLD please").await;
     llm.wait_call(before).await;
-    let sent = tokio::spawn({
-        let (mine, key) = (mine.clone(), gamma_key.clone());
-        async move { wire_send(&mine, &key, "msg-during-run").await }
-    });
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    // The daemon acks the envelope once it took it: acked before the held
+    // call is released, it landed during the run.
+    assert!(
+        wire_send(&mine, &gamma_key, "msg-during-run").await,
+        "not acked"
+    );
     hold.notify_one();
-    assert!(sent.await.unwrap(), "not acked");
     let at = first_showing(&llm, "msg-during-run").await;
     assert!(
         at > before,
@@ -1173,13 +1179,11 @@ async fn a_wire_message_wakes_the_agent_whenever_it_arrives() {
             .contains("CONTEXT COMPACTION"),
         "the first call of the quiet run is the summary"
     );
-    let sent = tokio::spawn({
-        let (mine, key) = (mine.clone(), gamma_key.clone());
-        async move { wire_send(&mine, &key, "msg-during-compaction").await }
-    });
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        wire_send(&mine, &gamma_key, "msg-during-compaction").await,
+        "not acked"
+    );
     summary.notify_one();
-    assert!(sent.await.unwrap(), "not acked");
     let at = first_showing(&llm, "msg-during-compaction").await;
     let shown = &llm.requests()[at];
     assert!(
@@ -1296,13 +1300,13 @@ async fn a_wire_message_during_the_compact_run_is_drawn_with_the_run_it_wakes() 
     let before = llm.requests().len();
     rig.send(Effect::CompactNow);
     llm.wait_call(before).await;
-    let sent = tokio::spawn({
-        let (mine, key) = (mine.clone(), gamma_key.clone());
-        async move { wire_send(&mine, &key, "msg-during-compaction").await }
-    });
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    // Acked (the daemon took it) before the summary call is released: it
+    // landed during the compaction. Never a sleep.
+    assert!(
+        wire_send(&mine, &gamma_key, "msg-during-compaction").await,
+        "not acked"
+    );
     summary.notify_one();
-    assert!(sent.await.unwrap(), "not acked");
     rig.wait_for(|msg| {
         matches!(msg, Msg::Peer { from, text } if from == "gamma/main-gggg" && text.contains("msg-during-compaction"))
     })

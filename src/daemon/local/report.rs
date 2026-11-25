@@ -332,13 +332,6 @@ impl Local {
         }
     }
 
-    /// `rkat/trust {"op": "project"}`: `/trust`, every present project
-    /// input recorded as it is now. The record is the one the realm config
-    /// store's guard and the factory's hook-source check read on every
-    /// session build, so the hooks run from the agent's next build
-    /// (`/new`, `/resume`, a daemon restart). The agent's MCP servers
-    /// are part of its mob's definition, made when the mob was first
-    /// created; trusting `.rkat/mcp.toml` here does not add them to it.
     /// The session of `caller`'s agent.
     fn session_of_caller(&self, caller: &Caller) -> Result<meerkat_core::SessionId, Refusal> {
         let agent = self.agent_of(caller)?;
@@ -506,20 +499,14 @@ impl Local {
             }
         };
         self.after_permission_command();
-        Ok(match done {
-            Ok(text) => RuleOutcome { ok: true, text },
-            Err(text) => RuleOutcome { ok: false, text },
-        })
+        Ok(RuleOutcome::from(done))
     }
 
     /// `rkat/untrust_host`: the user no longer trusts `host`.
     pub(super) fn untrust_host(&self, host: &str) -> RuleOutcome {
         let done = self.core.engine.untrust_host(host);
         self.after_permission_command();
-        match done {
-            Ok(text) => RuleOutcome { ok: true, text },
-            Err(text) => RuleOutcome { ok: false, text },
-        }
+        RuleOutcome::from(done)
     }
 
     /// `rkat/withdraw_approval`: withdraw the approval once of call `id`
@@ -530,10 +517,9 @@ impl Local {
         id: u64,
     ) -> Result<RuleOutcome, Refusal> {
         let session = self.session_of_caller(caller)?;
-        Ok(match self.core.engine.withdraw_approval(&session, id) {
-            Ok(text) => RuleOutcome { ok: true, text },
-            Err(text) => RuleOutcome { ok: false, text },
-        })
+        Ok(RuleOutcome::from(
+            self.core.engine.withdraw_approval(&session, id),
+        ))
     }
 
     /// `rkat/remove_statement`: remove statement `id` of `caller`'s agent's
@@ -546,23 +532,39 @@ impl Local {
         let session = self.session_of_caller(caller)?;
         let removed = self.core.engine.remove_statement(&session, id);
         self.after_permission_command();
-        Ok(match removed {
-            Ok(text) => RuleOutcome { ok: true, text },
-            Err(text) => RuleOutcome { ok: false, text },
-        })
+        Ok(RuleOutcome::from(removed))
     }
 
     /// `rkat/remove_grant`: remove session grant `id` of `caller`'s agent.
     pub(super) fn remove_grant(&self, caller: &Caller, id: u64) -> Result<RuleOutcome, Refusal> {
         let session = self.session_of_caller(caller)?;
-        Ok(match self.core.engine.remove_grant(&session, id) {
-            Ok(text) => RuleOutcome { ok: true, text },
-            Err(text) => RuleOutcome { ok: false, text },
-        })
+        Ok(RuleOutcome::from(
+            self.core.engine.remove_grant(&session, id),
+        ))
     }
 
-    pub(super) fn trust_project(&self) -> RuleOutcome {
-        match self.parts.project.trust_all() {
+    /// `rkat/trust_preview`: `/trust`'s question, each project input read
+    /// once with its digest and what of it would run as the host.
+    pub(super) fn trust_preview(&self) -> protocol::TrustPreviewList {
+        protocol::TrustPreviewList {
+            files: self.parts.project.preview(),
+        }
+    }
+
+    /// `rkat/trust`: `/trust` answered yes, the project inputs recorded as
+    /// they were `shown` (their digests, never a new read). The record is
+    /// the one the realm config store's guard and the factory's
+    /// hook-source check read on every session build, so the hooks run
+    /// from the agent's next build (`/new`, `/resume`, a daemon restart).
+    /// The agent's MCP servers are part of its mob's definition, made when
+    /// the mob was first created; trusting `.rkat/mcp.toml` here does not
+    /// add them to it.
+    pub(super) fn trust_project(
+        &self,
+        shown: &[crate::bootstrap::project_trust::TrustPreview],
+    ) -> RuleOutcome {
+        use std::fmt::Write as _;
+        match self.parts.project.trust_shown(shown) {
             Ok(recorded) if recorded.is_empty() => RuleOutcome {
                 ok: true,
                 text: "the project has no .rkat/mcp.toml or .rkat/config.toml to trust".to_string(),
@@ -577,12 +579,20 @@ impl Local {
                     "project_trusted",
                     files.clone(),
                 ));
-                RuleOutcome {
-                    ok: true,
-                    text: format!(
-                        "trusted {files} as they are now; their hooks run from the agent's next session (/new, /resume or a daemon restart), their MCP servers from the daemon's next start"
-                    ),
+                let changed = self.parts.project.changed_since(&recorded);
+                let mut text = format!(
+                    "trusted {files} as you were shown them; their hooks run from the agent's next session (/new, /resume or a daemon restart), their MCP servers from the daemon's next start"
+                );
+                if !changed.is_empty() {
+                    let names: Vec<String> =
+                        changed.iter().map(|p| p.display().to_string()).collect();
+                    let _ = write!(
+                        text,
+                        "; {} changed since you were shown it, so it is not trusted: run /trust again to see it",
+                        names.join(", ")
+                    );
                 }
+                RuleOutcome { ok: true, text }
             }
             Err(err) => RuleOutcome {
                 ok: false,

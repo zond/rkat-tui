@@ -447,7 +447,9 @@ async fn two_daemons_on_one_users_file_follow_each_others_changes_and_hand_edits
     })
     .await;
     // The second's own write: its confirmation, and no notice of its file
-    // changing after the watcher's quiet time.
+    // changing once the watcher synced it (its notices sent then).
+    let local = b.daemon.local();
+    let synced = local.settings_syncs_for_test();
     b.send(Effect::SetSettings {
         changes: vec![("ui.bell".into(), Some("false".into()))],
         user: false,
@@ -456,7 +458,7 @@ async fn two_daemons_on_one_users_file_follow_each_others_changes_and_hand_edits
         matches!(msg, Msg::Notice { text, .. } if text.starts_with("ui.bell = false: written to this workspace's tui.toml"))
     })
     .await;
-    tokio::time::sleep(rkat_tui::daemon::settings_watch::DEBOUNCE * 4).await;
+    common::until(|| local.settings_syncs_for_test() > synced).await;
     b.send(Effect::SetSettings {
         changes: vec![("ui.bell".into(), Some("true".into()))],
         user: false,

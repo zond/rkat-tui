@@ -245,8 +245,11 @@ pub fn compose(
     ));
     let mut notices = notices;
     notices.extend(prepare.startup_notice());
-    let mut startup_notices =
-        startup_notices(&confinement.notices, approval.notices.drain(..), notices);
+    let mut startup_notices = startup_notices(
+        confinement.notices.iter().chain(&approval.info),
+        approval.notices.drain(..),
+        notices,
+    );
     // The engine's decision events go to every attached client
     // (`rkat/approval_note`, forwarded once the consent surface exists).
     let approval_events = approval.events.take();
@@ -684,15 +687,14 @@ fn bind_late(late: &Late<'_>) {
 }
 
 /// What a client shows when it first attaches (`rkat/notices`): the
-/// confinement's observations, then the rules' and the bootstrap's
-/// warnings.
-fn startup_notices(
-    confinement: &[String],
+/// confinement's and the approval setup's observations, then the rules'
+/// and the bootstrap's warnings.
+fn startup_notices<'a>(
+    observations: impl Iterator<Item = &'a String>,
     rules: impl Iterator<Item = String>,
     bootstrap: Vec<String>,
 ) -> Vec<StartupNotice> {
-    confinement
-        .iter()
+    observations
         .map(|text| StartupNotice::info(text.clone()))
         .chain(rules.chain(bootstrap).map(StartupNotice::warn))
         .collect()

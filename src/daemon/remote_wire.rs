@@ -86,7 +86,7 @@ const LINK: [&str; 8] = [
 pub enum RemoteError {
     /// The host is no plain ssh destination.
     #[error(
-        "`{0}` is no ssh host: give it as ssh takes it (an alias of your ~/.ssh/config, host or user@host), with no spaces and not starting with `-`"
+        "`{0}` is no ssh host: give it as ssh takes it (an alias of your ~/.ssh/config, host or user@host), of letters, digits and `._@:%[]-`, not starting with `-`"
     )]
     BadHost(String),
     /// The remote program's path cannot be passed safely.
@@ -168,8 +168,10 @@ pub struct SshHost(String);
 
 impl SshHost {
     /// `host`, when ssh can take it as its destination and no option can
-    /// be read into it: not empty, no leading `-`, no whitespace, control
-    /// character or `/`.
+    /// be read into it: not empty, no leading `-`, only letters, digits and
+    /// `._@:%[]-`. A shell metacharacter never reaches the user's own
+    /// `ProxyCommand ... %h` through a pasted `/wire ssh://…` (the
+    /// CVE-2023-51385 class).
     ///
     /// # Errors
     ///
@@ -178,9 +180,9 @@ impl SshHost {
         let fine = !host.is_empty()
             && !host.starts_with('-')
             && host.len() <= 255
-            && !host
+            && host
                 .chars()
-                .any(|c| c.is_whitespace() || c.is_control() || c == '/');
+                .all(|c| c.is_ascii_alphanumeric() || "._@:%[]-".contains(c));
         if fine {
             Ok(Self(host.to_string()))
         } else {
@@ -1066,6 +1068,15 @@ mod tests {
             "a\nb",
             "box/ws",
             "\u{7f}x",
+            // Shell metacharacters a `ProxyCommand ... %h` would run.
+            "box;id",
+            "$(id)",
+            "`id`",
+            "a|b",
+            "a&b",
+            "a'b",
+            "a\"b",
+            "box>x",
         ] {
             let err = SshHost::parse(bad).unwrap_err();
             assert!(err.to_string().contains("is no ssh host"), "{bad}: {err}");

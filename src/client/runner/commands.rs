@@ -60,6 +60,67 @@ impl Runner {
         });
     }
 
+    /// `/trust`: ask the daemon what each project input would run (read
+    /// once there, with its digest) and show it with the question
+    /// ([`crate::ui::trust_picker`]); the yes sends back what was shown,
+    /// and nothing is recorded before it. With nothing that could be
+    /// trusted it asks nothing: the daemon's answer says so (and an absent
+    /// file's digest is forgotten).
+    pub(super) fn trust_project(&self) {
+        let Some(connection) = self.link_or_say("/trust needs it") else {
+            return;
+        };
+        let say = self.say();
+        tokio::spawn(async move {
+            let preview = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::TrustPreview>(&connection, &protocol::Empty {}),
+            )
+            .await;
+            let files = match preview {
+                Ok(list) => list.files,
+                Err(err) => {
+                    say.notice(NoticeLevel::Error, format!("/trust failed: {err}"));
+                    return;
+                }
+            };
+            for file in &files {
+                if let Some(why) = &file.refused {
+                    say.notice(
+                        NoticeLevel::Warn,
+                        format!("{} cannot be trusted: {why}", file.file.display()),
+                    );
+                }
+            }
+            if let Some(picker) = crate::ui::trust_picker(files.clone()) {
+                let _ = say.ui_tx.send(Msg::ShowPicker {
+                    picker,
+                    refresh: false,
+                });
+                return;
+            }
+            let answer = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Trust>(
+                    &connection,
+                    &protocol::TrustParams { files },
+                ),
+            )
+            .await;
+            match answer {
+                Ok(outcome) => say.notice(
+                    if outcome.ok {
+                        NoticeLevel::Info
+                    } else {
+                        NoticeLevel::Error
+                    },
+                    outcome.text,
+                ),
+                Err(err) => say.notice(NoticeLevel::Error, format!("/trust failed: {err}")),
+            }
+        });
+    }
+
     pub(super) fn status_report(&self) {
         let mut lines = vec![format!(
             "rkat-tui {} (attached to the workspace daemon)",
@@ -440,12 +501,6 @@ impl Runner {
         });
     }
 
-    /// The picker's confirmed retire: `name` leaves the workspace through
-    /// the daemon (`rkat/retire_agent`), which refuses an agent in use.
-    /// The picker stays open: once the daemon confirms, it lists the agents
-    /// again without the retired one ([`Msg::RefreshAgentPicker`]); a
-    /// refusal is shown on the picker ([`Msg::AgentPickerRefused`]) as well
-    /// as in the transcript.
     /// Stop the helper `path` of this client's agent (`rkat/stop_helper`):
     /// a refusal is a notice; the ending comes as the daemon's
     /// `rkat/helper_ended`.
@@ -472,6 +527,12 @@ impl Runner {
         });
     }
 
+    /// The picker's confirmed retire: `name` leaves the workspace through
+    /// the daemon (`rkat/retire_agent`), which refuses an agent in use.
+    /// The picker stays open: once the daemon confirms, it lists the agents
+    /// again without the retired one ([`Msg::RefreshAgentPicker`]); a
+    /// refusal is shown on the picker ([`Msg::AgentPickerRefused`]) as well
+    /// as in the transcript.
     pub(super) fn retire_agent(&self, name: String) {
         let say = self.say();
         let Some(connection) = self.link_or_say("the agent was not retired") else {
@@ -905,8 +966,10 @@ pub(super) fn report_lines(report: &protocol::Report) -> Vec<String> {
         }
     ));
     lines.push(match &report.classifier_model {
-        Some(model) => format!("classifier: {model} (/auto stats shows its numbers)"),
-        None => "classifier: none configured (reviewed actions ask you; [auto] classifier_model sets one)".to_string(),
+        Some(model) => format!(
+            "classifier: reviews with {model} (/auto model picks another, a cheaper one is usually enough; /auto stats shows its numbers)"
+        ),
+        None => "classifier: none (reviewed actions ask you; /auto model picks one)".to_string(),
     });
     lines.push(format!("realm rules: {}", report.realm_rules.display()));
     for input in &report.project_inputs {

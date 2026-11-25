@@ -423,7 +423,8 @@ impl Local {
             method::Audit, protocol::AuditParams { lines } => self.audit_tail(&self.agent_of(&caller)?, lines.unwrap_or(AUDIT_LINES));
             method::Missed, Empty {} => self.missed(&caller);
             method::SetModel, params => self.set_model(&self.agent_of(&caller)?, params).await;
-            method::Trust, Empty {} => Ok(self.trust_project());
+            method::TrustPreview, Empty {} => Ok(self.trust_preview());
+            method::Trust, protocol::TrustParams { files } => Ok(self.trust_project(&files));
             method::Card, protocol::WireAgentParams { agent } => self.card(&caller, agent).await;
             method::Wire, protocol::WireParams { agent, card } => self.wire(&caller, agent, card).await;
             method::Unwire, protocol::UnwireParams { agent, workspace, peer } => self.unwire(&caller, agent, &workspace, &peer).await;
@@ -670,9 +671,6 @@ fn answer(result: impl serde::Serialize) -> Result<Value, Refusal> {
     serde_json::to_value(result).map_err(Refusal::internal)
 }
 
-/// Put `note` (what the daemon held for the agent) before the user's
-/// words in the wire content input `content`: a string gets it in front,
-/// a block list a text block first.
 /// When the user's words of `session` overran their budget, choose on a
 /// task of its own which of the older ones stay
 /// ([`crate::approval::standing`]), store the result, and go on while
@@ -694,6 +692,9 @@ fn select_standing(core: &Arc<super::core::Core>, session: &meerkat_core::Sessio
     });
 }
 
+/// Put `note` (what the daemon held for the agent) before the user's
+/// words in the wire content input `content`: a string gets it in front,
+/// a block list a text block first.
 fn prepend_note(content: &mut Value, note: &str) {
     let lead = format!("{note}\n\n{HELD_NOTE_SEPARATOR}\n\n");
     match content {

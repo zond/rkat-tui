@@ -342,6 +342,16 @@ pub struct RuleOutcome {
     pub text: String,
 }
 
+/// A permission act's answer: done with its notice, or refused with why.
+impl From<Result<String, String>> for RuleOutcome {
+    fn from(done: Result<String, String>) -> Self {
+        match done {
+            Ok(text) => Self { ok: true, text },
+            Err(text) => Self { ok: false, text },
+        }
+    }
+}
+
 impl RuleOutcome {
     fn ok(text: impl Into<String>) -> Self {
         Self {

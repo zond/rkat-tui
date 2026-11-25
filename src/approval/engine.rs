@@ -1211,12 +1211,19 @@ impl ApprovalEngine {
         };
         if verdict.is_allowed() {
             self.record_agent_writes(session_id, &facts);
-            // A shell command allowed on anything but the policy's own
-            // read-only allowlist (a review, the user, an allow rule) may
-            // change files too (a download, `sed -i`): what a cached
-            // command runs may have changed with it.
+            // A shell command or a tool the policy does not know (an MCP
+            // tool, a foreign one) allowed on anything but the policy's own
+            // read-only tier (a review, the user, an allow rule) may change
+            // files too (a download, `sed -i`, a server's own writes): what
+            // a cached command runs may have changed with it. A file write
+            // drops the cache itself ([`Self::record_agent_writes`]); the
+            // reads, searches, notes and helpers' starts change no file.
             let read_only = tier == Tier::AlwaysAllow && allow_rule.is_none();
-            if matches!(facts.action.kind, ActionKind::Shell { .. }) && !read_only && !cache_hit {
+            let may_write = matches!(
+                facts.action.kind,
+                ActionKind::Shell { .. } | ActionKind::Other
+            );
+            if may_write && !read_only && !cache_hit {
                 self.drop_cached_allows();
             }
             if let Some(key) = cache {
@@ -2104,6 +2111,9 @@ impl ApprovalEngine {
                 (super::classifier::review_stage(allow), "allow", None)
             }
             Ok(ClassifierVerdict::Block { rule, .. }) => (2, "block", rule.clone()),
+            // Stage 2 answered without a verdict: its own outcome, put to
+            // the user as a failed review is.
+            Err(super::classifier::ClassifierError::Unclear { .. }) => (2, "unclear", None),
             Err(_) => (0, "error", None),
         };
         let record = ReviewRecord {
@@ -2286,14 +2296,28 @@ impl ApprovalEngine {
                 allow_at(tier, Decider::Human, "allowed by the user for this session")
             }
             HumanDecision::AllowAndAddRule(rule) => {
-                if let Err(err) = self.add_rule_blocking(*rule, Level::Workspace).await {
-                    tracing::warn!(error = %err, "failed to persist rule");
-                    self.emit(ApprovalEvent::Notice(format!(
-                        "the allow rule is active for this run but was not saved: {err}"
-                    )));
-                }
+                let added = match self.add_rule_blocking(*rule, Level::Workspace).await {
+                    Ok(()) => true,
+                    Err(err @ PersistError::Rules(RulesError::TooBroad { .. })) => {
+                        self.emit(ApprovalEvent::Notice(format!(
+                            "allowed once; no rule was added: {err}"
+                        )));
+                        false
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "failed to persist rule");
+                        self.emit(ApprovalEvent::Notice(format!(
+                            "the allow rule is active for this run but was not saved: {err}"
+                        )));
+                        true
+                    }
+                };
                 self.human_allowed(counted);
-                allow_at(tier, Decider::Human, "allowed by the user (rule added)")
+                if added {
+                    allow_at(tier, Decider::Human, "allowed by the user (rule added)")
+                } else {
+                    allow_at(tier, Decider::Human, "allowed once by the user")
+                }
             }
             HumanDecision::Deny { comment } => deny_at(tier, DenyReason::Human { comment }),
             HumanDecision::Stop => deny_at(tier, DenyReason::Stopped),
@@ -2949,6 +2973,8 @@ mod tests {
             ToolOrigin::tui(NOTES_SOURCE, name)
         } else if name == crate::tools::SKILL_READ {
             ToolOrigin::tui(crate::tools::SKILL_TOOLS_SOURCE, name)
+        } else if let Some(rest) = name.strip_prefix("mcp__") {
+            ToolOrigin::mcp(rest.split("__").next().unwrap_or_default())
         } else {
             ToolOrigin::native(ToolSourceKind::Builtin)
         }
@@ -3711,6 +3737,76 @@ mod tests {
         );
     }
 
+    /// An allowed call of a tool the policy does not know (an MCP tool,
+    /// which may write files as it likes) drops the cached allows as an
+    /// allowed shell command does; a read does not.
+    #[tokio::test]
+    async fn an_allowed_mcp_tool_call_clears_the_cache() {
+        let rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        let make = json!({"command": "make test"});
+        assert!(decide(&rig, "c1", &make).await.is_allowed());
+        assert!(decide(&rig, "c2", &make).await.is_allowed());
+        assert_eq!(rig.classifier.calls(), 1);
+        assert!(
+            call_in(
+                &rig,
+                None,
+                "m1",
+                "mcp__fs__write",
+                &json!({"path": "Makefile"})
+            )
+            .await
+            .is_allowed()
+        );
+        assert_eq!(rig.classifier.calls(), 2, "the MCP call was reviewed");
+        assert!(decide(&rig, "c3", &make).await.is_allowed());
+        assert_eq!(rig.classifier.calls(), 3, "reviewed again after it");
+        assert!(
+            call_in(
+                &rig,
+                None,
+                "r1",
+                "read_file",
+                &json!({"path": "src/main.rs"})
+            )
+            .await
+            .is_allowed()
+        );
+        assert!(decide(&rig, "c4", &make).await.is_allowed());
+        assert_eq!(rig.classifier.calls(), 3, "a read leaves the cache");
+    }
+
+    /// The escalation's "allow and add a rule" refuses a rule too broad to
+    /// keep, as `/permissions add` does: the call is allowed once, no rule
+    /// is added, and the user is told why.
+    #[tokio::test]
+    async fn allow_and_add_rule_refuses_a_broad_rule_and_allows_once() {
+        let mut rig = rig(
+            vec![Err(ClassifierError::Timeout)],
+            DEFAULT_ESCALATION_TIMEOUT,
+        );
+        let make = json!({"command": "make test"});
+        let task = spawn_decide(&rig, "c1", make.clone());
+        let request = rig.escalations.recv().await.unwrap();
+        let rule = Rule::literal(RuleKind::Allow, "shell", "make test", RuleOrigin::Realm).unwrap();
+        assert!(
+            rule.broad_reason().is_some(),
+            "a task runner's rule is broad"
+        );
+        request
+            .respond
+            .send(HumanDecision::AllowAndAddRule(Box::new(rule)))
+            .unwrap();
+        assert!(task.await.unwrap().is_allowed());
+        assert_eq!(rig.engine.rules().allow().count(), 0);
+        let said = drain(&mut rig.events);
+        assert!(
+            said.iter().any(|event| matches!(event, ApprovalEvent::Notice(text)
+                if text.starts_with("allowed once; no rule was added") && text.contains("narrower"))),
+            "{said:?}"
+        );
+    }
+
     /// The audit lines of a rule added, edited and removed say whether it
     /// allows or denies.
     #[tokio::test]
@@ -3843,6 +3939,39 @@ mod tests {
         );
         // A human allow resumes auto mode.
         assert_eq!(rig.engine.auto_state().1, None);
+    }
+
+    /// A review whose answer reached no verdict (cut off at the token
+    /// limit) is no block: attended, the call is put to the user with
+    /// what happened as the hint; unattended it is denied as every
+    /// question is. `/auto stats` counts it as its own outcome.
+    #[tokio::test]
+    async fn a_cut_off_review_asks_the_user_and_is_denied_unattended() {
+        let cut = || Err(ClassifierError::Unclear { cut_off: true });
+        let mut rig = rig(vec![cut(), cut()], DEFAULT_ESCALATION_TIMEOUT);
+        let task = spawn_decide(&rig, "c1", push());
+        let request = rig.escalations.recv().await.unwrap();
+        let hint = request.prompt.shown.classifier_hint.clone().unwrap();
+        assert!(
+            hint.contains("cut off") && hint.contains("not a refusal"),
+            "{hint}"
+        );
+        request.respond.send(HumanDecision::AllowOnce).unwrap();
+        assert!(task.await.unwrap().is_allowed());
+
+        rig.present.attached.store(false, Ordering::SeqCst);
+        let peer_run = RunId::new();
+        rig.engine.run_started(&rig.session, Some(&peer_run));
+        assert_eq!(
+            call_in(&rig, Some(&peer_run), "c2", "shell", &push()).await,
+            Verdict::Deny {
+                tier: Tier::Classifier,
+                reason: DenyReason::Unattended
+            }
+        );
+        let (total, _) = rig.engine.stats().of(Some(&rig.session));
+        assert_eq!((total.reviews, total.unclear, total.errors), (2, 2, 0));
+        assert_eq!(total.blocked(), 0);
     }
 
     #[tokio::test]

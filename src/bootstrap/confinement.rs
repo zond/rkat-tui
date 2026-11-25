@@ -8,7 +8,7 @@
 //!
 //! | mode | read and write | read only | IP network |
 //! |---|---|---|---|
-//! | `workspace` (default) | the workspace, the temp dir, the Cargo home, the user cache dir, each `--confinement-write` | the rustup home, `/usr/local`, `/usr/share`, `/usr/include`, `/usr/libexec`, `/opt`, `/etc/ssl`, `/etc/pki`, `/etc/ca-certificates`, `/etc/alternatives`, each `--confinement-read`; the files `/etc/{resolv.conf,hosts,nsswitch.conf,host.conf,gai.conf,services,protocols,passwd,group,gitconfig}` | allowed (`cargo fetch`) |
+//! | `workspace` (default) | the workspace, the temp dir, the Cargo home's `registry/` and `git/` ([`CargoHome`]: its other entries read only, its credentials not at all), the user cache dir, each `--confinement-write` | the rustup home, `/usr/local`, `/usr/share`, `/usr/include`, `/usr/libexec`, `/opt`, `/etc/ssl`, `/etc/pki`, `/etc/ca-certificates`, `/etc/alternatives`, each `--confinement-read`; the files `/etc/{resolv.conf,hosts,nsswitch.conf,host.conf,gai.conf,services,protocols,passwd,group,gitconfig}` | allowed (`cargo fetch`) |
 //! | `strict` | as `workspace` | as `workspace` | denied |
 //! | `off` (`--no-confinement`) | the trusted host: no OS confinement | | the host's |
 //!

@@ -1527,3 +1527,74 @@ async fn each_tool_s_real_answer_renders_its_line() {
     let none = fx.ok("glob", args.clone()).await;
     assert_eq!(said("glob", &args, &none).as_deref(), Some("no files"));
 }
+
+// ------------------------------------------------- rkat-tui's own state ----
+
+/// The file tools never read rkat-tui's own state, whatever the mode:
+/// another workspace's realm (its sessions, audit log, `tui.toml`), the
+/// host trust records, and the engine's per-session comms secret keys are
+/// secret roots of every workspace's root (`read_file` refuses them, and
+/// `glob` and `grep` from above never list or search them).
+#[tokio::test]
+async fn other_realms_trust_records_and_comms_keys_are_secret() {
+    use clap::Parser;
+    let dir = tempfile::tempdir().unwrap();
+    let base = std::fs::canonicalize(dir.path()).unwrap();
+    let (ws, cfg, home) = (base.join("ws"), base.join("cfg"), base.join("home"));
+    std::fs::create_dir_all(&ws).unwrap();
+    let args = rkat_tui::cli::Args::try_parse_from([
+        "rkat-tui",
+        "-w",
+        ws.to_str().unwrap(),
+        "--config-dir",
+        cfg.to_str().unwrap(),
+        "--user-config-root",
+        home.to_str().unwrap(),
+        "--no-confinement",
+    ])
+    .unwrap();
+    let files = [
+        cfg.join("workspaces/0123456789abcdef/audit.jsonl"),
+        cfg.join("trust/0123456789abcdef.toml"),
+        home.join(".rkat/session_comms_identity/s-1/identity.key"),
+    ];
+    for file in &files {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, "needle-c41b\n").unwrap();
+    }
+    let scope = rkat_tui::bootstrap::resolve_scope(&args).unwrap();
+    let tools = FileToolDispatcher::new(scope.project_root.clone(), None);
+    let call = |name: &'static str, args: Value| {
+        let tools = &tools;
+        async move { call_as(tools, None, name, args).await }
+    };
+    for file in &files {
+        let read = call("read_file", json!({"path": file})).await;
+        assert!(read.is_error, "{}: {}", file.display(), read.text_content());
+        assert!(
+            read.text_content().contains("is sealed"),
+            "{}",
+            read.text_content()
+        );
+        let glob = call(
+            "glob",
+            json!({"pattern": "**/*", "path": file.parent().unwrap()}),
+        )
+        .await;
+        assert!(glob.is_error, "{}", glob.text_content());
+    }
+    let walked = call("glob", json!({"pattern": "**/*", "path": base})).await;
+    assert!(
+        !walked.text_content().contains("audit.jsonl")
+            && !walked.text_content().contains("identity.key")
+            && !walked.text_content().contains("0123456789abcdef.toml"),
+        "{}",
+        walked.text_content()
+    );
+    let searched = call("grep", json!({"pattern": "needle-c41b", "path": base})).await;
+    assert!(
+        searched.text_content().starts_with("No matches for"),
+        "{}",
+        searched.text_content()
+    );
+}

@@ -1,4 +1,5 @@
-//! The model and the permission mode: `rkat/set_model` and a model switch's `[thinking]`, `rkat/set_mode` and the plan-mode notes.
+//! The model and the permission mode: `rkat/set_model` and a model
+//! switch's `[thinking]`, `rkat/set_mode` and the plan-mode notes.
 
 use super::*;
 

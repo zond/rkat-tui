@@ -261,7 +261,7 @@ impl App {
             (true, _) => " · a: hide the ended".to_string(),
         };
         let empty = if ended == 0 {
-            "no helpers in this conversation yet (the agent starts them with assign, fork_off or spawn_member)".to_string()
+            "no helpers in this conversation yet (the agent starts them with assign)".to_string()
         } else {
             format!("no live helpers; a shows {ended} ended")
         };

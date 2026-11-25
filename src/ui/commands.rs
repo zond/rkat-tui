@@ -77,9 +77,6 @@ pub enum CompactCommand {
     /// `/compact` (or `/compact now`): compact before the next turn's first
     /// model call.
     Now,
-    /// `/compact <instructions>`: as [`Self::Now`]; the engine has no
-    /// instruction-guided compaction, so the instructions are not used.
-    Focused(String),
     /// `/compact status`: report the compaction policy and the prepare
     /// instruction (its threshold, whether it is armed).
     Status,
@@ -123,21 +120,25 @@ fn parse_prepare(text: &str) -> CompactCommand {
     }
 }
 
-/// `--user` (or `--global`) taken out of `text`: the rest, and whether it
-/// was there (the commands that set something write the user's own
-/// `tui.toml` with it).
+/// `--user` (or `--global`) as `text`'s first word taken off: the rest, and
+/// whether it was there (the commands that set something write the user's
+/// own `tui.toml` with it). Only that position counts: anywhere else the
+/// word is part of the text (`/compact prepare run pip install --user x`
+/// is an instruction).
 #[must_use]
 pub fn split_user(text: &str) -> (String, bool) {
-    let mut user = false;
-    let rest: Vec<&str> = text
-        .split(' ')
-        .filter(|word| {
-            let flag = matches!(*word, "--user" | "--global");
-            user |= flag;
-            !flag
-        })
-        .collect();
-    (rest.join(" ").trim().to_string(), user)
+    let text = text.trim();
+    let first = text.split_whitespace().next().unwrap_or_default();
+    if is_user_flag(first) {
+        (text[first.len()..].trim().to_string(), true)
+    } else {
+        (text.to_string(), false)
+    }
+}
+
+/// Whether `word` is the flag that writes the user's own `tui.toml`.
+fn is_user_flag(word: &str) -> bool {
+    matches!(word, "--user" | "--global")
 }
 
 fn parse_prepare_change(text: &str) -> CompactCommand {
@@ -438,10 +439,10 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "set",
         aliases: &[],
-        usage: "<key> <value> [--user]",
+        usage: "[--user] <key> <value>",
         summary: "set a setting for this workspace, or with --user for you",
         help: &[(
-            "/set <key> <value> [--user]",
+            "/set [--user] <key> <value>",
             "write a setting to this workspace's tui.toml (with --user to\nyour own, every workspace); the answer says the file, the value\nin force and its layer, and when it applies",
         )],
         parse: parse_set,
@@ -449,10 +450,10 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "unset",
         aliases: &[],
-        usage: "<key> [--user]",
+        usage: "[--user] <key>",
         summary: "remove a setting from this workspace's tui.toml, or with --user from yours",
         help: &[(
-            "/unset <key> [--user]",
+            "/unset [--user] <key>",
             "remove the workspace's value (with --user your own): the next\nlayer's applies",
         )],
         parse: parse_unset,
@@ -466,7 +467,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "/help, /?",
             "open this help over the transcript (Tab: the keys; Esc, q or\nCtrl-C closes it)",
         )],
-        parse: |_| Some(Command::Help),
+        parse: |rest| arg_free(rest, Command::Help),
     },
     CommandSpec {
         name: "quit",
@@ -477,7 +478,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "/quit, /exit, /q",
             "leave rkat-tui (asks again while a turn runs or messages are queued):\nstops the daemon when this rkat-tui started it and nobody detached\nsince, leaves it running when other clients are attached, else asks:\ndetach or terminate (/detach always leaves it running)",
         )],
-        parse: |_| Some(Command::Quit),
+        parse: |rest| arg_free(rest, Command::Quit),
     },
     CommandSpec {
         name: "detach",
@@ -585,7 +586,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "/clear, /new",
             "clear the transcript and start a new session (during a turn:\nruns when it ends)",
         )],
-        parse: |_| Some(Command::Clear),
+        parse: |rest| arg_free(rest, Command::Clear),
     },
     CommandSpec {
         name: "resume",
@@ -601,7 +602,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "permissions",
         aliases: &[],
-        usage: "[blocked | rules | hosts | list | add allow|deny <tool> [pattern] [--user] | rm <n>]",
+        usage: "[blocked | rules | hosts | list | add [--user] allow|deny <tool> [pattern] | rm <n>]",
         summary: "approve blocked calls; see, add and remove rules, grants, statements and trusted hosts",
         help: &[
             (
@@ -626,8 +627,8 @@ pub static COMMANDS: &[CommandSpec] = &[
             ),
             ("/permissions list", "list approval rules"),
             (
-                "/permissions add allow|deny <tool> [pattern] [--user]",
-                "add an approval rule (with --user to your own tui.toml, for\nevery workspace)",
+                "/permissions add [--user] allow|deny <tool> [pattern]",
+                "add an approval rule (with --user, directly after add, to your\nown tui.toml, for every workspace; in the pattern it is text)",
             ),
             ("/permissions rm <n>", "remove rule n (rm or remove)"),
         ],
@@ -647,7 +648,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "mode",
         aliases: &[],
-        usage: "[default | accept-edits | plan | auto] [--user]",
+        usage: "[[--user] default | accept-edits | plan | auto]",
         summary: "pick or set the permission mode",
         help: &[
             (
@@ -655,7 +656,7 @@ pub static COMMANDS: &[CommandSpec] = &[
                 "open a list of the four modes, the current one marked, each\nwith what it asks and allows; Enter switches (on a paused\nauto mode: resumes it). Shift+Tab cycles manual → accept\nedits → plan → auto",
             ),
             (
-                "/mode default|accept-edits|plan|auto",
+                "/mode [--user] default|accept-edits|plan|auto",
                 "set it: default (manual) asks for every edit and command,\naccept-edits allows in-project edits, plan is read-only and\nends in a plan to approve, auto has the classifier review;\nrecorded for this workspace, with --user in your own tui.toml",
             ),
         ],
@@ -680,7 +681,7 @@ pub static COMMANDS: &[CommandSpec] = &[
                 "the classifier's reviews, stage-1 flags, blocks by rule, pauses,\napprovals from /permissions, how often you allow what is asked, its tokens\nand time, for this conversation and since the daemon started",
             ),
             (
-                "/auto model [[endpoint:]<id>] [--user]",
+                "/auto model [[--user] [endpoint:]<id>]",
                 "the classifier's model: pick it from every endpoint's list (the\ncurrent one marked), or set it; live, written to the realm's\ntui.toml (with --user to your own), its two-case check run in\nthe background",
             ),
             (
@@ -736,16 +737,12 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "compact",
         aliases: &[],
-        usage: "[now | status | prepare [at <N | Nk | N%>|default] [<text>|off|default] [--user] | <instructions>]",
+        usage: "[now | status | prepare [--user] [at <N | Nk | N%>|default] [<text>|off|default]]",
         summary: "compact the context (during a turn: before its next step)",
         help: &[
             (
                 "/compact [now]",
                 "ask the engine to compact the context at the next\nmodel call (during a turn: before the run's next model\nrequest)",
-            ),
-            (
-                "/compact <instructions>",
-                "the same; focus instructions are not supported yet (ignored)",
             ),
             (
                 "/compact status",
@@ -761,18 +758,20 @@ pub static COMMANDS: &[CommandSpec] = &[
             ),
             (
                 "/compact prepare at <threshold> <text>",
-                "set both; /compact prepare default all resets both;\n/compact prepare alone shows what is set and where from;\n--user on any of them writes your own tui.toml instead",
+                "set both; /compact prepare default all resets both;\n/compact prepare alone shows what is set and where from;\n/compact prepare --user … writes your own tui.toml instead\n(--user directly after prepare; anywhere else it is text)",
             ),
         ],
         parse: |rest| {
             if let Some(text) = first_word(rest.trim(), "prepare") {
                 return Some(Command::Compact(parse_prepare(text)));
             }
-            Some(Command::Compact(match words(rest).as_slice() {
-                [] | ["now"] => CompactCommand::Now,
-                ["status"] => CompactCommand::Status,
-                words => CompactCommand::Focused(words.join(" ")),
-            }))
+            // Anything else is refused with the usage: no focus
+            // instructions exist, so `/compact stauts` must not compact.
+            match words(rest).as_slice() {
+                [] | ["now"] => Some(Command::Compact(CompactCommand::Now)),
+                ["status"] => Some(Command::Compact(CompactCommand::Status)),
+                _ => None,
+            }
         },
     },
     CommandSpec {
@@ -892,10 +891,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "/context",
             "context usage, the compaction policy and what the context holds",
         )],
-        parse: |rest| match words(rest).as_slice() {
-            [] | ["all"] => Some(Command::Context),
-            _ => None,
-        },
+        parse: |rest| arg_free(rest, Command::Context),
     },
     CommandSpec {
         name: "copy",
@@ -983,15 +979,12 @@ fn parse_auto(rest: &str) -> Option<Command> {
         ["resume"] => Some(Command::Auto(AutoCommand::Resume)),
         ["stats"] => Some(Command::Auto(AutoCommand::Stats)),
         ["model"] => Some(Command::Auto(AutoCommand::Model(None, false))),
-        ["model", reference] => Some(Command::Auto(AutoCommand::Model(
-            Some((*reference).to_string()),
-            false,
-        ))),
-        ["model", reference, "--user" | "--global"]
-        | ["model", "--user" | "--global", reference] => Some(Command::Auto(AutoCommand::Model(
-            Some((*reference).to_string()),
-            true,
-        ))),
+        ["model", reference] if !is_user_flag(reference) => Some(Command::Auto(
+            AutoCommand::Model(Some((*reference).to_string()), false),
+        )),
+        ["model", flag, reference] if is_user_flag(flag) => Some(Command::Auto(
+            AutoCommand::Model(Some((*reference).to_string()), true),
+        )),
         ["check", rest @ ..] => {
             parse_check(rest).map(|selection| Command::Auto(AutoCommand::Check(selection)))
         }
@@ -1336,18 +1329,17 @@ pub fn parse(input: &str) -> Option<Result<Command, CommandError>> {
     })
 }
 
+/// `/permissions …`; `add --user` (directly after `add`) writes the user's
+/// own `tui.toml`, and the flag anywhere else is the rule's text
+/// (`add allow shell pip install --user *` is a rule for exactly that).
 fn parse_rules(args: &[&str]) -> Option<RulesCommand> {
-    let user = args
-        .iter()
-        .any(|word| matches!(*word, "--user" | "--global"));
-    let args: Vec<&str> = args
-        .iter()
-        .copied()
-        .filter(|word| !matches!(*word, "--user" | "--global"))
-        .collect();
-    if user && !matches!(args.first(), Some(&"add")) {
-        return None;
-    }
+    let (args, user): (Vec<&str>, bool) = match args {
+        ["add", flag, rest @ ..] if is_user_flag(flag) => (
+            std::iter::once("add").chain(rest.iter().copied()).collect(),
+            true,
+        ),
+        args => (args.to_vec(), false),
+    };
     match args.as_slice() {
         [] => Some(RulesCommand::Pick(None)),
         ["blocked"] => Some(RulesCommand::Pick(Some(
@@ -1358,7 +1350,7 @@ fn parse_rules(args: &[&str]) -> Option<RulesCommand> {
         ))),
         ["hosts"] => Some(RulesCommand::Pick(Some(super::permissions::Section::Hosts))),
         ["list"] => Some(RulesCommand::List),
-        ["add", effect, tool, pattern @ ..] => {
+        ["add", effect, tool, pattern @ ..] if !is_user_flag(tool) => {
             let effect = match *effect {
                 "allow" => RuleEffect::Allow,
                 "deny" => RuleEffect::Deny,
@@ -1616,7 +1608,7 @@ mod tests {
         );
         assert_eq!(usage_of("/status x"), "/status");
         assert_eq!(ok("/context"), Command::Context);
-        assert_eq!(ok("/context all"), Command::Context);
+        assert_eq!(usage_of("/context all"), "/context");
         assert_eq!(usage_of("/context x"), "/context");
         assert_eq!(ok("/compact"), Command::Compact(CompactCommand::Now));
         assert_eq!(ok("/compact now"), Command::Compact(CompactCommand::Now));
@@ -1624,18 +1616,21 @@ mod tests {
             ok("/compact status"),
             Command::Compact(CompactCommand::Status)
         );
-        assert_eq!(
-            ok("/compact keep the  test plan"),
-            Command::Compact(CompactCommand::Focused("keep the test plan".into()))
-        );
+        // No focus instructions: other text is refused with the usage.
+        for line in [
+            "/compact keep the  test plan",
+            "/compact later",
+            "/compact stauts",
+        ] {
+            assert!(
+                usage_of(line).starts_with("/compact [now | status"),
+                "{line}"
+            );
+        }
         for name in ["/usage", "/cost", "/stats"] {
             assert_eq!(ok(name), Command::Cost, "{name}");
             assert_eq!(usage_of(&format!("{name} now")), "/usage", "{name}");
         }
-        assert_eq!(
-            ok("/compact later"),
-            Command::Compact(CompactCommand::Focused("later".into()))
-        );
         assert_eq!(
             ok("/compact prepare update  PLAN.md, then call compact_ready"),
             prepare(None, Some("update  PLAN.md, then call compact_ready"))
@@ -1763,10 +1758,7 @@ mod tests {
         assert_eq!(ok("/compact prepare default all"), both);
         assert_eq!(ok("/compact prepare at default default"), both);
         // `prepare` is a word of its own.
-        assert_eq!(
-            ok("/compact prepared"),
-            Command::Compact(CompactCommand::Focused("prepared".into()))
-        );
+        assert!(usage_of("/compact prepared").starts_with("/compact ["));
     }
 
     #[test]
@@ -1827,10 +1819,15 @@ mod tests {
         );
         assert_eq!(ok("/mode plan"), Command::Mode(Some(PermissionMode::Plan)));
         assert_eq!(ok("/mode auto"), Command::Mode(Some(PermissionMode::Auto)));
-        for bad in ["/mode yolo", "/mode plan auto"] {
+        // `--user` counts only directly after the command.
+        assert!(matches!(
+            ok("/mode --user plan"),
+            Command::Set { user: true, .. }
+        ));
+        for bad in ["/mode yolo", "/mode plan auto", "/mode plan --user"] {
             assert_eq!(
                 usage_of(bad),
-                "/mode [default | accept-edits | plan | auto] [--user]",
+                "/mode [[--user] default | accept-edits | plan | auto]",
                 "{bad}"
             );
         }
@@ -1892,16 +1889,22 @@ mod tests {
             ))
         );
         assert_eq!(
-            ok("/auto model anthropic:claude-haiku-5-5 --user"),
+            ok("/auto model --user anthropic:claude-haiku-5-5"),
             Command::Auto(AutoCommand::Model(
                 Some("anthropic:claude-haiku-5-5".into()),
                 true
             ))
         );
-        assert!(matches!(
-            parse("/auto model a b"),
-            Some(Err(CommandError::Usage(_)))
-        ));
+        for bad in [
+            "/auto model a b",
+            "/auto model anthropic:claude-haiku-5-5 --user",
+            "/auto model --user",
+        ] {
+            assert!(
+                matches!(parse(bad), Some(Err(CommandError::Usage(_)))),
+                "{bad}"
+            );
+        }
         assert!(matches!(
             parse("/auto maybe"),
             Some(Err(CommandError::Usage(_)))
@@ -1955,6 +1958,50 @@ mod tests {
                 user: false,
             })
         );
+        // `--user` directly after `add` writes the user's own file;
+        // anywhere else it is the rule's text, never taken out of it.
+        assert_eq!(
+            ok("/permissions add --user allow shell cargo test *"),
+            Command::Rules(RulesCommand::Add {
+                effect: RuleEffect::Allow,
+                tool: "shell".into(),
+                pattern: Some("cargo test *".into()),
+                user: true,
+            })
+        );
+        assert_eq!(
+            ok("/permissions add allow shell pip install --user *"),
+            Command::Rules(RulesCommand::Add {
+                effect: RuleEffect::Allow,
+                tool: "shell".into(),
+                pattern: Some("pip install --user *".into()),
+                user: false,
+            })
+        );
+        for bad in [
+            "/permissions --user add allow shell x",
+            "/permissions add allow --user shell",
+            "/permissions list --user",
+        ] {
+            assert!(
+                matches!(parse(bad), Some(Err(CommandError::Usage(_)))),
+                "{bad}"
+            );
+        }
+        // Commands that take no argument refuse one (a typed `/new idea`
+        // must not start a new session).
+        for line in [
+            "/new idea for later",
+            "/clear x",
+            "/quit now",
+            "/q x",
+            "/help me",
+        ] {
+            assert!(
+                matches!(parse(line), Some(Err(CommandError::Usage(_)))),
+                "{line}"
+            );
+        }
         assert_eq!(
             ok("/permissions rm 3"),
             Command::Rules(RulesCommand::Remove(3))
@@ -2093,7 +2140,7 @@ mod tests {
         }
         assert_eq!(
             usage_of("/permissions rm x"),
-            "/permissions [blocked | rules | hosts | list | add allow|deny <tool> [pattern] [--user] | rm <n>]"
+            "/permissions [blocked | rules | hosts | list | add [--user] allow|deny <tool> [pattern] | rm <n>]"
         );
     }
 

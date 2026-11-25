@@ -32,6 +32,18 @@ pub struct Current<'a> {
     pub model: &'a str,
 }
 
+/// A model picker asked for before the lists were fetched: which one, and
+/// the model it marks as current (the agent's, or the classifier's).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Waiting {
+    /// The classifier's picker (`/auto model`).
+    pub(crate) classifier: bool,
+    /// The endpoint of the model it marks.
+    pub(crate) endpoint: String,
+    /// The model it marks.
+    pub(crate) model: String,
+}
+
 impl Workbench {
     /// The fetched lists, once there are any.
     #[must_use]
@@ -92,20 +104,24 @@ impl Workbench {
         if refresh {
             self.models = None;
         }
-        self.picker_for_classifier = classifier;
         if self.models.is_some() || self.endpoints.is_empty() {
-            self.show_picker(current);
+            self.show_picker(current, classifier);
             return;
         }
-        self.picker_waiting = true;
+        // What waits is one value: which picker, and the model it marks.
+        self.waiting = Some(Waiting {
+            classifier,
+            endpoint: current.endpoint.to_string(),
+            model: current.model.to_string(),
+        });
         self.ensure_fetch(true);
     }
 
-    /// Open the picker that was asked for (the agent's or the
-    /// classifier's).
-    fn show_picker(&self, current: Current<'_>) {
+    /// Open the picker that was asked for (the agent's, or with
+    /// `classifier` the classifier's), `current` marked.
+    fn show_picker(&self, current: Current<'_>, classifier: bool) {
         let groups = self.picker_groups(current);
-        self.send(if self.picker_for_classifier {
+        self.send(if classifier {
             Msg::ShowClassifierPicker(groups)
         } else {
             Msg::ShowModelPicker(groups)
@@ -113,14 +129,11 @@ impl Workbench {
     }
 
     /// The background fetch finished ([`Workbench::background`]): cache the
-    /// lists and their prices and open the picker when it waits. Returns
-    /// the `/model <id>` that waited for the lists, for the runner to
-    /// switch.
-    pub fn lists_arrived(
-        &mut self,
-        joined: Result<FetchResults, JoinError>,
-        current: Current<'_>,
-    ) -> Option<String> {
+    /// lists and their prices and open the picker when one waits, with the
+    /// model it was asked for marked (the classifier's for `/auto model`).
+    /// Returns the `/model <id>` that waited for the lists, for the runner
+    /// to switch.
+    pub fn lists_arrived(&mut self, joined: Result<FetchResults, JoinError>) -> Option<String> {
         let cache = match joined {
             Ok(results) => {
                 let (cache, prices) = ModelCache::from_results(results);
@@ -136,8 +149,14 @@ impl Workbench {
             }
         };
         self.models = Some(cache);
-        if std::mem::take(&mut self.picker_waiting) {
-            self.show_picker(current);
+        if let Some(waiting) = self.waiting.take() {
+            self.show_picker(
+                Current {
+                    endpoint: &waiting.endpoint,
+                    model: &waiting.model,
+                },
+                waiting.classifier,
+            );
         }
         self.pending_set.take()
     }

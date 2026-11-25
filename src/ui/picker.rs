@@ -48,6 +48,8 @@ pub enum PickerKind {
     Settings,
     /// `/rehome`.
     Rehome,
+    /// `/trust`'s question.
+    Trust,
 }
 
 impl PickerKind {
@@ -65,6 +67,7 @@ impl PickerKind {
             Self::Agents => " Agents ",
             Self::Settings => " Settings ",
             Self::Rehome => " Workspace state ",
+            Self::Trust => " Trust project files ",
         }
     }
 }
@@ -85,6 +88,8 @@ const ROW_CAP: usize = 2;
 /// What a picker's key does; each is what a typed command does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickAct {
+    /// `/trust` answered yes: record the project inputs as shown.
+    TrustProject(Vec<crate::bootstrap::project_trust::TrustPreview>),
     /// `/schedules pause|resume|delete <id>`, then the list again.
     Schedule(ScheduleOp, String),
     /// `/permissions rm <n>`, then the list again.
@@ -229,6 +234,7 @@ impl PickAct {
         matches!(
             self,
             Self::SetMode(_)
+                | Self::TrustProject(_)
                 | Self::ViewHelper(_)
                 | Self::SwitchAgent(_)
                 | Self::NewAgent
@@ -1786,6 +1792,62 @@ fn agent_row(agent: &AgentEntry) -> String {
     row
 }
 
+/// `/trust`'s question over `files` (the daemon's preview): each project
+/// input with what of it would run as the host, and `y` to trust them as
+/// shown, `n` or Esc to trust nothing. `None` when no file can be trusted
+/// (none present, or none readable): nothing to ask.
+#[must_use]
+pub fn trust_picker(
+    files: Vec<crate::bootstrap::project_trust::TrustPreview>,
+) -> Option<ListPicker> {
+    if files
+        .iter()
+        .all(|file| file.digest.is_none() || file.refused.is_some())
+    {
+        return None;
+    }
+    let question = "Trust these as shown? What they run starts with your privileges (MCP servers at the daemon's next start, hooks from the agent's next session).".to_string();
+    let act = PickAct::TrustProject(files.clone());
+    let ask = || {
+        vec![PickKey::confirmed(
+            KeyCode::Enter,
+            act.clone(),
+            question.clone(),
+        )]
+    };
+    let mut rows = Vec::new();
+    for file in &files {
+        let state = match (&file.refused, &file.digest) {
+            (Some(why), _) => format!("cannot be trusted: {why}"),
+            (None, None) => "absent: nothing to trust".to_string(),
+            (None, Some(_)) if file.runs.is_empty() => "runs nothing".to_string(),
+            (None, Some(_)) => format!("runs {}", crate::text::count(file.runs.len(), "thing")),
+        };
+        let mut row = PickRow::new(format!("{}  {state}", file.file.display()), ask())
+            .keyed(file.file.display().to_string());
+        if file.digest.is_none() || file.refused.is_some() {
+            row = row.dimmed();
+        }
+        rows.push(row);
+        for run in &file.runs {
+            rows.push(PickRow::new(format!("  {run}"), ask()));
+        }
+    }
+    let mut picker = ListPicker::new(
+        PickerKind::Trust,
+        rows,
+        "",
+        "y trust them as shown · n or Esc trust nothing · Esc again close",
+    )
+    .with_header("/trust would record these project files as they are now:");
+    picker.line = Some(PickerLine::Confirm {
+        question,
+        act,
+        nudged: false,
+    });
+    Some(picker)
+}
+
 impl App {
     /// Open a picker `modal` over nothing (or over the help); behind an
     /// approval dialog it waits until the dialogs are answered (replacing
@@ -1796,6 +1858,36 @@ impl App {
             Some(Modal::Escalation { .. }) => self.parked = Some(modal),
             Some(_) => {}
         }
+    }
+
+    /// Show the model picker over `groups` (the classifier's with
+    /// `classifier`) as [`Self::show_modal`] shows a picker: behind an
+    /// approval dialog it waits; over another dialog, or when a model picker
+    /// already waits there (one the user may have filtered), it is dropped
+    /// and the lists' warnings are shown as notices instead.
+    pub(super) fn show_model_picker(
+        &mut self,
+        groups: Vec<crate::models::ModelGroup>,
+        classifier: bool,
+    ) {
+        if matches!(self.parked, Some(Modal::Model(_)))
+            || !matches!(
+                self.modal,
+                None | Some(Modal::Help(_) | Modal::Escalation { .. })
+            )
+        {
+            for warning in super::modal::ModelPicker::warnings(&groups) {
+                self.transcript
+                    .push_notice(super::NoticeLevel::Warn, warning);
+            }
+            return;
+        }
+        let picker = super::modal::ModelPicker::new(groups);
+        self.show_modal(Modal::Model(if classifier {
+            picker.for_classifier()
+        } else {
+            picker
+        }));
     }
 
     /// Show `picker`: over nothing (or the keys panel) it opens; behind an
@@ -1919,6 +2011,7 @@ impl App {
             self.modal = None;
         }
         match act {
+            PickAct::TrustProject(files) => fx.push(Effect::TrustShown(files)),
             PickAct::Schedule(op, id) => fx.push(Effect::PickedSchedule(op, id)),
             PickAct::RemoveRule(n) => fx.push(Effect::PickedRuleRemoval(n)),
             PickAct::RemoveGrant(id) => fx.push(Effect::PickedGrantRemoval(id)),
@@ -2524,6 +2617,55 @@ mod tests {
     /// the last row seats a new agent, `d` asks and `y` retires (`n` or
     /// Esc keeps the agent), `d` on an agent in use says why and retires
     /// nothing; Esc, `q` and Ctrl-C close.
+    #[test]
+    fn trust_asks_before_it_records_and_n_records_nothing() {
+        use crate::bootstrap::project_trust::TrustPreview;
+        let files = vec![
+            TrustPreview {
+                file: "/w/.rkat/mcp.toml".into(),
+                digest: Some("ab".into()),
+                runs: vec!["MCP server docs: npx docs-server".into()],
+                refused: None,
+            },
+            TrustPreview {
+                file: "/w/.rkat/config.toml".into(),
+                digest: None,
+                runs: Vec::new(),
+                refused: None,
+            },
+        ];
+        let mut p = trust_picker(files.clone()).unwrap();
+        assert!(
+            matches!(&p.line, Some(PickerLine::Confirm { question, .. }) if question.starts_with("Trust these as shown?")),
+            "{:?}",
+            p.line
+        );
+        let text: Vec<&str> = p.rows.iter().map(|row| row.text.as_str()).collect();
+        assert_eq!(
+            text,
+            [
+                "/w/.rkat/mcp.toml  runs 1 thing",
+                "  MCP server docs: npx docs-server",
+                "/w/.rkat/config.toml  absent: nothing to trust",
+            ]
+        );
+        // `n` answers no: nothing is chosen.
+        assert_eq!(p.key(&press(KeyCode::Char('n'))), ModalKey::Stay);
+        assert_eq!(p.line, None);
+        // Asked again, `y` trusts what was shown.
+        p.key(&press(KeyCode::Enter));
+        assert_eq!(
+            p.key(&press(KeyCode::Char('y'))),
+            ModalKey::Choose(PickAct::TrustProject(files.clone()))
+        );
+        // Nothing present, or nothing readable: nothing to ask.
+        let nothing = vec![TrustPreview {
+            refused: Some("it is a symbolic link".into()),
+            ..files[0].clone()
+        }];
+        assert!(trust_picker(nothing).is_none());
+    }
+
     #[test]
     fn the_agent_picker_switches_seats_and_retires_after_a_confirmation() {
         let mut p = agent_picker(&agents());

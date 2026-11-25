@@ -10,12 +10,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use meerkat::{AgentFactory, LlmClient};
-use meerkat_core::{AuthBindingRef, Config, Provider, SessionLlmIdentity};
+use meerkat_core::{Config, Provider, SessionLlmIdentity};
 use tokio::sync::mpsc;
 
 use crate::approval::classifier::{
     ActionClassifier, Environment, GrantedDirs, LlmClassifier, UnavailableClassifier,
-    classifier_default_model,
 };
 use crate::approval::engine::DEFAULT_ESCALATION_TIMEOUT;
 use crate::approval::escalation::{EscalationBroker, EscalationRequest};
@@ -54,8 +53,11 @@ pub struct ApprovalParts {
     pub escalations: Option<mpsc::Receiver<EscalationRequest>>,
     /// Decisions, pauses and classifier usage (taken by the runner).
     pub events: Option<mpsc::UnboundedReceiver<ApprovalEvent>>,
-    /// Observations from loading the rules, shown once.
+    /// Observations from loading the rules, shown once as warnings.
     pub notices: Vec<String>,
+    /// What the setup chose that the user may want to change (the model
+    /// the classifier reviews with), shown once as information.
+    pub info: Vec<String>,
     /// The user's and the realm's `tui.toml` as rkat-tui writes them (the
     /// daemon's settings, rules, grants and statements).
     pub files: Option<crate::config::SettingsFiles>,
@@ -77,13 +79,12 @@ pub(crate) struct ClassifierSource<'a> {
     pub factory: &'a AgentFactory,
     /// Realm config.
     pub config: &'a Config,
-    /// Provider of the start-up model.
-    pub provider: Provider,
-    /// The auth binding of the start-up endpoint (`None` for a built-in one).
-    pub auth_binding: Option<AuthBindingRef>,
-    /// The start-up endpoint, when the engine reaches it as a self-hosted
-    /// server: the classifier runs on its alias of the classifier model.
-    pub self_hosted: Option<crate::endpoints::Endpoint>,
+    /// The start-up endpoint: the classifier's when `[auto]
+    /// classifier_model` names a model without an endpoint, or none.
+    pub endpoint: crate::endpoints::Endpoint,
+    /// The start-up model: the classifier's when `[auto] classifier_model`
+    /// names none (no model id of ours is a default).
+    pub model: String,
     /// Client every session uses instead of resolving credentials, if any.
     pub llm_override: Option<Arc<dyn LlmClient>>,
     /// The process's endpoints: `[auto] classifier_model` may name one
@@ -149,10 +150,12 @@ pub(crate) async fn build(
     let environment = Environment::detect(scope.project_root.as_path(), &cwd)
         .await
         .with_granted(granted)
-        .with_containment(containment);
+        .with_containment(containment)
+        .with_own_state(own_state(scope));
     // The model the classifier runs on, and whether the start-up check
     // runs against it (not for a scripted client, nor when turned off).
     let mut model = None;
+    let mut info = Vec::new();
     let mut check = None;
     let mut builder = None;
     let classifier = match &overrides.classifier {
@@ -165,24 +168,24 @@ pub(crate) async fn build(
         }
         None => {
             let probe = layered.settings.classifier_probe && source.llm_override.is_none();
-            let named = classifier_model(&layered.settings, source.provider);
-            builder = Some(classifier_builder(
+            let named = classifier_model(&layered.settings, &source.model);
+            let build = classifier_builder(
                 &source,
                 layered.settings.classifier_tools,
                 scope.project_root.clone(),
                 events_tx.clone(),
-            ));
-            let (classifier, checker, notice) = make_classifier(
-                &layered.settings,
-                source,
-                scope.project_root.clone(),
-                events_tx.clone(),
-            )
-            .await;
-            if notice.is_none() {
-                model = named.map(|named| (named, probe));
+            );
+            let (classifier, checker, notice) = make_classifier(&build, &named, &source).await;
+            match notice {
+                Some(notice) => notices.push(notice),
+                None => {
+                    if layered.settings.classifier_model.is_none() {
+                        info.push(default_classifier_notice(&named));
+                    }
+                    model = Some((named, probe));
+                }
             }
-            notices.extend(notice);
+            builder = Some(build);
             check = checker;
             classifier
         }
@@ -217,107 +220,84 @@ pub(crate) async fn build(
         escalations: Some(escalations),
         events: Some(events_rx),
         notices,
+        info,
     })
 }
 
-/// The classifier's model: `[auto] classifier_model`, else the default
-/// of the start-up model's `provider` ([`classifier_default_model`]).
+/// rkat-tui's own configuration and state and the engine's user-global
+/// configuration, as the classifier's environment names them: the config
+/// directory as resolved (`--config-dir` too), `<user config root>/.rkat/`,
+/// and every secret root of the project (the realms, the trust records,
+/// the endpoint directories, the comms keys).
+fn own_state(scope: &RuntimeScope) -> Vec<std::path::PathBuf> {
+    let mut dirs = vec![scope.global.config.clone()];
+    dirs.extend(
+        scope
+            .user_config_root
+            .as_ref()
+            .map(|root| root.join(".rkat")),
+    );
+    dirs.extend(scope.project_root.secret_roots().iter().cloned());
+    dirs
+}
+
+/// The classifier's model: `[auto] classifier_model`, else the start-up
+/// model `start` (no model id of ours is a default: the user picks a
+/// cheaper one with `/auto model`).
 #[must_use]
-pub(crate) fn classifier_model(settings: &AutoSettings, provider: Provider) -> Option<String> {
+pub(crate) fn classifier_model(settings: &AutoSettings, start: &str) -> String {
     settings
         .classifier_model
         .clone()
-        .or_else(|| classifier_default_model(provider).map(str::to_string))
+        .unwrap_or_else(|| start.to_string())
 }
 
-/// The two-stage LLM classifier on the session's provider (model from
-/// `[auto] classifier_model`, else [`classifier_default_model`]; a value
-/// `endpoint:model` naming one of the process's endpoints runs on that
-/// endpoint, as `/auto model` writes it), built with
-/// the factory's own credential resolution, and the same classifier for
-/// the checks (`/auto check`, the start-up check): the same client, model
-/// and policy, stage 2 without its file-reading tools, its calls reported
-/// in the check's result rather than as a conversation's usage. Without a
-/// model or a client every Tier-3 call is escalated to the human; the
-/// notice says why.
+/// The start-up notice when no `[auto] classifier_model` is set: which
+/// model reviews, and how to pick another.
+fn default_classifier_notice(model: &str) -> String {
+    format!(
+        "the safety classifier reviews with the agent's model ({model}); /auto model picks another (a cheaper one is usually enough)"
+    )
+}
+
+/// The endpoint and model `named` (`[auto] classifier_model` or the
+/// start-up model) runs on: `endpoint:model` on one of the process's
+/// endpoints, as `/auto model` writes it; else a model of the start-up
+/// endpoint.
+fn classifier_target(
+    named: &str,
+    source: &ClassifierSource<'_>,
+) -> (crate::endpoints::Endpoint, String) {
+    crate::endpoints::EndpointRef::parse(named)
+        .and_then(|named| Some((source.endpoints.get(&named.endpoint)?.clone(), named.model)))
+        .unwrap_or_else(|| (source.endpoint.clone(), named.to_string()))
+}
+
+/// The two-stage LLM classifier on `named`'s endpoint and model
+/// ([`classifier_target`]), built by `build` (the one builder `/auto
+/// model` uses too), and the same classifier for the checks (`/auto
+/// check`, the start-up check). Without a client every Tier-3 call is
+/// escalated to the human; the notice says why.
 async fn make_classifier(
-    settings: &AutoSettings,
-    source: ClassifierSource<'_>,
-    root: ProjectRoot,
-    events: mpsc::UnboundedSender<ApprovalEvent>,
+    build: &crate::approval::reviewer::ClassifierBuilder,
+    named: &str,
+    source: &ClassifierSource<'_>,
 ) -> (
     Arc<dyn ActionClassifier>,
     Option<Arc<dyn ActionClassifier>>,
     Option<String>,
 ) {
-    let Some(named) = classifier_model(settings, source.provider) else {
-        return (
+    let (endpoint, model) = classifier_target(named, source);
+    match build(endpoint, model).await {
+        Ok(built) => (built.review, Some(built.check), None),
+        Err(err) => (
             Arc::new(UnavailableClassifier),
             None,
             Some(format!(
-                "no classifier model for provider {}: set [auto] classifier_model; until then every reviewed action asks you",
-                source.provider.as_str()
+                "the safety classifier ({named}) is unavailable: {err}; every reviewed action asks you"
             )),
-        );
-    };
-    // `endpoint:model` on one of the process's endpoints; else a model of
-    // the start-up endpoint.
-    let on_endpoint = crate::endpoints::EndpointRef::parse(&named)
-        .and_then(|named| Some((source.endpoints.get(&named.endpoint)?.clone(), named.model)));
-    let (identity, provider, model) = match &on_endpoint {
-        Some((endpoint, model)) => (
-            endpoint_identity(endpoint, model),
-            endpoint.provider(),
-            model.clone(),
         ),
-        None => (
-            SessionLlmIdentity {
-                model: source
-                    .self_hosted
-                    .as_ref()
-                    .map_or_else(|| named.clone(), |endpoint| endpoint.engine_model(&named)),
-                provider: source
-                    .self_hosted
-                    .as_ref()
-                    .map_or(source.provider, crate::endpoints::Endpoint::engine_provider),
-                self_hosted_server_id: source
-                    .self_hosted
-                    .as_ref()
-                    .and_then(crate::endpoints::Endpoint::self_hosted_server),
-                provider_params: None,
-                auth_binding: source.auth_binding.clone(),
-            },
-            source.provider,
-            named.clone(),
-        ),
-    };
-    let client = match source.llm_override {
-        Some(client) => client,
-        None => match source
-            .factory
-            .build_llm_client_for_identity(source.config, &identity)
-            .await
-        {
-            Ok(client) => client,
-            Err(err) => {
-                return (
-                    Arc::new(UnavailableClassifier),
-                    None,
-                    Some(format!(
-                        "the safety classifier ({named}) is unavailable: {err}; every reviewed action asks you"
-                    )),
-                );
-            }
-        },
-    };
-    let built = classifiers(
-        client,
-        provider,
-        model,
-        settings.classifier_tools.then_some(root),
-        events,
-    );
-    (built.review, Some(built.check), None)
+    }
 }
 
 /// The engine identity of `model` on `endpoint` (its alias on a
@@ -367,9 +347,10 @@ fn classifiers(
     }
 }
 
-/// How `/auto model` builds the classifier for another model: the same
-/// factory, credentials and settings as the start-up one, on the endpoint
-/// the user picked.
+/// How the classifier is built for a model of an endpoint, at start-up and
+/// by `/auto model`: the factory's own credential resolution (or the
+/// override client), the endpoint's identity ([`endpoint_identity`]),
+/// stage 2 reading the project when `tools`.
 fn classifier_builder(
     source: &ClassifierSource<'_>,
     tools: bool,
@@ -392,10 +373,7 @@ fn classifier_builder(
                     .build_llm_client_for_identity(&config, &endpoint_identity(&endpoint, &model))
                     .await
                     .map_err(|err| {
-                        format!(
-                            "no client for {model} on endpoint {}: {err}; the classifier keeps its model",
-                            endpoint.name
-                        )
+                        format!("no client for {model} on endpoint {}: {err}", endpoint.name)
                     })?,
             };
             Ok(classifiers(

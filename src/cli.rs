@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[command(name = "rkat-tui", version = crate::BUILD)]
 #[command(about = "Interactive terminal coding harness for Meerkat")]
 #[command(
-    after_help = "Examples:\n  rkat-tui\n  rkat-tui \"fix the failing test\"\n  rkat-tui --resume last\n  rkat-tui --attach=~/src/other -c\n  rkat-tui --attach=~/src/other\n  rkat-tui --model claude-sonnet-4-6 --classifier-model claude-haiku-5-5\n  rkat-tui --endpoint-def litellm=openai=http://localhost:4000,key_env=LITELLM_KEY --model litellm:gpt-5.5\n  rkat-tui --allow 'shell=cargo nextest run*' --set auto.compact=auto\n\nEvery tui.toml setting can be given with --set <dotted.key>=<value> (TOML value; bare words are strings).\nCommand-line settings apply after the global and realm tui.toml, before the project file's deny rules.\n\nWhich daemon and which agent are two separate choices: --attach picks the daemon (default: this workspace's), -c or --resume picks an agent in it to join; with neither, you get a new agent."
+    after_help = "Examples:\n  rkat-tui\n  rkat-tui \"fix the failing test\"\n  rkat-tui --resume last\n  rkat-tui --attach=~/src/other -c\n  rkat-tui --attach=~/src/other\n  rkat-tui --model claude-sonnet-4-6 --classifier-model anthropic:claude-haiku-5-5\n  rkat-tui --endpoint-def litellm=openai=http://localhost:4000,key_env=LITELLM_KEY --model litellm:gpt-5.5\n  rkat-tui --allow 'shell=cargo nextest run*' --set auto.compact=auto\n\nEvery tui.toml setting can be given with --set <dotted.key>=<value> (TOML value; bare words are strings).\nCommand-line settings apply after the global and realm tui.toml, before the project file's deny rules.\n\nWhich daemon and which agent are two separate choices: --attach picks the daemon (default: this workspace's), -c or --resume picks an agent in it to join; with neither, you get a new agent."
 )]
 pub struct Args {
     /// Optional initial prompt to send as the first turn.
@@ -100,7 +100,8 @@ pub struct Args {
 
     /// OS process confinement of the shell commands the session runs:
     /// `workspace` lets them write only the workspace, the temp dir, the
-    /// Cargo home and the cache dir (network allowed), `strict` additionally
+    /// Cargo home's registry and git caches (the rest of it read only, its
+    /// credentials hidden) and the cache dir (network allowed), `strict` additionally
     /// denies IP network access, `off` runs them unconfined, `external`
     /// runs them unconfined because you declare that a sandbox of your own
     /// contains rkat-tui (name its writable directories with
@@ -141,7 +142,8 @@ pub struct Args {
     #[arg(long)]
     pub no_auto: bool,
 
-    /// Model used by the auto-mode classifier (defaults per provider).
+    /// Model used by the auto-mode classifier, `[endpoint:]model` (default:
+    /// the agent's start-up model; a cheaper one is usually enough).
     #[arg(long)]
     pub classifier_model: Option<String>,
 
@@ -391,7 +393,7 @@ pub enum ConfinementArg {
 }
 
 impl ConfinementArg {
-    /// Its command-line spelling (`workspace`, `strict`, `off`).
+    /// Its command-line spelling (`workspace`, `strict`, `off`, `external`).
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -593,8 +595,6 @@ mod tests {
             mode(&["rkat-tui", "--attach=existing"]),
             Some(AttachTarget::Existing)
         );
-        // There is no `--no-attach`: the TUI is always the daemon's client.
-        assert!(Args::try_parse_from(["rkat-tui", "--no-attach"]).is_err());
         // A prompt after a bare --attach is still the prompt.
         let args = Args::try_parse_from(["rkat-tui", "--attach", "fix it"]).unwrap();
         assert_eq!(args.prompt.as_deref(), Some("fix it"));

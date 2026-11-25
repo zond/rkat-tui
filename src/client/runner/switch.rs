@@ -811,9 +811,6 @@ pub(super) async fn switch_and_adopt(
     }
 }
 
-/// Follow the agent's conversation `session` on `connection`: its
-/// stream opened again (the old one follows the retired session), its last
-/// sequence (what is shown starts after it) and its committed transcript.
 /// How long a stream's open waits for the agent's session to be live
 /// again ([`reopen_settled`]), and how often it asks.
 const SETTLE_WAIT: Duration = Duration::from_secs(10);
@@ -853,6 +850,9 @@ async fn reopen_settled(connection: &Connection, old: &str) -> Result<String, St
     }
 }
 
+/// Follow the agent's conversation `session` on `connection`: its
+/// stream opened again (the old one follows the retired session), its last
+/// sequence (what is shown starts after it) and its committed transcript.
 pub(super) async fn adopt(
     connection: &Connection,
     old_stream: &str,

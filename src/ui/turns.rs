@@ -1,6 +1,6 @@
 //! Turns and the messages typed during them: submitting, steering,
-//! holding, recalling, the turn's end and what goes next, `/rewind`, and
-//! the context gauge.
+//! holding, recalling, the turn's end and what goes next, and the context
+//! gauge.
 
 use std::time::Instant;
 

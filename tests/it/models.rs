@@ -93,12 +93,96 @@ fn is_model(msg: &Msg, endpoint: &str, model: &str) -> bool {
     matches!(msg, Msg::Status(StatusUpdate::Model { endpoint: shown, model: m }) if shown == endpoint && m == model)
 }
 
+/// F109: a tool-call id the request's dialect refuses (a model behind a
+/// proxy issued one thousands of characters long) goes out short, on the
+/// call and on its result alike, while the stored conversation keeps the
+/// id the model issued.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_tool_call_id_goes_out_short_and_stays_stored() {
+    use meerkat_core::{AssistantBlock, Message};
+    let ws = Workspace::new();
+    std::fs::write(ws.root.join("notes.txt"), "n\n").unwrap();
+    let long: &'static str = Box::leak("a".repeat(7000).into_boxed_str());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: long,
+            name: "read_file",
+            args: serde_json::json!({"path": "notes.txt"}),
+        },
+        Step::Text("done"),
+    ]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    rig.send(Effect::StartTurn("read".into()));
+    rig.turn_finished().await.unwrap();
+    let short = rkat_tui::daemon::call_ids::short_id(long);
+    let sent = llm.requests().pop().unwrap();
+    let mut seen = (Vec::new(), Vec::new());
+    for message in &sent {
+        match message {
+            Message::BlockAssistant(a) => seen.0.extend(a.blocks.iter().filter_map(|b| match b {
+                AssistantBlock::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })),
+            Message::ToolResults { results, .. } => {
+                seen.1.extend(results.iter().map(|r| r.tool_use_id.clone()));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(seen, (vec![short.clone()], vec![short]));
+    let id = rig.current_session().await;
+    let stored = stored_session(&ws.root, &id).await;
+    assert!(
+        stored
+            .messages()
+            .iter()
+            .any(|m| matches!(m, Message::ToolResults { results, .. }
+            if results.iter().any(|r| r.tool_use_id == long))),
+        "the stored conversation keeps the issued id"
+    );
+    rig.quit().await;
+}
+
+/// `/auto model` before any model list was fetched waits for the lists and
+/// then opens the classifier's picker with the classifier's model marked
+/// current, not the agent's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_classifier_picker_opened_before_the_lists_marks_the_classifiers_model() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let setup = Setup {
+        classifier_model: Some(format!("proxy:{LISTED}")),
+        ..options()
+    };
+    let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
+    rig.saw(|m| is_model(m, "anthropic", common::MODEL)).await;
+    rig.send(Effect::RequestClassifierPicker);
+    let Msg::ShowClassifierPicker(groups) = rig
+        .wait_for(|m| matches!(m, Msg::ShowClassifierPicker(_)))
+        .await
+    else {
+        unreachable!()
+    };
+    let current: Vec<(&str, &str)> = groups
+        .iter()
+        .flat_map(|g| {
+            g.models
+                .iter()
+                .filter(|m| m.source == ModelSource::Current)
+                .map(move |m| (g.endpoint.as_str(), m.id.as_str()))
+        })
+        .collect();
+    assert_eq!(current, [("proxy", LISTED)], "{groups:?}");
+    rig.quit().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_picker_switches_the_live_model_and_the_next_turn_uses_it() {
     let ws = Workspace::new();
-    let realm = bootstrap::resolve_scope(&args_with(&ws.root, &[]))
-        .unwrap()
-        .realm_root();
+    let scope = bootstrap::resolve_scope(&args_with(&ws.root, &[])).unwrap();
+    let realm = scope.realm_root();
+    // The user's skills directory: a load-time override of every read.
+    std::fs::create_dir_all(scope.global.skills_dir()).unwrap();
     let llm = ScriptedLlmClient::new(vec![Step::Text("one"), Step::Text("two")]);
     let mut rig = Attached::start_with(&ws.root, &llm, options()).await;
     let id = rig.current_session().await;
@@ -167,6 +251,15 @@ async fn the_picker_switches_the_live_model_and_the_next_turn_uses_it() {
         document.models.custom.is_empty(),
         "{:?}",
         document.models.custom
+    );
+    // V1: the switch persisted none of the load-time overrides the store's
+    // reads carry (the turn limit, the user's skill repository): no engine
+    // path the daemon serves writes a config it read back.
+    assert_eq!(document.agent.max_turns, None);
+    assert!(
+        document.skills.repositories.is_empty(),
+        "{:?}",
+        document.skills.repositories
     );
 
     // The daemon counted each turn under the model it ran on, pushed the

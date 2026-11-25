@@ -192,6 +192,9 @@ repository). Open upstream issues this code waits on:
 - #2388 (filed 2026-11-17): the dialect clients replaying an assistant's
   empty or whitespace-only text (a proxy turns it into a placeholder
   sentence). Our filter `src/daemon/blank_text.rs` goes when it ships.
+- #2560 (filed 2026-11-25): the OpenAI dialect clients replaying another
+  provider's tool-call id unchanged (a long one is refused: `call_id` max
+  64). Our filter `src/daemon/call_ids.rs` goes when it ships.
 - #2432 (filed 2026-11-19): a host switch for the comms tools' usage
   section and the preloaded `mob-communication` skill, which teach
   `reply_to_peer`, `send_request`, `send_response` and `peers` to
@@ -237,8 +240,9 @@ pass.
 ## Sandbox facts worth knowing
 
 The agent's shell runs under the engine's Linux confinement: an empty
-private mount view with the workspace, the temp dir, the Cargo home and a
-few system directories granted, its own pid namespace with a read-only
+private mount view with the workspace, the temp dir, the Cargo home (only
+its `registry/` and `git/` writable, the rest read-only, its credentials
+not granted) and a few system directories granted, its own pid namespace with a read-only
 `/proc` of its own (best effort: a host that refuses the mount launches
 without it), and a seccomp filter. Inside it the command is pid 2 under a
 small init, host processes are invisible, and `/etc/alternatives` and `/usr/libexec` are granted so a

@@ -689,12 +689,16 @@ impl App {
             .count();
         let queued = self.pending.len() - commands + usize::from(self.delivery.has_next());
         let running = self.turn.is_running();
-        let busy = running || queued > 0 || commands > 0;
-        if busy && !self.quit_confirm_armed(now) {
+        let shell = self.shell.running.is_some();
+        // The one notion of busy ([`Self::quit_is_busy`]), told apart.
+        if self.quit_is_busy() && !self.quit_confirm_armed(now) {
             self.quit.confirm = Some(now);
             let mut what = Vec::new();
             if running {
                 what.push("a turn is running".to_string());
+            }
+            if shell {
+                what.push("a ! command is running (quitting stops it)".to_string());
             }
             if queued > 0 {
                 what.push(format!("{} queued", crate::text::count(queued, "message")));

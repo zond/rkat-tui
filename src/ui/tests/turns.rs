@@ -1,4 +1,4 @@
-//! Turns, steering, the turn's end, `/rewind`, the context gauge and the cost.
+//! Turns, steering, the turn's end, the context gauge and the cost.
 
 use super::*;
 

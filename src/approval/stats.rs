@@ -27,6 +27,10 @@ pub struct ReviewStats {
     pub blocks: BTreeMap<String, u64>,
     /// Reviews that could not be completed.
     pub errors: u64,
+    /// Reviews whose answer reached no verdict (cut off at the token limit,
+    /// or unclear): put to the user, not counted as blocks or errors.
+    #[serde(default)]
+    pub unclear: u64,
     /// Times auto mode paused after blocks.
     pub pauses: u64,
     /// Blocked calls the user approved with `/permissions` (once, for the
@@ -93,10 +97,11 @@ impl ReviewStats {
             )
         };
         format!(
-            "reviews {} · flagged by stage 1 {} ({}) · blocked {blocked}{rules} · failed {} · pauses {} · approved in /permissions {} ({} of blocks) · asked you {}, allowed {} ({}) · classifier {} in / {} out tokens, {:.1} s{checkpoints}",
+            "reviews {} · flagged by stage 1 {} ({}) · blocked {blocked}{rules} · no clear verdict {} · failed {} · pauses {} · approved in /permissions {} ({} of blocks) · asked you {}, allowed {} ({}) · classifier {} in / {} out tokens, {:.1} s{checkpoints}",
             self.reviews,
             self.flagged,
             pct(self.flagged, self.reviews),
+            self.unclear,
             self.errors,
             self.pauses,
             self.approvals,
@@ -155,6 +160,7 @@ impl Stats {
                         .or_insert(0) += 1;
                 }
                 "error" => stats.errors += 1,
+                "unclear" => stats.unclear += 1,
                 _ => {}
             }
             stats.input_tokens += record.input_tokens;
@@ -183,6 +189,7 @@ mod tests {
         let mut stats = ReviewStats {
             reviews: 10,
             flagged: 4,
+            unclear: 1,
             approvals: 1,
             asks: 4,
             asks_allowed: 3,
@@ -197,6 +204,7 @@ mod tests {
             "reviews 10",
             "flagged by stage 1 4 (40%)",
             "blocked 2 (T3 2)",
+            "no clear verdict 1",
             "approved in /permissions 1 (50% of blocks)",
             "asked you 4, allowed 3 (75%)",
             "1200 in / 80 out tokens, 2.5 s",

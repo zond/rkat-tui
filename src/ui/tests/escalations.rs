@@ -273,6 +273,63 @@ fn deny_with_a_comment_then_the_queue_and_the_parked_picker() {
     assert_eq!(app.modal.as_ref(), Some(&picker));
 }
 
+/// A command with a bidirectional override shows the rule "allow and add
+/// a rule" would add, the session grant and the `Tool:` span with `�` in
+/// its place: a dialog's rows pass one replacement where they reach the
+/// screen, so the dialog cannot show a rule other than the one `a` adds.
+#[test]
+fn a_bidi_control_in_a_dialogs_rows_is_replaced() {
+    let mut app = App::new(StatusInfo::default());
+    let prompt = RecordedPrompt {
+        tool: "shell\u{202E}".into(),
+        args_preview: "rm -rf \u{202E}tset".into(),
+        subjects: vec!["rm -rf \u{202E}tset".into()],
+        session_grant: Some("`shell rm \u{2067}x`".into()),
+        ..RecordedPrompt::default()
+    };
+    app.update(Msg::Escalation(prompt, EscalationId(1)));
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 40)).unwrap();
+    terminal
+        .draw(|f| render::draw_at(f, &mut app, Instant::now()))
+        .unwrap();
+    let shown: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert!(
+        !shown.contains('\u{202E}') && !shown.contains('\u{2067}'),
+        "{shown}"
+    );
+    assert!(shown.contains("rm -rf \u{fffd}tset"), "{shown}");
+}
+
+/// A model list (the agent's or the classifier's) that arrives while an
+/// approval dialog is open waits behind it, as a list picker does, and
+/// opens once the dialog is answered.
+#[test]
+fn a_model_list_arriving_behind_an_approval_dialog_waits_for_it() {
+    for classifier in [false, true] {
+        let mut app = App::new(StatusInfo::default());
+        app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
+        app.update(if classifier {
+            Msg::ShowClassifierPicker(picker_models())
+        } else {
+            Msg::ShowModelPicker(picker_models())
+        });
+        assert!(matches!(app.modal, Some(Modal::Escalation { .. })));
+        app.quiet_past_arming();
+        app.update(key(KeyCode::Char('y')));
+        assert!(
+            matches!(app.modal, Some(Modal::Model(_))),
+            "classifier {classifier}: {:?}",
+            app.modal
+        );
+    }
+}
+
 #[test]
 fn escalation_parks_the_model_picker_and_restores_it() {
     let (mut app, picker) = app_with_moved_model_picker();

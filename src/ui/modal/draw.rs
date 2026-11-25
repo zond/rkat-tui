@@ -156,8 +156,12 @@ pub fn draw_modal(
     draw_box(frame, area, width, &title, lines);
 }
 
-/// A bordered box of `lines`, `width` wide, centered over `area`.
+/// A bordered box of `lines`, `width` wide, centered over `area`: every
+/// dialog's one boundary to the screen, where the bidirectional controls of
+/// its spans are replaced ([`crate::ui::markdown::without_bidi`]), whatever
+/// agent-derived text a row holds.
 fn draw_box(frame: &mut Frame<'_>, area: Rect, width: u16, title: &str, lines: Vec<Line<'static>>) {
+    let lines = crate::ui::markdown::without_bidi(lines);
     let height = (lines.len() as u16).saturating_add(2);
     let rect = centered(area, width, height);
     frame.render_widget(Clear, rect);

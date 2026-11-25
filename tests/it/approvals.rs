@@ -1204,7 +1204,36 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
     client.turn_finished().await.unwrap();
     assert!(!marker.exists(), "an untrusted project hook does not run");
 
+    // `/trust` first shows what it would trust (the hook's command, from
+    // the bytes the daemon read) and records nothing before the yes.
     client.send(Effect::TrustProject);
+    let shown = client
+        .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, .. } if picker.kind == rkat_tui::ui::PickerKind::Trust))
+        .await;
+    let Msg::ShowPicker { picker, .. } = shown else {
+        unreachable!()
+    };
+    assert!(
+        picker
+            .rows
+            .iter()
+            .any(|row| row.text.contains("hook probe: /bin/sh -c")),
+        "{:?}",
+        picker.rows
+    );
+    let Some(rkat_tui::ui::PickerLine::Confirm {
+        act: rkat_tui::ui::PickAct::TrustProject(files),
+        ..
+    }) = picker.line.clone()
+    else {
+        panic!("{:?}", picker.line)
+    };
+    let status = connection.call("rkat/report", json!({})).await.unwrap();
+    assert!(
+        status.to_string().contains("not trusted"),
+        "nothing recorded before the yes: {status}"
+    );
+    client.send(Effect::TrustShown(files));
     client
         .wait_for(|msg| {
             matches!(msg, Msg::Notice { text, .. } if text.starts_with("trusted ") && text.contains(".rkat/config.toml"))

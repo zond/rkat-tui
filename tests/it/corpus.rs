@@ -227,9 +227,8 @@ async fn live_corpus() {
         _ => Provider::Anthropic,
     };
     let model = std::env::var("RKAT_CORPUS_MODEL").unwrap_or_else(|_| {
-        rkat_tui::approval::classifier::classifier_default_model(provider)
-            .unwrap()
-            .to_string()
+        // The classifier's default: the start-up model, the catalog's.
+        meerkat_models::default_model(provider).unwrap().to_string()
     });
     let selection = corpus::Selection {
         sets: env_list("RKAT_CORPUS_SETS")

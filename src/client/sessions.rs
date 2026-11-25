@@ -70,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn references_resolve_as_in_process() {
+    fn conversation_references_resolve() {
         let listed = vec![row(true), row(false), row(false)];
         // `last` is the most recent conversation other than the current one.
         for last in ["last", "~", "~0"] {

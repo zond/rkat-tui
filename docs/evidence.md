@@ -15021,3 +15021,145 @@ on the drop, which made the add a silent no-op.) Now
 The escalation's "allow and add a rule" (`add_rule_blocking`, a literal
 rule of the call) is left as it was. Test:
 `permission_sync::a_broad_allow_rule_is_refused_not_added_and_dropped`.
+(Superseded for the dialog by the next batch: `add_rule_blocking`
+refuses it too, see below.)
+
+## Review 8, batch B (2026-11-25)
+
+**A cut-off classifier answer asks (owner, F21).** A stage-2 answer with
+no `VERDICT:` line was a block ("could not reach a clear verdict"),
+counted as a denial; with a reasoning model behind a gateway the output
+budget (1024 tokens) can run out before the verdict. The fold of a
+reply (`collect_turn`) already kept the provider's `stop_reason`, which
+nobody read. Now `prompts::stage2_verdict` makes such an answer
+`ClassifierError::Unclear { cut_off }` (`cut_off`: the reply stopped at
+`MaxTokens`), a review that did not complete: the engine's existing
+failed-review path asks the user (unattended: `DenyReason::Unattended`).
+The audit line's verdict is `unclear` (stage 2), `/auto stats` counts
+`unclear` apart from blocks and errors. Tests:
+`approval::engine::tests::a_cut_off_review_asks_the_user_and_is_denied_unattended`,
+`classifier_llm::a_stage2_answer_without_a_verdict_is_an_incomplete_review`,
+`approval::prompts::tests::stage2_parsing` (the `stage2_verdict` rows).
+
+**No classifier model of ours (owner, Q1 with F60).**
+`classifier_default_model` (three hard-coded ids) is gone: with no
+`[auto] classifier_model` the classifier reviews with the start-up model
+on the start-up endpoint, so a self-hosted or proxy endpoint no longer
+has "no classifier model". `ClassifierSource` carries the start-up
+`Endpoint` and model; both the start-up classifier and `/auto model`'s
+are built by the one `classifier_builder` closure through
+`endpoint_identity`. A start-up notice (information, not a warning:
+`ApprovalParts::info`) and `/status` name the model and `/auto model`.
+Test: `realm_settings::without_a_classifier_model_the_start_up_model_reviews`.
+`ClassifierError::Unavailable` replaces "no classifier" read back from a
+provider error's words (F81): `daemon::checkpoint::tests::a_failed_review_reads_as_a_reason`.
+
+**The project `mcp.toml` is read once (F57).** The trust check
+(`inputs.mcp_trusted()`) and the engine's load read the file separately,
+and the confined shell may write `.rkat/`. The engine's public API has
+no entry for parsed project servers (`compose_effective_mcp_servers`
+takes file servers already expanded, and the `${VAR}` expansion is
+private), but its loader reads `<context root>/.rkat/mcp.toml`: so the
+file is read once (`HostTrustRecord::read_checked`: no symlinks, a
+regular file, its digest compared), and trusted, its bytes are written
+into a fresh private directory under the realm (`trusted-mcp-*`, out of
+the shell's and the file tools' reach), which is handed to the engine
+as the context root; the directory goes when the load returns. This
+closes the gap rather than narrowing it: the engine reads only bytes
+that were judged. Test:
+`bootstrap::mcp::tests::the_servers_come_from_the_bytes_judged_not_a_second_read`
+(a swap between the check and the load starts nothing of the swapped
+file; on the old code the engine read the swapped file).
+
+**`/trust` shows what it trusts (owner, F86).** `rkat/trust_preview`
+reads each project input once and answers its digest and what it would
+run (each MCP server's command line or URL, the variables it sets by
+name, each hook's command, from `project_trust::mcp_runs` and
+`hook_runs`); the client shows it as a confirmation picker
+(`PickerKind::Trust`), and `y` sends the preview back in `rkat/trust`,
+which records exactly the digests shown (`HostTrustRecord::record_digest`),
+never a new read: content changed after it was shown stays untrusted and
+the answer says so (`ProjectInputs::changed_since`). Tests:
+`bootstrap::project_trust::tests::trust_shows_what_runs_then_records_what_was_shown`,
+`ui::picker::tests::trust_asks_before_it_records_and_n_records_nothing`,
+`approvals::trust_from_the_client_records_the_project_hooks_across_a_restart`
+(the rig: the picker, nothing recorded before the yes).
+
+**rkat-tui's own state is secret to the file tools, and named to the
+classifier (F59, F40).** Verified first: the endpoint directories were
+secret already (`EndpointPlaces::secret_roots`), the own realm too; the
+other realms (`<config>/workspaces/<id>/`), the trust records and the
+engine's comms keys (`<user config root>/.rkat/session_comms_identity`,
+`meerkat::canonical_session_comms_identity_root`) were readable by a
+reviewed read. `scope::seal` makes all three secret roots. The shell's
+tier 1 already reviews any path outside the project (`cat ../secret`),
+but a workspace that holds the config directory (one at the home
+directory) had its realm inside the project: `check_inside` now refuses
+an operand or working directory under a secret root. Left: a recursive
+read from an ancestor of such state (`grep -r x .` in a home workspace)
+is still tier 1. The classifier's `<environment>` lists the directories
+(`Environment::own_state`: the config directory as resolved, `<user
+config root>/.rkat/`, every secret root) under S1, whose text names them;
+seven must-block corpus cases (b59-b65), three with an outer sandbox
+(`env.external`). Tests: `file_tools::other_realms_trust_records_and_comms_keys_are_secret`,
+`approval::shell::tests::a_read_of_rkat_tuis_own_state_is_not_allowlisted`,
+`approval::prompts::tests::the_environment_names_rkat_tuis_own_state_under_s1`.
+
+**Bidi controls replaced at the screen's boundaries (F51).** `sanitize`
+replaced them where text is wrapped; spans built otherwise (a diff's
+path, a peer's name, a triggered label, the dialog's rows, the status
+bar's model) and the markdown renderer's `push_char` did not, and
+ratatui's buffer drops only Cc characters. Now one pass
+(`markdown::without_bidi`) over `render::block_lines`' lines, over every
+dialog's in `draw_box` and over the status bar's line, and `push_char`
+uses the same predicate. Tests: `ui::render::tests::a_bidi_control_in_a_diffs_path_is_replaced`,
+`ui::render::tests::a_bidi_control_in_the_status_bars_model_is_replaced`,
+`ui::tests::escalations::a_bidi_control_in_a_dialogs_rows_is_replaced`.
+
+**The dialog's broad rule, and the cache after an MCP call (batch A's
+leftovers).** The escalation's "allow and add a rule" refuses a rule
+`broad_reason` names, as `/permissions add` does: the call is allowed
+once and the user told why. The allow cache is dropped after any allowed
+call of a shell command or a tool the policy does not know
+(`ActionKind::Other`: MCP and foreign tools), decided by the action's
+kind and tier, not a name list. Tests:
+`approval::engine::tests::allow_and_add_rule_refuses_a_broad_rule_and_allows_once`,
+`approval::engine::tests::an_allowed_mcp_tool_call_clears_the_cache`.
+
+**Tool-call ids another provider refuses (owner's report, F109).** A
+conversation run on a model behind a proxy that packs a thought
+signature into its tool-call ids (thousands of characters) and then
+switched with `/model` to an OpenAI-dialect model failed every request
+with the provider's 400 that a `call_id` is longer than its maximum of
+64 characters; `/compact` failed the same way. Read in the engine: the
+OpenAI clients write the stored id unchanged (`meerkat-openai`
+`client.rs`: `call_id` from the assistant's tool use and from the tool
+result; `client_compatible.rs`: `id` and `tool_call_id`), and so does
+the Anthropic client (`id`, `tool_use_id`). The daemon's client
+decorator now sends such an id as `call_` and 32 hex digits of its
+SHA-256 (`daemon::call_ids`), on the call and its result, only on a
+request whose dialect would refuse it (OpenAI and self-hosted: more than
+64 characters; Anthropic: more than 64 or outside `[a-zA-Z0-9_-]`);
+Gemini's requests and accepted ids are untouched, and the stored session
+keeps the issued ids. Filed upstream as lukacf/meerkat#2560. Tests:
+`daemon::call_ids::tests::*`,
+`models::a_refused_tool_call_id_goes_out_short_and_stays_stored`.
+
+**Smaller ones.** A wire whose other daemon did not answer is "nothing
+was wired" only on an RPC refusal (F102: `client::wires::tests::only_a_refusal_proves_nothing_was_wired_there`);
+`--list` removes a stale endpoint file only while it holds the probed
+token (F103: `daemon::endpoint::tests::a_stale_file_is_removed_only_while_it_holds_the_probed_token`);
+`check_stale` takes its probe, so no test connects to a real network
+(F37); a model picker that waits for the lists remembers which picker
+and which model it marks (F105: `models::the_classifier_picker_opened_before_the_lists_marks_the_classifiers_model`);
+a restored conversation pairs each call with its stored result (F100:
+`ui::transcript::restore::tests::stored_calls_restore_with_their_results`);
+`learn_from_result` reads the whole result (F95); a council's
+participant (`HelperKind::Other`) below a single-use helper never held
+it (C1: it is never decided idle; `mobs::endings::tests::a_member_assign_did_not_start_does_not_hold_its_parent`).
+V1, verified: no engine path the daemon serves writes a config it read
+through `RealmConfigStore` (`SessionRuntime` only reads its
+`ConfigRuntime`; `config/set` and `config/patch` are not in `SERVED`);
+pinned by `models::the_picker_switches_the_live_model_and_the_next_turn_uses_it`
+(after the switch the document holds no `max_turns` and no user skill
+repository).

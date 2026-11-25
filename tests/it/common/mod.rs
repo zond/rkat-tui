@@ -179,6 +179,8 @@ pub enum Step {
     Text(&'static str),
     /// Text reporting `input` input tokens, then `Done(EndTurn)`.
     TextUsage(&'static str, u64),
+    /// Text the provider stopped at its token limit: `Done(MaxTokens)`.
+    CutOff(&'static str),
     /// A single tool call, then `Done(ToolUse)`.
     Tool {
         id: &'static str,
@@ -248,6 +250,14 @@ impl Step {
                 }),
                 usage,
                 done(StopReason::EndTurn),
+            ],
+            Self::CutOff(text) => vec![
+                Ok(LlmEvent::TextDelta {
+                    delta: text.to_string(),
+                    meta: None,
+                }),
+                usage,
+                done(StopReason::MaxTokens),
             ],
             Self::Tool { id, name, args } => Self::Tools(vec![(id, name, args)]).events(model),
             Self::ToolUsage { id, name, args, .. } => {

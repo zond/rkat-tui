@@ -20,6 +20,8 @@ pub(super) struct Probe {
     interrupts: parking_lot::Mutex<Vec<Interrupted>>,
     /// How many prompts waited for a mode change.
     mode_waits: AtomicU64,
+    /// How many syncs of a settings file ended.
+    settings_syncs: AtomicU64,
 }
 
 impl Probe {
@@ -39,6 +41,11 @@ impl Probe {
         self.mode_waits.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// A sync of a settings file ended (its notices sent).
+    pub(super) fn settings_synced(&self) {
+        self.settings_syncs.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// An `rkat/interrupt` answered `answer`.
     pub(super) fn interrupted(&self, answer: &Interrupted) {
         self.interrupts.lock().push(answer.clone());
@@ -56,6 +63,13 @@ impl Local {
     #[must_use]
     pub fn mode_waits(&self) -> u64 {
         self.probe.mode_waits.load(Ordering::SeqCst)
+    }
+
+    /// Tests: how many syncs of a settings file ended (the watcher's, after
+    /// a file changed, its notices sent).
+    #[must_use]
+    pub fn settings_syncs_for_test(&self) -> u64 {
+        self.probe.settings_syncs.load(Ordering::SeqCst)
     }
 
     /// Tests: every interrupt's answer, in order.

@@ -84,6 +84,9 @@ impl ApprovalEngine {
         rule: Rule,
         level: Level,
     ) -> Result<(), PersistError> {
+        // Refused as [`Self::add_rule`] refuses it: a broad rule would be
+        // dropped by the next hold of the files and never apply.
+        refuse_broad(&rule)?;
         self.audit_event("rule_added", describe_rule(&rule));
         let rule = self.of_level(rule, level);
         let rules = Arc::clone(&self.rules);

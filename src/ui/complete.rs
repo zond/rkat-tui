@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(items[0].insert, "/mode");
         assert_eq!(
             items[0].label,
-            "/mode [default | accept-edits | plan | auto] [--user]"
+            "/mode [[--user] default | accept-edits | plan | auto]"
         );
         assert_eq!(items[0].detail, "pick or set the permission mode");
         assert_eq!(items[1].insert, "/model");

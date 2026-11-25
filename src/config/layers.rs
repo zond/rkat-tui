@@ -584,7 +584,7 @@ impl Layered {
                 }
                 None => true,
             });
-        // Nor do they widen the self.shell's sandbox.
+        // Nor do they widen the shell's sandbox.
         let project_grants = project
             .confinement
             .as_ref()
@@ -595,7 +595,7 @@ impl Layered {
                 count: project_grants,
             });
         }
-        // Project files never define self.endpoints, not even new ones: a cloned
+        // Project files never define endpoints, not even new ones: a cloned
         // repository could route prompts and credentials to its own server.
         for name in project.endpoints.keys() {
             self.notices.push(Notice::ProjectEndpointIgnored {

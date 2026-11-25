@@ -39,7 +39,8 @@ pub enum CompactMode {
 /// Thresholds and mode for the context gauge (`crate::ui::CompactionGauge`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompactionPolicy {
-    /// Warn or compact automatically.
+    /// The engine's own threshold (native), warn only, or compact at
+    /// `compact_auto_percent`.
     pub mode: CompactMode,
     /// Usage (percent of the window) at which to warn once.
     pub warn_percent: u8,

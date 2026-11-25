@@ -5,8 +5,8 @@ use std::time::Instant;
 
 use super::deferred::Deferred;
 use super::{
-    App, AutoCommand, Busy, COMPACT_FOCUS_UNSUPPORTED, Command, CompactCommand, CompactFailure,
-    Effect, HelpDialog, HelpView, Modal, ModelCommand, NoticeLevel, RulesCommand, commands,
+    App, AutoCommand, Busy, Command, CompactCommand, CompactFailure, Effect, HelpDialog, HelpView,
+    Modal, ModelCommand, NoticeLevel, RulesCommand, commands,
 };
 use crate::approval::mode::PermissionMode;
 
@@ -44,8 +44,8 @@ impl App {
         )
     }
 
-    /// What keeps a session-level command (`/rewind`, `/clear`,
-    /// `/resume`, `/model`, `/init`, `/compact`) from running now, if
+    /// What keeps a session-level command (`/clear`, `/resume`, `/model`,
+    /// `/init`, `/compact`) from running now, if
     /// anything. One guard for all of them so they cannot drift apart.
     pub(crate) fn blocker(&self) -> Option<Busy> {
         if self.turn.is_running() {
@@ -201,15 +201,9 @@ impl App {
             Command::Compact(CompactCommand::PrepareRefused(why)) => {
                 self.transcript.push_notice(NoticeLevel::Error, why);
             }
-            Command::Compact(cmd @ (CompactCommand::Now | CompactCommand::Focused(_)))
-                if self.turn.is_running() =>
-            {
+            Command::Compact(CompactCommand::Now) if self.turn.is_running() => {
                 // During a turn the request goes now: the engine compacts
                 // before the run's next model request.
-                if matches!(cmd, CompactCommand::Focused(_)) {
-                    self.transcript
-                        .push_notice(NoticeLevel::Warn, COMPACT_FOCUS_UNSUPPORTED);
-                }
                 self.transcript.push_notice(
                     NoticeLevel::Info,
                     "asking the engine to compact before the run's next model request…",
@@ -217,7 +211,7 @@ impl App {
                 self.scroll.bottom();
                 fx.push(Effect::CompactNow);
             }
-            Command::Compact(cmd @ (CompactCommand::Now | CompactCommand::Focused(_))) => {
+            Command::Compact(CompactCommand::Now) => {
                 if !self.idle_or_notice() {
                     return;
                 }
@@ -225,10 +219,6 @@ impl App {
                     self.transcript
                         .push_notice(NoticeLevel::Info, CompactFailure::NothingYet.to_string());
                     return;
-                }
-                if matches!(cmd, CompactCommand::Focused(_)) {
-                    self.transcript
-                        .push_notice(NoticeLevel::Warn, COMPACT_FOCUS_UNSUPPORTED);
                 }
                 self.compaction.ask();
                 self.transcript

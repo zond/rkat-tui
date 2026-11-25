@@ -364,9 +364,14 @@ methods! {
     /// The configured endpoint a conversation's durable auth binding names
     /// (the status bar shows it).
     Endpoint = "rkat/endpoint" (SessionParams) -> SessionEndpoint;
-    /// `/trust`: every present project input recorded in the trust record
-    /// the daemon owns, as it is now (read on every session build).
-    Trust = "rkat/trust" (Empty) -> crate::approval::desk::RuleOutcome;
+    /// `/trust`, first: each project input read once, its digest and what
+    /// of it would run as the host, for the user to see before anything is
+    /// recorded.
+    TrustPreview = "rkat/trust_preview" (Empty) -> TrustPreviewList;
+    /// `/trust`, answered yes: the digests of the content the user was
+    /// shown ([`TrustPreview`]'s answer) recorded in the trust record the
+    /// daemon owns (read on every session build).
+    Trust = "rkat/trust" (TrustParams) -> crate::approval::desk::RuleOutcome;
     /// A conversation's tasks in the engine's task store (the Ctrl+T
     /// checklist; read on attach, after a switch and after each of the
     /// agent's `task_create` and `task_update` calls).
@@ -2137,6 +2142,21 @@ pub struct AuditTail {
     pub path: std::path::PathBuf,
     /// Its last lines for the agent, oldest first, as written (JSON).
     pub lines: Vec<String>,
+}
+
+/// [`method::TrustPreview`]'s result: each project input as it would be
+/// trusted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustPreviewList {
+    /// Every project input, present or not, in a fixed order.
+    pub files: Vec<crate::bootstrap::project_trust::TrustPreview>,
+}
+
+/// [`method::Trust`]'s parameters: what the user was shown and said yes to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustParams {
+    /// The files as [`method::TrustPreview`] answered them.
+    pub files: Vec<crate::bootstrap::project_trust::TrustPreview>,
 }
 
 /// [`method::Notices`]'s result.

@@ -261,6 +261,12 @@ impl Local {
     /// the next start); a file that does not read is reported once and its
     /// last good values stay.
     pub async fn sync_settings(&self, level: Level) {
+        self.sync_settings_once(level).await;
+        #[cfg(any(test, feature = "test-support"))]
+        self.probe.settings_synced();
+    }
+
+    async fn sync_settings_once(&self, level: Level) {
         use crate::daemon::settings::Synced;
         let settings = Arc::clone(&self.core.settings);
         let Ok(synced) = tokio::task::spawn_blocking(move || settings.sync(level)).await else {

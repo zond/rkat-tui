@@ -605,6 +605,31 @@ fn quit_while_busy_needs_confirmation_and_hands_over_held_messages() {
     );
 }
 
+/// A running `!` command is busy for Ctrl-D and `/quit` alike: the first
+/// request warns, naming it, and only a second one quits (and stops it).
+#[test]
+fn quit_while_a_bang_command_runs_asks_again() {
+    let mut app = App::new(StatusInfo::default());
+    assert_eq!(submit(&mut app, "!make"), vec![run_shell(1, "make")]);
+    let t0 = Instant::now();
+    assert!(app.update_at(ctrl('d'), t0).is_empty());
+    assert!(matches!(
+        last_notice(&app),
+        Some((NoticeLevel::Warn, text)) if text.contains("a ! command is running")
+    ));
+    assert_eq!(
+        app.update_at(ctrl('d'), t0 + Duration::from_secs(1)).last(),
+        Some(&Effect::Quit)
+    );
+    let mut app = App::new(StatusInfo::default());
+    submit(&mut app, "!make");
+    type_str(&mut app, "/quit");
+    assert!(
+        app.update(key(KeyCode::Enter)).is_empty(),
+        "the first /quit asks"
+    );
+}
+
 #[test]
 fn idle_quit_is_immediate() {
     let mut app = App::new(StatusInfo::default());

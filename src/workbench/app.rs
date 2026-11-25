@@ -17,7 +17,7 @@ use crate::error::TuiError;
 use crate::paths::ProjectRoot;
 use crate::ui::{App, CompactionPolicy, Effect, History, Msg, StatusInfo, UiChannels, run_ui};
 
-/// What the UI takes from the configuration, .
+/// What the UI takes from the configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSetup {
     /// The context-compaction policy of the `tui.toml` layers.

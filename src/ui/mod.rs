@@ -69,9 +69,11 @@ pub use delivery::{Pending, PendingId, PendingQueue, PendingState, SteerFailure}
 pub use history::History;
 pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
+#[cfg(any(test, feature = "test-support"))]
+pub use modal::ModelPicker;
 pub use modal::{
     EscalationAnswer, EscalationDialog, EscalationId, HelpDialog, HelpView, Modal, ModalKey,
-    ModelPicker, PlanChoice, PlanDialog, QuitChoice, QuitDialog, ResumePicker,
+    PlanChoice, PlanDialog, QuitChoice, QuitDialog, ResumePicker,
 };
 pub use permissions::{Section, permissions_dialog};
 #[cfg(any(test, feature = "test-support"))]
@@ -79,6 +81,7 @@ pub use picker::Does;
 pub use picker::PickerLine;
 pub use picker::{
     AgentEntry, Field, FieldFor, ListPicker, PickAct, PickKey, PickRow, PickerKind, RuleForm,
+    trust_picker,
 };
 
 /// A picker's lines as text, `width` wide (tests of pickers built
@@ -236,7 +239,7 @@ impl TurnFailure {
     }
 }
 
-/// Fold one run's end `next` into the turn's end so far, :
+/// Fold one run's end `next` into the turn's end so far, `current`:
 /// the higher [`TurnFailure::rank`] wins. On a tie a failure keeps the
 /// earlier one (the first failure is the one to show) and a completion
 /// takes the later one (the last run's text is the turn's answer).
@@ -699,10 +702,6 @@ pub enum ShellOutcome {
     Cancelled,
 }
 
-/// Notice for `/compact <instructions>`: the engine cannot use them.
-pub const COMPACT_FOCUS_UNSUPPORTED: &str =
-    "focus instructions are not supported by the engine yet; compacting without them";
-
 /// Notice shown once the engine took a `/compact` request while a turn
 /// of the agent runs (another client's): that turn compacts at its next
 /// model request.
@@ -724,8 +723,9 @@ pub const COMPACT_RUNNING: &str = "compacting now: the agent makes one short req
 pub enum Effect {
     /// Run a turn with this prompt; answer with [`Msg::TurnFinished`].
     StartTurn(String),
-    /// Run a `!` command under the agent shell's confinement and add its
-    /// output to the session's context; answer with [`Msg::ShellFinished`].
+    /// Run a `!` command as the user (the user's own shell, unconfined, in
+    /// the client) and add its output to the session's context; answer
+    /// with [`Msg::ShellFinished`].
     RunShell {
         /// The run's id.
         id: ShellRunId,
@@ -888,10 +888,14 @@ pub enum Effect {
     /// The Hosts section's `d`: stop trusting the host, then the dialog's
     /// lists again.
     PickedHostRemoval(String),
-    /// `/trust`: record every project input's digest
-    /// in the host trust record; their servers and hooks run from the next
-    /// session.
+    /// `/trust`: ask the daemon what each project input would run, and show
+    /// it with the question ([`PickerKind::Trust`]); nothing is recorded
+    /// before the yes ([`Self::TrustShown`]).
     TrustProject,
+    /// `/trust` answered yes: record the project inputs as they were shown
+    /// (their digests) in the host trust record; their servers and hooks
+    /// run from the next session.
+    TrustShown(Vec<crate::bootstrap::project_trust::TrustPreview>),
     /// Switch the permission mode (`Shift+Tab`, `/mode`, `/auto on|off`).
     SetMode(PermissionMode),
     /// Record the checklist panel's view (Ctrl+T) as `[ui] checklist` in
@@ -1237,7 +1241,7 @@ impl StatusInfo {
         }
     }
 
-    /// Apply an client runner update: the only way in from outside the UI.
+    /// Apply a client runner update: the only way in from outside the UI.
     pub fn apply(&mut self, update: StatusUpdate) {
         match update {
             StatusUpdate::Model { endpoint, model } => {
@@ -1520,7 +1524,8 @@ impl std::fmt::Display for Busy {
 /// `App` is pure: it performs no I/O. Prompt-history persistence is the
 /// client runner's job — seed recall with [`App::with_history`] (e.g. from
 /// [`History::load`]) and, after each [`App::update`], drain newly submitted
-/// lines with [`App::take_submitted`] and append them to the [`History`] file.
+/// lines with [`App::take_local`] ([`LocalEffect::Submitted`]) and append
+/// them to the [`History`] file.
 #[derive(Debug)]
 pub struct App {
     /// Rendered conversation.
@@ -2098,20 +2103,8 @@ impl App {
             Msg::PickerDone { kind, text } => self.picker_done(kind, &text),
             Msg::ShowPicker { picker, refresh } => self.show_picker(picker, refresh),
             Msg::RehomeChecked { typed, answer } => self.rehome_checked(&typed, answer),
-            Msg::ShowClassifierPicker(groups) => {
-                if matches!(self.modal, None | Some(Modal::Help(_))) && self.parked.is_none() {
-                    self.modal = Some(Modal::Model(ModelPicker::new(groups).for_classifier()));
-                }
-            }
-            Msg::ShowModelPicker(groups) => {
-                if matches!(self.modal, None | Some(Modal::Help(_))) && self.parked.is_none() {
-                    self.modal = Some(Modal::Model(ModelPicker::new(groups)));
-                } else {
-                    for warning in ModelPicker::warnings(&groups) {
-                        self.transcript.push_notice(NoticeLevel::Warn, warning);
-                    }
-                }
-            }
+            Msg::ShowClassifierPicker(groups) => self.show_model_picker(groups, true),
+            Msg::ShowModelPicker(groups) => self.show_model_picker(groups, false),
             Msg::RemoteTurn { prompt } => self.remote_turn(prompt, now),
             Msg::Peer { from, text } => {
                 // A message that wakes the idle agent comes just before

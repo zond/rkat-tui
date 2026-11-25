@@ -248,3 +248,39 @@ async fn tui_set_settings_survive_a_shutdown() {
 async fn tui_set_settings_survive_a_retiring_shutdown() {
     survives(Stop::Retiring).await;
 }
+
+/// No model id of ours is a default: with no `[auto] classifier_model` the
+/// classifier reviews with the agent's start-up model, `/status` names it,
+/// and a start-up notice (information, not a warning) says so and how to
+/// pick another.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn without_a_classifier_model_the_start_up_model_reviews() {
+    let ws = Workspace::new();
+    let setup = Setup {
+        llm_classifier: true,
+        ..Setup::args(&["--model", "anthropic:claude-opus-4-8"])
+    };
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon =
+        Running::start_with(&setup.command_line(&ws.root), setup.options(&ws.root, &llm)).await;
+    let report = call(&daemon, "rkat/report", json!({})).await;
+    assert_eq!(report["classifier_model"], "claude-opus-4-8", "{report}");
+    let notices = call(&daemon, "rkat/notices", json!({})).await;
+    let said = notices["notices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| {
+            n["text"]
+                .as_str()
+                .unwrap()
+                .contains("/auto model picks another")
+        })
+        .unwrap_or_else(|| panic!("{notices}"));
+    assert!(
+        said["text"].as_str().unwrap().contains("claude-opus-4-8"),
+        "{said}"
+    );
+    assert_eq!(said["warn"], false, "{said}");
+    daemon.stop().await;
+}

@@ -5,8 +5,9 @@
 //! (a D5 block whose call names hosts) to trust those hosts. **In
 //! force**: the approval rules, grants and statements with where each
 //! comes from, to remove, `e` to edit a rule in place, and `n` (a
-//! statement) and `r` (a rule) to add one. **Hosts**: the hosts the user trusts with the project's data, to
-//! remove, `n` to trust one, and the project's own, read-only. The rows
+//! statement) and `r` (a rule) to add one. **Hosts**: the hosts the user
+//! trusts with the project's data, to remove, `n` to trust one, and the
+//! project's own, read-only. The rows
 //! are built here from the daemon's lists; the runner asks for them and
 //! does what the keys choose.
 

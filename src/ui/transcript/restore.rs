@@ -5,12 +5,16 @@ use meerkat_core::{AssistantBlock, Message, TranscriptUserRole};
 use super::{Block, ToolState};
 
 /// Transcript blocks for a stored conversation's `messages` (read from the
-/// daemon): user text, assistant text and tool calls. Tool results are
-/// summarized as completed calls; runtime notices and injected context are
-/// not shown; a compaction's summary is its folded line.
+/// daemon): user text, assistant text and tool calls. Each call is paired
+/// with its stored result by tool-use id, as live: whether it failed, its
+/// outcome and its preview; a call with no stored result is drawn done.
+/// Runtime notices and injected context are not shown; a compaction's
+/// summary is its folded line.
 #[must_use]
 pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
     let mut blocks = Vec::new();
+    // Each call's block, by its tool-use id, until its result comes.
+    let mut calls: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     // The reply to `/compact`'s own prompt is not shown either.
     let mut compact_reply = false;
     for message in messages {
@@ -39,7 +43,17 @@ pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
                 for call in assistant.tool_calls() {
                     let args = serde_json::from_str(call.args.get())
                         .unwrap_or_else(|_| serde_json::Value::String(call.args.get().to_string()));
+                    calls.insert(call.id.to_string(), blocks.len());
                     blocks.push(restored_tool_block(call.name, args));
+                }
+            }
+            Message::ToolResults { results, .. } => {
+                for result in results {
+                    if let Some(at) = calls.remove(&result.tool_use_id)
+                        && let Some(block) = blocks.get_mut(at)
+                    {
+                        restore_result(block, &result.text_content(), result.is_error);
+                    }
                 }
             }
             Message::SystemNotice(notice) => {
@@ -203,6 +217,30 @@ fn outcome_blocks(notice: &meerkat_core::SystemNoticeMessage) -> Vec<Block> {
         .collect()
 }
 
+/// A restored call's `block` with its stored result `text`: failed or not,
+/// its outcome and its preview, as a live result sets them.
+fn restore_result(block: &mut Block, text: &str, is_error: bool) {
+    let Block::Tool {
+        name,
+        args,
+        state,
+        outcome,
+        result_preview,
+        ..
+    } = block
+    else {
+        return;
+    };
+    *state = ToolState::Done {
+        is_error,
+        duration_ms: 0,
+    };
+    *result_preview = Some(text)
+        .filter(|text| !text.is_empty())
+        .map(super::Preview::of);
+    *outcome = super::Transcript::outcome_of(name, args, state, text);
+}
+
 /// A stored call as a done tool block (its line's paths are made again
 /// with the transcript's path view, [`super::Transcript::reset`]).
 fn restored_tool_block(name: &str, args: serde_json::Value) -> Block {
@@ -226,7 +264,7 @@ fn restored_tool_block(name: &str, args: serde_json::Value) -> Block {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use meerkat_core::UserMessage;
@@ -285,6 +323,78 @@ mod tests {
                 collapsed: true,
                 to: None,
             }]
+        );
+    }
+
+    /// Each stored call is paired with its stored result by tool-use id: a
+    /// failed one restores failed with its reason and its preview, a
+    /// successful one done with its preview; one with no result is done.
+    #[test]
+    fn stored_calls_restore_with_their_results() {
+        use meerkat_core::{BlockAssistantMessage, StopReason, ToolResult};
+        let call = |id: &str, command: &str| AssistantBlock::ToolUse {
+            id: id.into(),
+            name: "shell".into(),
+            args: serde_json::value::to_raw_value(&serde_json::json!({ "command": command }))
+                .unwrap(),
+            meta: None,
+        };
+        let messages = [
+            Message::BlockAssistant(BlockAssistantMessage::new(
+                vec![call("a", "make"), call("b", "ls"), call("c", "pwd")],
+                StopReason::ToolUse,
+            )),
+            Message::tool_results(vec![
+                ToolResult::new("b".into(), "src\n".into(), false),
+                ToolResult::new(
+                    "a".into(),
+                    "make: *** No rule to make target 'all'. Stop.".into(),
+                    true,
+                ),
+            ]),
+        ];
+        let blocks = blocks_from_messages(&messages);
+        let state = |n: usize| match &blocks[n] {
+            Block::Tool {
+                state,
+                result_preview,
+                ..
+            } => (state.clone(), result_preview.is_some()),
+            other => panic!("{other:?}"),
+        };
+        assert!(matches!(
+            state(0),
+            (ToolState::Done { is_error: true, .. }, true)
+        ));
+        assert!(matches!(
+            state(1),
+            (
+                ToolState::Done {
+                    is_error: false,
+                    ..
+                },
+                true
+            )
+        ));
+        assert!(matches!(
+            state(2),
+            (
+                ToolState::Done {
+                    is_error: false,
+                    ..
+                },
+                false
+            )
+        ));
+        let Block::Tool { outcome, .. } = &blocks[0] else {
+            unreachable!()
+        };
+        assert!(
+            outcome
+                .text
+                .as_deref()
+                .is_some_and(|t| t.contains("No rule")),
+            "{outcome:?}"
         );
     }
 

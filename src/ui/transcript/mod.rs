@@ -1427,7 +1427,7 @@ impl Transcript {
     /// Expand or collapse the output of the tool block `id`. Returns the new
     /// `collapsed` state, or `None` when `id` is not a tool block with output.
     pub fn toggle_tool(&mut self, id: BlockId) -> Option<bool> {
-        if !self.block(id).is_some_and(tool_has_output) {
+        if !self.block(id).is_some_and(foldable) {
             return None;
         }
         match self.block_mut(id) {
@@ -2146,21 +2146,17 @@ impl Transcript {
     /// What a finished call's result tells the transcript: a `contacts`
     /// result names the peers; a `send_message` that was sent folds to
     /// `sent to <name>` (its receipt behind the toggle), one that failed
-    /// shows its error unfolded.
-    fn learn_from_result(&mut self, id: BlockId) {
+    /// shows its error unfolded. `whole` is the whole result (never the
+    /// preview, which a longer result is cut to and which then does not
+    /// parse), when it has come.
+    fn learn_from_result(&mut self, id: BlockId, whole: Option<&str>) {
         let Some(Block::Tool {
-            name,
-            args,
-            state,
-            result_preview,
-            ..
+            name, args, state, ..
         }) = self.block(id)
         else {
             return;
         };
-        let result = result_preview
-            .as_ref()
-            .and_then(|preview| serde_json::from_str::<Value>(preview).ok());
+        let result = whole.and_then(|text| serde_json::from_str::<Value>(text).ok());
         // `contacts` (and an earlier build's `peers`): every entry naming a
         // peer id, in whichever group it is.
         if matches!(tool_base(name), "peers" | crate::daemon::contacts::CONTACTS) {
@@ -2252,7 +2248,7 @@ impl Transcript {
                 *outcome = Self::outcome_of(name, args, state, text);
             }
         }
-        self.learn_from_result(id);
+        self.learn_from_result(id, result);
     }
 
     /// A finished call's outcome from its whole `result`: the tool's row
@@ -2283,7 +2279,7 @@ impl Transcript {
             *result_preview = Some(result).filter(|r| !r.is_empty()).map(Preview::of);
             *outcome = Self::outcome_of(name, args, state, result);
         }
-        self.learn_from_result(id);
+        self.learn_from_result(id, Some(result));
     }
 
     fn hook_denied(
@@ -2360,8 +2356,6 @@ fn recipient(args: &Value) -> String {
         .to_string()
 }
 
-/// Whether `block` has something to fold: its line ends in `▸`/`▾`.
-#[must_use]
 /// Which of its two reports showed a run nobody here typed
 /// ([`Transcript::remote_input`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2466,14 +2460,11 @@ pub(crate) fn helper_note(
     })
 }
 
+/// Whether `block` has something to fold (its line ends in `▸`/`▾`): a
+/// tool call (its arguments, output, diff or reason), a reasoning block, a
+/// `!` command's output or a job's outcome.
+#[must_use]
 pub fn foldable(block: &Block) -> bool {
-    tool_has_output(block)
-}
-
-/// Whether `block` folds something away: a tool call (its arguments,
-/// output, diff or reason), a reasoning block, a `!` command's output or a
-/// job's outcome.
-fn tool_has_output(block: &Block) -> bool {
     matches!(block, Block::Tool { args, result_preview, diff, state, outcome, .. }
         if result_preview.is_some()
             || diff.is_some()
@@ -4181,6 +4172,27 @@ mod tests {
         };
         assert_eq!(head.text(), "message → ed25519:zzz: hi");
         assert!(note.is_none() && !*collapsed);
+        // A `contacts` result longer than the preview (pretty, many
+        // agents) still names its peers: the whole result is read, never
+        // the cut preview.
+        let many: Vec<Value> = (0..30)
+            .map(|n| json!({"name": format!("main-{n:04}"), "what": "idle", "peer_id": format!("ed25519:p{n}")}))
+            .collect();
+        let long =
+            serde_json::to_string_pretty(&json!({ "agents_of_this_workspace": many })).unwrap();
+        call(&mut t, "p2", "contacts", json!({}));
+        done(&mut t, "p2", "contacts", false, &long);
+        call(
+            &mut t,
+            "m3",
+            "send_message",
+            json!({"body": "hi", "handling_mode": "queue", "peer_id": "ed25519:p29"}),
+        );
+        let id = t.tool_block("m3").unwrap();
+        let Some(Block::Tool { head, .. }) = t.block(id) else {
+            panic!("no tool block");
+        };
+        assert_eq!(head.text(), "message → main-0029: hi");
         // Other tools have their own lines, never JSON.
         assert_eq!(
             tool_line::head(

@@ -44,7 +44,7 @@ use meerkat_core::{
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
 
-use super::{blank_text, comms_text};
+use super::{blank_text, call_ids, comms_text};
 
 /// How deep `$ref`s are inlined into each other (a recursive type stops
 /// there and keeps its `$ref`).
@@ -346,21 +346,26 @@ pub fn unconstrained(obj: &Map<String, Value>) -> bool {
     })
 }
 
-/// A request's `messages` as sent: no blank text
-/// ([`blank_text::for_the_wire`]) and no instructions about comms tools
-/// the members do not have ([`comms_text::for_the_wire`]); `None` when
+/// A request's `messages` as sent to `provider`: no blank text
+/// ([`blank_text::for_the_wire`]), no instructions about comms tools
+/// the members do not have ([`comms_text::for_the_wire`]) and no tool-call
+/// id the provider refuses ([`call_ids::for_the_wire`]); `None` when
 /// nothing changes.
-fn as_sent(messages: &[Message]) -> Option<Vec<Message>> {
-    match blank_text::for_the_wire(messages) {
-        Some(cleaned) => Some(comms_text::for_the_wire(&cleaned).unwrap_or(cleaned)),
-        None => comms_text::for_the_wire(messages),
-    }
+fn as_sent(provider: meerkat_core::Provider, messages: &[Message]) -> Option<Vec<Message>> {
+    let cleaned = blank_text::for_the_wire(messages);
+    let current = cleaned.as_deref().unwrap_or(messages);
+    let comms = comms_text::for_the_wire(current).or(cleaned);
+    let current = comms.as_deref().unwrap_or(messages);
+    call_ids::for_the_wire(provider, current).or(comms)
 }
 
 /// [`as_sent`] of a request's `messages`; the same `Arc` when nothing
 /// changes.
-fn wire_messages(messages: Arc<Vec<Message>>) -> Arc<Vec<Message>> {
-    match as_sent(&messages) {
+fn wire_messages(
+    provider: meerkat_core::Provider,
+    messages: Arc<Vec<Message>>,
+) -> Arc<Vec<Message>> {
+    match as_sent(provider, &messages) {
         Some(sent) => Arc::new(sent),
         None => messages,
     }
@@ -465,7 +470,7 @@ impl AgentLlmClient for SchemaCompat {
         authorization: Option<meerkat_core::LlmRequestAuthorization>,
     ) -> Result<Arc<dyn AgentLlmRequestAttempt>, AgentError> {
         let tools = self.tools(&tools);
-        let messages = wire_messages(messages);
+        let messages = wire_messages(self.inner.provider(), messages);
         Arc::clone(&self.inner).prepare_request_attempt_authorized(
             messages,
             tools,
@@ -485,7 +490,7 @@ impl AgentLlmClient for SchemaCompat {
         provider_params: Option<ProviderParamsOverride>,
     ) -> Result<Arc<dyn AgentLlmRequestAttempt>, AgentError> {
         let tools = self.tools(&tools);
-        let messages = wire_messages(messages);
+        let messages = wire_messages(self.inner.provider(), messages);
         Arc::clone(&self.inner).prepare_request_attempt(
             messages,
             tools,
@@ -508,7 +513,7 @@ impl AgentLlmClient for SchemaCompat {
         provider_params: Option<&ProviderParamsOverride>,
     ) -> Result<LlmStreamResult, AgentError> {
         let tools = self.tools(tools);
-        let sent = as_sent(messages);
+        let sent = as_sent(self.inner.provider(), messages);
         let messages = sent.as_deref().unwrap_or(messages);
         self.inner
             .stream_response(messages, &tools, max_tokens, temperature, provider_params)
@@ -525,7 +530,7 @@ impl AgentLlmClient for SchemaCompat {
         authorization: Option<meerkat_core::LlmRequestAuthorization>,
     ) -> Result<LlmStreamResult, AgentError> {
         let tools = self.tools(tools);
-        let sent = as_sent(messages);
+        let sent = as_sent(self.inner.provider(), messages);
         let messages = sent.as_deref().unwrap_or(messages);
         self.inner
             .stream_response_authorized(
@@ -548,7 +553,7 @@ impl AgentLlmClient for SchemaCompat {
         provider_params: Option<&ProviderParamsOverride>,
     ) -> Result<Option<meerkat_core::ProviderRequestPressure>, AgentError> {
         let tools = self.tools(tools);
-        let sent = as_sent(messages);
+        let sent = as_sent(self.inner.provider(), messages);
         let messages = sent.as_deref().unwrap_or(messages);
         self.inner
             .request_pressure(messages, &tools, max_tokens, temperature, provider_params)
@@ -564,7 +569,7 @@ impl AgentLlmClient for SchemaCompat {
         provider_params: Option<&ProviderParamsOverride>,
     ) -> Result<Vec<meerkat_core::TargetCacheLoweringCapability>, AgentError> {
         let tools = self.tools(tools);
-        let sent = as_sent(messages);
+        let sent = as_sent(self.inner.provider(), messages);
         let messages = sent.as_deref().unwrap_or(messages);
         self.inner.target_cache_lowering_capabilities(
             issuer,

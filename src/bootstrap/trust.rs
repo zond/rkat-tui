@@ -78,7 +78,8 @@ pub enum TrustStatus {
 #[derive(Debug, thiserror::Error)]
 pub enum TrustError {
     /// The file to trust cannot be trusted at all (symlink, not regular,
-    /// unreadable).
+    /// unreadable): [`HostTrustRecord::record_file`]'s.
+    #[cfg(any(test, feature = "test-support"))]
     #[error("cannot trust {}: {reason}", path.display())]
     Refused {
         /// The file.
@@ -214,16 +215,28 @@ impl HostTrustRecord {
     /// The trust state of `file`.
     #[must_use]
     pub fn check(&self, file: &Path) -> TrustStatus {
+        self.read_checked(file).0
+    }
+
+    /// The trust state of `file` and the bytes it was judged on, read once
+    /// (no symlink on the way, a regular file): a caller that uses the
+    /// content uses exactly what was judged, never a second read a writer
+    /// could have changed in between. The bytes come with every state but
+    /// [`TrustStatus::Missing`] and an [`Untrusted`] file that could not be
+    /// read at all.
+    #[must_use]
+    pub fn read_checked(&self, file: &Path) -> (TrustStatus, Option<Vec<u8>>) {
         let bytes = match self.inspect(file) {
             Ok(Some(bytes)) => bytes,
-            Ok(None) => return TrustStatus::Missing,
-            Err(reason) => return TrustStatus::Untrusted(reason),
+            Ok(None) => return (TrustStatus::Missing, None),
+            Err(reason) => return (TrustStatus::Untrusted(reason), None),
         };
-        match self.record.files.get(&self.key(file)) {
+        let status = match self.record.files.get(&self.key(file)) {
             None => TrustStatus::Untrusted(Untrusted::NotRecorded),
             Some(digest) if *digest == crate::hex::sha256(&bytes) => TrustStatus::Trusted,
             Some(_) => TrustStatus::Untrusted(Untrusted::Changed),
-        }
+        };
+        (status, Some(bytes))
     }
 
     /// Whether the digest recorded for `file` is `hex_sha256` (lower-case
@@ -245,6 +258,7 @@ impl HostTrustRecord {
     ///
     /// [`TrustError::Refused`] when the file is symlinked, not regular or
     /// unreadable; [`TrustError::Write`] when the record cannot be saved.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn record_file(&mut self, file: &Path) -> Result<(), TrustError> {
         let key = self.key(file);
         match self.inspect(file) {
@@ -259,6 +273,31 @@ impl HostTrustRecord {
                     path: file.to_path_buf(),
                     reason,
                 });
+            }
+        }
+        self.save()
+    }
+
+    /// Trust the content of `file` whose digest is `hex_sha256` (`None`:
+    /// forget its digest), the content the user was shown, and save the
+    /// record. The file is not read again: content that changed since
+    /// stays untrusted.
+    ///
+    /// # Errors
+    ///
+    /// [`TrustError::Write`] when the record cannot be saved.
+    pub fn record_digest(
+        &mut self,
+        file: &Path,
+        hex_sha256: Option<&str>,
+    ) -> Result<(), TrustError> {
+        let key = self.key(file);
+        match hex_sha256 {
+            Some(digest) => {
+                self.record.files.insert(key, digest.to_string());
+            }
+            None => {
+                self.record.files.remove(&key);
             }
         }
         self.save()

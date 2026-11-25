@@ -104,7 +104,7 @@ pub fn resolve_scope(args: &Args) -> Result<RuntimeScope, TuiError> {
     } else {
         None
     };
-    let project_root = seal(project_root, &opened.home.dir, &global);
+    let project_root = seal(project_root, &root, &global, user_config_root.as_deref());
     Ok(RuntimeScope {
         project_root,
         context_root,
@@ -262,18 +262,42 @@ fn find_workspace_above(
 
 /// Seal what a file tool must never write wherever it lies: the git
 /// directories governing the project ([`crate::paths::git_dirs`]) and the
-/// user config directory (global rules, trust records); and keep the realm
-/// directory (its `config.toml`, rules, approvals, `tui.toml`, sessions,
-/// the audit log) from the file tools altogether, reads included: it is a
-/// secret root.
-fn seal(project_root: ProjectRoot, realm_root: &Path, global: &GlobalDirs) -> ProjectRoot {
+/// user config directory (global rules, trust records); and keep every
+/// workspace's realm (its `config.toml`, rules, approvals, `tui.toml`,
+/// sessions, the audit log), the trust records and the engine's comms
+/// keys from the file tools altogether, reads included: they are secret
+/// roots ([`secret_dirs`]).
+fn seal(
+    project_root: ProjectRoot,
+    realms_root: &Path,
+    global: &GlobalDirs,
+    user_config_root: Option<&Path>,
+) -> ProjectRoot {
     let git = crate::paths::git_dirs(project_root.as_path());
     project_root
         .with_sealed_roots(
             git.into_iter()
                 .chain(std::iter::once(global.config.clone())),
         )
-        .with_secret_roots(std::iter::once(realm_root.to_path_buf()))
+        .with_secret_roots(secret_dirs(realms_root, global, user_config_root))
+}
+
+/// The directories the file tools never read or write: every workspace's
+/// realm (this one's and the others', their sessions, audit logs and
+/// `tui.toml`), the host trust records, and the engine's per-session comms
+/// secret keys (`<user config root>/.rkat/session_comms_identity`, with
+/// which an agent speaks as itself on a wire).
+fn secret_dirs(
+    realms_root: &Path,
+    global: &GlobalDirs,
+    user_config_root: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut dirs = vec![
+        realms_root.to_path_buf(),
+        global.config.join(crate::bootstrap::trust::TRUST_DIR),
+    ];
+    dirs.extend(meerkat::canonical_session_comms_identity_root(user_config_root).ok());
+    dirs
 }
 
 fn project_root_from(path: &Path) -> Result<ProjectRoot, TuiError> {

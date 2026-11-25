@@ -28,8 +28,78 @@
 - A rule moved by hand from the workspace's `tui.toml` to your own (or
   back) is edited and removed in the file it is in now.
 
+- The project's `.rkat/mcp.toml` is read once at start and its servers
+  start from exactly the bytes judged trusted: a file swapped after the
+  trust check (the confined shell may write `.rkat/`) no longer starts
+  servers you never trusted.
+- `/help`, `/quit` (`/exit`, `/q`) and `/clear` (`/new`) refuse an
+  argument with their usage: a typed `/new idea for later` no longer
+  starts a new session.
+- Ctrl-D or `/quit` while a `!` command runs asks again, naming it,
+  instead of quitting at once and stopping the command.
+- A model list (`/model`, `/auto model`) that arrives while an approval
+  dialog is open waits behind it and opens once the dialog is answered,
+  instead of being dropped.
+- The file tools no longer read the other workspaces' state, the host
+  trust records or the agents' comms keys, as they never read this
+  workspace's realm; a read-only shell command on rkat-tui's own state
+  (inside a workspace that holds the config directory) is reviewed, and
+  the safety classifier is told which directories are rkat-tui's own
+  and that the agent never reads or changes them.
+- Bidirectional control characters (a file name with U+202E) show as `�`
+  in every transcript line, dialog row and the status bar, not only in
+  wrapped text: a dialog can no longer show a rule other than the one it
+  adds.
+- The approval dialog's "allow and add a rule" refuses a rule too broad
+  to keep (`make test`): it allows the call once and says why, instead of
+  saying "rule added" of a rule dropped at once.
+- A classifier allow remembered for a command is forgotten after an
+  allowed call of an MCP tool too, which may change files.
+- `/auto model` opened before any model list was fetched marks the
+  classifier's model as current, not the agent's.
+- A resumed conversation shows each stored tool call as it ended (`✗`
+  with its reason for a failed one), with its output, instead of every
+  call as done.
+- `/wire` says "nothing was wired" only when the other daemon refused;
+  a dropped connection takes the same undo and words as no answer.
+- `--list` no longer deletes the endpoint file of a daemon that started
+  while it probed a stale one.
+- A single-use helper that convened a council is told done when its run
+  ends; the council's members no longer hold it.
+- A conversation switched to another model no longer fails on a
+  tool-call id the new provider refuses (an id thousands of characters
+  long that a proxy issued, refused by an OpenAI-dialect endpoint, and
+  `/compact` with it): such an id is sent as a short one derived from it,
+  the stored conversation unchanged.
+- `/wire ssh://` takes only a host of letters, digits and `._@:%[]-`, so
+  no shell metacharacter reaches a `ProxyCommand` of your ssh config.
+
 ### Changed
 
+- A classifier review whose answer names no clear verdict (the provider
+  cut it off at its token limit, or the answer is unclear) asks you, as a
+  failed review does, instead of blocking the call; with nobody attached
+  it is denied as every question is. `/auto stats` counts these as "no
+  clear verdict", and the audit line's verdict is `unclear`.
+- No model id of rkat-tui's own is a default any more: with no `[auto]
+  classifier_model` the classifier reviews with the agent's start-up
+  model, so a self-hosted or proxy endpoint has a classifier too. A
+  start-up notice and `/status` name the model and say that `/auto model`
+  picks another (a cheaper one is usually enough).
+- `--user` (`--global`) counts only directly after the command or its
+  subcommand: `/set --user <key> <value>`, `/unset --user <key>`, `/mode
+  --user <mode>`, `/auto model --user <id>`, `/compact prepare --user …`,
+  `/permissions add --user allow|deny …`. Anywhere else it is part of the
+  text: `/permissions add allow shell pip install --user *` is a rule for
+  exactly that command, in the workspace's file.
+- `/compact` with text it does not know (`/compact stauts`) is refused
+  with the usage instead of compacting; there are no focus instructions.
+  `/context all` is refused as `/context x` is.
+- `/trust` first shows what the project's `.rkat/mcp.toml` and
+  `.rkat/config.toml` would run (each MCP server's command line, each
+  hook's command) and asks; `y` records exactly what you were shown, `n`
+  or Esc records nothing. A file that changed after you were shown it
+  stays untrusted, and the answer says so.
 - The audit log's `rule_added` and `rule_removed` lines say whether the
   rule allows or denies (`allow shell cargo nextest run*`).
 

@@ -239,6 +239,14 @@ impl Endpoint {
     }
 }
 
+/// Remove the endpoint file at `path` only while it still holds `token`
+/// (the endpoint a probe found stale): a daemon started meanwhile has
+/// written its own token there, and its file stays. Whether it was removed.
+#[must_use]
+pub fn remove_if_holds(path: &Path, token: &str) -> bool {
+    Endpoint::read(path).is_ok_and(|now| now.token == token) && std::fs::remove_file(path).is_ok()
+}
+
 /// A fresh random token: [`TOKEN_BYTES`] from the OS, hex-encoded.
 ///
 /// # Errors
@@ -260,6 +268,17 @@ pub fn new_token() -> Result<String, DaemonError> {
 /// [`DaemonError::AlreadyRunning`] when something accepts at the
 /// address, [`DaemonError::EndpointUndecided`] when it cannot be told.
 pub async fn check_stale(path: &Path) -> Result<(), DaemonError> {
+    check_stale_with(path, |address| reach(address, REACH_TIMEOUT)).await
+}
+
+/// [`check_stale`] with the liveness probe given (`probe` of an address:
+/// [`reach`] in a daemon, a fixed answer in a test, which so touches no
+/// real network).
+async fn check_stale_with<F, P>(path: &Path, probe: P) -> Result<(), DaemonError>
+where
+    P: FnOnce(std::net::SocketAddr) -> F,
+    F: std::future::Future<Output = Reach>,
+{
     let undecided = |why: String| DaemonError::EndpointUndecided {
         file: path.to_path_buf(),
         why,
@@ -270,7 +289,7 @@ pub async fn check_stale(path: &Path) -> Result<(), DaemonError> {
         Err(err) => return Err(undecided(format!("cannot look at it: {err}"))),
     }
     let endpoint = Endpoint::read(path).map_err(|err| undecided(err.to_string()))?;
-    match reach(endpoint.address, REACH_TIMEOUT).await {
+    match probe(endpoint.address).await {
         Reach::Accepts => Err(DaemonError::AlreadyRunning {
             address: endpoint.address,
             pid: endpoint.pid,
@@ -434,6 +453,34 @@ mod tests {
         assert_ne!(key, workspace_key(other.path()));
     }
 
+    /// A stale endpoint file is removed only while it holds the token the
+    /// probe found stale: one a daemon rewrote in between stays.
+    #[test]
+    fn a_stale_file_is_removed_only_while_it_holds_the_probed_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mob.endpoint");
+        let probed = Endpoint {
+            address: "127.0.0.1:9".parse().unwrap(),
+            token: "old".into(),
+            pid: 1,
+            workspace: None,
+            started_at: None,
+        };
+        // Rewritten by a daemon that started after the probe.
+        Endpoint {
+            token: "new".into(),
+            ..probed.clone()
+        }
+        .write(&path)
+        .unwrap();
+        assert!(!remove_if_holds(&path, &probed.token));
+        assert_eq!(Endpoint::read(&path).unwrap().token, "new");
+        probed.write(&path).unwrap();
+        assert!(remove_if_holds(&path, &probed.token));
+        assert!(!path.exists());
+        assert!(!remove_if_holds(&path, &probed.token), "gone already");
+    }
+
     #[tokio::test]
     async fn a_stale_file_is_replaced_and_a_live_one_refuses() {
         let dir = tempfile::tempdir().unwrap();
@@ -458,26 +505,34 @@ mod tests {
 
     /// The finding this guards: a probe that timed
     /// out, or a file that could not be read, was taken as stale, so a
-    /// daemon could start beside a live one that was slow to accept.
+    /// daemon could start beside a live one that was slow to accept. The
+    /// probe is given (no test touches a real network).
     #[tokio::test]
     async fn only_a_refused_connect_proves_a_file_stale() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mob.endpoint");
-        // An address nothing answers at in time (or that is unreachable):
-        // not proven stale.
         let silent = Endpoint {
-            address: "10.255.255.1:9".parse().unwrap(),
+            address: "127.0.0.1:9".parse().unwrap(),
             token: "t".into(),
             pid: 1,
             workspace: None,
             started_at: None,
         };
         silent.write(&path).unwrap();
-        let refused = check_stale(&path).await;
+        // Nothing answers in time (or the address is unreachable): not
+        // proven stale.
+        let refused = check_stale_with(&path, |_| async {
+            Reach::Unknown("no answer within 2s".into())
+        })
+        .await;
         assert!(
             matches!(&refused, Err(DaemonError::EndpointUndecided { file, .. }) if file == &path),
             "{refused:?}"
         );
+        // A refusal is.
+        check_stale_with(&path, |_| async { Reach::Refused })
+            .await
+            .unwrap();
         // A file that cannot be read is no proof either.
         std::fs::write(&path, "not an endpoint").unwrap();
         assert!(matches!(

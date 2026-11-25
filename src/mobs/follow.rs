@@ -235,7 +235,6 @@ async fn follow(
     }
 }
 
-/// `terminal` with the `steps` its run made, when it reached its limit.
 /// What the follower keeps of the helper's current run.
 #[derive(Debug, Default)]
 struct RunSeen {
@@ -304,6 +303,7 @@ impl Follower<'_> {
     }
 }
 
+/// `terminal` with the `steps` its run made, when it reached its limit.
 fn counted(terminal: super::endings::Terminal, steps: u64) -> super::endings::Terminal {
     match terminal {
         super::endings::Terminal::Limit { .. } => super::endings::Terminal::Limit { steps },

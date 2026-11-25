@@ -1396,13 +1396,15 @@ impl HelperEndings {
     /// One of its own helpers still at work (spawned and not run yet,
     /// running, or its run's end not decided yet: [`Self::at_work`]), it
     /// is not done yet: it stays seated, that helper's ending is told to it
-    /// (a run of it reads it) and that run's end decides again.
+    /// (a run of it reads it) and that run's end decides again. A member
+    /// `assign` did not start ([`super::HelperKind::Other`], a council's
+    /// participant) is never decided idle, so it holds nothing.
     fn done(&self, key: &HelperKey, how: How) {
         if let Some(registry) = self.owed.get(OWED).and_then(Weak::upgrade)
             && registry
                 .bound_below(key)
                 .iter()
-                .any(|(child, _)| self.at_work(child))
+                .any(|(child, tag)| tag.kind != super::HelperKind::Other && self.at_work(child))
         {
             tracing::info!(helper = %key, "a single-use helper's own helper is still at work: it is done once that one's ending reached it");
             return;
@@ -2081,6 +2083,19 @@ mod tests {
         HelperKey,
     ) {
         use crate::mobs::{HelperContext::Fresh, HelperKind::Started, HelperLife};
+        parent_and(Started(Fresh, HelperLife::Kept))
+    }
+
+    /// [`parent_and_child`] with a child `c1` of `kind`.
+    fn parent_and(
+        kind: crate::mobs::HelperKind,
+    ) -> (
+        Arc<super::super::HelperRegistry>,
+        mpsc::UnboundedReceiver<Ended>,
+        HelperKey,
+        HelperKey,
+    ) {
+        use crate::mobs::{HelperContext::Fresh, HelperKind::Started, HelperLife};
         let (tx, rx) = mpsc::unbounded_channel();
         let registry = Arc::new(super::super::HelperRegistry::in_memory().with_outlets(
             crate::mobs::Outlets {
@@ -2093,19 +2108,36 @@ mod tests {
         let mob = MobId::from("tui");
         let parent = HelperKey::new(mob.clone(), AgentIdentity::from("p1"));
         let child = HelperKey::new(mob, AgentIdentity::from("c1"));
-        let tag = |path: Vec<&str>, life| HelperTag {
+        let tag = |path: Vec<&str>, kind| HelperTag {
             owner: owner.clone(),
             path: path.into_iter().map(str::to_string).collect(),
             model: "m".into(),
-            kind: Started(Fresh, life),
+            kind,
         };
         registry
-            .spawning(parent.clone(), tag(vec!["p1"], HelperLife::Single))
+            .spawning(
+                parent.clone(),
+                tag(vec!["p1"], Started(Fresh, HelperLife::Single)),
+            )
             .unwrap();
         registry
-            .spawning(child.clone(), tag(vec!["p1", "c1"], HelperLife::Kept))
+            .spawning(child.clone(), tag(vec!["p1", "c1"], kind))
             .unwrap();
         (registry, rx, parent, child)
+    }
+
+    /// C1: a member below a single-use helper that `assign` did not start
+    /// (a council's participant, [`crate::mobs::HelperKind::Other`]) is
+    /// never decided idle, so it does not hold its parent: the parent is
+    /// done when its own run ends, as with no such member.
+    #[test]
+    fn a_member_assign_did_not_start_does_not_hold_its_parent() {
+        let (registry, mut rx, parent, _child) = parent_and(crate::mobs::HelperKind::Other);
+        let endings = registry.endings();
+        endings.run_started(&parent);
+        endings.run_ended(&parent, Terminal::Completed("done".into()));
+        let ended = rx.try_recv().unwrap();
+        assert_eq!(ended.key, parent);
     }
 
     /// A kept helper restored from the last daemon and woken with no run

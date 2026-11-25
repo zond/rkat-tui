@@ -411,7 +411,7 @@ impl Renderer {
     fn push_char(&mut self, ch: char, st: Style) {
         let ch = match ch {
             '\t' => ' ',
-            c if c.is_control() => '\u{fffd}',
+            c if c.is_control() || is_bidi_control(c) => '\u{fffd}',
             c => c,
         };
         self.word_width += ch.width().unwrap_or(0);
@@ -840,8 +840,34 @@ pub fn sanitize(text: &str) -> String {
 /// Bidirectional embedding, override and isolate controls (U+202A–U+202E,
 /// U+2066–U+2069): text the model or a tool wrote could reorder what the
 /// terminal shows (a "Trojan Source" display), so they are replaced too.
-fn is_bidi_control(c: char) -> bool {
+pub(crate) fn is_bidi_control(c: char) -> bool {
     matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// `lines` with every bidirectional control in a span replaced by `�`: the
+/// one pass at each boundary where lines reach the screen (a block's lines,
+/// a dialog's, the status bar), whatever built their spans. The terminal
+/// buffer drops only `char::is_control` (Cc); these are Cf.
+#[must_use]
+pub fn without_bidi(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    for line in &mut lines {
+        line_without_bidi(line);
+    }
+    lines
+}
+
+/// [`without_bidi`] for one line.
+pub fn line_without_bidi(line: &mut Line<'static>) {
+    for span in &mut line.spans {
+        if span.content.chars().any(is_bidi_control) {
+            span.content = std::borrow::Cow::Owned(
+                span.content
+                    .chars()
+                    .map(|c| if is_bidi_control(c) { '\u{fffd}' } else { c })
+                    .collect(),
+            );
+        }
+    }
 }
 
 /// Sanitize `text` and greedily word-wrap every line to at most `width` columns.

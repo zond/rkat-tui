@@ -454,7 +454,10 @@ read. `auto.classifier_tools = false` turns the reading off. A call
 identical to one allowed earlier in the conversation is not reviewed
 again, except while auto mode is paused. An action whose arguments exceed
 48 KiB is never shown to the classifier: you are asked, and with nobody
-to ask it is denied.
+to ask it is denied. A stage-2 answer that names no clear verdict (the
+provider cut it off at its token limit, or it is unclear) is no block:
+you are asked, as when the review fails, and with nobody to ask it is
+denied; `/auto stats` counts these as "no clear verdict".
 
 ### The approval dialog
 
@@ -484,8 +487,11 @@ that agent's questions queued behind it.
 
 ### The classifier's model
 
-`/status` names it. `/auto model` opens a picker over every endpoint's
-models; `/auto model [endpoint:]<id>` sets it; `--user` writes your own
+With no `[auto] classifier_model` the classifier reviews with the agent's
+start-up model (rkat-tui names no model of its own as a default); a start-up
+notice says so. A cheaper model is usually enough. `/status` names it.
+`/auto model` opens a picker over every endpoint's models; `/auto model
+[endpoint:]<id>` sets it; `/auto model --user <id>` writes your own
 `tui.toml` instead of the workspace's. It is saved as `[auto]
 classifier_model` (never in a project file) and applies at once. A model
 of an endpoint the daemon lacks is refused: define the endpoint in your
@@ -497,7 +503,8 @@ main` it must block; a few thousand tokens) and warns when one comes out
 wrong. `[auto] classifier_probe = false` turns that off.
 
 `/auto stats` shows, for this conversation and since the daemon started,
-reviews, stage-1 flags, blocks by rule, failed reviews, pauses, the share
+reviews, stage-1 flags, blocks by rule, answers with no clear verdict,
+failed reviews, pauses, the share
 of blocks you approved in `/permissions` (the false-block signal), how
 often you allowed what you were asked (near 100% means the questions tell
 you nothing), and the classifier's tokens and time.
@@ -513,7 +520,7 @@ or two model calls at your cost.
 | Command | Sends |
 |---|---|
 | `/auto check` | 30 fixed cases: 12 routine, 12 harmful, 3 scope pairs (at most a few hundred thousand input tokens) |
-| `/auto check all` | all 159: 51 routine, 57 harmful, 12 scope pairs, 9 statement triples |
+| `/auto check all` | all 166: 51 routine, 64 harmful, 12 scope pairs, 9 statement triples |
 | `/auto check <n>` | `n` cases, spread the same way |
 | `/auto check statements` | the 9 statement triples |
 | `/auto check <case id>…` | those cases |
@@ -693,7 +700,7 @@ pause; entering it resets the counters.
 | Command | Does |
 |---|---|
 | `/mode` | Pick a mode (on a paused auto mode: resume) |
-| `/mode default\|accept-edits\|plan\|auto [--user]` | Set it |
+| `/mode [--user] default\|accept-edits\|plan\|auto` | Set it |
 | `/auto on`, `/auto off`, `/auto resume` | `/mode auto`, `/mode default`, end a pause |
 | `/auto` | The mode and the counters |
 
@@ -714,9 +721,13 @@ command hooks are not tool calls: rkat-tui starts them with your
 privileges, outside the confinement. A project's `.rkat/mcp.toml`
 (servers) and `.rkat/config.toml` (`[hooks]`) may have come with a cloned
 repository, and on Linux a confined shell can write `.rkat/`, so neither
-runs anything until you trust it. `/trust` records the SHA-256 of both,
-as they are now, in `~/.rkat/tui/trust/`; `--trust-project` trusts them
-for one run without recording. A changed file is untrusted again; a
+runs anything until you trust it. `/trust` first shows what each file
+would run (every MCP server's command line or URL, every hook's command,
+read from the file as it is then) and asks: `y` records the SHA-256 of
+exactly what you were shown in `~/.rkat/tui/trust/`, `n` or Esc records
+nothing; a file that changed after you were shown it stays untrusted,
+and the answer says so. `--trust-project` trusts them for one run
+without recording. A changed file is untrusted again; a
 start-up notice names each untrusted file and what it did not start, and
 `/status` shows their state. Your own `~/.rkat/config.toml`,
 `~/.rkat/mcp.toml`, `~/.rkat/tui` and the workspace's state directory
@@ -1183,13 +1194,18 @@ wins over every layer. rkat-tui never writes a project's file.
 
 | Command | Does |
 |---|---|
-| `/set <key> <value> [--user]` | writes the workspace's file, or with `--user` (`--global`) yours; values as `true`/`on`, `65%`, `300k`, words, text |
-| `/unset <key> [--user]` | removes that level's value; the next layer's applies |
+| `/set [--user] <key> <value>` | writes the workspace's file, or with `--user` (`--global`) yours; values as `true`/`on`, `65%`, `300k`, words, text |
+| `/unset [--user] <key>` | removes that level's value; the next layer's applies |
 | `/settings [filter]` | lists every setting with its value in force, its layer, what each layer holds and when a change applies; edit or remove values there |
 
 `/compact prepare …`, `/auto model`, `/mode`, `/permissions add` and
 Ctrl-T write settings the same way, and the first four take `--user`
-too (`/mode` alone and Shift+Tab write the workspace's).
+too (`/mode` alone and Shift+Tab write the workspace's). `--user` counts
+only directly after the command or its subcommand (`/set --user …`,
+`/compact prepare --user …`, `/auto model --user …`, `/permissions add
+--user …`); anywhere else it is part of the text, so
+`/permissions add allow shell pip install --user *` is a rule for
+exactly that command.
 `/permissions`' `A` and `n` write your file.
 
 Every change answers with the file written, the value now in force and
@@ -1244,7 +1260,7 @@ only add deny rules.
   and any rule for a task runner (`npm run`, `npm exec`, `npx`, `pnpm`,
   `yarn`, `cargo run`, `make`).
 
-`/permissions add allow|deny <tool> [pattern] [--user]` adds one (to your
+`/permissions add [--user] allow|deny <tool> [pattern]` adds one (to your
 own file with `--user`), `/permissions rm <n>` removes one, `/permissions
 list` prints them; the dialog's
 [In force](#in-force-rules-grants-and-statements) section does the same.
@@ -1284,7 +1300,7 @@ says when a change made while the daemon runs applies.
 | Key | Takes | Default | A project file | Takes effect | Flag, command |
 |---|---|---|---|---|---|
 | `auto.mode`: The permission mode at start (`default` is manual: every call that needs review asks you). | `default`, `accept-edits`, `plan`, `auto` | auto | may only turn auto mode off (`mode = "default"`) | at once | `--no-auto`, `/mode`, Shift+Tab |
-| `auto.classifier_model`: The model that reviews the agent's actions in auto mode. | a model, `[endpoint:]model` | the start-up endpoint's per-dialect default | may not set it | at once | `--classifier-model`, `/auto model` |
+| `auto.classifier_model`: The model that reviews the agent's actions in auto mode (a cheaper one than the agent's is usually enough). | a model, `[endpoint:]model` | the agent's start-up model | may not set it | at once | `--classifier-model`, `/auto model` |
 | `auto.trust_project_builds`: Whether `cargo build\|test\|nextest\|check\|clippy` are tier 1. | `true` or `false` | unset: trusted while a sandbox contains the shell; uncontained, a build after a dependency change asks | may only set `false` | at once | `--trust-project-builds`, `--no-trust-project-builds` |
 | `auto.classifier_tools`: Whether the classifier's second stage may read project files. | `true` or `false` | true | may only set `false` | at the next start | — |
 | `auto.classifier_probe`: Whether the daemon checks the classifier model at start with two fixed cases. | `true` or `false` | true | may set it (the command line wins) | at the next start | — |
@@ -1358,9 +1374,9 @@ work=openai=https://litellm.example.com,key_env=WORK_LLM_KEY[,api_style=chat_com
 The key always comes from the environment: rkat-tui records only the
 variable's name. An inline `api_key` refuses the start (exit 2); an unset
 variable skips the endpoint with a notice. Models are `work:<model>`, as
-the server lists them (`--model work:claude-opus-5-5`, or `/model`). When
-the proxy is your only endpoint, give the classifier a model there too:
-`--classifier-model work:<model>` or `[auto] classifier_model`.
+the server lists them (`--model work:claude-opus-5-5`, or `/model`). The
+classifier reviews with the start-up model unless you give it another
+(`--classifier-model work:<model>` or `[auto] classifier_model`).
 
 ### How endpoints reach the engine
 
@@ -1532,9 +1548,9 @@ unknown the thresholds are 120k and 150k tokens.
 
 **`/compact`** (or `/compact now`) compacts now; during a turn, before
 the run's next model request. Between turns it costs a short extra model
-call besides the summary. `/compact <instructions>` compacts the same way
-and ignores the instructions (Meerkat's compaction takes none).
-`/compact status` shows the policy, the threshold and the prepare
+call besides the summary. Meerkat's compaction takes no instructions,
+so `/compact` with any other text is refused with the usage (a typo such
+as `/compact stauts` does not compact). `/compact status` shows the policy, the threshold and the prepare
 instruction.
 
 Each compaction is one folded line, `✓ compacted: 379 → 68 messages (3.2k summary tokens) ▸`;
@@ -1578,7 +1594,8 @@ instruction.
 The keys layer like the other compaction keys (your `tui.toml`, the
 realm's, `--set`, the project's `.rkat/tui.toml`). In the TUI, these
 forms are shorthands for `/set` ([Settings](#settings)), written for this
-workspace, or with `--user` to your own file, and applied at once:
+workspace, or with `/compact prepare --user …` to your own file, and
+applied at once:
 
 | Command | Effect |
 |---|---|
@@ -1668,14 +1685,16 @@ compares the two feature by feature.
 `/help` shows these in a dialog over the transcript, with the keys one Tab
 away; it scrolls (↑/↓, `j`/`k`, PgUp/PgDn, Home/End, the mouse wheel) and
 Esc, `q` or Ctrl-C closes it. Nothing of it goes into the transcript, and
-the agent goes on underneath. `--user` (or `--global`) on a command that sets
-something writes your own `tui.toml` (every workspace) instead of the
-workspace's. `//` at the start of a prompt sends a literal `/`.
+the agent goes on underneath. `--user` (or `--global`) directly after a
+command that sets something (or after its subcommand) writes your own
+`tui.toml` (every workspace) instead of the workspace's; anywhere else
+it is part of the text. A command that takes no argument (`/help`,
+`/quit`, `/clear`, …) refuses one. `//` at the start of a prompt sends a literal `/`.
 
 | Command | What it does |
 |---|---|
 | `/settings [filter]` | Every setting, its value and the layer it comes from; edit or remove it there ([Settings](#settings)) |
-| `/set <key> <value> [--user]`, `/unset <key> [--user]` | Write or remove a setting in the workspace's `tui.toml` |
+| `/set [--user] <key> <value>`, `/unset [--user] <key>` | Write or remove a setting in the workspace's `tui.toml` |
 | `/help`, `/?` | The commands and keys, in a dialog (Tab switches) |
 | `/quit`, `/exit`, `/q` | Leave; your agent retires, and the daemon may stop ([The workspace daemon](#the-workspace-daemon)) |
 | `/detach` | Leave; the agent keeps working |
@@ -1685,16 +1704,16 @@ workspace's. `//` at the start of a prompt sends a literal `/`.
 | `/schedules [pause\|resume\|delete <name>]` | This agent's schedules ([Schedules](#schedules)) |
 | `/clear`, `/new` | Start a new session |
 | `/resume [ref]` | Switch to another conversation; no ref opens a picker ([Sessions](#sessions)) |
-| `/permissions [blocked\|rules\|hosts \| list \| add allow\|deny <tool> [pattern] [--user] \| rm <n>]` | The permissions dialog, or list, add and remove rules (`remove` = `rm`) ([The permissions dialog](#the-permissions-dialog)) |
-| `/trust` | Trust the project's `.rkat/mcp.toml` and `.rkat/config.toml` as they are now; their MCP servers and hooks run from the next session (`--trust-project`: for one run) |
-| `/mode [default\|accept-edits\|plan\|auto] [--user]` | Pick or set the permission mode ([Permission modes](#permission-modes)) |
+| `/permissions [blocked\|rules\|hosts \| list \| add [--user] allow\|deny <tool> [pattern] \| rm <n>]` | The permissions dialog, or list, add and remove rules (`remove` = `rm`) ([The permissions dialog](#the-permissions-dialog)) |
+| `/trust` | Show what the project's `.rkat/mcp.toml` and `.rkat/config.toml` would run and ask; `y` trusts them as shown, their MCP servers and hooks run from the next session (`--trust-project`: for one run) |
+| `/mode [[--user] default\|accept-edits\|plan\|auto]` | Pick or set the permission mode ([Permission modes](#permission-modes)) |
 | `/auto [on\|off\|resume\|stats]` | Show auto mode; switch it on or off; resume it after a denial pause; its review numbers |
-| `/auto model [[endpoint:]<id>] [--user]` | Pick or set the classifier's model |
+| `/auto model [[--user] [endpoint:]<id>]` | Pick or set the classifier's model |
 | `/auto check [all\|statements\|<n>\|<case id>…]` | Measure the classifier's model on built-in cases, one paid call each ([Checking your classifier model](#checking-your-classifier-model)) |
 | `/model [[endpoint:]<id> \| refresh]` | Pick or switch the model; `refresh` fetches the lists again |
 | `/remember <text>`, `#<text>` | Add a line to the workspace `AGENTS.md` and this session (`\#` sends a literal `#`) |
 | `/btw <question>` | A side question; see [below](#a-side-question-btw) |
-| `/compact [now \| status \| prepare … \| <instructions>]` | Compact before the next model request (instructions are ignored); `status` shows the policy; `prepare` sets the pre-compaction instruction ([Preparing for a compaction](#preparing-for-a-compaction)) |
+| `/compact [now \| status \| prepare …]` | Compact before the next model request (other text is refused); `status` shows the policy; `prepare` sets the pre-compaction instruction ([Preparing for a compaction](#preparing-for-a-compaction)) |
 | `/status` | Version, model, session, workspace and realm, confinement, mode, classifier, trust, helper depth, file watches |
 | `/daemon stop\|start` | Shut the daemon down (sessions stay), or connect again, starting it if needed |
 | `/memory [workspace\|user\|system]` | Edit `AGENTS.md` (workspace or yours) or `SYSTEM.md` in your editor; an `AGENTS.md` edit reaches this session, `SYSTEM.md` the next |

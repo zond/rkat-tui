@@ -419,12 +419,13 @@ pub(crate) struct Shared {
 impl Shared {
     /// Resolve a model-supplied path against the project root.
     /// A secret path ([`ResolvedPath::secret`]: the daemon's endpoint
-    /// directories) is refused here too, whatever the gate decided.
+    /// directories, every workspace's realm, the trust records, the
+    /// engine's comms keys) is refused here too, whatever the gate decided.
     pub(crate) fn resolve(&self, tool: &str, raw: &str) -> Result<ResolvedPath, ToolFailure> {
         let resolved = self.resolve_any(tool, raw)?;
         if resolved.secret {
             return Err(ToolFailure::recoverable(format!(
-                "`{raw}` is sealed: it holds the daemon's attach token, which no file tool reads"
+                "`{raw}` is sealed: it is rkat-tui's own state (an attach token, a workspace's realm, the trust records or the agents' comms keys), which no file tool reads or writes; work with the project's files instead"
             )));
         }
         Ok(resolved)

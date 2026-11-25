@@ -720,7 +720,7 @@ pub async fn remove_home(
     }
     if !yes {
         let config = config_dir
-            .map(|dir| format!(" --config-dir {}", dir.display()))
+            .map(|dir| format!(" --config-dir {}", crate::error::shell_quote(dir)))
             .unwrap_or_default();
         let daemon = if live.is_some() {
             "; its idle daemon would be stopped first"

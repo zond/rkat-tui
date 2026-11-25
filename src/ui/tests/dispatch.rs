@@ -1073,16 +1073,27 @@ fn compact_status_reports_the_policy_and_compact_needs_context() {
             user: false,
         }]
     );
-    // The threshold first, then the instruction; --user writes the
-    // user's own file.
+    // The threshold first, then the instruction; --user directly after
+    // `prepare` writes the user's own file.
     assert_eq!(
-        submit(&mut app, "/compact prepare at 65% update PLAN.md --user"),
+        submit(&mut app, "/compact prepare --user at 65% update PLAN.md"),
         vec![Effect::SetSettings {
             changes: vec![
                 ("auto.compact_prepare_at".into(), Some("65%".into())),
                 ("auto.compact_prepare".into(), Some("update PLAN.md".into())),
             ],
             user: true,
+        }]
+    );
+    // Anywhere else it is the instruction's text, for this workspace.
+    assert_eq!(
+        submit(&mut app, "/compact prepare run pip install --user the deps"),
+        vec![Effect::SetSettings {
+            changes: vec![(
+                "auto.compact_prepare".into(),
+                Some("run pip install --user the deps".into())
+            )],
+            user: false,
         }]
     );
     assert_eq!(
@@ -1097,10 +1108,18 @@ fn compact_status_reports_the_policy_and_compact_needs_context() {
     );
     // The generic forms.
     assert_eq!(
-        submit(&mut app, "/set ui.bell false --user"),
+        submit(&mut app, "/set --user ui.bell false"),
         vec![Effect::SetSettings {
             changes: vec![("ui.bell".into(), Some("false".into()))],
             user: true,
+        }]
+    );
+    // After the value it is the value's text.
+    assert_eq!(
+        submit(&mut app, "/set auto.compact_prepare say --user"),
+        vec![Effect::SetSettings {
+            changes: vec![("auto.compact_prepare".into(), Some("say --user".into()))],
+            user: false,
         }]
     );
     assert_eq!(
@@ -1111,7 +1130,7 @@ fn compact_status_reports_the_policy_and_compact_needs_context() {
         }]
     );
     assert_eq!(
-        submit(&mut app, "/mode plan --user"),
+        submit(&mut app, "/mode --user plan"),
         vec![Effect::SetSettings {
             changes: vec![("auto.mode".into(), Some("plan".into()))],
             user: true,
@@ -1137,7 +1156,7 @@ fn compact_status_reports_the_policy_and_compact_needs_context() {
         last_notice(&app)
     );
     // Nothing reported yet: nothing to compact.
-    for cmd in ["/compact", "/compact now", "/compact keep the plan"] {
+    for cmd in ["/compact", "/compact now"] {
         assert!(submit(&mut app, cmd).is_empty(), "{cmd}");
         assert_eq!(
             last_notice(&app),
@@ -1214,28 +1233,24 @@ fn context_command_sends_the_gauge_and_the_policy() {
     ));
 }
 
-// `/compact` compacts like Claude Code's, with `now` kept as an alias and the policy under `status`.
+// `/compact` compacts like Claude Code's, with `now` kept as an alias and
+// the policy under `status`; any other text is refused with the usage (no
+// focus instructions exist, so `/compact stauts` must not compact).
 #[test]
-fn bare_compact_compacts_and_instructions_add_a_warning() {
+fn bare_compact_compacts_and_other_text_is_refused() {
     let mut app = App::new(StatusInfo::default());
     app.status.context_used = Some(40_000);
+    for typo in ["/compact keep the test plan", "/compact stauts"] {
+        assert_eq!(submit(&mut app, typo), vec![], "{typo}");
+        assert!(!app.compaction.busy(), "{typo}");
+        assert!(
+            last_notice(&app).is_some_and(|(_, text)| text.contains("/compact [now | status")),
+            "{typo}: {:?}",
+            last_notice(&app)
+        );
+    }
     assert_eq!(submit(&mut app, "/compact"), vec![Effect::CompactNow]);
     assert!(app.compaction.busy());
-    assert!(
-        !app.transcript
-            .blocks()
-            .iter()
-            .any(|b| matches!(b, Block::Notice { text, .. } if text == COMPACT_FOCUS_UNSUPPORTED))
-    );
-    app.update(Msg::CompactRequested(Ok(())));
-    assert_eq!(
-        submit(&mut app, "/compact keep the test plan"),
-        vec![Effect::CompactNow]
-    );
-    assert!(app.transcript.blocks().iter().any(|b| matches!(
-        b,
-        Block::Notice { level: NoticeLevel::Warn, text } if text == COMPACT_FOCUS_UNSUPPORTED
-    )));
 }
 
 #[test]

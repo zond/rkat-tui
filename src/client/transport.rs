@@ -4,8 +4,9 @@
 //!
 //! [`Connection::call`] sends a request under a fresh id and resolves when
 //! the line with that id arrives, so any number of calls can be in flight
-//! (a slow answer does not hold up the others). Every other line with a `method` is a notification and
-//! goes to the receiver [`Connection::attach`] returns; that receiver
+//! (a slow answer does not hold up the others). Every other line with a
+//! `method` is a notification and goes to the receiver
+//! [`Connection::attach`] returns; that receiver
 //! ending is the one signal that the connection is gone (every call still
 //! pending then fails with [`ClientError::Disconnected`]).
 

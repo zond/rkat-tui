@@ -206,9 +206,9 @@ pub async fn configure_at(
 
 /// The arguments and `tui.toml` layers of the workspace `target` attaches
 /// to (`layers`: the ones read for `args`, reused when the workspace
-/// stays), and the daemon `--attach=HOST:PORT` reached. `check`: refuse a
-/// directory without an endpoint file (the start-up does; tests place
-/// their endpoint files elsewhere).
+/// stays), and the daemon `--attach=HOST:PORT` reached. `local_files`:
+/// this machine's endpoint files, which establish that a daemon reached by
+/// address is local ([`configure_at`]).
 async fn retarget(
     args: Args,
     target: &AttachTarget,

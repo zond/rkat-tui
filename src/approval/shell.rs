@@ -1121,6 +1121,11 @@ pub fn allowlisted_in(
                     "working directory is outside the project",
                 ));
             }
+            if resolved.secret {
+                return Err(NotAllowlisted::new(
+                    "working directory is rkat-tui's own state",
+                ));
+            }
             resolved.abs
         }
         None => ctx.root.as_path().to_path_buf(),
@@ -1672,6 +1677,15 @@ fn check_inside(
         .root
         .resolve(as_str)
         .map_err(|e| NotAllowlisted::new(format!("path `{value}`: {e}")))?;
+    if resolved.secret {
+        // rkat-tui's own state (a realm, the trust records, an attach
+        // token, the comms keys) may lie inside a project that holds the
+        // config directory (a workspace at the home directory): reading
+        // it is never a routine read.
+        return Err(NotAllowlisted::new(format!(
+            "path `{value}` is rkat-tui's own state"
+        )));
+    }
     if resolved.inside() {
         Ok(())
     } else {
@@ -2010,6 +2024,38 @@ mod tests {
         assert!(allowlisted("git status", &ctx).is_ok());
         assert!(allowlisted("git status \r# ; rm -rf x", &ctx).is_err());
         assert!(allowlisted("git status\r\n", &ctx).is_err());
+    }
+
+    /// A read-only command whose path or working directory lies in
+    /// rkat-tui's own state (a secret root: a realm, the trust records, the
+    /// comms keys) is never allowed unreviewed, also when that state lies
+    /// inside the project (a workspace that holds the config directory).
+    /// Outside the project it already is not (`cat ../secret`).
+    #[test]
+    fn a_read_of_rkat_tuis_own_state_is_not_allowlisted() {
+        let (dir, root) = project();
+        let state = dir.path().join(".rkat/tui/workspaces/abc");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join("audit.jsonl"), "{}\n").unwrap();
+        let root = root.with_secret_roots([dir.path().join(".rkat/tui/workspaces")]);
+        let c = ctx(&root, false);
+        assert!(allowlisted("cat src/main.rs", &c).is_ok());
+        for command in [
+            "cat .rkat/tui/workspaces/abc/audit.jsonl",
+            "tail -n 5 .rkat/tui/workspaces/abc/audit.jsonl",
+            "ls .rkat/tui/workspaces",
+            "cat .rkat/tui/workspaces/abc/*.jsonl",
+        ] {
+            let err = allowlisted(command, &c).unwrap_err();
+            assert!(
+                err.0.contains("rkat-tui's own state"),
+                "{command}: {}",
+                err.0
+            );
+        }
+        let err =
+            allowlisted_in("cat audit.jsonl", Some(".rkat/tui/workspaces/abc"), &c).unwrap_err();
+        assert!(err.0.contains("rkat-tui's own state"), "{}", err.0);
     }
 
     /// Git reads a directory holding `HEAD`, `objects` and `refs` as a

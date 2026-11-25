@@ -6,7 +6,7 @@ use std::time::Instant;
 use meerkat_core::{AgentEvent, TurnUsage};
 use ratatui::text::Line;
 
-use super::{Block, BlockId, Transcript, tool_has_output};
+use super::{Block, BlockId, Transcript, foldable};
 
 impl Transcript {
     /// The blocks a toggle key looks at: the transcript's blocks on screen
@@ -91,7 +91,7 @@ impl Transcript {
     pub fn last_tool_with_output_in(&self, scope: Option<BlockId>) -> Option<BlockId> {
         self.scoped_blocks_rev(scope)
             .into_iter()
-            .find(|id| self.block(*id).is_some_and(tool_has_output))
+            .find(|id| self.block(*id).is_some_and(foldable))
     }
 
     /// Laid-out line `idx` of the whole transcript, as of the last

@@ -327,9 +327,9 @@ struct OpenedMob {
 
 /// What a background task reports.
 enum Report {
-    /// A `/model` switch (`rkat/set_model`) applied, or why not.
     /// The classifier's model (`rkat/report`), for its picker.
     ClassifierModel(Option<String>),
+    /// A `/model` switch (`rkat/set_model`) applied, or why not.
     ModelSet {
         switch: ModelSwitch,
         result: Result<protocol::ModelSet, String>,
@@ -1295,8 +1295,12 @@ impl Runner {
             Effect::ListRules => {
                 self.outcome_command::<protocol::method::Rules>(RuleCommand::List, "/permissions");
             }
-            Effect::TrustProject => {
-                self.outcome_command::<protocol::method::Trust>(protocol::Empty {}, "/trust");
+            Effect::TrustProject => self.trust_project(),
+            Effect::TrustShown(files) => {
+                self.outcome_command::<protocol::method::Trust>(
+                    protocol::TrustParams { files },
+                    "/trust",
+                );
             }
             Effect::SaveUnsent(held) => self.bench.hold_unsent(held),
             Effect::SetChecklistView(view) => self.set_checklist_view(view),
@@ -1709,7 +1713,7 @@ mod tests {
                 "realm: /w/.rkat/tui (id tui)",
                 "shell confinement: workspace",
                 "permission mode: auto, PAUSED (consecutive denials 1/3, total 2/20)",
-                "classifier: claude-haiku-5-5 (/auto stats shows its numbers)",
+                "classifier: reviews with claude-haiku-5-5 (/auto model picks another, a cheaper one is usually enough; /auto stats shows its numbers)",
                 "realm rules: /w/.rkat/tui/tui.toml",
                 "project /w/.rkat/mcp.toml: not trusted: it changed",
                 "helpers: depth limit on (max_depth 1: the agent's helpers start none of their own)",

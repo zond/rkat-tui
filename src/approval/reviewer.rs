@@ -168,7 +168,9 @@ impl Reviewer {
         let Some(builder) = self.builder.get() else {
             return Err("this daemon's classifier is fixed (a test's or an embedder's); the model cannot be changed".into());
         };
-        let built = builder(endpoint, model).await?;
+        let built = builder(endpoint, model)
+            .await
+            .map_err(|why| format!("{why}; the classifier keeps its model"))?;
         let previous = self.model();
         *self.classifier.write() = built.review;
         *self.check.write() = Some(built.check);

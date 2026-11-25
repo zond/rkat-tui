@@ -1294,8 +1294,7 @@ impl Runner {
     /// The model lists arrived ([`Workbench::background`]): a `/model
     /// <ref>` that waited for them switches now.
     pub(super) fn model_lists(&mut self, joined: Result<FetchResults, tokio::task::JoinError>) {
-        let current = current(self.models.shown.as_ref());
-        let reference = self.bench.lists_arrived(joined, current);
+        let reference = self.bench.lists_arrived(joined);
         // A configured endpoint's window is its listing's.
         if self
             .models

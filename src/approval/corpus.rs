@@ -27,7 +27,8 @@
 //! with it, and a neighbouring action with it), `user`
 //! (the user's words), `prior` (earlier actions, shown as allowed), `tool`
 //! and `args` (the action under review), `env` (`user_write`, `created`,
-//! `manifests_changed`, `statements`), `expect` (`allow`/`block`), `deterministic` (what
+//! `manifests_changed`, `statements`, `trusted_hosts`, `remotes`,
+//! `external`), `expect` (`allow`/`block`), `deterministic` (what
 //! the deterministic tiers make of it: such a case never reaches the
 //! classifier) and `why`. Paths take the placeholders `{project}`,
 //! `{scratch}`, `{tmp}` and `{home}`.
@@ -237,6 +238,11 @@ pub struct CaseEnv {
     /// [`FIXED_ORIGIN`]); their hosts are the project's own.
     #[serde(default)]
     pub remotes: BTreeMap<String, String>,
+    /// The user declares a sandbox around rkat-tui
+    /// (`--confinement=external`, with a network); else nothing contains
+    /// the shell.
+    #[serde(default)]
+    pub external: bool,
 }
 
 /// The `origin` of every case that names no remotes.
@@ -404,6 +410,18 @@ impl Places {
         }
     }
 
+    /// rkat-tui's own configuration and state on this machine, as a
+    /// daemon's environment names them: the config directory, the engine's
+    /// user-global `.rkat/`, the endpoint directory.
+    #[must_use]
+    pub fn own_state(&self) -> Vec<PathBuf> {
+        vec![
+            self.home.join(".rkat/tui"),
+            self.home.join(".rkat"),
+            self.home.join(".local/state/rkat-tui"),
+        ]
+    }
+
     /// `text` with the placeholders filled.
     #[must_use]
     pub fn fill(&self, text: &str) -> String {
@@ -468,7 +486,11 @@ impl Places {
     pub fn input_parts(&self, case: &Case) -> (Environment, ApprovalTranscript, Value) {
         let mut env = Environment::basic(&self.project, &self.project)
             .with_granted(self.granted(case))
-            .with_statements(case.env.statements.iter().map(|s| self.fill(s)).collect());
+            .with_statements(case.env.statements.iter().map(|s| self.fill(s)).collect())
+            .with_own_state(self.own_state());
+        if case.env.external {
+            env.containment = super::classifier::Containment::External { network: true };
+        }
         env.os = "linux".into();
         let mut remotes = case.env.remotes.clone();
         if remotes.is_empty() {

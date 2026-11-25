@@ -111,7 +111,9 @@ pub(crate) fn pid_gone(pid: u32) -> bool {
     }
 }
 
-/// Probe every file of [`files`]; a stale one whose pid is gone is removed.
+/// Probe every file of [`files`]; a stale one whose pid is gone is removed,
+/// only while it still holds the token probed (a daemon started during the
+/// probe's seconds has written its own there, [`endpoint::remove_if_holds`]).
 pub async fn list(explicit: Option<&Path>) -> Vec<Listed> {
     let mut listed = Vec::new();
     for file in files(explicit) {
@@ -120,7 +122,8 @@ pub async fn list(explicit: Option<&Path>) -> Vec<Listed> {
         };
         let found = match probe(&endpoint).await {
             Found::Stale { .. } => {
-                let removed = pid_gone(endpoint.pid) && std::fs::remove_file(&file).is_ok();
+                let removed =
+                    pid_gone(endpoint.pid) && endpoint::remove_if_holds(&file, &endpoint.token);
                 Found::Stale { removed }
             }
             found => found,

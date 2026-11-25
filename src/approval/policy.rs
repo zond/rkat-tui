@@ -1028,7 +1028,7 @@ fn secret(path: &str) -> TierDecision {
     TierDecision::new(
         Tier::Sealed,
         format!(
-            "`{path}` is sealed: it holds the daemon's attach token, which file tools never read"
+            "`{path}` is sealed: it is rkat-tui's own state (an attach token, a workspace's realm, the trust records or the agents' comms keys), which file tools never read; work with the project's files instead"
         ),
     )
 }
@@ -1387,8 +1387,9 @@ mod tests {
             ("sealed", IN_PROJECT),
             (
                 "secret",
-                "Sealed: `<base>/secret/token` is sealed: it holds the daemon's attach \
-                 token, which file tools never read",
+                "Sealed: `<base>/secret/token` is sealed: it is rkat-tui's own state (an \
+                 attach token, a workspace's realm, the trust records or the agents' comms \
+                 keys), which file tools never read; work with the project's files instead",
             ),
             ("bad", BAD),
             ("outside", OUTSIDE),
@@ -1451,8 +1452,9 @@ mod tests {
             (
                 Some("secret-dir"),
                 Some("*"),
-                "Sealed: `<base>/secret` is sealed: it holds the daemon's attach token, \
-                 which file tools never read",
+                "Sealed: `<base>/secret` is sealed: it is rkat-tui's own state (an attach \
+                 token, a workspace's realm, the trust records or the agents' comms keys), \
+                 which file tools never read; work with the project's files instead",
             ),
             (
                 Some("outside-dir"),

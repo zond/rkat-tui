@@ -223,7 +223,7 @@ impl SettingsFile {
                 .as_table_mut()
                 .entry(list)
                 .or_insert(Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
-            if rule_entries(item).iter().any(|known| known == entry) {
+            if rule_index(item, entry).is_some() {
                 return Ok(false);
             }
             push_rule(item, entry).ok_or_else(shape)?;
@@ -258,7 +258,7 @@ impl SettingsFile {
             let Some(item) = doc.as_table_mut().get_mut(old_list) else {
                 return Ok(false);
             };
-            let Some(at) = rule_entries(item).iter().position(|known| known == old) else {
+            let Some(at) = rule_index(item, old) else {
                 return Ok(false);
             };
             if old_list == new_list {
@@ -307,7 +307,7 @@ impl SettingsFile {
             let Some(item) = doc.as_table_mut().get_mut(list) else {
                 return Ok(false);
             };
-            let Some(at) = rule_entries(item).iter().position(|known| known == entry) else {
+            let Some(at) = rule_index(item, entry) else {
                 return Ok(false);
             };
             match item {
@@ -492,8 +492,19 @@ fn set_field(table: &mut dyn TableLike, name: &str, value: Option<&str>) {
     }
 }
 
-/// The rule entries of an `allow`/`deny` item, in order.
-fn rule_entries(item: &Item) -> Vec<RuleEntry> {
+/// The index in `item` of the rule entry equal to `entry`: an index of the
+/// whole array (a member that is no table is counted, never matched), so
+/// `remove(at)` and `get_mut(at)` reach that entry.
+fn rule_index(item: &Item, entry: &RuleEntry) -> Option<usize> {
+    rule_entries(item)
+        .into_iter()
+        .find(|(_, known)| known == entry)
+        .map(|(at, _)| at)
+}
+
+/// The rule entries of an `allow`/`deny` item, in order, each with its
+/// index in the item.
+fn rule_entries(item: &Item) -> Vec<(usize, RuleEntry)> {
     let field = |table: &dyn TableLike, name: &str| {
         table.get(name).and_then(Item::as_str).map(str::to_string)
     };
@@ -503,11 +514,15 @@ fn rule_entries(item: &Item) -> Vec<RuleEntry> {
         literal: field(table, "literal"),
     };
     match item {
-        Item::ArrayOfTables(tables) => tables.iter().map(|table| entry(table)).collect(),
+        Item::ArrayOfTables(tables) => tables
+            .iter()
+            .enumerate()
+            .map(|(at, table)| (at, entry(table)))
+            .collect(),
         Item::Value(toml_edit::Value::Array(array)) => array
             .iter()
-            .filter_map(toml_edit::Value::as_inline_table)
-            .map(|table| entry(table))
+            .enumerate()
+            .filter_map(|(at, value)| Some((at, entry(value.as_inline_table()?))))
             .collect(),
         _ => Vec::new(),
     }

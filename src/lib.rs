@@ -19,6 +19,9 @@
 //! - `error` — the surface's error type and exit codes
 //! - `paths` — project-root path resolution and protected-path policy
 //! - `http` — bounded HTTP body reads
+//! - `hex` — hex digests and random ids
+//! - `text` — counts, durations and cuts of text in messages
+//! - `late` — the handles the daemon's start-up binds once
 //! - `config` — `tui.toml`: its schema, layering and the realm file's writes
 //! - `overlay` — the `--set`/`--allow`/… command-line layer over `tui.toml`
 //! - `pricing` — token prices for the cost readout

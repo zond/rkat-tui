@@ -334,14 +334,12 @@ async fn register_start_model(
     let listed = models.and_then(|cache| cache.entry(choice.endpoint.as_str(), &choice.model));
     match endpoints.get(choice.endpoint.as_str()) {
         Some(endpoint) if endpoint.is_self_hosted() => {
-            let classifier = approval::classifier_model(settings, choice.provider);
+            let classifier = approval::classifier_model(settings, &choice.model);
             let mut wanted: Vec<(&str, Option<&crate::models::ModelEntry>)> =
                 vec![(choice.model.as_str(), listed)];
-            if let Some(classifier) = classifier.as_deref()
-                && classifier != choice.model
-            {
-                let entry = models.and_then(|cache| cache.entry(&endpoint.name, classifier));
-                wanted.push((classifier, entry));
+            if classifier != choice.model {
+                let entry = models.and_then(|cache| cache.entry(&endpoint.name, &classifier));
+                wanted.push((classifier.as_str(), entry));
             }
             if let Some(Ok(list)) = models.and_then(|cache| cache.get(&endpoint.name)) {
                 for entry in list {
@@ -531,6 +529,16 @@ pub async fn assemble(
             },
         }
     };
+    // The choice was made on one of `endpoints` ([`choice_for`]).
+    let start_endpoint = endpoints
+        .get(choice.endpoint.as_str())
+        .cloned()
+        .ok_or_else(|| {
+            EndpointError::from(ModelRefError::UnknownEndpoint {
+                name: choice.endpoint.clone(),
+                known: endpoints.names(),
+            })
+        })?;
     let approval = approval::build(
         &scope,
         layered,
@@ -539,12 +547,8 @@ pub async fn assemble(
         approval::ClassifierSource {
             factory: &factory,
             config: &effective,
-            provider: choice.provider,
-            auth_binding: choice.auth_binding.clone(),
-            self_hosted: endpoints
-                .get(choice.endpoint.as_str())
-                .filter(|endpoint| endpoint.is_self_hosted())
-                .cloned(),
+            endpoint: start_endpoint,
+            model: choice.model.clone(),
             llm_override: options.llm_override.clone(),
             endpoints: &endpoints,
         },

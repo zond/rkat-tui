@@ -56,6 +56,121 @@ fn conventions_config(root: &Path) -> PathBuf {
     root.join(".rkat").join("config.toml")
 }
 
+/// One project input as `/trust` shows it before recording it
+/// ([`ProjectInputs::preview`]); the client sends it back with the yes.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TrustPreview {
+    /// The file.
+    pub file: PathBuf,
+    /// The SHA-256 (lower-case hex) of the content shown; `None`: absent.
+    pub digest: Option<String>,
+    /// What of it would run as the host, one line each (`MCP server docs:
+    /// npx docs-server --port 3000`, `hook fmt: ./fmt.sh`).
+    pub runs: Vec<String>,
+    /// Why it cannot be trusted at all (a symlink, not a regular file,
+    /// unreadable); it is then not recorded.
+    pub refused: Option<String>,
+}
+
+/// A command and its arguments as one line, each word quoted when it
+/// holds anything but plain characters.
+fn command_line(command: &str, args: &[String]) -> String {
+    std::iter::once(command)
+        .chain(args.iter().map(String::as_str))
+        .map(|word| {
+            if !word.is_empty()
+                && word
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c))
+            {
+                word.to_string()
+            } else {
+                crate::error::shell_quote(Path::new(word))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// What an `mcp.toml`'s `bytes` would start, one line per server.
+fn mcp_runs(bytes: &[u8]) -> Vec<String> {
+    use meerkat_core::mcp_config::{McpConfig, McpTransportConfig};
+    let parsed = std::str::from_utf8(bytes)
+        .map_err(|err| err.to_string())
+        .and_then(|text| toml::from_str::<McpConfig>(text).map_err(|err| err.to_string()));
+    match parsed {
+        Err(err) => vec![format!(
+            "it does not read as an mcp.toml ({}); no server of it would start",
+            crate::text::prefix(err.trim(), 200)
+        )],
+        Ok(config) => config
+            .servers
+            .iter()
+            .map(|server| match &server.transport {
+                McpTransportConfig::Stdio(stdio) => {
+                    let mut line = format!(
+                        "MCP server {}: {}",
+                        server.name,
+                        command_line(&stdio.command, &stdio.args)
+                    );
+                    if let Some(cwd) = &stdio.cwd {
+                        let _ = write!(line, " (in {cwd})");
+                    }
+                    if !stdio.env.is_empty() {
+                        let mut names: Vec<&str> = stdio.env.keys().map(String::as_str).collect();
+                        names.sort_unstable();
+                        let _ = write!(line, " (sets {})", names.join(", "));
+                    }
+                    line
+                }
+                McpTransportConfig::Http(http) => {
+                    format!("MCP server {}: {}", server.name, http.url)
+                }
+            })
+            .collect(),
+    }
+}
+
+/// What a conventions config's `bytes` would run, one line per hook.
+fn hook_runs(bytes: &[u8]) -> Vec<String> {
+    use meerkat_core::HookAdapterConfig;
+    let mut parsed = Config::default();
+    let read = std::str::from_utf8(bytes)
+        .map_err(|err| err.to_string())
+        .and_then(|text| parsed.merge_toml_str(text).map_err(|err| err.to_string()));
+    if let Err(err) = read {
+        return vec![format!(
+            "it does not read as a config.toml ({}); none of its hooks would run",
+            crate::text::prefix(err.trim(), 200)
+        )];
+    }
+    parsed
+        .hooks
+        .entries
+        .iter()
+        .map(|entry| {
+            let runs = match &entry.runtime {
+                HookAdapterConfig::Command(command) => {
+                    command_line(&command.command, &command.args)
+                }
+                HookAdapterConfig::Http(http) => format!("{} {}", http.method, http.url),
+                HookAdapterConfig::InProcess(_) => "a handler built into the host".to_string(),
+            };
+            format!("hook {}: {runs}", entry.id.0)
+        })
+        .collect()
+}
+
+/// The project `.rkat/mcp.toml` as [`ProjectInputs::read_mcp`] judged it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectMcp {
+    /// Trusted (recorded, or `--trust-project`): the bytes judged, `None`
+    /// when there is no file.
+    Trusted(Option<Vec<u8>>),
+    /// Not trusted: none of its servers start.
+    Untrusted,
+}
+
 /// Something of an untrusted file that was not started.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refused {
@@ -154,20 +269,114 @@ impl ProjectInputs {
         )
     }
 
-    /// Whether the project `.rkat/mcp.toml` may start servers.
+    /// Whether the project `.rkat/mcp.toml` may start servers (the load
+    /// itself judges the bytes it reads, [`Self::read_mcp`]).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn mcp_trusted(&self) -> bool {
         self.trusted(&self.mcp)
     }
 
-    /// `/trust`: record every present input as it is now (an absent one
-    /// forgets its digest). Returns the files recorded.
+    /// The project `.rkat/mcp.toml` read once, judged on the bytes read
+    /// ([`HostTrustRecord::read_checked`]): what [`super::mcp::load`]
+    /// starts the project's servers from.
+    #[must_use]
+    pub fn read_mcp(&self) -> ProjectMcp {
+        let (status, bytes) = self.record.lock().read_checked(&self.mcp);
+        match (status, bytes) {
+            (TrustStatus::Missing, _) => ProjectMcp::Trusted(None),
+            (TrustStatus::Trusted, bytes) => ProjectMcp::Trusted(bytes),
+            // `--trust-project` trusts the content, never a symlinked or
+            // unreadable file (no bytes were read).
+            (TrustStatus::Untrusted(_), Some(bytes)) if self.by_flag => {
+                ProjectMcp::Trusted(Some(bytes))
+            }
+            (TrustStatus::Untrusted(_), _) => ProjectMcp::Untrusted,
+        }
+    }
+
+    /// What `/trust` shows before it records anything: each input read once,
+    /// its digest, and what of it would run as the host (each MCP server's
+    /// command line, each hook's command), from exactly the bytes read.
+    #[must_use]
+    pub fn preview(&self) -> Vec<TrustPreview> {
+        let record = self.record.lock();
+        self.files()
+            .map(|file| {
+                let (status, bytes) = record.read_checked(file);
+                let refused = match &status {
+                    TrustStatus::Untrusted(
+                        why @ (Untrusted::Symlinked(_)
+                        | Untrusted::NotRegular
+                        | Untrusted::Unreadable(_)),
+                    ) => Some(why.to_string()),
+                    _ => None,
+                };
+                let runs = match &bytes {
+                    Some(bytes) if file == self.mcp => mcp_runs(bytes),
+                    Some(bytes) => hook_runs(bytes),
+                    None => Vec::new(),
+                };
+                TrustPreview {
+                    file: file.to_path_buf(),
+                    digest: bytes.as_deref().map(crate::hex::sha256),
+                    runs,
+                    refused,
+                }
+            })
+            .collect()
+    }
+
+    /// `/trust`, answered yes: record the digests the user was shown
+    /// (`shown`, from [`Self::preview`]); a file shown absent forgets its
+    /// digest, and one the preview could not read (it said why) is left
+    /// as it is. Only the project inputs are recorded, each as shown,
+    /// never as read now: content that changed since stays untrusted (the
+    /// answer's [`Self::changed_since`] says so). Returns the files
+    /// recorded.
+    ///
+    /// # Errors
+    ///
+    /// [`TrustError`] when the record cannot be saved.
+    pub fn trust_shown(&self, shown: &[TrustPreview]) -> Result<Vec<PathBuf>, TrustError> {
+        let mut record = self.record.lock();
+        let mut recorded = Vec::new();
+        for file in self.files() {
+            let Some(seen) = shown.iter().find(|seen| seen.file == file) else {
+                continue;
+            };
+            if seen.refused.is_some() {
+                continue;
+            }
+            record.record_digest(file, seen.digest.as_deref())?;
+            if seen.digest.is_some() {
+                recorded.push(file.to_path_buf());
+            }
+        }
+        Ok(recorded)
+    }
+
+    /// Of `files`, the ones whose content is no longer the recorded one
+    /// (changed after the user was shown it).
+    #[must_use]
+    pub fn changed_since(&self, files: &[PathBuf]) -> Vec<PathBuf> {
+        let record = self.record.lock();
+        files
+            .iter()
+            .filter(|file| record.check(file) != TrustStatus::Trusted)
+            .cloned()
+            .collect()
+    }
+
+    /// `/trust` without the question: record every present input as it is
+    /// now (an absent one forgets its digest). Returns the files recorded.
     ///
     /// # Errors
     ///
     /// [`TrustError`] when a file cannot be trusted (symlinked, not a
     /// regular file) or the record cannot be saved; the files before it
     /// stay recorded.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn trust_all(&self) -> Result<Vec<PathBuf>, TrustError> {
         let mut record = self.record.lock();
         let mut recorded = Vec::new();
@@ -394,6 +603,50 @@ mod tests {
             inputs.guard(&mut config).await,
             [Refused::hook(&project, "fmt2")]
         );
+    }
+
+    /// `/trust` shows each input's MCP servers' command lines and hooks'
+    /// commands, read once, and records nothing; the yes records the
+    /// digests shown, and content changed in between stays untrusted.
+    #[test]
+    fn trust_shows_what_runs_then_records_what_was_shown() {
+        let fx = fixture();
+        let mcp = fx.ws.join(".rkat/mcp.toml");
+        let hooks = fx.ws.join(".rkat/config.toml");
+        std::fs::write(
+            &mcp,
+            "[[servers]]\nname = \"docs\"\ncommand = \"npx\"\nargs = [\"docs-server\", \"--port\", \"3 000\"]\nenv = { TOKEN = \"x\" }\n\n[[servers]]\nname = \"web\"\nurl = \"https://mcp.example.com/x\"\n",
+        )
+        .unwrap();
+        std::fs::write(&hooks, HOOK).unwrap();
+        let inputs = ProjectInputs::new(&fx.scope, record(&fx.scope), false);
+        let shown = inputs.preview();
+        assert_eq!(shown.len(), 2);
+        assert_eq!(
+            shown[0].runs,
+            [
+                "MCP server docs: npx docs-server --port '3 000' (sets TOKEN)",
+                "MCP server web: https://mcp.example.com/x",
+            ]
+        );
+        assert_eq!(shown[1].runs, ["hook fmt: touch /tmp/pwned"]);
+        assert!(!inputs.mcp_trusted(), "a preview records nothing");
+
+        // Yes, but the hook file changed after it was shown.
+        std::fs::write(&hooks, HOOK.replace("pwned", "other")).unwrap();
+        let recorded = inputs.trust_shown(&shown).unwrap();
+        assert_eq!(recorded, [mcp.clone(), hooks.clone()]);
+        assert!(inputs.mcp_trusted());
+        assert!(!inputs.trusted(&hooks));
+        assert_eq!(inputs.changed_since(&recorded), [hooks]);
+
+        // A file shown absent forgets its digest.
+        std::fs::remove_file(&mcp).unwrap();
+        let gone = inputs.preview();
+        assert_eq!(gone[0].digest, None);
+        inputs.trust_shown(&gone).unwrap();
+        std::fs::write(&mcp, "[[servers]]\nname = \"docs\"\ncommand = \"npx\"\n").unwrap();
+        assert!(!inputs.mcp_trusted());
     }
 
     #[tokio::test]

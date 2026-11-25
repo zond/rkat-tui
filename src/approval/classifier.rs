@@ -18,7 +18,7 @@
 use super::ApprovalEvent;
 use super::prompts::{
     Evidence, Stage1, Stage2Mode, TOOL_BUDGET_EXHAUSTED, UNTRUSTED_TOOL_RESULT_PREFIX,
-    parse_stage1, render_stage1, render_stage2, render_stage2_final, stage2_or_block,
+    parse_stage1, render_stage1, render_stage2, render_stage2_final, stage2_verdict,
 };
 use super::transcript::ApprovalTranscript;
 use crate::tools::{READ_FILE, ReadOnlyProjectTools};
@@ -71,6 +71,13 @@ pub struct Environment {
     /// The hosts the user trusts (`[auto] trusted_hosts`, checked
     /// patterns), set per call.
     pub trusted_hosts: Vec<String>,
+    /// rkat-tui's own configuration and state and the engine's user-global
+    /// configuration, resolved: the config directory (permissions,
+    /// settings, trust records, every workspace's realm), the user config
+    /// root's `.rkat/` (`mcp.toml`, hooks, `AGENTS.md`, skills, the comms
+    /// keys) and the daemon's endpoint directories (the attach token). The
+    /// agent never reads or writes them (rule S1).
+    pub own_state: Vec<PathBuf>,
 }
 
 /// What contains the agent's shell: rkat-tui's own sandbox, one the user
@@ -226,7 +233,29 @@ impl Environment {
             statements: Vec::new(),
             project_hosts: Vec::new(),
             trusted_hosts: Vec::new(),
+            own_state: Vec::new(),
         }
+    }
+
+    /// The same environment with rkat-tui's own configuration and state
+    /// (`dirs`, see [`Self::own_state`]); a directory under another one
+    /// listed is left out.
+    #[must_use]
+    pub fn with_own_state(mut self, dirs: impl IntoIterator<Item = PathBuf>) -> Self {
+        let mut dirs: Vec<PathBuf> = dirs.into_iter().collect();
+        dirs.sort();
+        dirs.dedup();
+        let kept: Vec<PathBuf> = dirs
+            .iter()
+            .filter(|dir| {
+                !dirs
+                    .iter()
+                    .any(|other| other != *dir && dir.starts_with(other))
+            })
+            .cloned()
+            .collect();
+        self.own_state = kept;
+        self
     }
 
     /// The same environment with the statements the user allows.
@@ -570,6 +599,27 @@ pub enum ClassifierError {
     /// The response could not be parsed.
     #[error("unparseable classifier response: {0}")]
     Unparseable(String),
+    /// The review's answer reached no verdict: the provider cut it off at
+    /// its output budget (`cut_off`), or it named no clear verdict. Not a
+    /// refusal of the action: the call is put to the user, as when no
+    /// classifier answers.
+    #[error("{}", unclear_words(*.cut_off))]
+    Unclear {
+        /// Whether the provider stopped the answer at its token limit.
+        cut_off: bool,
+    },
+    /// No classifier model is configured.
+    #[error("no classifier model is configured")]
+    Unavailable,
+}
+
+/// What an [`ClassifierError::Unclear`] answer is called.
+fn unclear_words(cut_off: bool) -> &'static str {
+    if cut_off {
+        "the classifier's answer was cut off at its token limit before a verdict"
+    } else {
+        "the classifier's answer named no clear verdict"
+    }
 }
 
 /// Reviews Tier-3 actions.
@@ -587,9 +637,7 @@ pub trait ActionClassifier: Send + Sync {
         &self,
         _input: super::checkpoint::CheckpointInput<'_>,
     ) -> Result<super::checkpoint::CheckpointVerdict, ClassifierError> {
-        Err(ClassifierError::Provider(
-            "no classifier model is configured".to_string(),
-        ))
+        Err(ClassifierError::Unavailable)
     }
 
     /// Choose which of the user's older messages stay in the transcript
@@ -599,9 +647,7 @@ pub trait ActionClassifier: Send + Sync {
         &self,
         _input: super::standing::StandingInput<'_>,
     ) -> Result<Vec<usize>, ClassifierError> {
-        Err(ClassifierError::Provider(
-            "no classifier model is configured".to_string(),
-        ))
+        Err(ClassifierError::Unavailable)
     }
 }
 
@@ -616,9 +662,7 @@ impl ActionClassifier for UnavailableClassifier {
         &self,
         _input: ClassifierInput<'_>,
     ) -> Result<ClassifierVerdict, ClassifierError> {
-        Err(ClassifierError::Provider(
-            "no classifier is configured".to_string(),
-        ))
+        Err(ClassifierError::Unavailable)
     }
 }
 
@@ -637,19 +681,6 @@ pub const MAX_STAGE2_ROUND_TRIPS: usize = 8;
 pub const DEFAULT_STAGE1_MAX_TOKENS: u32 = 32;
 /// Default stage-2 output budget (reasoning plus verdict lines).
 pub const DEFAULT_STAGE2_MAX_TOKENS: u32 = 1024;
-
-/// Default classifier model for `provider`: a small, fast catalog model
-/// (`None` for self-hosted and unknown providers). `[auto] classifier_model`
-/// overrides it.
-#[must_use]
-pub fn classifier_default_model(provider: Provider) -> Option<&'static str> {
-    match provider {
-        Provider::Anthropic => Some("claude-sonnet-4-6"),
-        Provider::OpenAI => Some("gpt-5.4-mini"),
-        Provider::Gemini => Some("gemini-3.1-flash-lite"),
-        Provider::SelfHosted | Provider::Other => None,
-    }
-}
 
 /// Typed provider knobs that minimise hidden reasoning, so the tiny stage-1
 /// budget is spent on the answer.
@@ -829,9 +860,20 @@ impl LlmClassifier {
         session: &SessionId,
         request: LlmRequest,
     ) -> Result<String, ClassifierError> {
+        self.call_answer(session, request)
+            .await
+            .map(|answer| answer.text)
+    }
+
+    /// A call whose text, and whether the provider cut it off, matter.
+    async fn call_answer(
+        &self,
+        session: &SessionId,
+        request: LlmRequest,
+    ) -> Result<Answer, ClassifierError> {
         self.call(session, request)
             .await
-            .map(|reply| assistant_text(&reply))
+            .map(|reply| Answer::of(&reply))
             .map_err(|err| ClassifierError::Provider(err.to_string()))
     }
 
@@ -878,10 +920,10 @@ impl LlmClassifier {
         &self,
         input: &ClassifierInput<'_>,
     ) -> Result<ClassifierVerdict, ClassifierError> {
-        let (text, run) = match &self.project_tools {
+        let (answer, run) = match &self.project_tools {
             None => (self.stage2_plain(input).await?, Stage2Run::Plain),
             Some(tools) => match self.stage2_tool_loop(input, tools).await {
-                Ok((text, stats)) => (text, Stage2Run::Tools(stats)),
+                Ok((answer, stats)) => (answer, Stage2Run::Tools(stats)),
                 Err(LoopError::ToolsRejected(error)) => {
                     tracing::debug!(
                         model = %self.model,
@@ -894,7 +936,7 @@ impl LlmClassifier {
             },
         };
         tracing::debug!(model = %self.model, tool = input.tool, ?run, "classifier stage 2 mode");
-        let verdict = match stage2_or_block(&text) {
+        let verdict = match stage2_verdict(&answer.text, answer.cut_off)? {
             ClassifierVerdict::Block {
                 rule,
                 reason,
@@ -914,9 +956,9 @@ impl LlmClassifier {
     }
 
     /// Tool-less stage 2 (no project tools, or the endpoint rejected them).
-    async fn stage2_plain(&self, input: &ClassifierInput<'_>) -> Result<String, ClassifierError> {
+    async fn stage2_plain(&self, input: &ClassifierInput<'_>) -> Result<Answer, ClassifierError> {
         let (system, user) = render_stage2(input, Stage2Mode::NoTools);
-        self.call_text(
+        self.call_answer(
             input.session_id,
             self.request(system, user, self.stage2_max_tokens),
         )
@@ -928,7 +970,7 @@ impl LlmClassifier {
         &self,
         input: &ClassifierInput<'_>,
         tools: &ReadOnlyProjectTools,
-    ) -> Result<(String, ToolStats), LoopError> {
+    ) -> Result<(Answer, ToolStats), LoopError> {
         let (system, user) = render_stage2(input, Stage2Mode::WithTools);
         let mut request = self.request(system.clone(), user.clone(), self.stage2_max_tokens);
         request.tools = tools.tools().iter().cloned().collect::<Vec<Arc<ToolDef>>>();
@@ -951,7 +993,7 @@ impl LlmClassifier {
                 }
             };
             if reply.tool_calls().next().is_none() {
-                return Ok((assistant_text(&reply), stats));
+                return Ok((Answer::of(&reply), stats));
             }
             let mut results = Vec::new();
             for call in reply.tool_calls() {
@@ -996,11 +1038,27 @@ impl LlmClassifier {
             render_stage2_final(&user, &views),
             self.stage2_max_tokens,
         );
-        let text = self
-            .call_text(input.session_id, request)
+        let answer = self
+            .call_answer(input.session_id, request)
             .await
             .map_err(LoopError::Classifier)?;
-        Ok((text, stats))
+        Ok((answer, stats))
+    }
+}
+
+/// A reply's text and whether the provider stopped it at the token limit.
+#[derive(Debug)]
+struct Answer {
+    text: String,
+    cut_off: bool,
+}
+
+impl Answer {
+    fn of(reply: &BlockAssistantMessage) -> Self {
+        Self {
+            text: assistant_text(reply),
+            cut_off: reply.stop_reason == Some(StopReason::MaxTokens),
+        }
     }
 }
 
@@ -1322,7 +1380,7 @@ mod tests {
         };
         assert!(matches!(
             UnavailableClassifier.classify(input).await,
-            Err(ClassifierError::Provider(_))
+            Err(ClassifierError::Unavailable)
         ));
     }
 

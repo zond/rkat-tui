@@ -195,7 +195,7 @@ fn the_rows_hold_every_setting_and_layer() {
         .iter()
         .find(|row| row.key == "auto.classifier_model")
         .unwrap();
-    assert_eq!(model.value, "the start-up endpoint's per-dialect default");
+    assert_eq!(model.value, "the agent's start-up model");
     assert_eq!(model.source, Level::Default);
     assert_eq!(list.user_file, tmp.path().join("user").join("tui.toml"));
 }

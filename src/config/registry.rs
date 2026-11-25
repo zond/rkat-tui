@@ -857,10 +857,10 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         key: "auto.classifier_model",
         kind: Kind::Model,
-        default: Fallback::Unset("the start-up endpoint's per-dialect default"),
+        default: Fallback::Unset("the agent's start-up model"),
         project: ProjectRule::Never,
         applies: Applies::Live,
-        about: "The model that reviews the agent's actions in auto mode.",
+        about: "The model that reviews the agent's actions in auto mode (a cheaper one than the agent's is usually enough).",
         flags: &[Flag {
             flag: "--classifier-model",
             value: FlagValue::Argument,

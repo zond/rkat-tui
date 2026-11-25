@@ -1139,7 +1139,11 @@ fn status_bar_with(status: &StatusInfo, now: Instant, send_now: &str) -> Line<'s
         }
         spans.push(seg);
     }
-    Line::from(spans)
+    // The bar's one boundary to the screen: an endpoint's or a model's
+    // name (an endpoint's listing) holds no bidirectional control there.
+    let mut line = Line::from(spans);
+    super::markdown::line_without_bidi(&mut line);
+    line
 }
 
 /// The status-bar text (unstyled [`status_bar`]).
@@ -1199,8 +1203,16 @@ pub const USER_BAND: Style = Style::new()
     .bg(Color::Indexed(238))
     .add_modifier(Modifier::BOLD);
 
-/// Lay out one block at `width` (including a trailing spacer line).
+/// Lay out one block at `width` (including a trailing spacer line). The
+/// transcript's one boundary to the screen: the bidirectional controls of
+/// every span are replaced here ([`super::markdown::without_bidi`]), so a
+/// diff's path, a peer's name or a triggered run's label the agent chose
+/// cannot reorder what the terminal shows.
 pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
+    super::markdown::without_bidi(block_lines_raw(block, width))
+}
+
+fn block_lines_raw(block: &Block, width: u16) -> Vec<Line<'static>> {
     let w = usize::from(width).max(4);
     let dim = Style::default().add_modifier(Modifier::DIM);
     let mut out = Vec::new();
@@ -2109,6 +2121,64 @@ mod tests {
         );
         assert_eq!(tool_toggle_hint(true, None, Some(&diff)), " ▸ +3 -1");
         assert_eq!(tool_toggle_hint(false, None, Some(&diff)), " ▾");
+    }
+
+    /// A file name the agent chose with a bidirectional override (the
+    /// classic `evil\u{202E}txt.exe`) shows as `�` in a diff's line: the
+    /// block's lines pass one replacement at their boundary.
+    #[test]
+    fn a_bidi_control_in_a_diffs_path_is_replaced() {
+        let block = Block::Tool {
+            name: "write_file".into(),
+            head: super::super::transcript::tool_line::head(
+                "write_file",
+                &serde_json::json!({"path": "a"}),
+                &super::super::transcript::tool_line::PathView::default(),
+            ),
+            outcome: super::super::transcript::tool_line::Outcome::default(),
+            ticked: 0,
+            args: serde_json::json!({"path": "a"}),
+            state: ToolState::Done {
+                is_error: false,
+                duration_ms: 5,
+            },
+            result_preview: None,
+            diff: Some(DiffView {
+                path: "evil\u{202E}txt.exe".into(),
+                unified: "+a".into(),
+                added: 1,
+                removed: 0,
+            }),
+            note: None,
+            depth: 0,
+            collapsed: false,
+        };
+        let text: Vec<String> = block_lines(&block, 80).iter().map(line_text).collect();
+        assert!(
+            text.iter().any(|line| line.contains("evil\u{fffd}txt.exe")),
+            "{text:?}"
+        );
+        assert!(
+            !text.iter().any(|line| line.contains('\u{202E}')),
+            "{text:?}"
+        );
+    }
+
+    /// The status bar's endpoint and model come from an endpoint's
+    /// listing: a bidirectional control there shows as `�`.
+    #[test]
+    fn a_bidi_control_in_the_status_bars_model_is_replaced() {
+        let mut s = StatusInfo::default();
+        s.apply(StatusUpdate::Model {
+            endpoint: "work\u{2066}".into(),
+            model: "gpt\u{202E}-5".into(),
+        });
+        let bar = line_text(&status_bar(&s, Instant::now()));
+        assert!(bar.contains("gpt\u{fffd}-5"), "{bar}");
+        assert!(
+            !bar.contains('\u{202E}') && !bar.contains('\u{2066}'),
+            "{bar}"
+        );
     }
 
     #[test]

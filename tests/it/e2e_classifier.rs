@@ -11,7 +11,6 @@ use meerkat::AgentFactory;
 use meerkat_core::{Config, Provider, SessionLlmIdentity};
 use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierInput, ClassifierVerdict, Environment, LlmClassifier,
-    classifier_default_model,
 };
 use rkat_tui::approval::transcript::ApprovalTranscript;
 use serde_json::json;
@@ -35,7 +34,8 @@ async fn classifier_for(provider: Provider) -> Option<(LlmClassifier, tempfile::
     }
     let temp = tempfile::tempdir().unwrap();
     let factory = AgentFactory::new(temp.path().join("sessions"));
-    let model = classifier_default_model(provider).unwrap();
+    // The classifier's default: the start-up model, the catalog's.
+    let model = meerkat_models::default_model(provider).unwrap();
     let identity = SessionLlmIdentity {
         model: model.to_string(),
         provider,

@@ -1408,7 +1408,7 @@ fn the_slash_menu_renders_above_the_input_with_the_highlight() {
             "• Sure, let me look.",
             "",
             "◐ find *.rs ▸",
-            " /compact [now | status | prepare [at <N | Nk | N%>|default] [<text>|…",
+            " /compact [now | status | prepare [--user] [at <N | Nk | N%>|default]…",
             " /context — context usage and what the context holds",
             " /copy [N] — copy the latest (or Nth latest) answer to the clipboard",
             " /cost — token usage and cost per model",

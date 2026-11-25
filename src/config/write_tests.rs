@@ -9,6 +9,21 @@ fn file(dir: &Path) -> SettingsFile {
     SettingsFile::new(Level::User, dir.join("tui").join("tui.toml"))
 }
 
+/// A rule's index is its index in the whole array: a member that is no
+/// table is counted (never matched), so removing the rule removes it and
+/// not its neighbour.
+#[test]
+fn a_rules_index_counts_every_member_of_its_array() {
+    let doc: toml_edit::DocumentMut = "allow = [\"x\", { tool = \"a\" }]\n".parse().unwrap();
+    let item = doc.as_table().get("allow").unwrap();
+    let a = RuleEntry {
+        tool: "a".into(),
+        arg: None,
+        literal: None,
+    };
+    assert_eq!(rule_index(item, &a), Some(1));
+}
+
 #[test]
 fn a_setting_changes_only_its_own_key_and_keeps_comments_and_order() {
     let tmp = tempfile::tempdir().unwrap();

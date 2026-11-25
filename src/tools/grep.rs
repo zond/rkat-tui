@@ -271,11 +271,11 @@ impl Search<'_> {
     }
 }
 
-/// The answer: the files' lines up to the output's limits, and what was
-/// left out.
 /// What the answer of a grep that matched nothing starts with.
 pub(crate) const NO_MATCHES: &str = "No matches for";
 
+/// The answer: the files' lines up to the output's limits, and what was
+/// left out.
 fn render(found: Searched, line_limit: usize, pattern: &str) -> String {
     let Searched {
         files,

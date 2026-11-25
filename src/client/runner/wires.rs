@@ -270,10 +270,18 @@ async fn wire_over_ssh(say: &Say, connection: &Connection, params: protocol::Wir
             say.notice(NoticeLevel::Warn, format!("nothing was wired: {message}"));
             return;
         }
+        // Only a refusal proves nothing was done: a dropped connection
+        // or an unreadable answer leaves the wire's state unknown.
         Ok(Err(err)) => {
             say.notice(
                 NoticeLevel::Warn,
-                format!("nothing was wired: this workspace's daemon did not answer: {err}"),
+                if listing {
+                    format!("this workspace's daemon did not answer: {err}")
+                } else {
+                    format!(
+                        "this workspace's daemon did not answer the wire to {host} ({err}); /agents shows whether it was made"
+                    )
+                },
             );
             return;
         }

@@ -1,5 +1,5 @@
 //! `LlmClassifier` against the scripted `LlmClient` of the shared harness:
-//! stage-1 parsing, the bounded stage-2 tool loop, fail-closed verdicts,
+//! stage-1 parsing, the bounded stage-2 tool loop, answers with no verdict,
 //! typed low-reasoning knobs and usage reporting.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -19,7 +19,7 @@ use meerkat_llm_core::LlmClient;
 use rkat_tui::approval::ApprovalEvent;
 use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict, Environment,
-    LlmClassifier, STAGE1_ALLOW_REASON, classifier_default_model, low_reasoning_params,
+    LlmClassifier, STAGE1_ALLOW_REASON, low_reasoning_params,
 };
 use rkat_tui::approval::prompts::{
     STAGE2_TOOLS_INSTRUCTIONS, TOOL_BUDGET_EXHAUSTED, UNTRUSTED_TOOL_RESULT_PREFIX,
@@ -173,18 +173,26 @@ async fn stage1_garbage_then_stage2_block_with_rule() {
     assert_eq!(client.recorded().len(), 2);
 }
 
+/// A stage-2 answer with no verdict is no block: the review did not
+/// complete (the engine then asks the user), and the error says whether
+/// the provider cut the answer off at its token limit.
 #[tokio::test]
-async fn a_malformed_stage2_verdict_fails_closed() {
+async fn a_stage2_answer_without_a_verdict_is_an_incomplete_review() {
     let client = ScriptedLlmClient::new(vec![
         Step::Text("BLOCK"),
         Step::Text("I really cannot say."),
     ]);
     let fx = Fixture::new();
-    let verdict = classifier(&client).classify(fx.input()).await.unwrap();
-    assert!(matches!(
-        verdict,
-        ClassifierVerdict::Block { rule: None, .. }
-    ));
+    let err = classifier(&client).classify(fx.input()).await.unwrap_err();
+    assert_eq!(err, ClassifierError::Unclear { cut_off: false });
+
+    let client = ScriptedLlmClient::new(vec![
+        Step::CutOff("thinking"),
+        Step::CutOff("The command runs the tests, which the user asked for, so"),
+    ]);
+    let err = classifier(&client).classify(fx.input()).await.unwrap_err();
+    assert_eq!(err, ClassifierError::Unclear { cut_off: true });
+    assert!(err.to_string().contains("cut off"), "{err}");
 }
 
 #[tokio::test]
@@ -235,29 +243,7 @@ async fn budgets_and_typed_low_reasoning_knobs() {
 }
 
 #[test]
-fn default_models_and_knobs() {
-    assert_eq!(
-        classifier_default_model(Provider::Anthropic),
-        Some("claude-sonnet-4-6")
-    );
-    assert_eq!(
-        classifier_default_model(Provider::OpenAI),
-        Some("gpt-5.4-mini")
-    );
-    assert_eq!(
-        classifier_default_model(Provider::Gemini),
-        Some("gemini-3.1-flash-lite")
-    );
-    assert_eq!(classifier_default_model(Provider::Other), None);
-    // Every default model is in the catalog the facade builds clients from.
-    for provider in [Provider::Anthropic, Provider::OpenAI, Provider::Gemini] {
-        let model = classifier_default_model(provider).unwrap();
-        assert_eq!(
-            meerkat_models::catalog::infer_provider(model),
-            Some(provider),
-            "{model}"
-        );
-    }
+fn low_reasoning_knobs() {
     assert_eq!(
         low_reasoning_params(Provider::Gemini, "gemini-3.1-flash-lite"),
         Some(ProviderTag::Gemini(GeminiProviderTag {

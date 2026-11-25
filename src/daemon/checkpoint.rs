@@ -163,10 +163,13 @@ impl Line<'_> {
 pub fn reason_of_error(error: &ClassifierError) -> String {
     match error {
         ClassifierError::Timeout => "the review timed out".to_string(),
-        ClassifierError::Unparseable(_) => "the review's answer was unclear".to_string(),
-        ClassifierError::Provider(why) if why.contains("no classifier") => {
-            "no classifier model reviews checkpoints".to_string()
+        ClassifierError::Unparseable(_) | ClassifierError::Unclear { cut_off: false } => {
+            "the review's answer was unclear".to_string()
         }
+        ClassifierError::Unclear { cut_off: true } => {
+            "the review's answer was cut off at its token limit".to_string()
+        }
+        ClassifierError::Unavailable => "no classifier model reviews checkpoints".to_string(),
         ClassifierError::Provider(why) => format!("the review failed: {}", plain(why)),
     }
 }
@@ -430,10 +433,17 @@ mod tests {
             "the review's answer was unclear"
         );
         assert_eq!(
-            reason_of_error(&ClassifierError::Provider(
-                "no classifier model is configured".into()
-            )),
+            reason_of_error(&ClassifierError::Unavailable),
             "no classifier model reviews checkpoints"
+        );
+        // A provider failure that happens to say the words is a failure.
+        assert_eq!(
+            reason_of_error(&ClassifierError::Provider("no classifier here".into())),
+            "the review failed: no classifier here"
+        );
+        assert_eq!(
+            reason_of_error(&ClassifierError::Unclear { cut_off: true }),
+            "the review's answer was cut off at its token limit"
         );
         assert_eq!(
             reason_of_error(&ClassifierError::Provider("a 503\nretry later.".into())),

@@ -266,27 +266,41 @@ pub async fn wire(own: &Connection, other: &Endpoint, peer: &str) -> Result<Stri
             agent: Some(peer.to_string()),
         })
         .await?;
-    let wired_there = match bounded(remote::call::<method::Wire>(
+    let answer = bounded(remote::call::<method::Wire>(
         there.connection,
         &peer_params(ours.clone()),
     ))
-    .await
-    {
-        Ok(wired) => wired,
-        // No answer in time: whether it wired its side is not known, so
-        // it is undone (or said so) before anything is claimed.
-        Err(ClientError::Timeout(_)) => {
-            let undone = there
-                .call::<method::Unwire>(&UnwireParams {
-                    agent: Some(peer.to_string()),
-                    workspace: ours.workspace.clone(),
-                    peer: ours.agent.clone(),
-                })
-                .await
-                .map(|unwired| unwired.removed);
-            return Err(unanswered_wire(&there.name, &theirs.label(), undone));
+    .await;
+    let wired_there = match WireAnswer::of(answer) {
+        WireAnswer::Wired(wired) => wired,
+        WireAnswer::Refused(err) => {
+            return Err(format!("nothing was wired: {}", words(&there.name, &err)));
         }
-        Err(err) => return Err(format!("nothing was wired: {}", words(&there.name, &err))),
+        // The request may have been taken: it is undone over a fresh
+        // connection (or said so) before anything is claimed.
+        WireAnswer::Unknown(err) => {
+            let unwire = UnwireParams {
+                agent: Some(peer.to_string()),
+                workspace: ours.workspace.clone(),
+                peer: ours.agent.clone(),
+            };
+            let undone = match probe(other, &there.name).await {
+                Ok(fresh) => Side {
+                    name: there.name.clone(),
+                    connection: &fresh,
+                }
+                .call::<method::Unwire>(&unwire)
+                .await
+                .map(|unwired| unwired.removed),
+                Err(why) => Err(why),
+            };
+            return Err(unanswered_wire(
+                &there.name,
+                &theirs.label(),
+                &unanswered(&err),
+                undone,
+            ));
+        }
     };
     let wired_here = match here
         .call::<method::Wire>(&WireParams {
@@ -338,17 +352,48 @@ pub async fn wire(own: &Connection, other: &Endpoint, peer: &str) -> Result<Stri
 /// in time comes to, after the undo of that side's half (`undone`:
 /// whether it had one to remove, or why the undo failed): "nothing was
 /// wired" only when that is known.
-fn unanswered_wire(name: &str, label: &str, undone: Result<bool, String>) -> String {
+fn unanswered_wire(name: &str, label: &str, how: &str, undone: Result<bool, String>) -> String {
     match undone {
         Ok(true) => format!(
-            "{name} did not answer in time but had wired its side; that half was undone, so nothing is wired (/wire {label} again)"
+            "{name} {how} but had wired its side; that half was undone, so nothing is wired (/wire {label} again)"
         ),
         Ok(false) => format!(
-            "nothing was wired: {name} did not answer in time and holds no wire to this agent (/wire {label} again)"
+            "nothing was wired: {name} {how} and holds no wire to this agent (/wire {label} again)"
         ),
         Err(undo) => format!(
-            "{name} did not answer in time, so whether it wired its side is not known, and undoing it failed too ({undo}); this side is not wired: /wire {label} again, or in that workspace /wire, then d on this agent's row"
+            "{name} {how}, so whether it wired its side is not known, and undoing it failed too ({undo}); this side is not wired: /wire {label} again, or in that workspace /wire, then d on this agent's row"
         ),
+    }
+}
+
+/// What the other daemon's answer to `rkat/wire` proves.
+#[derive(Debug)]
+enum WireAnswer<T> {
+    /// It wired its side.
+    Wired(T),
+    /// It refused (an RPC error): it did nothing.
+    Refused(ClientError),
+    /// No answer in time, a dropped connection, an answer that does not
+    /// read: the request may have been taken, so whether it wired its side
+    /// is not known (absence is no evidence).
+    Unknown(ClientError),
+}
+
+impl<T> WireAnswer<T> {
+    fn of(result: Result<T, ClientError>) -> Self {
+        match result {
+            Ok(wired) => Self::Wired(wired),
+            Err(err @ ClientError::Rpc { .. }) => Self::Refused(err),
+            Err(err) => Self::Unknown(err),
+        }
+    }
+}
+
+/// How a wire request went unanswered, as [`unanswered_wire`] says it.
+fn unanswered(err: &ClientError) -> String {
+    match err {
+        ClientError::Timeout(_) => "did not answer in time".to_string(),
+        other => format!("did not answer ({other})"),
     }
 }
 
@@ -635,20 +680,53 @@ mod tests {
     #[test]
     fn an_unanswered_wire_says_what_is_the_case() {
         let name = "the daemon of /w/gamma";
-        let undone = unanswered_wire(name, "gamma/main-g", Ok(true));
+        let late = unanswered(&ClientError::Timeout("x"));
+        assert_eq!(late, "did not answer in time");
+        let undone = unanswered_wire(name, "gamma/main-g", &late, Ok(true));
         assert!(
             undone.contains("had wired its side; that half was undone, so nothing is wired"),
             "{undone}"
         );
-        let none = unanswered_wire(name, "gamma/main-g", Ok(false));
+        let none = unanswered_wire(name, "gamma/main-g", &late, Ok(false));
         assert!(none.starts_with("nothing was wired: "), "{none}");
-        let unknown = unanswered_wire(name, "gamma/main-g", Err("no answer".into()));
+        // A dropped connection is no refusal: the same honest words.
+        let dropped = unanswered(&ClientError::Disconnected);
+        let unknown = unanswered_wire(name, "gamma/main-g", &dropped, Err("no answer".into()));
+        assert!(
+            unknown.contains("did not answer (the connection"),
+            "{unknown}"
+        );
         assert!(!unknown.contains("nothing was wired"), "{unknown}");
         assert!(
             unknown.contains("whether it wired its side is not known")
                 && unknown.contains("in that workspace /wire, then d on this agent's row"),
             "{unknown}"
         );
+    }
+
+    /// Only a refusal proves the other side wired nothing: a dropped
+    /// connection, an unreadable answer or a timeout leave it unknown (and
+    /// take the undo).
+    #[test]
+    fn only_a_refusal_proves_nothing_was_wired_there() {
+        let refused = WireAnswer::<()>::of(Err(ClientError::Rpc {
+            method: "rkat/wire".into(),
+            code: -32000,
+            message: "no".into(),
+        }));
+        assert!(matches!(refused, WireAnswer::Refused(_)));
+        for err in [
+            ClientError::Disconnected,
+            ClientError::Timeout("x"),
+            ClientError::Protocol("half a line".into()),
+            ClientError::Io(std::io::Error::other("reset")),
+        ] {
+            assert!(
+                matches!(WireAnswer::<()>::of(Err(err)), WireAnswer::Unknown(_)),
+                "unknown"
+            );
+        }
+        assert!(matches!(WireAnswer::of(Ok(1)), WireAnswer::Wired(1)));
     }
 
     fn c(workspace: &str, agent: &str) -> Candidate {
