@@ -244,12 +244,12 @@ impl fmt::Display for DenyReason {
         match self {
             Self::UserRule { id, rule } => write!(
                 f,
-                "denied by the user's deny rule {id} (`{rule}`); only the user can lift it \
+                "{USER_RULE_DENIAL}{id} (`{rule}`); only the user can lift it \
                  (`/permissions` lists and removes rules)"
             ),
             Self::Sealed { detail } => write!(
                 f,
-                "denied by rkat-tui's fixed policy, which no rule or answer opens: {detail}"
+                "{FIXED_POLICY_DENIAL}, which no rule or answer opens: {detail}"
             ),
             Self::Unavailable { detail } => f.write_str(detail),
             Self::Classifier {
@@ -270,20 +270,18 @@ impl fmt::Display for DenyReason {
                 }
                 Ok(())
             }
-            Self::Human { comment: None } => {
-                f.write_str("the user denied this action in the approval dialog")
-            }
+            Self::Human { comment: None } => f.write_str(HUMAN_DENIAL),
             Self::Human {
                 comment: Some(comment),
-            } => write!(f, "denied by the user: {comment}"),
-            Self::Stopped => f.write_str("the user stopped this turn from the approval dialog"),
+            } => write!(f, "{HUMAN_COMMENT_DENIAL}{comment}"),
+            Self::Stopped => write!(f, "{STOPPED_DENIAL} from the approval dialog"),
             Self::Interrupted => {
                 f.write_str("the user interrupted this turn; the call was not run")
             }
             Self::PlanMode => f.write_str(PLAN_MODE_DENIAL),
             Self::ClassifierUnavailable(err) => write!(
                 f,
-                "the safety classifier is unavailable ({err}) and no user could be asked; \
+                "{UNAVAILABLE_DENIAL} ({err}) and no user could be asked; \
                  the user can answer such calls once attached, or switch to manual mode"
             ),
             Self::ReviewIncomplete(err) => write!(
@@ -293,10 +291,10 @@ impl fmt::Display for DenyReason {
                  in your answer, so the user can check the classifier or answer such calls \
                  themselves"
             ),
-            Self::EscalationTimedOut => f.write_str(
-                "the user did not answer the approval request in time (or one queued ahead of \
-                 it went unanswered); say in your answer what you wanted to do, so the user can \
-                 ask for it again",
+            Self::EscalationTimedOut => write!(
+                f,
+                "{TIMED_OUT_DENIAL} (or one queued ahead of it went unanswered); say in your \
+                 answer what you wanted to do, so the user can ask for it again",
             ),
             Self::Unattended => f.write_str(UNATTENDED_DENIAL),
             Self::PlanWired { label } => write!(
@@ -309,6 +307,24 @@ impl fmt::Display for DenyReason {
 
 /// How a classifier denial starts: its source.
 pub const CLASSIFIER_SOURCE: &str = "the safety classifier blocked it: ";
+
+// How the other denials start: a transcript reads a denial's few words by
+// them (`crate::ui::transcript::tool_line::denial`).
+
+/// How a user deny rule's denial starts (its id follows).
+pub const USER_RULE_DENIAL: &str = "denied by the user's deny rule ";
+/// How a sealed path's denial starts.
+pub const FIXED_POLICY_DENIAL: &str = "denied by rkat-tui's fixed policy";
+/// The user's denial in the dialog, with no comment.
+pub const HUMAN_DENIAL: &str = "the user denied this action in the approval dialog";
+/// How the user's denial with a comment starts (the comment follows).
+pub const HUMAN_COMMENT_DENIAL: &str = "denied by the user: ";
+/// How the dialog's Stop's denial starts.
+pub const STOPPED_DENIAL: &str = "the user stopped this turn";
+/// How an unavailable classifier's denial starts.
+pub const UNAVAILABLE_DENIAL: &str = "the safety classifier is unavailable";
+/// How an unanswered escalation's denial starts.
+pub const TIMED_OUT_DENIAL: &str = "the user did not answer the approval request in time";
 
 /// How a failed review starts, for the agent and the user alike.
 pub const REVIEW_INCOMPLETE: &str = "the safety review could not be completed";

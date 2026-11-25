@@ -169,6 +169,10 @@ impl Shown for Reveals {
     }
 }
 
+/// Valid `tool_search` calls, for a refusal of arguments that do not read.
+const SEARCH_EXAMPLES: &str =
+    r#"a valid call looks like {"query": "schedule"} or {"family": "mob"}"#;
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SearchArgs {
@@ -188,10 +192,10 @@ fn one_line(description: &str) -> String {
         .find(". ")
         .map_or(first, |end| &first[..=end])
         .trim_end();
-    if sentence.len() <= LINE {
-        return sentence.to_string();
+    match crate::text::head_bytes(sentence, LINE) {
+        (head, true) => format!("{head}…"),
+        (whole, false) => whole.to_string(),
     }
-    format!("{}…", crate::text::prefix(sentence, LINE))
 }
 
 /// One conversation's search tool.
@@ -361,7 +365,7 @@ impl AgentToolDispatcher for SearchTool {
             .parse_args()
             .map_err(|err| ToolError::InvalidArguments {
                 name: call.name.to_string(),
-                reason: err.to_string(),
+                reason: format!("{err}; {SEARCH_EXAMPLES}"),
             })?;
         Ok(ToolDispatchOutcome::from(
             self.search(call.id.to_string(), args).await,

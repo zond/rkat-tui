@@ -23,6 +23,7 @@ use super::counters::{MAX_CONSECUTIVE_DENIALS, MAX_TOTAL_DENIALS};
 use super::escalation::{HumanDecision, RecordedPrompt};
 use super::mode::PermissionMode;
 use super::rules::{Rule, RuleId, RuleKind, RuleOrigin, RuleSet, RulesError};
+use crate::daemon::protocol::Outcome;
 
 /// The human's answer to an escalation dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,23 +248,16 @@ pub fn mode_notice(mode: PermissionMode) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum RuleCommand {
-    /// `/permissions add allow|deny <tool> [pattern]`.
+    /// `/permissions add allow|deny <tool> [pattern]`, or the dialog's `r`
+    /// form (a literal one too).
     Add {
-        /// Allow or deny.
-        deny: bool,
-        /// Tool name pattern.
-        tool: String,
-        /// Argument pattern.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pattern: Option<String>,
+        /// The rule.
+        #[serde(flatten)]
+        spec: RuleSpec,
         /// Written to the user's own `tui.toml` (`--user`) instead of the
         /// workspace's.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         user: bool,
-        /// `pattern` is matched exactly, not as a glob (the `/permissions`
-        /// dialog's `r` form).
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        literal: bool,
     },
     /// `/permissions remove <n>`.
     Remove {
@@ -333,86 +327,39 @@ impl RuleSpec {
     }
 }
 
-/// What a rule command did: whether it succeeded and the text to show.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuleOutcome {
-    /// It did what it was asked.
-    pub ok: bool,
-    /// The notice.
-    pub text: String,
-}
-
-/// A permission act's answer: done with its notice, or refused with why.
-impl From<Result<String, String>> for RuleOutcome {
-    fn from(done: Result<String, String>) -> Self {
-        match done {
-            Ok(text) => Self { ok: true, text },
-            Err(text) => Self { ok: false, text },
-        }
-    }
-}
-
-impl RuleOutcome {
-    fn ok(text: impl Into<String>) -> Self {
-        Self {
-            ok: true,
-            text: text.into(),
-        }
-    }
-
-    fn failed(text: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            text: text.into(),
-        }
-    }
-}
-
 /// Run `command` on `engine` (rules added or removed are persisted to the
 /// realm rules file, trusted).
 #[must_use]
-pub fn run_rule_command(engine: &ApprovalEngine, command: &RuleCommand) -> RuleOutcome {
+pub fn run_rule_command(engine: &ApprovalEngine, command: &RuleCommand) -> Outcome {
     match command {
-        RuleCommand::Add {
-            deny,
-            tool,
-            pattern,
-            user,
-            literal,
-        } => {
+        RuleCommand::Add { spec, user } => {
             let level = if *user {
                 crate::config::registry::Level::User
             } else {
                 crate::config::registry::Level::Workspace
             };
-            let spec = RuleSpec {
-                deny: *deny,
-                tool: tool.clone(),
-                pattern: pattern.clone(),
-                literal: *literal,
-            };
             let rule = match spec.rule(RuleOrigin::Realm) {
                 Ok(rule) => rule,
-                Err(why) => return RuleOutcome::failed(format!("rule not added: {why}")),
+                Err(why) => return Outcome::failed(format!("rule not added: {why}")),
             };
             match engine.add_rule(rule, level) {
-                Ok(()) if *user => RuleOutcome::ok("rule added to your tui.toml (every workspace)"),
-                Ok(()) => RuleOutcome::ok("rule added"),
-                Err(err) => RuleOutcome::failed(format!("rule not added: {err}")),
+                Ok(()) if *user => Outcome::ok("rule added to your tui.toml (every workspace)"),
+                Ok(()) => Outcome::ok("rule added"),
+                Err(err) => Outcome::failed(format!("rule not added: {err}")),
             }
         }
         RuleCommand::Remove { n } => {
             let Some(id) = nth_rule_id(&engine.rules(), *n) else {
-                return RuleOutcome::failed(format!("no rule #{n}"));
+                return Outcome::failed(format!("no rule #{n}"));
             };
             match engine.remove_rule(id) {
-                Ok(Some(rule)) => RuleOutcome::ok(format!("removed {}", describe_rule(&rule))),
-                Ok(None) => RuleOutcome::failed(format!("no rule #{n}")),
-                Err(err) => RuleOutcome::failed(format!("rule not removed: {err}")),
+                Ok(Some(rule)) => Outcome::ok(format!("removed {}", describe_rule(&rule))),
+                Ok(None) => Outcome::failed(format!("no rule #{n}")),
+                Err(err) => Outcome::failed(format!("rule not removed: {err}")),
             }
         }
         RuleCommand::Edit { n, old, new } => {
-            let not = |why: &str| RuleOutcome::failed(format!("rule {n} not changed: {why}"));
+            let not = |why: &str| Outcome::failed(format!("rule {n} not changed: {why}"));
             let rules = engine.rules();
             let Some((id, held)) =
                 nth_rule_id(&rules, *n).and_then(|id| rules.get(id).map(|rule| (id, rule.clone())))
@@ -431,9 +378,9 @@ pub fn run_rule_command(engine: &ApprovalEngine, command: &RuleCommand) -> RuleO
             };
             match engine.edit_rule(id, rule) {
                 Ok(RuleEdit::Unchanged) => {
-                    RuleOutcome::ok(format!("rule {n} unchanged: nothing was written"))
+                    Outcome::ok(format!("rule {n} unchanged: nothing was written"))
                 }
-                Ok(RuleEdit::Edited { old, new }) => RuleOutcome::ok(format!(
+                Ok(RuleEdit::Edited { old, new }) => Outcome::ok(format!(
                     "rule {n} changed: {} is now {}",
                     describe_rule(&old),
                     describe_rule(&new)
@@ -447,9 +394,9 @@ pub fn run_rule_command(engine: &ApprovalEngine, command: &RuleCommand) -> RuleO
                 .map(|(n, rule)| rule_list_line(n, rule))
                 .collect();
             if lines.is_empty() {
-                RuleOutcome::ok("no rules")
+                Outcome::ok("no rules")
             } else {
-                RuleOutcome::ok(lines.join("\n"))
+                Outcome::ok(lines.join("\n"))
             }
         }
     }
@@ -686,11 +633,13 @@ mod tests {
     #[test]
     fn rule_commands_and_mode_status_travel_as_json() {
         let add = RuleCommand::Add {
-            deny: true,
-            tool: "write_file".into(),
-            pattern: None,
+            spec: RuleSpec {
+                deny: true,
+                tool: "write_file".into(),
+                pattern: None,
+                literal: false,
+            },
             user: false,
-            literal: false,
         };
         let wire = serde_json::to_value(&add).unwrap();
         assert_eq!(
@@ -698,6 +647,17 @@ mod tests {
             json!({"op": "add", "deny": true, "tool": "write_file"})
         );
         assert_eq!(serde_json::from_value::<RuleCommand>(wire).unwrap(), add);
+        let literal = json!({"op": "add", "deny": false, "tool": "shell", "pattern": "make", "literal": true, "user": true});
+        let RuleCommand::Add { spec, user } =
+            serde_json::from_value::<RuleCommand>(literal.clone()).unwrap()
+        else {
+            panic!("an add")
+        };
+        assert!(user && spec.literal && spec.pattern.as_deref() == Some("make"));
+        assert_eq!(
+            serde_json::to_value(RuleCommand::Add { spec, user }).unwrap(),
+            literal
+        );
         assert_eq!(
             serde_json::from_value::<RuleCommand>(json!({"op": "remove", "n": 3})).unwrap(),
             RuleCommand::Remove { n: 3 }

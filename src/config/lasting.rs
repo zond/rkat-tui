@@ -167,7 +167,7 @@ impl Lasting {
                 }),
                 Err(why) => self.skipped.push(Skipped::TrustedHost {
                     origin,
-                    text: raw.chars().take(80).collect(),
+                    text: crate::text::head_chars(raw, 80).0.to_string(),
                     why,
                 }),
             }
@@ -196,7 +196,7 @@ impl Lasting {
                 Err(StatementRefusal::Duplicate) => {}
                 Err(refusal) => self.skipped.push(Skipped::Statement {
                     origin,
-                    text: raw.chars().take(80).collect(),
+                    text: crate::text::head_chars(raw, 80).0.to_string(),
                     refusal,
                 }),
             }

@@ -69,10 +69,34 @@ pub const AGENT_NOTICE: &str = "rkat/agent_notice";
 /// [`HelperEnded`].
 pub const HELPER_ENDED: &str = "rkat/helper_ended";
 
-/// The `how` of a [`HELPER_ENDED`] that says only that a helper left its
-/// mob (it was retired; how it ended, if it was told, came before): its
-/// line shows it retired, and nothing else is shown.
-pub const HELPER_RETIRED: &str = "retired";
+/// How a helper ended, as a client's line of it reads it
+/// ([`HelperEnded::ending`]); its `Display` is the word a line shows
+/// when the daemon gave no other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HelperEnding {
+    /// It finished its task.
+    Finished,
+    /// Its run failed.
+    Failed,
+    /// It was stopped (by the user, the daemon's stop, its checkpoint).
+    Stopped,
+    /// It only left its mob (it was retired; how it ended, if it was
+    /// told, came before): its line shows it retired, and nothing else is
+    /// shown.
+    Retired,
+}
+
+impl std::fmt::Display for HelperEnding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Finished => "finished",
+            Self::Failed => "failed",
+            Self::Stopped => "stopped",
+            Self::Retired => "retired",
+        })
+    }
+}
 
 /// The notification of the helpers seated for one agent's conversation
 /// now (its whole tree, nested ones too): pushed whenever one is seated or
@@ -106,6 +130,8 @@ pub struct HelperEnded {
     pub session_id: SessionId,
     /// Its labels, outermost first (its own last).
     pub path: Vec<String>,
+    /// How it ended.
+    pub ending: HelperEnding,
     /// How it ended, in the words its line shows (`stopped by you`).
     pub how: String,
     /// Who was told and when, in plain words (`main-ab12 is told with your
@@ -160,16 +186,50 @@ pub struct SetSettingParams {
     pub user: bool,
 }
 
-/// [`method::SetSetting`]'s result.
+/// What an act the daemon was asked for did (a rule, a setting, a grant,
+/// a schedule, a read such as `/auto stats`): whether it did it and the
+/// text to show.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SettingOutcome {
-    /// It was written.
+pub struct Outcome {
+    /// It did what it was asked.
     pub ok: bool,
-    /// The confirmation, or why nothing was written.
+    /// The notice: the confirmation, or why nothing was done.
     pub text: String,
-    /// What applying it had to warn about.
+    /// What doing it had to warn about (a setting that applies later).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+}
+
+/// An act's answer: done with its notice, or refused with why.
+impl From<Result<String, String>> for Outcome {
+    fn from(done: Result<String, String>) -> Self {
+        match done {
+            Ok(text) => Self::ok(text),
+            Err(text) => Self::failed(text),
+        }
+    }
+}
+
+impl Outcome {
+    /// Done, with this notice.
+    #[must_use]
+    pub fn ok(text: impl Into<String>) -> Self {
+        Self {
+            ok: true,
+            text: text.into(),
+            warning: None,
+        }
+    }
+
+    /// Not done, and why.
+    #[must_use]
+    pub fn failed<T: Into<String>>(text: T) -> Self {
+        Self {
+            ok: false,
+            text: text.into(),
+            warning: None,
+        }
+    }
 }
 
 /// [`method::Settings`]'s result: every setting as `/settings` lists it.
@@ -286,7 +346,7 @@ methods! {
     SetMode = "rkat/set_mode" (SetModeParams) -> ModeSet;
     /// A `/permissions` command on the daemon's engine, which persists to
     /// the realm rules file.
-    Rules = "rkat/rules" (crate::approval::desk::RuleCommand) -> crate::approval::desk::RuleOutcome;
+    Rules = "rkat/rules" (crate::approval::desk::RuleCommand) -> Outcome;
     /// The `/permissions` picker's rows: every rule of the daemon's
     /// engine with its number, its patterns and its layer.
     RuleRows = "rkat/rule_rows" (Empty) -> crate::approval::desk::RuleRows;
@@ -296,42 +356,42 @@ methods! {
     /// Approve a blocked call once, for this session or always; with an
     /// `effect`, allow that kind of action (a statement the classifier
     /// reads) for this session or always instead.
-    Approve = "rkat/approve" (ApproveParams) -> crate::approval::desk::RuleOutcome;
+    Approve = "rkat/approve" (ApproveParams) -> Outcome;
     /// Allow a kind of action the user typed (`/permissions`' `n`), for
     /// this client's agent's session or always: a statement the
     /// classifier reads from the next review on; the agent is told in one
     /// system note.
-    AllowStatement = "rkat/allow_statement" (StatementParams) -> crate::approval::desk::RuleOutcome;
+    AllowStatement = "rkat/allow_statement" (StatementParams) -> Outcome;
     /// Withdraw an approval once that waits for the agent (the Blocked
     /// section's `w`): the call is a blocked call again.
-    WithdrawApproval = "rkat/withdraw_approval" (GrantParams) -> crate::approval::desk::RuleOutcome;
+    WithdrawApproval = "rkat/withdraw_approval" (GrantParams) -> Outcome;
     /// Remove a statement of this client's agent's session, or one added
     /// always (`/permissions`).
-    RemoveStatement = "rkat/remove_statement" (GrantParams) -> crate::approval::desk::RuleOutcome;
+    RemoveStatement = "rkat/remove_statement" (GrantParams) -> Outcome;
     /// Trust a host with the project's data (`/permissions`' Hosts
     /// section's `n`, or the hosts of a D5 block with the Blocked
     /// section's `t`/`T`), written to the realm's `tui.toml` or the user's
     /// own; the agent is told (for a blocked call: to run it again).
-    TrustHost = "rkat/trust_host" (TrustHostParams) -> crate::approval::desk::RuleOutcome;
+    TrustHost = "rkat/trust_host" (TrustHostParams) -> Outcome;
     /// Stop trusting a host (the Hosts section's `d`): it leaves the
     /// user's files that name it.
-    UntrustHost = "rkat/untrust_host" (HostParams) -> crate::approval::desk::RuleOutcome;
+    UntrustHost = "rkat/untrust_host" (HostParams) -> Outcome;
     /// `/set`, `/unset` and their shorthands (`/compact prepare`, `/auto
     /// model`, Ctrl+T): one setting at the user's or the workspace's
     /// level, checked, written to that `tui.toml`, and applied when the
     /// value in force changed (`crate::daemon::settings`).
-    SetSetting = "rkat/set_setting" (SetSettingParams) -> SettingOutcome;
+    SetSetting = "rkat/set_setting" (SetSettingParams) -> Outcome;
     /// `/settings`: every setting, the value in force, its layer and what
     /// each layer holds.
     Settings = "rkat/settings" (Empty) -> SettingsList;
     /// `/compact status`'s daemon side: the prepare instruction, its
     /// threshold and whether it is armed for this client's agent.
-    CompactStatus = "rkat/compact_status" (Empty) -> crate::approval::desk::RuleOutcome;
+    CompactStatus = "rkat/compact_status" (Empty) -> Outcome;
     /// The review numbers (`/auto stats`), since the daemon started and
     /// for this client's agent's conversation.
-    AutoStats = "rkat/auto_stats" (Empty) -> crate::approval::desk::RuleOutcome;
+    AutoStats = "rkat/auto_stats" (Empty) -> Outcome;
     /// Remove a session grant of this client's agent (`/permissions`).
-    RemoveGrant = "rkat/remove_grant" (GrantParams) -> crate::approval::desk::RuleOutcome;
+    RemoveGrant = "rkat/remove_grant" (GrantParams) -> Outcome;
     /// The agents' conversations, last used first, the caller's agent's
     /// current one marked ([`crate::daemon::conversations`]).
     Conversations = "rkat/conversations" (Empty) -> ConversationList;
@@ -371,7 +431,7 @@ methods! {
     /// `/trust`, answered yes: the digests of the content the user was
     /// shown ([`TrustPreview`]'s answer) recorded in the trust record the
     /// daemon owns (read on every session build).
-    Trust = "rkat/trust" (TrustParams) -> crate::approval::desk::RuleOutcome;
+    Trust = "rkat/trust" (TrustParams) -> Outcome;
     /// A conversation's tasks in the engine's task store (the Ctrl+T
     /// checklist; read on attach, after a switch and after each of the
     /// agent's `task_create` and `task_update` calls).
@@ -404,7 +464,7 @@ methods! {
     Schedules = "rkat/schedules" (Empty) -> ScheduleList;
     /// The user's own pause, resume or delete of one of the caller's
     /// agent's schedules (`/schedules pause|resume|delete <name>`).
-    Schedule = "rkat/schedule" (ScheduleAction) -> crate::approval::desk::RuleOutcome;
+    Schedule = "rkat/schedule" (ScheduleAction) -> Outcome;
     /// What the realm holds that a re-home replacing it would lose: each
     /// conversation with a user turn (or that cannot be read); `/rehome`
     /// refuses then.
@@ -1417,6 +1477,29 @@ pub struct ScheduleAction {
     pub schedule: String,
 }
 
+/// Whether a schedule fires ([`ScheduleRow::state`]); its `Display` is
+/// its wire word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleState {
+    /// It fires when due.
+    Active,
+    /// It is kept but does not fire.
+    Paused,
+    /// It was deleted.
+    Deleted,
+}
+
+impl std::fmt::Display for ScheduleState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::Deleted => "deleted",
+        })
+    }
+}
+
 /// One schedule as [`method::Schedules`] lists it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduleRow {
@@ -1429,8 +1512,8 @@ pub struct ScheduleRow {
     /// The next occurrence due, when one is planned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
-    /// `active` or `paused`.
-    pub state: String,
+    /// Whether it fires.
+    pub state: ScheduleState,
     /// How many times it fired (occurrences delivered to the agent).
     pub fired: usize,
     /// The tokens its runs used, by model, as the daemon counted them.
@@ -1445,6 +1528,22 @@ pub struct ScheduleList {
     pub schedules: Vec<ScheduleRow>,
 }
 
+/// What started a run no client started ([`TriggeredNote::cause`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerCause {
+    /// One of the agent's schedules fired.
+    Schedule,
+    /// A file watch saw files change.
+    Watch,
+    /// The user approved a blocked call from `/permissions`.
+    Approval,
+    /// The agent's checkpoint (its status asked, or its going on).
+    Checkpoint,
+    /// A note of helpers' endings.
+    HelperEnding,
+}
+
 /// [`TRIGGERED`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TriggeredNote {
@@ -1452,7 +1551,9 @@ pub struct TriggeredNote {
     pub agent: String,
     /// The run's session.
     pub session_id: SessionId,
-    /// What fired it: `scheduled: <name>` or `files changed: <paths>`.
+    /// What fired it.
+    pub cause: TriggerCause,
+    /// What fired it, in words: `scheduled: <name>`, `files changed`.
     pub label: String,
     /// The run's input.
     pub prompt: String,
@@ -1731,9 +1832,35 @@ pub struct Unwired {
     pub label: String,
     /// A wire was removed (`false`: there was none).
     pub removed: bool,
-    /// For a wire over ssh: what became of the remote half, in words.
+    /// For a wire over ssh: what became of the remote half.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remote: Option<String>,
+    pub remote: Option<RemoteHalf>,
+}
+
+/// What became of the remote half of a wire over ssh when it was removed
+/// ([`Unwired::remote`]); its `Display` says it in words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "half", rename_all = "snake_case")]
+pub enum RemoteHalf {
+    /// The daemon on `host` removed it too.
+    Removed {
+        /// The ssh host.
+        host: String,
+    },
+    /// It stays: `text` says why and how to remove it.
+    Stays {
+        /// Why, and what removes it, in words.
+        text: String,
+    },
+}
+
+impl std::fmt::Display for RemoteHalf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Removed { host } => write!(f, "removed on {host} too"),
+            Self::Stays { text } => f.write_str(text),
+        }
+    }
 }
 
 /// [`method::WireSsh`]'s parameters: the host, the agent there
@@ -1778,10 +1905,10 @@ pub struct WireRow {
     /// the link (the remote half, [`WireCard::ssh_from`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
-    /// Its link's state, for one over ssh: `connecting`, `up` or `down`
-    /// (on the remote half: `up` while the link's socket is here).
+    /// Its link's state, for one over ssh (on the remote half: up while
+    /// the link's socket is here).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub link: Option<String>,
+    pub link: Option<crate::daemon::remote_wire::LinkState>,
 }
 
 impl WireRow {
@@ -1791,21 +1918,24 @@ impl WireRow {
         wire_label(&self.workspace, &self.agent)
     }
 
+    /// Its link's state as a line shows it (down when none was given).
+    #[must_use]
+    pub fn link_shown(&self) -> crate::daemon::remote_wire::LinkState {
+        self.link
+            .unwrap_or(crate::daemon::remote_wire::LinkState::Down)
+    }
+
     /// The label as `/agents` shows it: one over ssh with its host and
     /// its link's state (`api/main-ab12 (ssh box, link up)`).
     #[must_use]
     pub fn shown(&self) -> String {
         match (&self.host, &self.from) {
-            (Some(host), _) => format!(
-                "{} (ssh {host}, link {})",
-                self.label(),
-                self.link.as_deref().unwrap_or("down")
-            ),
+            (Some(host), _) => format!("{} (ssh {host}, link {})", self.label(), self.link_shown()),
             (None, Some(from)) => format!(
                 "{} (ssh from {}, link {})",
                 self.label(),
                 machine(from),
-                self.link.as_deref().unwrap_or("down")
+                self.link_shown()
             ),
             (None, None) => self.label(),
         }
@@ -2199,6 +2329,49 @@ pub struct DecisionEnded {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The wire's enums read back as they were sent, and each shows the
+    /// word its wire form is.
+    #[test]
+    fn the_wire_enums_show_their_wire_words() {
+        fn round<T>(values: &[T])
+        where
+            T: Serialize
+                + serde::de::DeserializeOwned
+                + std::fmt::Display
+                + PartialEq
+                + std::fmt::Debug,
+        {
+            for value in values {
+                let wire = serde_json::to_value(value).unwrap();
+                assert_eq!(wire, json!(value.to_string()), "{value:?}");
+                assert_eq!(&serde_json::from_value::<T>(wire).unwrap(), value);
+            }
+        }
+        round(&[
+            HelperEnding::Finished,
+            HelperEnding::Failed,
+            HelperEnding::Stopped,
+            HelperEnding::Retired,
+        ]);
+        round(&[
+            ScheduleState::Active,
+            ScheduleState::Paused,
+            ScheduleState::Deleted,
+        ]);
+        use crate::daemon::remote_wire::LinkState;
+        round(&[LinkState::Connecting, LinkState::Up, LinkState::Down]);
+        let removed = RemoteHalf::Removed { host: "box".into() };
+        assert_eq!(removed.to_string(), "removed on box too");
+        let stays = RemoteHalf::Stays {
+            text: "the half on box stays".into(),
+        };
+        assert_eq!(stays.to_string(), "the half on box stays");
+        for half in [removed, stays] {
+            let wire = serde_json::to_string(&half).unwrap();
+            assert_eq!(serde_json::from_str::<RemoteHalf>(&wire).unwrap(), half);
+        }
+    }
 
     /// Every method has its own `rkat/*` name (the dispatcher takes the
     /// first match).

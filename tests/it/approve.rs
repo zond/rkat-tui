@@ -24,7 +24,16 @@ use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
 };
 use rkat_tui::approval::grants::GrantScope;
-use rkat_tui::ui::{Effect, Msg, PickerKind, Section, TurnFailure};
+use rkat_tui::ui::{Effect, Msg, PermissionAct, PickerKind, Section, TurnFailure};
+
+/// The Blocked section's approval of call `id` for `scope`.
+fn approve(id: u64, scope: GrantScope) -> Effect {
+    Effect::Permissions(PermissionAct::Approve {
+        id,
+        scope,
+        effect: None,
+    })
+}
 use serde_json::json;
 use tokio::sync::Notify;
 
@@ -162,7 +171,7 @@ async fn an_idle_agent_runs_its_call_again_once_approved() {
     let picker = listed(&mut rig).await;
     assert_eq!(picker.rows.len(), 1, "{:?}", picker.rows);
     let id = rig.daemon.engine().blocks().list(&rig.daemon.session)[0].id;
-    rig.send(Effect::PickedApproval(id, GrantScope::Once, None));
+    rig.send(approve(id, GrantScope::Once));
     rig.saw(|m| matches!(m, Msg::Triggered { label, prompt, .. } if label == APPROVED && prompt.starts_with(TOLD)))
         .await;
     assert_eq!(rig.turn_finished().await.unwrap().text, "after 2 results");
@@ -219,7 +228,7 @@ async fn an_approval_during_the_turn_is_steered_into_it() {
     rig.send(Effect::StartTurn("touch the marker".into()));
     common::until(|| llm.recorded().len() == 2).await;
     let id = rig.daemon.engine().blocks().list(&rig.daemon.session)[0].id;
-    rig.send(Effect::PickedApproval(id, GrantScope::Once, None));
+    rig.send(approve(id, GrantScope::Once));
     // Told: the steer reached the engine.
     rig.saw(|m| matches!(m, Msg::Triggered { label, .. } if label == APPROVED))
         .await;
@@ -272,7 +281,7 @@ async fn grants_from_approve_wake_the_agent_once_and_removing_one_does_not() {
         rig.send(Effect::StartTurn(prompt.into()));
         rig.turn_finished().await.unwrap();
         let id = rig.daemon.engine().blocks().list(&session)[0].id;
-        rig.send(Effect::PickedApproval(id, scope, None));
+        rig.send(approve(id, scope));
         rig.turn_finished().await.unwrap();
         assert!(path.exists(), "{scope:?}: the repeated call ran");
         let calls = llm.recorded().len();
@@ -292,10 +301,10 @@ async fn grants_from_approve_wake_the_agent_once_and_removing_one_does_not() {
         .grants()
         .rows(Some(&session))
         .into_iter()
-        .find(|row| row.removable)
+        .find(rkat_tui::approval::grants::GrantRow::removable)
         .unwrap();
     let calls = llm.recorded().len();
-    rig.send(Effect::PickedGrantRemoval(grant.id));
+    rig.send(Effect::Permissions(PermissionAct::RemoveGrant(grant.id)));
     rig.wait_for(
         |m| matches!(m, Msg::Notice { text, .. } if text.starts_with("removed the session grant")),
     )
@@ -343,7 +352,7 @@ async fn an_approval_once_waits_on_the_list_until_used_and_can_be_withdrawn() {
     rig.send(Effect::StartTurn("touch the marker".into()));
     rig.turn_finished().await.unwrap();
     let id = rig.daemon.engine().blocks().list(&session)[0].id;
-    rig.send(Effect::PickedApproval(id, GrantScope::Once, None));
+    rig.send(approve(id, GrantScope::Once));
     // The approval's run asks the model, which is held.
     common::until(|| held.load(Ordering::SeqCst) == 1).await;
     let picker = listed(&mut rig).await;
@@ -355,7 +364,7 @@ async fn an_approval_once_waits_on_the_list_until_used_and_can_be_withdrawn() {
         "{}",
         picker.rows[0].text
     );
-    rig.send(Effect::PickedWithdrawal(id));
+    rig.send(Effect::Permissions(PermissionAct::Withdraw(id)));
     rig.wait_for(
         |m| matches!(m, Msg::Notice { text, .. } if text.starts_with("withdrew the approval")),
     )
@@ -375,11 +384,7 @@ async fn an_approval_once_waits_on_the_list_until_used_and_can_be_withdrawn() {
     let listed_now = rig.daemon.engine().blocks().list(&session);
     assert_eq!(listed_now.len(), 1, "listed once: {listed_now:?}");
     // Approved again: the repeat runs and the entry goes.
-    rig.send(Effect::PickedApproval(
-        listed_now[0].id,
-        GrantScope::Once,
-        None,
-    ));
+    rig.send(approve(listed_now[0].id, GrantScope::Once));
     assert_eq!(rig.turn_finished().await.unwrap().text, "after 3 results");
     assert!(path.exists());
     assert!(rig.daemon.engine().blocks().list(&session).is_empty());
@@ -416,7 +421,7 @@ async fn an_approval_right_after_an_interrupt_starts_the_run() {
     rig.send(Effect::Interrupt);
     assert_eq!(rig.turn_finished().await, Err(TurnFailure::Interrupted));
     let id = rig.daemon.engine().blocks().list(&rig.daemon.session)[0].id;
-    rig.send(Effect::PickedApproval(id, GrantScope::Once, None));
+    rig.send(approve(id, GrantScope::Once));
     rig.saw(|m| matches!(m, Msg::Triggered { label, .. } if label == APPROVED))
         .await;
     assert_eq!(rig.turn_finished().await.unwrap().text, "done");
@@ -497,7 +502,7 @@ async fn a_helper_s_approved_call_is_told_to_its_running_agent() {
     .await;
     let call = rig.daemon.engine().blocks().list(&session)[0].clone();
     assert_eq!(call.helper.as_deref(), Some("scout"));
-    rig.send(Effect::PickedApproval(call.id, GrantScope::Once, None));
+    rig.send(approve(call.id, GrantScope::Once));
     rig.saw(|m| matches!(m, Msg::Triggered { label, prompt, .. } if label == APPROVED && prompt.contains("that your helper `scout` made")))
         .await;
     hold.notify_one();
@@ -551,7 +556,7 @@ async fn an_ended_helper_s_approved_call_goes_to_its_agent() {
     rig.daemon.idle(&rig.daemon.agent).await;
     let call = rig.daemon.engine().blocks().list(&session)[0].clone();
     assert_eq!(call.helper.as_deref(), Some("scout"));
-    rig.send(Effect::PickedApproval(call.id, GrantScope::Once, None));
+    rig.send(approve(call.id, GrantScope::Once));
     rig.saw(|m| matches!(m, Msg::Triggered { label, .. } if label == APPROVED))
         .await;
     common::until(|| {
@@ -606,7 +611,7 @@ async fn a_decision_after_an_approval_reaches_the_client_during_the_turn() {
         .await;
     common::until(|| llm.recorded().len() == 2).await;
     let id = rig.daemon.engine().blocks().list(&rig.daemon.session)[0].id;
-    rig.send(Effect::PickedApproval(id, GrantScope::Once, None));
+    rig.send(approve(id, GrantScope::Once));
     rig.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("approved once")))
         .await;
     gate.notify_one();

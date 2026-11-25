@@ -36,7 +36,7 @@ use meerkat::{
 use meerkat_core::RunId;
 
 use super::MOB_ID;
-use super::protocol::{ScheduleOp, ScheduleRow};
+use super::protocol::{ScheduleOp, ScheduleRow, ScheduleState};
 
 /// How often, and how long apart, a run start looks for the occurrence
 /// that fired it: the store records the dispatch before the delivery
@@ -119,11 +119,11 @@ fn stamp(at: DateTime<Utc>) -> String {
     at.format("%Y-%m-%d %H:%M:%SZ").to_string()
 }
 
-fn phase_word(phase: SchedulePhase) -> &'static str {
+fn phase_state(phase: SchedulePhase) -> ScheduleState {
     match phase {
-        SchedulePhase::Active => "active",
-        SchedulePhase::Paused => "paused",
-        SchedulePhase::Deleted => "deleted",
+        SchedulePhase::Active => ScheduleState::Active,
+        SchedulePhase::Paused => ScheduleState::Paused,
+        SchedulePhase::Deleted => ScheduleState::Deleted,
     }
 }
 
@@ -239,7 +239,7 @@ impl Schedules {
                 name: name_of(&schedule),
                 expression: expression(&schedule.trigger),
                 next: next.map(stamp),
-                state: phase_word(schedule.phase).to_string(),
+                state: phase_state(schedule.phase),
                 fired,
                 cost: Some(
                     self.ledger

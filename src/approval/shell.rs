@@ -1303,6 +1303,45 @@ impl<'a> From<&'a Word> for PathValue<'a> {
 struct Parsed<'a> {
     positionals: Vec<&'a Word>,
     path_values: Vec<PathValue<'a>>,
+    /// Every short option given, alone or in a cluster.
+    shorts: Vec<char>,
+    /// Every long option given, without its `=value`.
+    longs: Vec<&'a str>,
+}
+
+impl Parsed<'_> {
+    fn has(&self, short: char, long: &str) -> bool {
+        self.shorts.contains(&short) || self.longs.contains(&long)
+    }
+
+    /// Whether the search pattern came with an option (`-e`, `-f`,
+    /// `--regexp`, `--file`), so no positional is the pattern.
+    fn named_pattern(&self) -> bool {
+        self.has('e', "--regexp") || self.has('f', "--file")
+    }
+}
+
+/// Whether this run of `entry` walks the directories it is given (or its
+/// working directory, given none): its operands then must not hold
+/// rkat-tui's own state below them.
+fn walks(entry: &Allowed, parsed: &Parsed<'_>) -> bool {
+    match entry.name {
+        "find" | "tree" | "du" | "rg" => true,
+        // `-d recurse` too: `-d` is not listed, so any `-d` counts.
+        "grep" => {
+            parsed.has('r', "--recursive") || parsed.shorts.iter().any(|c| matches!(c, 'R' | 'd'))
+        }
+        "ls" => parsed.has('R', "--recursive"),
+        "diff" => parsed.has('r', "--recursive"),
+        _ => false,
+    }
+}
+
+/// The positionals of a walking run that name where it walks: for `grep`
+/// and `rg` the first is the pattern unless an option named it.
+fn walk_operands<'p, 'a>(entry: &Allowed, parsed: &'p Parsed<'a>) -> &'p [&'a Word] {
+    let skip = usize::from(matches!(entry.name, "grep" | "rg") && !parsed.named_pattern());
+    parsed.positionals.get(skip..).unwrap_or_default()
 }
 
 /// Walk `args` with the entry's option tables. Unknown long options, forbidden
@@ -1367,6 +1406,7 @@ fn parse_long<'a>(
             "`{label}` option `{name}` is not on the read-only allowlist"
         )));
     };
+    out.longs.push(name);
     match (kind, value) {
         (Arg::Plain | Arg::Optional, Some(_)) => {
             reject_option_glob(label, word)?;
@@ -1398,6 +1438,7 @@ fn parse_short<'a>(
         if entry.forbidden_short.contains(&c) {
             return Err(NotAllowlisted::new(format!("`{label}` with `-{c}`")));
         }
+        out.shorts.push(c);
         if let Some(&(_, kind)) = entry.short_args.iter().find(|(s, _)| *s == c) {
             let attached = cluster.get(idx + c.len_utf8()..).unwrap_or_default();
             if attached.is_empty() {
@@ -1487,7 +1528,40 @@ fn check_entry(
         .map(|w| PathValue::from(*w))
         .chain(parsed.path_values.iter().copied())
     {
-        check_path_value(value, base, ctx)?;
+        check_path_value(value, base, ctx, Walk::No)?;
+    }
+    if walks(entry, &parsed) {
+        let operands = walk_operands(entry, &parsed);
+        for word in operands {
+            check_path_value((*word).into(), base, ctx, Walk::From)?;
+        }
+        if operands.is_empty() {
+            refuse_walk_into_secret(&label, base, ctx)?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether a path is the root of a walk (a recursive search, `find`'s
+/// start, a `**` glob): then it must not hold rkat-tui's own state below
+/// it, as a project at the home directory holds the config directory.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Walk {
+    No,
+    From,
+}
+
+/// Refuse a walk that starts at the working directory `base` when a secret
+/// root lies below it.
+fn refuse_walk_into_secret(
+    label: &str,
+    base: &std::path::Path,
+    ctx: &PolicyContext<'_>,
+) -> Result<(), NotAllowlisted> {
+    if ctx.root.holds_secret(base) {
+        return Err(NotAllowlisted::new(format!(
+            "`{label}` walks the working directory, which holds rkat-tui's own state"
+        )));
     }
     Ok(())
 }
@@ -1522,11 +1596,13 @@ fn check_find(
 ) -> Result<(), NotAllowlisted> {
     let mut iter = args.iter();
     let mut in_expression = false;
+    let mut starts = 0;
     while let Some(word) = iter.next() {
         let text = word.text.as_str();
         let is_primary = text.starts_with('-') || matches!(text, "!" | "(" | ")");
         if !in_expression && !is_primary {
-            check_path_value(word.into(), base, ctx)?;
+            check_path_value(word.into(), base, ctx, Walk::From)?;
+            starts += 1;
             continue;
         }
         in_expression = true;
@@ -1544,10 +1620,13 @@ fn check_find(
                     .ok_or_else(|| NotAllowlisted::new(format!("`find {text}` without a value")))?;
                 reject_option_glob("find", value)?;
                 if kind == Arg::Path {
-                    check_path_value(value.into(), base, ctx)?;
+                    check_path_value(value.into(), base, ctx, Walk::No)?;
                 }
             }
         }
+    }
+    if starts == 0 {
+        refuse_walk_into_secret("find", base, ctx)?;
     }
     Ok(())
 }
@@ -1630,11 +1709,14 @@ fn simple_glob_prefix(text: &str) -> Option<String> {
 }
 
 /// Check a path-position word: no `~user` forms, only narrow globs, and the
-/// resolved path must lie inside the project.
+/// resolved path must lie inside the project. The literal directory of a
+/// `**` glob is the root of a walk ([`Walk::From`]): what it expands to is
+/// chosen from anywhere below it.
 fn check_path_value(
     value: PathValue<'_>,
     base: &std::path::Path,
     ctx: &PolicyContext<'_>,
+    walk: Walk,
 ) -> Result<(), NotAllowlisted> {
     let text = value.text;
     if text.starts_with('~') && text != "~" && !text.starts_with("~/") {
@@ -1648,15 +1730,23 @@ fn check_path_value(
                 "glob `{text}` is not of the form `dir/*.ext`, `dir/**/*.ext` or `./*.ext`"
             )));
         };
-        return check_inside(&prefix, base, ctx);
+        // `dir/*.ext` matches only `dir`'s own entries, `dir/**/*.ext`
+        // anything below it.
+        let walk = if text.contains("/**/") {
+            Walk::From
+        } else {
+            walk
+        };
+        return check_inside(&prefix, base, ctx, walk);
     }
-    check_inside(text, base, ctx)
+    check_inside(text, base, ctx, walk)
 }
 
 fn check_inside(
     value: &str,
     base: &std::path::Path,
     ctx: &PolicyContext<'_>,
+    walk: Walk,
 ) -> Result<(), NotAllowlisted> {
     if value == "-" {
         return Ok(());
@@ -1684,6 +1774,11 @@ fn check_inside(
         // it is never a routine read.
         return Err(NotAllowlisted::new(format!(
             "path `{value}` is rkat-tui's own state"
+        )));
+    }
+    if walk == Walk::From && ctx.root.holds_secret(&resolved.abs) {
+        return Err(NotAllowlisted::new(format!(
+            "path `{value}` holds rkat-tui's own state below it"
         )));
     }
     if resolved.inside() {
@@ -1721,6 +1816,7 @@ fn check_redirect(
                 },
                 base,
                 ctx,
+                Walk::No,
             )?;
             true
         }
@@ -2056,6 +2152,93 @@ mod tests {
         let err =
             allowlisted_in("cat audit.jsonl", Some(".rkat/tui/workspaces/abc"), &c).unwrap_err();
         assert!(err.0.contains("rkat-tui's own state"), "{}", err.0);
+    }
+
+    /// The commands that walk a directory, given none or one that holds
+    /// rkat-tui's own state below it (a project at the home directory
+    /// holds the config directory), are reviewed; the same commands from a
+    /// sibling, and reads that do not walk, stay allowed. In a project
+    /// whose secret roots lie outside it every one of them is allowed, as
+    /// before.
+    #[test]
+    fn a_walk_that_reaches_rkat_tuis_own_state_is_not_allowlisted() {
+        const WALKS: &[&str] = &[
+            "grep -r x .",
+            "grep -r x",
+            "grep -rn x",
+            "grep --recursive x .",
+            "grep -d recurse x .",
+            "rg x",
+            "rg x .",
+            "rg -e x",
+            "rg --files",
+            "rg x src .rkat",
+            "find",
+            "find .",
+            "find . -name '*.jsonl'",
+            "find src .rkat -type f",
+            "tree",
+            "tree .",
+            "du",
+            "du -sh .",
+            "ls -R",
+            "ls -R .rkat",
+            "ls --recursive .",
+            "diff -r . src",
+            "cat ./**/*.jsonl",
+            "cat .rkat/**/*.jsonl",
+        ];
+        const SIBLING: &[&str] = &[
+            "cat src/main.rs",
+            "ls",
+            "ls -la .",
+            "ls .rkat",
+            "ls -la .rkat/tui",
+            "cat ./*.md",
+            "grep x input.txt",
+            "grep -r x src",
+            "grep -rn . src",
+            "rg x src",
+            "rg . src",
+            "rg -e x src",
+            "find src -name '*.rs'",
+            "find src -newer input.txt",
+            "tree src",
+            "du -sh src",
+            "ls -R src",
+            "diff -r src src",
+            "cat src/**/*.rs",
+            "wc -l input.txt",
+        ];
+        let (home, root) = project();
+        std::fs::create_dir_all(home.path().join(".rkat/tui/workspaces/abc")).unwrap();
+        let home_root = root.with_secret_roots([home.path().join(".rkat/tui/workspaces")]);
+        let c = ctx(&home_root, false);
+        for command in WALKS {
+            let err = allowlisted(command, &c).unwrap_err();
+            assert!(
+                err.0.contains("rkat-tui's own state"),
+                "{command}: {}",
+                err.0
+            );
+        }
+        for command in SIBLING {
+            assert!(allowlisted(command, &c).is_ok(), "{command}");
+        }
+        // From a working directory that holds the state, or from one beside it.
+        assert!(allowlisted_in("grep -r x", Some(".rkat"), &c).is_err());
+        assert!(allowlisted_in("find .", Some(".rkat/tui"), &c).is_err());
+        assert!(allowlisted_in("grep -r x", Some("src"), &c).is_ok());
+        assert!(allowlisted_in("ls", Some(".rkat"), &c).is_ok());
+
+        // The ordinary case: the secret roots lie outside the project.
+        let (_dir, plain) = project();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let plain = plain.with_secret_roots([elsewhere.path().join("rkat-tui")]);
+        let c = ctx(&plain, false);
+        for command in WALKS.iter().chain(SIBLING) {
+            assert!(allowlisted(command, &c).is_ok(), "{command}");
+        }
     }
 
     /// Git reads a directory holding `HEAD`, `objects` and `refs` as a

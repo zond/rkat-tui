@@ -18,6 +18,7 @@ use crate::daemon::checkpoint::{
     Begun, CONTINUE_INSTRUCTION, CONTINUE_LABEL, Line, MAX_STATUS, Outcome, STATUS_LABEL,
     STATUS_WAIT, Subject, plain, reason_of_error, status_request,
 };
+use crate::daemon::protocol::TriggerCause;
 use crate::mobs::endings::LimitReached;
 
 /// Whose run a checkpoint reviews, with the session whose transcript it
@@ -91,7 +92,12 @@ impl Agents {
             "checkpoint",
             format!("after {steps} steps; the agent is asked for its status"),
         );
-        self.tell_triggered(name, session, STATUS_LABEL.to_string(), request.clone());
+        self.tell_triggered(
+            name,
+            session,
+            (TriggerCause::Checkpoint, STATUS_LABEL.to_string()),
+            request.clone(),
+        );
         let (mob, member) = (MobId::from(MOB_ID), AgentIdentity::from(name));
         let status = tokio::select! {
             status = self.ask_status(&mob, &member, request) => status,
@@ -138,7 +144,7 @@ impl Agents {
             self.tell_triggered(
                 name,
                 session,
-                CONTINUE_LABEL.to_string(),
+                (TriggerCause::Checkpoint, CONTINUE_LABEL.to_string()),
                 CONTINUE_INSTRUCTION.to_string(),
             );
             let sent =
@@ -201,14 +207,7 @@ impl Agents {
 
     /// Tell the clients of `name` `text`.
     fn notice(&self, name: &str, warn: bool, text: String) {
-        self.core.decisions.broadcast(
-            crate::daemon::protocol::AGENT_NOTICE,
-            &crate::daemon::protocol::AgentNotice {
-                agent: name.to_string(),
-                warn,
-                text,
-            },
-        );
+        self.core.decisions.agent_notice(name, warn, text);
     }
 
     /// Ask `member` of `mob` for its status in a run of its own with its

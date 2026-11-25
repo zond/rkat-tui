@@ -9,9 +9,20 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::{
     Action, App, Command, Departure, EditAction, EditorClosed, EditorTarget, Effect, HelpDialog,
     HelpView, HistorySearch, INTERRUPT_REPEAT, InputMode, LocalEffect, Modal, ModalKey,
-    ModelCommand, NoticeLevel, PathIndex, PendingId, PendingState, Pressed, QUIT_CONFIRM_WINDOW,
-    QuitChoice, QuitDecision, QuitDialog, SearchOutcome, StashOutcome, complete, keymap, search,
+    ModelCommand, NoticeLevel, PendingId, PendingState, Pressed, QUIT_CONFIRM_WINDOW, QuitChoice,
+    QuitDecision, QuitDialog, SearchOutcome, StashOutcome, complete, keymap, search,
 };
+
+/// The `@` menu's workspace paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum PathIndex {
+    /// None held (no path menu open).
+    Dropped,
+    /// Asked for with this generation ([`LocalEffect::IndexPaths`]).
+    Indexing(u64),
+    /// The paths.
+    Ready(Vec<crate::mentions::PathEntry>),
+}
 
 impl App {
     /// The active history search and its corpus, if searching.

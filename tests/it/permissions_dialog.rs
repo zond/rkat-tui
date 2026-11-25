@@ -19,9 +19,23 @@ use rig::{Attached, Setup};
 use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
 };
+use rkat_tui::approval::desk::RuleSpec;
 use rkat_tui::approval::grants::GrantScope;
 use rkat_tui::approval::mode::PermissionMode;
-use rkat_tui::ui::{Effect, Msg, PickerKind, RuleForm, Section};
+use rkat_tui::ui::{Effect, Msg, PermissionAct, PickerKind, Section};
+
+/// The dialog's `n`: allow `text` for `scope`.
+fn statement(scope: GrantScope, text: &str) -> Effect {
+    Effect::Permissions(PermissionAct::AddStatement {
+        scope,
+        text: text.into(),
+    })
+}
+
+/// The dialog's `r`: add the rule `spec` (to the user's file with `user`).
+fn add_rule(spec: RuleSpec, user: bool) -> Effect {
+    Effect::Permissions(PermissionAct::AddRule { spec, user })
+}
 use serde_json::json;
 
 /// Allows every call, recording the statements of each review's
@@ -125,10 +139,7 @@ async fn a_statement_typed_with_n_reaches_the_classifier_and_its_file() {
     )
     .await;
     rig.set_mode(PermissionMode::Auto).await;
-    rig.send(Effect::PickedStatement {
-        scope: GrantScope::Session,
-        text: SESSION.into(),
-    });
+    rig.send(statement(GrantScope::Session, SESSION));
     let text = notice(&mut rig, "allowed").await;
     assert_eq!(
         text,
@@ -172,20 +183,14 @@ async fn a_statement_typed_with_n_reaches_the_classifier_and_its_file() {
 
     // Always for this workspace: the realm's file; in every workspace:
     // the user's own.
-    rig.send(Effect::PickedStatement {
-        scope: GrantScope::Always,
-        text: ALWAYS.into(),
-    });
+    rig.send(statement(GrantScope::Always, ALWAYS));
     notice(&mut rig, "allowed always").await;
     let rows = in_force(&mut rig).await;
     assert!(
         rows.contains(&format!("allow kind \"{ALWAYS}\" · always")),
         "{rows:?}"
     );
-    rig.send(Effect::PickedStatement {
-        scope: GrantScope::AlwaysUser,
-        text: EVERYWHERE.into(),
-    });
+    rig.send(statement(GrantScope::AlwaysUser, EVERYWHERE));
     notice(&mut rig, "allowed always").await;
     in_force(&mut rig).await;
     let realm: toml::Table = toml::from_str(&read(&realm_toml)).unwrap();
@@ -210,10 +215,7 @@ async fn a_statement_typed_with_n_reaches_the_classifier_and_its_file() {
     }
     // "anything" is refused: the notice and the dialog say why, nothing
     // is added.
-    rig.send(Effect::PickedStatement {
-        scope: GrantScope::Session,
-        text: "anything".into(),
-    });
+    rig.send(statement(GrantScope::Session, "anything"));
     let msg = rig
         .wait_for(|msg| {
             matches!(
@@ -260,13 +262,15 @@ async fn a_rule_made_with_r_is_written_and_applies_at_once() {
     .await;
     rig.set_mode(PermissionMode::Auto).await;
     let command = format!("touch {}", path.display());
-    rig.send(Effect::PickedRule(RuleForm {
-        deny: false,
-        tool: "shell".into(),
-        pattern: Some(command.clone()),
-        literal: true,
-        user: false,
-    }));
+    rig.send(add_rule(
+        RuleSpec {
+            deny: false,
+            tool: "shell".into(),
+            pattern: Some(command.clone()),
+            literal: true,
+        },
+        false,
+    ));
     assert_eq!(notice(&mut rig, "rule added").await, "rule added");
     let rows = in_force(&mut rig).await;
     assert!(
@@ -293,13 +297,15 @@ async fn a_rule_made_with_r_is_written_and_applies_at_once() {
         recorder.reviews.lock()
     );
     // A deny rule in the user's own file.
-    rig.send(Effect::PickedRule(RuleForm {
-        deny: true,
-        tool: "shell".into(),
-        pattern: Some("git push*".into()),
-        literal: false,
-        user: true,
-    }));
+    rig.send(add_rule(
+        RuleSpec {
+            deny: true,
+            tool: "shell".into(),
+            pattern: Some("git push*".into()),
+            literal: false,
+        },
+        true,
+    ));
     assert_eq!(
         notice(&mut rig, "rule added").await,
         "rule added to your tui.toml (every workspace)"
@@ -318,13 +324,15 @@ async fn a_rule_made_with_r_is_written_and_applies_at_once() {
         "in force at once"
     );
     // A pattern that does not parse: refused, on the dialog too.
-    rig.send(Effect::PickedRule(RuleForm {
-        deny: false,
-        tool: "shell".into(),
-        pattern: Some("[unclosed".into()),
-        literal: false,
-        user: false,
-    }));
+    rig.send(add_rule(
+        RuleSpec {
+            deny: false,
+            tool: "shell".into(),
+            pattern: Some("[unclosed".into()),
+            literal: false,
+        },
+        false,
+    ));
     let msg = rig
         .wait_for(|msg| {
             matches!(

@@ -384,12 +384,16 @@ impl StartAt {
         match &args.resume {
             None => Self::Current,
             Some(None) => Self::Pick,
-            Some(Some(reference)) => match reference.trim() {
-                "last" | "~" | "~0" => Self::Current,
-                _ => Self::Resume(reference.clone()),
-            },
+            Some(Some(reference)) if names_last(reference) => Self::Current,
+            Some(Some(reference)) => Self::Resume(reference.clone()),
         }
     }
+}
+
+/// Whether a `--resume` reference names the most recent conversation
+/// (`last`, `~`, `~0`).
+fn names_last(reference: &str) -> bool {
+    matches!(reference.trim(), "last" | "~" | "~0")
 }
 
 /// Which agent `args` ask for: with neither `-c` nor `--resume`, a
@@ -406,11 +410,9 @@ pub fn agent_choice(args: &Args) -> crate::daemon::protocol::AgentChoice {
     match &args.resume {
         None => AgentChoice::New,
         Some(None) => AgentChoice::Recent,
-        Some(Some(reference)) => match reference.trim() {
-            "last" | "~" | "~0" => AgentChoice::Recent,
-            reference => AgentChoice::Conversation {
-                reference: reference.to_string(),
-            },
+        Some(Some(reference)) if names_last(reference) => AgentChoice::Recent,
+        Some(Some(reference)) => AgentChoice::Conversation {
+            reference: reference.trim().to_string(),
         },
     }
 }

@@ -1,6 +1,7 @@
 //! The helper panel and a helper's full view.
 
 use super::*;
+use crate::daemon::protocol::{HelperEnding, TriggerCause};
 
 /// The owner's rule: the panel lists what is live, running
 /// helpers first (newest first), then the seated idle ones; one that ended
@@ -28,6 +29,7 @@ fn the_panel_lists_live_helpers_and_an_ended_one_leaves_after_its_linger() {
     app.update_at(
         Msg::HelperEnded {
             path: vec!["fork-1".into()],
+            ending: HelperEnding::Finished,
             how: "finished".into(),
             told: Some("main-ab12 was told".into()),
         },
@@ -82,6 +84,7 @@ fn of_twenty_helpers_in_one_long_turn_the_panel_lists_the_three_live() {
         app.update_at(
             Msg::HelperEnded {
                 path: vec![label.clone()],
+                ending: HelperEnding::Finished,
                 how: "finished".into(),
                 told: Some("main-ab12 was told".into()),
             },
@@ -453,6 +456,7 @@ fn the_helper_picker_stops_a_running_helper_after_a_confirmation() {
     // A helper that is not running has nothing to stop.
     app.update(Msg::HelperEnded {
         path: vec!["scout".into()],
+        ending: HelperEnding::Stopped,
         how: "stopped by you".into(),
         told: None,
     });
@@ -584,6 +588,7 @@ fn the_helper_picker_stays_open_after_its_acts_and_follows_the_helpers() {
     // the highlight is on its neighbour.
     app.update(Msg::HelperEnded {
         path: vec![label(&first).into()],
+        ending: HelperEnding::Stopped,
         how: "stopped by you".into(),
         told: None,
     });
@@ -619,6 +624,7 @@ fn a_helper_s_line_says_how_it_ended() {
     let (mut app, scout, _) = helper_app();
     app.update(Msg::HelperEnded {
         path: vec!["scout".into()],
+        ending: HelperEnding::Stopped,
         how: "stopped by you".into(),
         told: Some("main-ab12 was told".into()),
     });
@@ -639,6 +645,7 @@ fn a_helper_s_line_says_how_it_ended() {
     ));
     app.update(Msg::HelperEnded {
         path: vec!["fork-1".into()],
+        ending: HelperEnding::Stopped,
         how: "ended when the daemon stopped".into(),
         told: None,
     });
@@ -1114,6 +1121,7 @@ fn the_daemon_s_summary_of_a_note_is_its_folded_line() {
     let (mut app, _, _) = helper_app();
     app.update(Msg::Triggered {
         summary: Some(summary_of(&items)),
+        cause: TriggerCause::HelperEnding,
         label: HELPER_ENDED_LABEL.into(),
         // Words this build does not know: the summary says what happened.
         prompt: "Something about scout, worded anew.".into(),
@@ -1145,8 +1153,13 @@ fn a_helper_s_ending_note_is_one_folded_line() {
     let ended = |app: &mut App, label: &str, how: &str| {
         app.update(Msg::HelperEnded {
             path: vec![label.into()],
+            ending: if how.starts_with("failed") {
+                HelperEnding::Failed
+            } else {
+                HelperEnding::Finished
+            },
             how: how.into(),
-            told: Some("main-ab12 was told".into()),
+            told: Some(format!("main-ab12{}", crate::daemon::agents::endings::TOLD)),
         });
     };
     // The notice first, then the run the note started.
@@ -1154,6 +1167,7 @@ fn a_helper_s_ending_note_is_one_folded_line() {
     ended(&mut app, "scout", "finished");
     app.update(Msg::Triggered {
         summary: None,
+        cause: TriggerCause::HelperEnding,
         label: HELPER_ENDED_LABEL.into(),
         prompt: ending_note("scout", How::Done { answer: long }),
     });
@@ -1205,6 +1219,7 @@ fn a_helper_s_ending_note_is_one_folded_line() {
     let (mut app, _, _) = helper_app();
     app.update(Msg::Triggered {
         summary: None,
+        cause: TriggerCause::HelperEnding,
         label: HELPER_ENDED_LABEL.into(),
         prompt: ending_note(
             "scout",
@@ -1225,6 +1240,7 @@ fn a_helper_s_ending_note_is_one_folded_line() {
     let (mut app, _, _) = helper_app();
     app.update(Msg::Triggered {
         summary: None,
+        cause: TriggerCause::HelperEnding,
         label: HELPER_ENDED_LABEL.into(),
         prompt: crate::daemon::agents::endings::note_text(&[
             crate::daemon::agents::endings::NoteItem {
@@ -1245,6 +1261,7 @@ fn a_helper_s_ending_note_is_one_folded_line() {
     });
     app.update(Msg::Triggered {
         summary: None,
+        cause: TriggerCause::HelperEnding,
         label: HELPER_IDLE_LABEL.into(),
         prompt: ending_note(
             "scout",
@@ -1276,6 +1293,7 @@ fn a_helper_s_ending_note_is_one_folded_line() {
     let (mut app, _, _) = helper_app();
     app.update(Msg::Triggered {
         summary: None,
+        cause: TriggerCause::HelperEnding,
         label: HELPER_ENDED_LABEL.into(),
         prompt: ending_note(
             "scout",
@@ -1371,7 +1389,8 @@ fn a_woken_kept_helper_keeps_its_header_and_says_idle_until_retired() {
     let before = app.transcript.len();
     app.update(Msg::HelperEnded {
         path: vec!["w1".into()],
-        how: crate::daemon::protocol::HELPER_RETIRED.into(),
+        ending: HelperEnding::Retired,
+        how: HelperEnding::Retired.to_string(),
         told: None,
     });
     app.update(Msg::SeatedHelpers(Vec::new()));
@@ -1381,12 +1400,14 @@ fn a_woken_kept_helper_keeps_its_header_and_says_idle_until_retired() {
     let (mut app, _, _) = helper_app();
     app.update(Msg::HelperEnded {
         path: vec!["scout".into()],
+        ending: HelperEnding::Finished,
         how: "finished".into(),
         told: Some("main-ab12 was told".into()),
     });
     app.update(Msg::HelperEnded {
         path: vec!["scout".into()],
-        how: crate::daemon::protocol::HELPER_RETIRED.into(),
+        ending: HelperEnding::Retired,
+        how: HelperEnding::Retired.to_string(),
         told: None,
     });
     assert!(picker_line(&mut app, "scout").contains("[scout · m] finished · 1 tool call"));
@@ -1445,7 +1466,8 @@ fn a_fork_s_line_says_idle_then_retired() {
         }
         app.update(Msg::HelperEnded {
             path: vec!["kid".into()],
-            how: crate::daemon::protocol::HELPER_RETIRED.into(),
+            ending: HelperEnding::Retired,
+            how: HelperEnding::Retired.to_string(),
             told: None,
         });
         let line = picker_line(&mut app, "kid");
@@ -1484,6 +1506,7 @@ fn helpers_lists_the_live_helpers_and_shows_the_ended_ones_on_a() {
     // done1 finished (the daemon says so); kid is no longer in the mob.
     app.update(Msg::HelperEnded {
         path: vec!["done1".into()],
+        ending: HelperEnding::Finished,
         how: "finished".into(),
         told: Some("main-ab12 was told".into()),
     });
@@ -1530,7 +1553,8 @@ fn helpers_lists_the_live_helpers_and_shows_the_ended_ones_on_a() {
     // Only ended ones: the empty line says how to see them.
     app.update(Msg::HelperEnded {
         path: vec!["w1".into()],
-        how: crate::daemon::protocol::HELPER_RETIRED.into(),
+        ending: HelperEnding::Retired,
+        how: HelperEnding::Retired.to_string(),
         told: None,
     });
     type_str(&mut app, "/helpers");
@@ -1621,6 +1645,7 @@ fn a_helper_s_ending_note_is_one_folded_line_in_every_order() {
     let triggered = |app: &mut App, prompt: &str| {
         app.update(Msg::Triggered {
             summary: None,
+            cause: TriggerCause::HelperEnding,
             label: HELPER_ENDED_LABEL.into(),
             prompt: prompt.into(),
         });
@@ -1729,11 +1754,13 @@ fn a_note_that_reaches_a_running_turn_is_one_folded_line() {
     }));
     app.update(Msg::HelperEnded {
         path: vec!["scout".into()],
+        ending: HelperEnding::Finished,
         how: "finished".into(),
         told: Some("main-ab12 was told".into()),
     });
     app.update(Msg::Triggered {
         summary: None,
+        cause: TriggerCause::HelperEnding,
         label: HELPER_ENDED_LABEL.into(),
         prompt: note.clone(),
     });

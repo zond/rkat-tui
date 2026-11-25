@@ -5,8 +5,18 @@
 use super::transcript::HelperFold;
 use super::{
     App, Block, BlockId, Effect, HelperTarget, HelperView, HelpersCommand, ListPicker, Modal,
-    NoticeLevel, OpenHelperView, PickAct, PickKey, PickRow, PickerKind, ScrollState,
+    NoticeLevel, PickAct, PickKey, PickRow, PickerKind, ScrollState,
 };
+
+/// An open helper full view: the helper's header and the view's own
+/// scroll position (it follows new output while at the bottom).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct OpenHelperView {
+    pub(super) header: BlockId,
+    pub(super) scroll: ScrollState,
+    /// Esc asked whether to stop the (running) helper.
+    pub(super) confirm_stop: bool,
+}
 
 impl App {
     /// Set how helper headers start: folded (default) or expanded.
@@ -372,14 +382,8 @@ fn stop_question(label: &str) -> String {
 fn helper_line(fold: &HelperFold) -> String {
     let indent = "  ".repeat(fold.depth);
     let marker = if fold.expanded { "▾" } else { "▸" };
-    let status = fold.status_text();
-    let status = if fold.state.is_running() {
-        status
-            .split_once(' ')
-            .map_or(status.as_str(), |(_, rest)| rest)
-    } else {
-        status.as_str()
-    };
+    let parts = fold.status_parts();
+    let status = format!("{}{}", parts.state, parts.rest);
     match fold.kind {
         Some(kind) => format!("{indent}{marker} {} {} · {status}", fold.tag(), kind.text()),
         None => format!("{indent}{marker} {} {status}", fold.tag()),

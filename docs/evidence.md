@@ -15163,3 +15163,61 @@ through `RealmConfigStore` (`SessionRuntime` only reads its
 pinned by `models::the_picker_switches_the_live_model_and_the_next_turn_uses_it`
 (after the switch the document holds no `max_turns` and no user skill
 repository).
+
+## Review 8, batch C (2026-11-25)
+
+**A walk from a directory that holds rkat-tui's own state (F40's
+remainder).** Batch B made tier 1 refuse an operand or working directory
+AT or below a secret root; a command that walks from an ANCESTOR of one
+(`grep -r x .` in a workspace at the home directory, whose config
+directory is inside the project) still ran unreviewed and read the
+realms, the trust records and the comms keys. Now
+`ProjectRoot::holds_secret` (a secret root lies at or below a path) is
+asked of every root a command walks: the directory operands of `find`,
+`tree`, `du`, `rg`, `grep -r`/`-d`, `ls -R`, `diff -r` (the pattern
+of `grep`/`rg` is not an operand unless `-e`/`-f` named it), the working
+directory when such a command names none, and the literal directory of a
+`dir/**/*.ext` glob for any command. A `dir/*.ext` glob for a command
+that does not walk, a non-recursive `ls`, and any read of a sibling stay
+tier 1; a project with no secret root inside it is decided exactly as
+before. Test:
+`approval::shell::tests::a_walk_that_reaches_rkat_tuis_own_state_is_not_allowlisted`
+(both cases as tables; with `holds_secret` answering `false`, which is
+the old code's behaviour, it fails on its first row).
+
+**A kept helper's run after a restart reaches a fresh client (T1).**
+`client::helpers::Followers::show` drops a helper's event whose
+sequence is at or below the highest it showed, the backfill's durable
+sequences and the live stream's taken as one space. Probed with the rig:
+a kept helper answers, the daemon stops and starts, a client attaches
+and the agent messages the helper; the helper's new run (its start and
+its answer) reaches the client, so the restarted daemon's sequences go
+on above the durable ones and nothing needed fixing. Test:
+`helper_rows::a_kept_helper_s_run_after_a_restart_reaches_a_fresh_client`.
+
+**Words on the wire are types (F98, F94).** `HelperEnded` carries a
+`HelperEnding` beside its words, `Unwired.remote` a `RemoteHalf`,
+`ScheduleRow.state` a `ScheduleState`, `WireRow.link` the `LinkState`,
+`TriggeredNote` a `TriggerCause`, and a helper note block its
+`NoteKind`: the client decides by them, never by the words (none of them
+is stored; client and daemon are one build). The phrases a client
+still reads a stored conversation by are one constant beside their
+producer (`prepare::CONTEXT_OPENING`, `BACKSTOP_OPENING`,
+`REMINDER_CLOSING`, `checkpoint::STATUS_OPENING`,
+`APPROVED_OPENING`, `watches::FILES_CHANGED`, `endings::TOLD`, the
+`DenyReason` openings in `approval/mod.rs`), each with a test that the
+producer's text is recognised. Not done: the denial's short words from a
+typed field: the gate's denial reaches the client only as the tool
+error's code and message (`ToolConsequenceDenial`), no hook payload
+carries it, so the needles stay (now the gate's constants).
+
+**Smaller ones (batch C).** `/audit` reads the log from its end in 64
+KiB chunks (`audit::tail`, test
+`daemon::audit::tests::the_tail_reads_back_from_the_end_across_chunks_and_generations`);
+a helper binding lookup that misses in memory reads the file only after
+an owner was forgotten (`HelperBindings::partial`); the words file of a
+conversation is written off the proxy's line loop, in order, and
+written at the stop and before a read (`WordsWriter`); one lookup of a
+tool's origin without building the session's catalog
+(`ToolOrigins::origin`); one "until seated" retry
+(`links::until_seated`).

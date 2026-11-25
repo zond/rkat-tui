@@ -4,9 +4,19 @@
 use std::time::Instant;
 
 use super::{
-    App, Block, BlockId, Effect, NoticeLevel, PendingState, RunningShell, ShellOutcome, ShellRunId,
-    ShellState, commands, transcript,
+    App, Block, BlockId, Effect, NoticeLevel, PendingState, ShellOutcome, ShellRunId, ShellState,
+    commands, transcript,
 };
+
+/// A `!` command on its way ([`Effect::RunShell`] sent, no
+/// [`super::Msg::ShellFinished`] yet).
+#[derive(Debug, Clone)]
+pub(super) struct RunningShell {
+    pub(super) id: ShellRunId,
+    pub(super) block: BlockId,
+    pub(super) command: String,
+    pub(super) since: Instant,
+}
 
 impl App {
     /// Whether the input is a `!` command (shell mode).

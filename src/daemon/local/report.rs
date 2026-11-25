@@ -39,7 +39,7 @@ impl Local {
         caller: &Caller,
         op: crate::daemon::protocol::ScheduleOp,
         schedule: &str,
-    ) -> Result<RuleOutcome, Refusal> {
+    ) -> Result<Outcome, Refusal> {
         let agent = self.agent_of(caller)?;
         Ok(match self.core.schedules.act(&agent, op, schedule).await {
             Ok(text) => {
@@ -47,12 +47,9 @@ impl Local {
                     crate::daemon::audit::Line::event("schedule_changed", text.clone())
                         .of_agent(&agent),
                 );
-                RuleOutcome { ok: true, text }
+                Outcome::ok(text)
             }
-            Err(err) => RuleOutcome {
-                ok: false,
-                text: err.to_string(),
-            },
+            Err(err) => Outcome::failed(err.to_string()),
         })
     }
 
@@ -61,7 +58,7 @@ impl Local {
     pub(super) async fn rules(
         &self,
         command: crate::approval::desk::RuleCommand,
-    ) -> Result<RuleOutcome, Refusal> {
+    ) -> Result<Outcome, Refusal> {
         let engine = Arc::clone(&self.core.engine);
         let outcome = tokio::task::spawn_blocking(move || run_rule_command(&engine, &command))
             .await
@@ -204,7 +201,7 @@ impl Local {
     /// `/compact status`'s daemon side: the prepare instruction and its
     /// threshold for the caller's agent, and what is beneath the
     /// workspace's instruction.
-    pub(super) fn compact_status(&self, caller: &Caller) -> RuleOutcome {
+    pub(super) fn compact_status(&self, caller: &Caller) -> Outcome {
         use crate::config::registry::{Level, PREPARE};
         use crate::config::settings::Sourced;
         let beneath = Sourced::instruction(
@@ -213,13 +210,11 @@ impl Local {
                 .settings
                 .resolve_without(&PREPARE, Level::Workspace),
         );
-        RuleOutcome {
-            ok: true,
-            text: self
-                .core
+        Outcome::ok(
+            self.core
                 .prepare
                 .status(self.agent_of(caller).ok().as_deref(), &beneath),
-        }
+        )
     }
 }
 
@@ -365,21 +360,18 @@ impl Local {
 
     /// `rkat/auto_stats`: the review numbers since the daemon started and
     /// for `caller`'s agent's conversation.
-    pub(super) fn auto_stats(&self, caller: &Caller) -> RuleOutcome {
+    pub(super) fn auto_stats(&self, caller: &Caller) -> Outcome {
         let session = self.session_of_caller(caller).ok();
         let (total, mine) = self.core.engine.stats().of(session.as_ref());
         let model = self.core.engine.reviewer().model().map_or_else(
             || "no classifier model".to_string(),
             |m| format!("classifier {m}"),
         );
-        RuleOutcome {
-            ok: true,
-            text: format!(
-                "{model}\nthis conversation: {}\nsince the daemon started: {}",
-                mine.describe(),
-                total.describe()
-            ),
-        }
+        Outcome::ok(format!(
+            "{model}\nthis conversation: {}\nsince the daemon started: {}",
+            mine.describe(),
+            total.describe()
+        ))
     }
 
     /// `rkat/classifier_check`: the corpus cases `selection` names through
@@ -421,7 +413,7 @@ impl Local {
         id: u64,
         scope: crate::approval::grants::GrantScope,
         effect: Option<&str>,
-    ) -> Result<RuleOutcome, Refusal> {
+    ) -> Result<Outcome, Refusal> {
         let session = self.session_of_caller(caller)?;
         let done = match effect {
             Some(text) => self.core.engine.approve_effect(&session, id, text, scope),
@@ -433,15 +425,9 @@ impl Local {
                 let notice = approved.notice.clone();
                 let agents = Arc::clone(&self.agents);
                 tokio::spawn(async move { agents.approved(&session, approved).await });
-                RuleOutcome {
-                    ok: true,
-                    text: notice,
-                }
+                Outcome::ok(notice)
             }
-            Err(why) => RuleOutcome {
-                ok: false,
-                text: why,
-            },
+            Err(why) => Outcome::failed(why),
         })
     }
 
@@ -453,17 +439,11 @@ impl Local {
         caller: &Caller,
         text: &str,
         scope: crate::approval::grants::GrantScope,
-    ) -> Result<RuleOutcome, Refusal> {
+    ) -> Result<Outcome, Refusal> {
         let session = self.session_of_caller(caller)?;
         let done = self.core.engine.allow_statement(&session, text, scope);
         self.after_permission_command();
-        Ok(match done {
-            Ok(approved) => RuleOutcome {
-                ok: true,
-                text: approved.notice,
-            },
-            Err(text) => RuleOutcome { ok: false, text },
-        })
+        Ok(Outcome::from(done.map(|approved| approved.notice)))
     }
 
     /// `rkat/trust_host`: the user trusts a host they typed (the agent of
@@ -474,7 +454,7 @@ impl Local {
         &self,
         caller: &Caller,
         params: protocol::TrustHostParams,
-    ) -> Result<RuleOutcome, Refusal> {
+    ) -> Result<Outcome, Refusal> {
         use crate::config::registry::Level;
         let level = |user: bool| if user { Level::User } else { Level::Workspace };
         let done = match params {
@@ -499,48 +479,38 @@ impl Local {
             }
         };
         self.after_permission_command();
-        Ok(RuleOutcome::from(done))
+        Ok(Outcome::from(done))
     }
 
     /// `rkat/untrust_host`: the user no longer trusts `host`.
-    pub(super) fn untrust_host(&self, host: &str) -> RuleOutcome {
+    pub(super) fn untrust_host(&self, host: &str) -> Outcome {
         let done = self.core.engine.untrust_host(host);
         self.after_permission_command();
-        RuleOutcome::from(done)
+        Outcome::from(done)
     }
 
     /// `rkat/withdraw_approval`: withdraw the approval once of call `id`
     /// of `caller`'s agent; it is a blocked call again.
-    pub(super) fn withdraw_approval(
-        &self,
-        caller: &Caller,
-        id: u64,
-    ) -> Result<RuleOutcome, Refusal> {
+    pub(super) fn withdraw_approval(&self, caller: &Caller, id: u64) -> Result<Outcome, Refusal> {
         let session = self.session_of_caller(caller)?;
-        Ok(RuleOutcome::from(
+        Ok(Outcome::from(
             self.core.engine.withdraw_approval(&session, id),
         ))
     }
 
     /// `rkat/remove_statement`: remove statement `id` of `caller`'s agent's
     /// session, or one added always.
-    pub(super) fn remove_statement(
-        &self,
-        caller: &Caller,
-        id: u64,
-    ) -> Result<RuleOutcome, Refusal> {
+    pub(super) fn remove_statement(&self, caller: &Caller, id: u64) -> Result<Outcome, Refusal> {
         let session = self.session_of_caller(caller)?;
         let removed = self.core.engine.remove_statement(&session, id);
         self.after_permission_command();
-        Ok(RuleOutcome::from(removed))
+        Ok(Outcome::from(removed))
     }
 
     /// `rkat/remove_grant`: remove session grant `id` of `caller`'s agent.
-    pub(super) fn remove_grant(&self, caller: &Caller, id: u64) -> Result<RuleOutcome, Refusal> {
+    pub(super) fn remove_grant(&self, caller: &Caller, id: u64) -> Result<Outcome, Refusal> {
         let session = self.session_of_caller(caller)?;
-        Ok(RuleOutcome::from(
-            self.core.engine.remove_grant(&session, id),
-        ))
+        Ok(Outcome::from(self.core.engine.remove_grant(&session, id)))
     }
 
     /// `rkat/trust_preview`: `/trust`'s question, each project input read
@@ -562,13 +532,12 @@ impl Local {
     pub(super) fn trust_project(
         &self,
         shown: &[crate::bootstrap::project_trust::TrustPreview],
-    ) -> RuleOutcome {
+    ) -> Outcome {
         use std::fmt::Write as _;
         match self.parts.project.trust_shown(shown) {
-            Ok(recorded) if recorded.is_empty() => RuleOutcome {
-                ok: true,
-                text: "the project has no .rkat/mcp.toml or .rkat/config.toml to trust".to_string(),
-            },
+            Ok(recorded) if recorded.is_empty() => {
+                Outcome::ok("the project has no .rkat/mcp.toml or .rkat/config.toml to trust")
+            }
             Ok(recorded) => {
                 let files = recorded
                     .iter()
@@ -592,12 +561,9 @@ impl Local {
                         names.join(", ")
                     );
                 }
-                RuleOutcome { ok: true, text }
+                Outcome::ok(text)
             }
-            Err(err) => RuleOutcome {
-                ok: false,
-                text: format!("not trusted: {err}"),
-            },
+            Err(err) => Outcome::failed(format!("not trusted: {err}")),
         }
     }
 }

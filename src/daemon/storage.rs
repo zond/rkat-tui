@@ -202,16 +202,7 @@ pub fn bindings_saving(
         if let Some(audit) = &core.audit {
             audit.write(&super::audit::Line::event(event, text.clone()));
         }
-        for agent in live.names() {
-            core.decisions.broadcast(
-                super::protocol::AGENT_NOTICE,
-                &super::protocol::AgentNotice {
-                    agent,
-                    warn,
-                    text: text.clone(),
-                },
-            );
-        }
+        core.decisions.notice_every_agent(live.names(), warn, &text);
     });
 }
 
@@ -254,16 +245,9 @@ pub fn watch_free_space(
             {
                 tracing::warn!(realm = %realm.display(), free, "the realm's filesystem is nearly full");
                 let text = low_space_line(&realm, free);
-                for agent in live.names() {
-                    live.core().decisions.broadcast(
-                        super::protocol::AGENT_NOTICE,
-                        &super::protocol::AgentNotice {
-                            agent,
-                            warn: true,
-                            text: text.clone(),
-                        },
-                    );
-                }
+                live.core()
+                    .decisions
+                    .notice_every_agent(live.names(), true, &text);
             }
             drop(live);
             tokio::time::sleep(SPACE_EVERY).await;
@@ -320,14 +304,8 @@ pub async fn reload(
             tracing::warn!(%mob, %member, error = %err, "the member's reload failed");
             audit(format!("{member} of {mob}: reload failed: {err}"));
             if let Some(agent) = agent.filter(|_| tell_failure) {
-                core.decisions.broadcast(
-                    super::protocol::AGENT_NOTICE,
-                    &super::protocol::AgentNotice {
-                        agent,
-                        warn: true,
-                        text: reload_failed_line(&core.realm),
-                    },
-                );
+                core.decisions
+                    .agent_notice(agent, true, reload_failed_line(&core.realm));
             }
         }
     }

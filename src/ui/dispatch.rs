@@ -269,9 +269,12 @@ impl App {
                 pattern,
                 user,
             }) => fx.push(Effect::AddRule {
-                effect,
-                tool,
-                pattern,
+                spec: crate::approval::desk::RuleSpec {
+                    deny: effect == super::RuleEffect::Deny,
+                    tool,
+                    pattern,
+                    literal: false,
+                },
                 user,
             }),
             Command::Rules(RulesCommand::Remove(n)) => fx.push(Effect::RemoveRule(n)),

@@ -64,11 +64,15 @@ pub const MAX_STATUS: usize = 16 * 1024;
 /// The longest reason a line shows.
 const MAX_REASON: usize = 300;
 
+/// How [`status_request`] opens: a client reads a run it starts by it
+/// (`crate::ui::transcript::composed_input`).
+pub const STATUS_OPENING: &str = "rkat-tui checkpoint: this run has made ";
+
 /// What an agent is asked at its checkpoint after `steps` model calls.
 #[must_use]
 pub fn status_request(steps: u64) -> String {
     format!(
-        "rkat-tui checkpoint: this run has made {steps} steps (model calls), the limit for one run. Do not call any tool now. In at most five short lines, state plainly what is done, what is left, and the next step you will take. Facts only."
+        "{STATUS_OPENING}{steps} steps (model calls), the limit for one run. Do not call any tool now. In at most five short lines, state plainly what is done, what is left, and the next step you will take. Facts only."
     )
 }
 
@@ -178,11 +182,10 @@ pub fn reason_of_error(error: &ClassifierError) -> String {
 /// [`MAX_REASON`] characters, no closing full stop.
 #[must_use]
 pub fn plain(reason: &str) -> String {
-    let one: String = reason.split_whitespace().collect::<Vec<_>>().join(" ");
-    let one = one.trim().trim_end_matches('.');
-    match one.char_indices().nth(MAX_REASON) {
-        Some((cut, _)) => format!("{}…", &one[..cut]),
-        None => one.to_string(),
+    let one = crate::text::one_line(reason);
+    match crate::text::head_chars(one.trim_end_matches('.'), MAX_REASON) {
+        (head, true) => format!("{head}…"),
+        (whole, false) => whole.to_string(),
     }
 }
 
@@ -373,6 +376,15 @@ impl Checkpoints {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A client reads a run the status request starts as the checkpoint's.
+    #[test]
+    fn the_status_request_is_read_back_as_the_checkpoint_s() {
+        assert_eq!(
+            crate::ui::transcript::composed_input(&status_request(100)),
+            Some(STATUS_LABEL)
+        );
+    }
 
     #[test]
     fn the_lines_say_what_happened_in_plain_words() {

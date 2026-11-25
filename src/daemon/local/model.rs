@@ -177,8 +177,8 @@ impl Local {
     /// that started finishes on the old one), audited, and the start-up
     /// check runs against it in the background, its result a notice. An
     /// endpoint this daemon does not have is refused with what to do.
-    pub(super) async fn switch_classifier_model(&self, endpoint: &str, model: &str) -> RuleOutcome {
-        let refused = |text: String| RuleOutcome { ok: false, text };
+    pub(super) async fn switch_classifier_model(&self, endpoint: &str, model: &str) -> Outcome {
+        let refused = Outcome::failed::<String>;
         let model = model.trim();
         if model.is_empty() {
             return refused("/auto model needs a model: /auto model [endpoint:]<id>, or /auto model to pick one".into());
@@ -223,7 +223,7 @@ impl Local {
                         tracing::warn!("the new classifier model's check did not finish in 120 s");
                     }
                 });
-                RuleOutcome { ok: true, text }
+                Outcome::ok(text)
             }
             Err(text) => refused(format!("the classifier model was not changed: {text}")),
         }

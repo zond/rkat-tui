@@ -24,7 +24,7 @@ use super::{App, BlockId, Effect, MemoryTarget, Modal, OpenHelperView, ScrollSta
 use crate::approval::desk::RuleSpec;
 use crate::approval::grants::GrantScope;
 use crate::approval::mode::PermissionMode;
-use crate::daemon::protocol::ScheduleOp;
+use crate::daemon::protocol::{ScheduleOp, TrustHostParams};
 
 /// Which command's picker a [`ListPicker`] is (a refresh replaces only a
 /// picker of its own kind).
@@ -109,8 +109,13 @@ pub enum PickAct {
         text: String,
     },
     /// Add an approval rule (as `/permissions add`, or a literal one),
-    /// then the list again.
-    AddRule(RuleForm),
+    /// to the user's own `tui.toml` with `user`, then the list again.
+    AddRule {
+        /// The rule.
+        spec: RuleSpec,
+        /// Written to the user's own `tui.toml` (every workspace).
+        user: bool,
+    },
     /// Replace rule `n`, which read `old`, with `new` in place, then the
     /// list again; the field stays open until the daemon answers (a
     /// refusal shows in it, its text kept).
@@ -402,19 +407,97 @@ pub enum FieldFor {
 /// The most characters the `/rehome` picker's directory takes.
 const DIRECTORY_CHARS: usize = 4_096;
 
-/// A rule as the `/permissions` dialog's `r` form leaves it.
+/// One act of the `/permissions` dialog, as the runner sends it to the
+/// daemon (then the dialog's lists come again).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuleForm {
-    /// A deny rule (else an allow rule).
-    pub deny: bool,
-    /// The tool's name or pattern.
-    pub tool: String,
-    /// The argument's pattern, or with `literal` its exact text.
-    pub pattern: Option<String>,
-    /// `pattern` is matched exactly.
-    pub literal: bool,
-    /// Written to the user's own `tui.toml` (every workspace).
-    pub user: bool,
+pub enum PermissionAct {
+    /// Approve blocked call `id` for the scope (with `effect`: allow that
+    /// kind of action instead).
+    Approve {
+        /// The blocked call.
+        id: u64,
+        /// How long it holds.
+        scope: GrantScope,
+        /// The kind of action allowed instead, in the user's words.
+        effect: Option<String>,
+    },
+    /// Withdraw the approval once of call `id`.
+    Withdraw(u64),
+    /// Remove rule `n` (as `/permissions rm <n>`).
+    RemoveRule(u64),
+    /// Remove session grant `id`.
+    RemoveGrant(u64),
+    /// Remove statement `id`.
+    RemoveStatement(u64),
+    /// Allow the kind of action `text` describes for the scope.
+    AddStatement {
+        /// How long it holds.
+        scope: GrantScope,
+        /// The statement as typed.
+        text: String,
+    },
+    /// Add the rule (`r`), to the user's own `tui.toml` with `user`.
+    AddRule {
+        /// The rule.
+        spec: RuleSpec,
+        /// Written to the user's own `tui.toml` (every workspace).
+        user: bool,
+    },
+    /// Replace rule `n`, which read `old`, with `new` in place (`e`).
+    EditRule {
+        /// The rule's number.
+        n: u64,
+        /// The rule as the dialog showed it.
+        old: RuleSpec,
+        /// The rule as edited.
+        new: RuleSpec,
+    },
+    /// Trust a host typed (Hosts' `n`) or a blocked call's (Blocked's
+    /// `t`).
+    TrustHost(TrustHostParams),
+    /// Stop trusting a host (Hosts' `d`).
+    UntrustHost(String),
+}
+
+/// Why a rule's text (`<tool> [pattern]`) makes no rule.
+enum RuleTextError {
+    /// No tool was typed.
+    NoTool,
+    /// A literal rule with nothing after the tool.
+    NoLiteral(String),
+}
+
+/// The rule `text` (`<tool> [pattern]`, trimmed) reads as, `deny` and
+/// `literal` as the field has them.
+fn rule_text(text: &str, deny: bool, literal: bool) -> Result<RuleSpec, RuleTextError> {
+    let (tool, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
+    let rest = rest.trim();
+    if tool.is_empty() {
+        return Err(RuleTextError::NoTool);
+    }
+    if literal && rest.is_empty() {
+        return Err(RuleTextError::NoLiteral(tool.to_string()));
+    }
+    Ok(RuleSpec {
+        deny,
+        tool: tool.to_string(),
+        pattern: (!rest.is_empty()).then(|| rest.to_string()),
+        literal,
+    })
+}
+
+impl RuleTextError {
+    /// Why, after `refused` (`no rule added`, `rule 3 not changed`).
+    fn words(&self, refused: &str) -> String {
+        match self {
+            Self::NoTool => format!(
+                "{refused}: type the tool's name (shell, write_file, …), then an optional pattern"
+            ),
+            Self::NoLiteral(tool) => format!(
+                "{refused}: a literal rule needs the exact text after `{tool}` (↑/↓ makes it a pattern)"
+            ),
+        }
+    }
 }
 
 /// The next of the three scopes a statement is allowed for (Tab).
@@ -569,28 +652,10 @@ impl FieldFor {
                 deny,
                 user,
                 literal,
-            } => {
-                let (tool, rest) = text.split_once(char::is_whitespace).unwrap_or((&text, ""));
-                let rest = rest.trim();
-                if tool.is_empty() {
-                    return Err(
-                        "no rule added: type the tool's name (shell, write_file, …), then an optional pattern"
-                            .to_string(),
-                    );
-                }
-                if *literal && rest.is_empty() {
-                    return Err(format!(
-                        "no rule added: a literal rule needs the exact text after `{tool}` (↑/↓ makes it a pattern)"
-                    ));
-                }
-                PickAct::AddRule(RuleForm {
-                    deny: *deny,
-                    tool: tool.to_string(),
-                    pattern: (!rest.is_empty()).then(|| rest.to_string()),
-                    literal: *literal,
-                    user: *user,
-                })
-            }
+            } => PickAct::AddRule {
+                spec: rule_text(&text, *deny, *literal).map_err(|e| e.words("no rule added"))?,
+                user: *user,
+            },
             Self::EditRule {
                 n,
                 old,
@@ -598,31 +663,13 @@ impl FieldFor {
                 literal,
                 user,
                 ..
-            } => {
-                let (tool, rest) = text.split_once(char::is_whitespace).unwrap_or((&text, ""));
-                let rest = rest.trim();
-                if tool.is_empty() {
-                    return Err(format!(
-                        "rule {n} not changed: type the tool's name (shell, write_file, …), then an optional pattern"
-                    ));
-                }
-                if *literal && rest.is_empty() {
-                    return Err(format!(
-                        "rule {n} not changed: a literal rule needs the exact text after `{tool}` (↑/↓ makes it a pattern)"
-                    ));
-                }
-                PickAct::EditRule {
-                    n: *n,
-                    old: old.clone(),
-                    new: RuleSpec {
-                        deny: *deny,
-                        tool: tool.to_string(),
-                        pattern: (!rest.is_empty()).then(|| rest.to_string()),
-                        literal: *literal,
-                    },
-                    user: *user,
-                }
-            }
+            } => PickAct::EditRule {
+                n: *n,
+                old: old.clone(),
+                new: rule_text(&text, *deny, *literal)
+                    .map_err(|e| e.words(&format!("rule {n} not changed")))?,
+                user: *user,
+            },
         })
     }
 
@@ -1070,20 +1117,38 @@ impl ListPicker {
     /// field or a row's detail taller than that grows it.
     #[must_use]
     pub(super) fn steady_lines(&self, width: usize, max_lines: usize) -> usize {
-        let count = self.sections.as_ref().map_or(1, |s| s.names.len());
-        (0..count)
-            .map(|index| {
-                let mut view = self.clone();
-                view.show_section(index);
-                view.line = None;
-                view.detail = None;
-                let tallest = (0..view.rows.len()).max_by_key(|&i| {
-                    let row = &view.rows[i];
-                    row_lines(row, width, true) - row_lines(row, width, false)
-                });
-                view.cursor = ListCursor::at(tallest.unwrap_or(0));
-                list_picker_parts(&view, width, usize::MAX).0.len()
-            })
+        // Each page as `list_picker_parts` lays it out with no line under
+        // the rows and every row shown: the header, the rows (the one
+        // that grows most when highlighted, highlighted) or the empty
+        // line, the key hint. Measured where the pages are, not copied.
+        let head = self
+            .header
+            .as_deref()
+            .map_or(0, |header| wrap_text(header, width).len());
+        let measure = |rows: &[PickRow], empty: &str, footer: &str| {
+            let body = if rows.is_empty() {
+                wrap_text(empty, width).len()
+            } else {
+                let tallest = (0..rows.len())
+                    .max_by_key(|&i| {
+                        row_lines(&rows[i], width, true) - row_lines(&rows[i], width, false)
+                    })
+                    .unwrap_or(0);
+                rows.iter()
+                    .enumerate()
+                    .map(|(i, row)| row_lines(row, width, i == tallest))
+                    .sum()
+            };
+            head + body + wrap_text(footer, width).len()
+        };
+        let shown = measure(&self.rows, &self.empty, &self.footer);
+        let others = self
+            .sections
+            .iter()
+            .flat_map(|sections| sections.pages.iter().flatten())
+            .map(|page| measure(&page.rows, &page.empty, &page.footer));
+        std::iter::once(shown)
+            .chain(others)
             .max()
             .unwrap_or(0)
             .min(max_lines)
@@ -2013,23 +2078,44 @@ impl App {
         match act {
             PickAct::TrustProject(files) => fx.push(Effect::TrustShown(files)),
             PickAct::Schedule(op, id) => fx.push(Effect::PickedSchedule(op, id)),
-            PickAct::RemoveRule(n) => fx.push(Effect::PickedRuleRemoval(n)),
-            PickAct::RemoveGrant(id) => fx.push(Effect::PickedGrantRemoval(id)),
-            PickAct::RemoveStatement(id) => fx.push(Effect::PickedStatementRemoval(id)),
-            PickAct::Approve(id, scope) => fx.push(Effect::PickedApproval(id, scope, None)),
-            PickAct::Withdraw(id) => fx.push(Effect::PickedWithdrawal(id)),
-            PickAct::TrustHost { host, user } => fx.push(Effect::PickedHostTrust { host, user }),
-            PickAct::TrustCallHosts { id, user } => {
-                fx.push(Effect::PickedCallHostTrust { id, user });
+            PickAct::RemoveRule(n) => fx.push(Effect::Permissions(PermissionAct::RemoveRule(n))),
+            PickAct::RemoveGrant(id) => {
+                fx.push(Effect::Permissions(PermissionAct::RemoveGrant(id)));
             }
-            PickAct::UntrustHost(host) => fx.push(Effect::PickedHostRemoval(host)),
+            PickAct::RemoveStatement(id) => {
+                fx.push(Effect::Permissions(PermissionAct::RemoveStatement(id)));
+            }
+            PickAct::Approve(id, scope) => fx.push(Effect::Permissions(PermissionAct::Approve {
+                id,
+                scope,
+                effect: None,
+            })),
+            PickAct::Withdraw(id) => fx.push(Effect::Permissions(PermissionAct::Withdraw(id))),
+            PickAct::TrustHost { host, user } => fx.push(Effect::Permissions(
+                PermissionAct::TrustHost(TrustHostParams::Host { host, user }),
+            )),
+            PickAct::TrustCallHosts { id, user } => fx.push(Effect::Permissions(
+                PermissionAct::TrustHost(TrustHostParams::Call { id, user }),
+            )),
+            PickAct::UntrustHost(host) => {
+                fx.push(Effect::Permissions(PermissionAct::UntrustHost(host)));
+            }
             PickAct::AllowEffect { id, scope, text } => {
-                fx.push(Effect::PickedApproval(id, scope, Some(text)));
+                fx.push(Effect::Permissions(PermissionAct::Approve {
+                    id,
+                    scope,
+                    effect: Some(text),
+                }));
             }
             PickAct::AddStatement { scope, text } => {
-                fx.push(Effect::PickedStatement { scope, text });
+                fx.push(Effect::Permissions(PermissionAct::AddStatement {
+                    scope,
+                    text,
+                }));
             }
-            PickAct::AddRule(form) => fx.push(Effect::PickedRule(form)),
+            PickAct::AddRule { spec, user } => {
+                fx.push(Effect::Permissions(PermissionAct::AddRule { spec, user }));
+            }
             // The field stays open, its text kept, until the daemon's
             // answer: the refreshed list (the row changed) or a refusal
             // in the field.
@@ -2043,7 +2129,7 @@ impl App {
                     }
                     picker.line = Some(PickerLine::Field(field));
                 }
-                fx.push(Effect::PickedRuleEdit { n, old, new });
+                fx.push(Effect::Permissions(PermissionAct::EditRule { n, old, new }));
             }
             PickAct::SetMode(mode) => fx.push(Effect::SetMode(mode)),
             PickAct::SetSetting {
@@ -2479,13 +2565,15 @@ mod tests {
                 scope: GrantScope::Always,
                 text: "x".into(),
             },
-            PickAct::AddRule(RuleForm {
-                deny: false,
-                tool: "shell".into(),
-                pattern: None,
-                literal: false,
+            PickAct::AddRule {
+                spec: RuleSpec {
+                    deny: false,
+                    tool: "shell".into(),
+                    pattern: None,
+                    literal: false,
+                },
                 user: false,
-            }),
+            },
             PickAct::SetSetting {
                 key: "k".into(),
                 value: None,

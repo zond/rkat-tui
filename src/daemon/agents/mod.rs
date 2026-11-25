@@ -808,14 +808,7 @@ impl Agents {
                 return;
             }
         }
-        self.core.decisions.broadcast(
-            super::protocol::AGENT_NOTICE,
-            &super::protocol::AgentNotice {
-                agent: name.to_string(),
-                warn: false,
-                text,
-            },
-        );
+        self.core.decisions.agent_notice(name, false, text);
     }
 
     /// The most recently active live agent (spares last).

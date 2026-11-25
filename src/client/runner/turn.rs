@@ -1189,11 +1189,11 @@ impl Runner {
                 .and_then(|models| models.entry(endpoint, model))
                 .and_then(|entry| entry.context_window)
         };
-        let window = if self.bench.is_configured_endpoint(endpoint) {
-            listed().or_else(registry)
-        } else {
-            registry().or_else(listed)
-        };
+        let window = crate::endpoints::context_window(
+            self.bench.is_configured_endpoint(endpoint),
+            registry,
+            listed,
+        );
         self.send(Msg::Status(StatusUpdate::ContextWindow(window)));
     }
 

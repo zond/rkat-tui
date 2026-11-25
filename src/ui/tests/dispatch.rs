@@ -418,7 +418,7 @@ fn the_wire_picker_opens_with_only_wires_when_no_daemon_runs() {
     use crate::client::wires::wire_picker;
     let mut ssh = wire_row("/w/far", "main-eeee");
     ssh.host = Some("box".into());
-    ssh.link = Some("up".into());
+    ssh.link = Some(crate::daemon::remote_wire::LinkState::Up);
     let wired = [wire_row("/w/web", "main-cccc"), ssh];
     let mut app = App::new(StatusInfo::default());
     app.update(Msg::ShowPicker {
@@ -561,7 +561,7 @@ fn rule_picker_removes_after_a_confirmation() {
     assert!(app.update(key(KeyCode::Char('d'))).is_empty());
     assert_eq!(
         app.update(key(KeyCode::Char('y'))),
-        vec![Effect::PickedRuleRemoval(3)]
+        vec![Effect::Permissions(PermissionAct::RemoveRule(3))]
     );
     assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Permissions));
     app.update(Msg::ShowPicker {
@@ -1788,7 +1788,7 @@ fn the_blocked_section_marks_a_waiting_approval_and_withdraws_it() {
     }
     assert_eq!(
         app.update(key(KeyCode::Char('w'))),
-        vec![Effect::PickedWithdrawal(2)]
+        vec![Effect::Permissions(PermissionAct::Withdraw(2))]
     );
     assert!(matches!(&app.modal, Some(Modal::List(p))
         if p.kind == PickerKind::Permissions && p.section() == Some(Section::Blocked.index())));
@@ -1813,6 +1813,7 @@ fn an_approval_s_run_is_headed_by_why_it_started() {
     let note = "The user approved your blocked call `shell cmd` once. Run it again exactly as before (any other call is reviewed as usual).";
     app.update(Msg::Triggered {
         summary: None,
+        cause: crate::daemon::protocol::TriggerCause::Approval,
         label: "approved: the agent is told and goes on".into(),
         prompt: note.into(),
     });

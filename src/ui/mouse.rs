@@ -8,9 +8,31 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 
 use super::{
-    App, Block, BlockId, CellPos, InputMode, LastDown, MULTI_CLICK_WINDOW, Modal, NoticeLevel,
-    Press, QueuedCopy, SelectMode, Selection, keymap, selection,
+    App, Block, BlockId, CellPos, InputMode, MULTI_CLICK_WINDOW, Modal, NoticeLevel, QueuedCopy,
+    SelectMode, Selection, keymap, selection,
 };
+
+/// A left button press not yet released.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Press {
+    /// Cell pressed.
+    pub(super) pos: CellPos,
+    /// Screen row pressed (for click-to-expand).
+    pub(super) row: u16,
+    /// 1 = single, 2 = double, 3 = triple click.
+    pub(super) clicks: u8,
+    /// Whether the pointer moved with the button held.
+    pub(super) dragged: bool,
+}
+
+/// The last left press, for multi-click detection.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LastDown {
+    pub(super) at: Instant,
+    pub(super) row: u16,
+    pub(super) column: u16,
+    pub(super) clicks: u8,
+}
 
 impl App {
     /// Record where the transcript was drawn: its screen area, the logical

@@ -115,11 +115,10 @@ fn entry(
 
 /// `text`, cut to about `max` bytes (at a character boundary), saying so.
 fn cut(text: &str, max: usize) -> String {
-    if text.len() <= max {
-        return text.to_string();
+    match crate::text::head_bytes(text, max) {
+        (_, false) => text.to_string(),
+        (head, true) => format!("{head} … ({} more bytes left out)", text.len() - head.len()),
     }
-    let head = crate::text::prefix(text, max);
-    format!("{head} … ({} more bytes left out)", text.len() - head.len())
 }
 
 /// The session's record for the side call, at most about `budget` bytes:
@@ -172,13 +171,10 @@ fn last_part(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
     }
-    let mut start = text.len() - max;
-    while !text.is_char_boundary(start) {
-        start += 1;
-    }
+    let tail = crate::text::tail_bytes(text, max);
     format!(
-        "(… its first {start} bytes are left out here …)\n{}",
-        &text[start..]
+        "(… its first {} bytes are left out here …)\n{tail}",
+        text.len() - tail.len()
     )
 }
 

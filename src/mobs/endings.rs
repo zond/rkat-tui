@@ -177,6 +177,21 @@ pub enum How {
 }
 
 impl How {
+    /// How a client's line reads the ending (an idle member, which is not
+    /// announced, reads as stopped).
+    #[must_use]
+    pub fn ending(&self) -> crate::daemon::protocol::HelperEnding {
+        use crate::daemon::protocol::HelperEnding;
+        match self {
+            Self::Finished { .. } | Self::Done { .. } => HelperEnding::Finished,
+            Self::Failed { .. } => HelperEnding::Failed,
+            Self::WentIdle { .. }
+            | Self::StoppedByUser
+            | Self::DaemonStopped
+            | Self::CheckpointStopped { .. } => HelperEnding::Stopped,
+        }
+    }
+
     /// The words a helper's line shows (`stopped by you`).
     #[must_use]
     pub fn text(&self) -> String {

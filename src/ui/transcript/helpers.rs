@@ -10,7 +10,8 @@ use ratatui::text::Line;
 use serde_json::Value;
 
 use super::{Block, BlockId, CachedLayout, HelperScope, Transcript, role_lines};
-use crate::ui::markdown::truncate_chars;
+use crate::daemon::protocol::HelperEnding;
+use crate::text::truncate_chars;
 use crate::ui::render::{SPINNER, SPINNER_FRAME_MS};
 
 /// Maximum characters of a helper header's last-activity preview.
@@ -174,16 +175,14 @@ impl HelperFold {
     /// status (`⠋ fresh · single-use · running · 2 tool calls`).
     #[must_use]
     pub fn panel_status_text(&self) -> String {
-        let status = self.status_text();
         let Some(kind) = self.kind else {
-            return status;
+            return self.status_text();
         };
+        let parts = self.status_parts();
         let kind = kind.text();
-        match status.split_once(' ') {
-            Some((glyph, rest)) if SPINNER.contains(&glyph.chars().next().unwrap_or(' ')) => {
-                format!("{glyph} {kind} · {rest}")
-            }
-            _ => format!("{kind} · {status}"),
+        match parts.glyph {
+            Some(glyph) => format!("{glyph} {kind} · {}{}", parts.state, parts.rest),
+            None => format!("{kind} · {}{}", parts.state, parts.rest),
         }
     }
 
@@ -193,14 +192,22 @@ impl HelperFold {
     /// is retired.
     #[must_use]
     pub fn view_status_text(&self) -> String {
-        let status = self.status_text();
-        let state = self.state.text();
-        let shown = match (self.state, self.kind) {
-            (HelperState::Done, Some(kind)) if kind.kept() => "idle",
-            (HelperState::Done, _) => "finished",
-            _ => state,
+        let parts = self.status_parts();
+        // The state's own word reads `finished` here (`idle` for a kept
+        // helper); the daemon's words of how it ended stay.
+        let state = if parts.state == self.state.text() {
+            match (self.state, self.kind) {
+                (HelperState::Done, Some(kind)) if kind.kept() => "idle",
+                (HelperState::Done, _) => "finished",
+                _ => &parts.state,
+            }
+        } else {
+            &parts.state
         };
-        let status = status.replacen(state, shown, 1);
+        let status = match parts.glyph {
+            Some(glyph) => format!("{glyph} {state}{}", parts.rest),
+            None => format!("{state}{}", parts.rest),
+        };
         match self.kind {
             Some(kind) => format!("{} · {status}", kind.text()),
             None => status,
@@ -441,7 +448,7 @@ impl Transcript {
                 self.helpers.folds.shift_remove(label);
             }
             if depth == 1 {
-                self.ensure_fold(&[label]);
+                self.ensure_fold(&[], label);
             }
             now_live.push(label.to_string());
         }
@@ -711,30 +718,29 @@ impl Transcript {
         false
     }
 
-    /// The header of the helper `path` (outermost first), made (with the
-    /// headers of the helpers above it) when missing.
-    pub(super) fn ensure_fold(&mut self, path: &[&str]) -> BlockId {
-        let Some((label, parents)) = path.split_last() else {
-            return BlockId(usize::MAX);
-        };
+    /// The header of the helper `label` below `parents` (outermost first),
+    /// made (with the headers of the helpers above it) when missing.
+    pub(super) fn ensure_fold(&mut self, parents: &[&str], label: &str) -> BlockId {
         if let Some(id) = self.helpers.fold(label) {
             return id;
         }
-        let parent = (!parents.is_empty()).then(|| self.ensure_fold(parents));
+        let parent = parents
+            .split_last()
+            .map(|(up, above)| self.ensure_fold(above, up));
         // The helper's own block: it parts no other scope's prose.
         let id = self.push_raw(Block::Helper(HelperFold {
-            label: (*label).to_string(),
+            label: label.to_string(),
             model: self.helper_model(label).map(str::to_string),
             state: HelperState::Running,
             calls: 0,
             last: HelperLast::Nothing,
             expanded: self.helpers.view == HelperView::Expanded,
             usage: None,
-            depth: path.len(),
+            depth: parents.len() + 1,
             spin: 0,
             was_live: false,
             left: None,
-            kind: self.helpers.kinds.get(*label).copied(),
+            kind: self.helpers.kinds.get(label).copied(),
             inputs: 0,
             ended: None,
         }));
@@ -885,14 +891,20 @@ impl Transcript {
         self.update_fold(helper.header, |f| f.inputs += 1);
     }
 
-    /// The daemon said the helper `path` ended `how` (`stopped by you`)
-    /// and who was `told`: its line says how instead of its state, and a
-    /// notice in the transcript says it.
-    pub fn helper_ended(&mut self, path: &[String], how: &str, told: Option<&str>) {
+    /// The daemon said the helper `path` ended (`ending`, in the words
+    /// `how`: `stopped by you`) and who was `told`: its line says how
+    /// instead of its state, and a notice in the transcript says it.
+    pub fn helper_ended(
+        &mut self,
+        path: &[String],
+        ending: HelperEnding,
+        how: &str,
+        told: Option<&str>,
+    ) {
         let Some(label) = path.last() else {
             return;
         };
-        if how == crate::daemon::protocol::HELPER_RETIRED {
+        if ending == HelperEnding::Retired {
             self.helpers.unseat(label);
             // It left its mob: shown on its line, unless its line says how
             // it ended already (`finished`, `stopped by you`).
@@ -908,12 +920,10 @@ impl Transcript {
             }
             return;
         }
-        let state = if how == "finished" {
-            HelperState::Done
-        } else if how.starts_with("failed") {
-            HelperState::Failed
-        } else {
-            HelperState::Cancelled
+        let state = match ending {
+            HelperEnding::Finished => HelperState::Done,
+            HelperEnding::Failed => HelperState::Failed,
+            HelperEnding::Stopped | HelperEnding::Retired => HelperState::Cancelled,
         };
         if let Some(id) = self.helpers.fold(label) {
             self.update_fold(id, |fold| {
@@ -939,8 +949,15 @@ impl Transcript {
         };
         // News of a helper: it parts no prose of the agent's still
         // streaming (see the module doc).
-        let text = format!("helper {} {how}{told}", self.helper_tag(label));
+        let text = format!("{}{how}{told}", self.ending_head(label));
         self.push_raw(Block::Notice { level, text });
+    }
+
+    /// How the notice that the helper `label` ended opens
+    /// (`helper [scout · m] `): [`Self::helper_ended`] writes it, and the
+    /// run its note starts finds the notice by it.
+    pub(super) fn ending_head(&self, label: &str) -> String {
+        format!("helper {} ", self.helper_tag(label))
     }
 
     /// The model of the helper `label`, when known.
@@ -977,15 +994,15 @@ impl Transcript {
                 _ => None,
             })
             .collect();
-        let Some(label) = path.last().copied() else {
+        let Some((&label, parents)) = path.split_last() else {
             return;
         };
-        let parent = match path.len() {
-            0 | 1 => self.helpers.agent_name.clone(),
-            n => path.get(n - 2).map(|p| (*p).to_string()),
+        let parent = match parents.last() {
+            None => self.helpers.agent_name.clone(),
+            Some(up) => Some((*up).to_string()),
         };
         let helper = HelperScope {
-            header: self.ensure_fold(&path),
+            header: self.ensure_fold(parents, label),
             tag: self.helper_tag(label),
             scope_id: &scoped.scope_id,
             depth: path.len(),

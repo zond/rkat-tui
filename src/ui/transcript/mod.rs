@@ -43,8 +43,8 @@ use ratatui::text::Line;
 use serde_json::Value;
 
 use super::delivery::PendingId;
-use super::markdown::truncate_chars;
 use super::render::SPINNER;
+use crate::text::truncate_chars;
 
 mod helpers;
 mod layout;
@@ -88,6 +88,15 @@ pub enum NoticeLevel {
     Warn,
     /// A failure.
     Error,
+}
+
+impl NoticeLevel {
+    /// A warning when `warn`, else information: a notice the daemon sent
+    /// with its `warn` flag.
+    #[must_use]
+    pub fn of_warning(warn: bool) -> Self {
+        if warn { Self::Warn } else { Self::Info }
+    }
 }
 
 /// Lifecycle state of a tool call.
@@ -200,25 +209,44 @@ impl HelperFold {
     /// grep "fn resolve"`, `done · 7 tool calls · 2.1k tokens`.
     #[must_use]
     pub fn status_text(&self) -> String {
-        use std::fmt::Write as _;
-        let mut out = String::new();
-        if self.state.is_running() {
-            let glyph = SPINNER
+        let parts = self.status_parts();
+        match parts.glyph {
+            Some(glyph) => format!("{glyph} {}{}", parts.state, parts.rest),
+            None => format!("{}{}", parts.state, parts.rest),
+        }
+    }
+
+    /// [`Self::status_text`] in its parts: the spinner's glyph of a
+    /// running helper, its state in words, and what follows.
+    #[must_use]
+    pub fn status_parts(&self) -> StatusParts {
+        let glyph = self.state.is_running().then(|| {
+            SPINNER
                 .get(self.spin % SPINNER.len())
                 .copied()
-                .unwrap_or('⠋');
-            out.push(glyph);
-            out.push(' ');
-        }
-        match self.ended.as_deref().filter(|_| !self.state.is_running()) {
-            Some(how) => out.push_str(how),
+                .unwrap_or('⠋')
+        });
+        let state = match self.ended.as_deref().filter(|_| !self.state.is_running()) {
+            Some(how) => how.to_string(),
             // A kept helper whose run ended is seated still, idle, until it
             // is retired (the daemon says so).
             None if self.state == HelperState::Done && self.kind.is_some_and(HelperKind::kept) => {
-                out.push_str("idle");
+                "idle".to_string()
             }
-            None => out.push_str(self.state.text()),
+            None => self.state.text().to_string(),
+        };
+        StatusParts {
+            glyph,
+            state,
+            rest: self.status_rest(),
         }
+    }
+
+    /// What follows the state in [`Self::status_text`]: its calls, then a
+    /// running helper's latest activity or an ended one's tokens.
+    fn status_rest(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
         let _ = write!(out, " · {}", crate::text::count(self.calls, "tool call"));
         if self.state.is_running() {
             match &self.last {
@@ -238,6 +266,18 @@ impl HelperFold {
         }
         out
     }
+}
+
+/// A helper's status line in its parts ([`HelperFold::status_parts`]), for
+/// each place that shows it to join as it needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusParts {
+    /// The spinner's glyph, while it runs.
+    pub glyph: Option<char>,
+    /// Its state in words (`running`, `idle`, `stopped by you`).
+    pub state: String,
+    /// What follows the state, with its leading ` · `.
+    pub rest: String,
 }
 
 /// A file diff attached to a tool block.
@@ -394,6 +434,8 @@ pub enum Block {
     /// (`scheduled: <name>`, `files changed: …`), with its input.
     Triggered {
         /// What fired it.
+        cause: crate::daemon::protocol::TriggerCause,
+        /// What fired it, in words.
         label: String,
         /// The run's input.
         text: String,
@@ -412,6 +454,8 @@ pub enum Block {
         helpers: Vec<String>,
         /// Whether one of them failed.
         failed: bool,
+        /// What it says of them.
+        kind: crate::daemon::agents::endings::NoteKind,
         /// Whether only the one line shows.
         collapsed: bool,
         /// Whether the daemon's notice of the same ending was left out for
@@ -791,7 +835,7 @@ impl Transcript {
                     let _ = writeln!(out, "## {label}");
                     body(&mut out, text);
                 }
-                Block::Triggered { label, text } => {
+                Block::Triggered { label, text, .. } => {
                     let _ = writeln!(out, "## {label}");
                     body(&mut out, text);
                 }
@@ -1079,16 +1123,16 @@ impl Transcript {
         Some(note)
     }
 
-    /// A run nobody typed was fired by `label` with input `prompt`: the
-    /// prompt's block among the run's (`run_first` and later) is
-    /// relabelled, else the labelled block is appended. When the run's
-    /// own input showed it already ([`Self::remote_input`]) nothing is.
-    /// `summary`: a note of helpers' endings' folded line, as the daemon
-    /// made it.
+    /// A run nobody typed was fired by `cause` (named `label`) with input
+    /// `prompt`: the prompt's block among the run's (`run_first` and
+    /// later) is relabelled, else the labelled block is appended. When the
+    /// run's own input showed it already ([`Self::remote_input`]) nothing
+    /// is. `summary`: a note of helpers' endings' folded line, as the
+    /// daemon made it.
     pub fn label_triggered(
         &mut self,
         run_first: BlockId,
-        label: String,
+        (cause, label): (crate::daemon::protocol::TriggerCause, String),
         prompt: String,
         summary: Option<crate::daemon::agents::endings::NoteSummary>,
     ) {
@@ -1115,6 +1159,7 @@ impl Transcript {
                 note
             }
             None => Block::Triggered {
+                cause,
                 label,
                 text: prompt,
             },
@@ -1135,9 +1180,10 @@ impl Transcript {
     /// (`helper [review-x · m] finished; main was told`) since the user's
     /// last message: a [`Block::HelperNote`] says it. Whether one went.
     fn drop_ending_notices(&mut self, helpers: &[String]) -> bool {
+        use crate::daemon::agents::endings::TOLD;
         let heads: Vec<String> = helpers
             .iter()
-            .map(|label| format!("helper {} ", self.helper_tag(label)))
+            .map(|label| self.ending_head(label))
             .collect();
         // The newest such notice of each helper: an earlier one was of
         // another ending (a kept helper goes idle more than once).
@@ -1149,7 +1195,7 @@ impl Transcript {
                     .take_while(|(_, block)| !matches!(block, Block::User { .. }))
                     .find(|(_, block)| {
                         matches!(block, Block::Notice { text, .. }
-                            if text.ends_with(" was told") && text.starts_with(head.as_str()))
+                            if text.ends_with(TOLD) && text.starts_with(head.as_str()))
                     })
                     .map(|(id, _)| id)
             })
@@ -1165,7 +1211,7 @@ impl Transcript {
     /// user's last message, not yet paired with a notice); that note is
     /// paired with it then.
     pub(super) fn ending_shown(&mut self, label: &str, told: &str) -> bool {
-        if !told.ends_with(" was told") {
+        if !told.ends_with(crate::daemon::agents::endings::TOLD) {
             return false;
         }
         let note = self
@@ -1297,19 +1343,13 @@ impl Transcript {
             self.layout.touch(0);
         }
         for index in 0..self.entries.len() {
-            let changed = match &mut self.entries[index].block {
-                Block::Reasoning { collapsed, .. }
-                | Block::Tool { collapsed, .. }
-                | Block::Shell { collapsed, .. }
-                | Block::Peer { collapsed, .. }
-                | Block::HelperNote { collapsed, .. }
-                | Block::Compaction { collapsed, .. }
-                | Block::Outcome { collapsed, .. } => {
+            let changed = match self.entries[index].block.collapsed_mut() {
+                Some(collapsed) => {
                     let changed = *collapsed != collapse;
                     *collapsed = collapse;
                     changed
                 }
-                _ => false,
+                None => false,
             };
             if changed {
                 self.invalidate(index);
@@ -1430,21 +1470,9 @@ impl Transcript {
         if !self.block(id).is_some_and(foldable) {
             return None;
         }
-        match self.block_mut(id) {
-            Some(
-                Block::Tool { collapsed, .. }
-                | Block::Reasoning { collapsed, .. }
-                | Block::Shell { collapsed, .. }
-                | Block::Peer { collapsed, .. }
-                | Block::HelperNote { collapsed, .. }
-                | Block::Compaction { collapsed, .. }
-                | Block::Outcome { collapsed, .. },
-            ) => {
-                *collapsed = !*collapsed;
-                Some(*collapsed)
-            }
-            _ => None,
-        }
+        let collapsed = self.block_mut(id)?.collapsed_mut()?;
+        *collapsed = !*collapsed;
+        Some(*collapsed)
     }
 
     /// The tool block of a call by its tool-use id as the model issued it: a
@@ -1719,10 +1747,7 @@ impl Transcript {
                 if let Some(block) = self.tool_block(&key(id))
                     && let Some(Block::Tool { outcome, .. }) = self.block_mut(block)
                 {
-                    *outcome = tool_line::Outcome {
-                        text: Some(format!("timed out after {after}")),
-                        failed: true,
-                    };
+                    *outcome = tool_line::Outcome::failure(format!("timed out after {after}"));
                 }
             }
             // A run at its limit is at its checkpoint, no failure: the
@@ -1918,11 +1943,7 @@ impl Transcript {
     fn push_raw(&mut self, mut block: Block) -> BlockId {
         // With the detail on (Ctrl-O), a foldable block arrives shown.
         if self.detail
-            && let Block::Reasoning { collapsed, .. }
-            | Block::Tool { collapsed, .. }
-            | Block::Shell { collapsed, .. }
-            | Block::HelperNote { collapsed, .. }
-            | Block::Outcome { collapsed, .. } = &mut block
+            && let Some(collapsed) = block.collapsed_mut()
         {
             *collapsed = false;
         }
@@ -2159,7 +2180,10 @@ impl Transcript {
         let result = whole.and_then(|text| serde_json::from_str::<Value>(text).ok());
         // `contacts` (and an earlier build's `peers`): every entry naming a
         // peer id, in whichever group it is.
-        if matches!(tool_base(name), "peers" | crate::daemon::contacts::CONTACTS) {
+        if matches!(
+            tool_line::base(name),
+            "peers" | crate::daemon::contacts::CONTACTS
+        ) {
             fn entries(value: &Value, out: &mut Vec<Value>) {
                 match value {
                     Value::Object(map) => {
@@ -2195,7 +2219,7 @@ impl Transcript {
             .and_then(|r| r.get("status"))
             .and_then(Value::as_str)
             == Some("sent");
-        let recipient = recipient(args);
+        let recipient = tool_line::recipient(args).to_string();
         if let Some(Block::Tool {
             note, collapsed, ..
         }) = self.block_mut(id)
@@ -2336,24 +2360,9 @@ impl Transcript {
     }
 }
 
-/// A tool block's tool name without a helper's tag (`[scout] contacts`).
-fn tool_base(name: &str) -> &str {
-    name.rsplit(' ').next().unwrap_or(name)
-}
-
 /// Whether `name` is the comms tool that sends a peer a message.
 fn send_tool(name: &str) -> bool {
-    tool_base(name) == "send_message"
-}
-
-/// A `send_message`'s recipient as its header and note name it: the
-/// peer's name when known, else its id.
-fn recipient(args: &Value) -> String {
-    args.get("display_name")
-        .and_then(Value::as_str)
-        .or_else(|| args.get("peer_id").and_then(Value::as_str))
-        .unwrap_or("?")
-        .to_string()
+    tool_line::base(name) == "send_message"
 }
 
 /// Which of its two reports showed a run nobody here typed
@@ -2383,22 +2392,22 @@ pub fn composed_input(text: &str) -> Option<&'static str> {
     use crate::daemon::{checkpoint, prepare};
     let text = text.trim();
     let prepare_request = text.ends_with(prepare::READY_SUFFIX)
-        || ((text.starts_with("Compaction happens automatically at")
-            || text.starts_with("Your context is at "))
-            && text.ends_with("then `compact_ready`."));
+        || ((text.starts_with(prepare::BACKSTOP_OPENING)
+            || text.starts_with(prepare::CONTEXT_OPENING))
+            && text.ends_with(prepare::REMINDER_CLOSING));
     if prepare_request {
-        Some("the agent was asked to prepare for compaction")
+        Some(prepare::PREPARE_LABEL)
     } else if text == checkpoint::CONTINUE_INSTRUCTION {
         Some(checkpoint::CONTINUE_LABEL)
-    } else if text.starts_with("rkat-tui checkpoint: this run has made ") {
+    } else if text.starts_with(checkpoint::STATUS_OPENING) {
         Some(checkpoint::STATUS_LABEL)
     } else if text == crate::approval::mode::PLAN_ON_NOTE {
         Some("plan mode on: the agent was told")
     } else if text == crate::approval::mode::PLAN_OFF_NOTE {
         Some("plan mode off: the agent was told")
-    } else if text.starts_with("The user approved your blocked call") {
+    } else if text.starts_with(crate::approval::engine::APPROVED_OPENING) {
         Some(crate::daemon::agents::APPROVED_LABEL)
-    } else if text.starts_with("files changed: ") {
+    } else if text.starts_with(crate::daemon::watches::FILES_CHANGED) {
         Some("files changed: the agent was told")
     } else if text == crate::daemon::agents::READ_ONLY_COMMS_NOTE {
         Some("the agent was told that a read-only profile cannot send messages")
@@ -2455,9 +2464,28 @@ pub(crate) fn helper_note(
         text: prompt.to_string(),
         helpers: summary.helpers,
         failed: summary.failed,
+        kind: summary.kind,
         collapsed,
         paired: false,
     })
+}
+
+impl Block {
+    /// Whether only its first line shows, for the kinds that fold (a tool
+    /// call, reasoning, a `!` command, a peer's message, a helper's note,
+    /// a compaction, a job's outcome); `None` for the others.
+    fn collapsed_mut(&mut self) -> Option<&mut bool> {
+        match self {
+            Self::Reasoning { collapsed, .. }
+            | Self::Tool { collapsed, .. }
+            | Self::Shell { collapsed, .. }
+            | Self::Peer { collapsed, .. }
+            | Self::HelperNote { collapsed, .. }
+            | Self::Compaction { collapsed, .. }
+            | Self::Outcome { collapsed, .. } => Some(collapsed),
+            _ => None,
+        }
+    }
 }
 
 /// Whether `block` has something to fold (its line ends in `▸`/`▾`): a
@@ -2594,18 +2622,21 @@ mod tests {
         t.push(Block::User {
             text: "check the build".into(),
         });
+        use crate::daemon::protocol::TriggerCause;
         t.label_triggered(
             run,
-            "scheduled: nightly".into(),
+            (TriggerCause::Schedule, "scheduled: nightly".into()),
             "check the build".into(),
             None,
         );
         assert!(matches!(&t.blocks()[0], Block::User { .. }));
-        assert!(matches!(&t.blocks()[1], Block::Triggered { label, text }
-            if label == "scheduled: nightly" && text == "check the build"));
+        assert!(
+            matches!(&t.blocks()[1], Block::Triggered { label, text, .. }
+            if label == "scheduled: nightly" && text == "check the build")
+        );
         t.label_triggered(
             t.next_id(),
-            "scheduled: other".into(),
+            (TriggerCause::Schedule, "scheduled: other".into()),
             "elsewhere".into(),
             None,
         );

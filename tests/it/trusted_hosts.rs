@@ -17,7 +17,17 @@ use rkat_tui::approval::catalog::ToolOrigin;
 use rkat_tui::approval::classifier::{ClassifierVerdict, Environment};
 use rkat_tui::approval::engine::ToolCall;
 use rkat_tui::approval::mode::PermissionMode;
+use rkat_tui::daemon::protocol::TrustHostParams;
+use rkat_tui::ui::{Effect, PermissionAct};
 use serde_json::json;
+
+/// The Hosts section's `n`: trust `host` (in every workspace with `user`).
+fn trust_host(host: &str, user: bool) -> Effect {
+    Effect::Permissions(PermissionAct::TrustHost(TrustHostParams::Host {
+        host: host.into(),
+        user,
+    }))
+}
 
 /// How the gate decides the shell command `command` for the start agent.
 async fn decide(daemon: &Running, id: &str, command: &str) -> Verdict {
@@ -238,7 +248,6 @@ async fn notice(rig: &mut rig::Attached, start: &str) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_host_trusted_in_the_dialog_is_written_live_and_survives_a_restart() {
     use rkat_tui::approval::hosts::HostOrigin;
-    use rkat_tui::ui::Effect;
     let ws = Workspace::new();
     let realm_file = common::realm_of(&ws.root).join("tui.toml");
     let user_file = common::config_dir_for(&ws.root).join("tui.toml");
@@ -249,10 +258,7 @@ async fn a_host_trusted_in_the_dialog_is_written_live_and_survives_a_restart() {
     let mut rig = rig::Attached::start_with(&ws.root, &llm, setup()).await;
     rig.set_mode(PermissionMode::Auto).await;
 
-    rig.send(Effect::PickedHostTrust {
-        host: "https://paste.example.com/x".into(),
-        user: false,
-    });
+    rig.send(trust_host("https://paste.example.com/x", false));
     let refused = notice(&mut rig, "`https://paste.example.com/x` was not trusted").await;
     assert!(
         refused.contains("a valid entry is a host name (`ci.example.net`) or `*.` and a domain"),
@@ -264,10 +270,7 @@ async fn a_host_trusted_in_the_dialog_is_written_live_and_survives_a_restart() {
         read(&realm_file)
     );
 
-    rig.send(Effect::PickedHostTrust {
-        host: "Paste.Example.com".into(),
-        user: false,
-    });
+    rig.send(trust_host("Paste.Example.com", false));
     let text = notice(&mut rig, "trusted `paste.example.com`").await;
     assert!(
         text.contains("this workspace (the realm's tui.toml)"),
@@ -278,10 +281,7 @@ async fn a_host_trusted_in_the_dialog_is_written_live_and_survives_a_restart() {
         "{}",
         read(&realm_file)
     );
-    rig.send(Effect::PickedHostTrust {
-        host: "*.corp.example".into(),
-        user: true,
-    });
+    rig.send(trust_host("*.corp.example", true));
     notice(&mut rig, "trusted `*.corp.example`").await;
     assert!(
         read(&user_file).contains("*.corp.example"),
@@ -342,7 +342,9 @@ async fn a_host_trusted_in_the_dialog_is_written_live_and_survives_a_restart() {
     );
 
     // Removed: gone from its file and from the next review.
-    rig.send(Effect::PickedHostRemoval("paste.example.com".into()));
+    rig.send(Effect::Permissions(PermissionAct::UntrustHost(
+        "paste.example.com".into(),
+    )));
     let text = notice(&mut rig, "no longer trusted: `paste.example.com`").await;
     assert!(text.contains("removed from this workspace"), "{text}");
     assert!(
@@ -366,7 +368,7 @@ async fn a_host_trusted_in_the_dialog_is_written_live_and_survives_a_restart() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_d5_block_says_how_to_trust_its_host_and_t_trusts_it() {
     use common::Step;
-    use rkat_tui::ui::{Effect, Msg};
+    use rkat_tui::ui::Msg;
     // A command of the project's own (no file here: it fails when it
     // runs, which the script does not read), never a read-only one,
     // which tier 1 would let through unreviewed.
@@ -413,10 +415,12 @@ async fn a_d5_block_says_how_to_trust_its_host_and_t_trusts_it() {
         "{told}"
     );
 
-    rig.send(Effect::PickedCallHostTrust {
-        id: blocked.id,
-        user: false,
-    });
+    rig.send(Effect::Permissions(PermissionAct::TrustHost(
+        TrustHostParams::Call {
+            id: blocked.id,
+            user: false,
+        },
+    )));
     rig.saw(|m| {
         matches!(m, Msg::Triggered { prompt, .. }
             if prompt.starts_with("The user approved your blocked call")

@@ -53,7 +53,7 @@ use parking_lot::{Mutex, RwLock};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::approval::admission::denial_error;
-use crate::approval::catalog::{ToolCatalog, ToolOrigins};
+use crate::approval::catalog::{ToolCatalog, ToolOrigin, ToolOrigins};
 use crate::approval::desk::{EscalationAnswer, answered};
 use crate::approval::escalation::{EscalationRequest, HumanDecision};
 use crate::approval::{ApprovalEngine, ApprovalGate, DenyReason};
@@ -477,6 +477,17 @@ impl ToolOrigins for DaemonToolOrigins {
         // A tool revealed in this run is in no catalog read yet.
         self.deferrable.add_to(&mut catalog);
         Some(catalog)
+    }
+
+    /// [`Self::catalog`]'s entry for `name`, looked up where it is held
+    /// (the session's catalog, else the known tools, else the deferrable
+    /// ones), with no catalog built for one call.
+    async fn origin(&self, session_id: &SessionId, name: &str) -> Option<ToolOrigin> {
+        let held = match self.cache.read().get(session_id) {
+            Some(catalog) => catalog.get(name).cloned(),
+            None => self.known.read().get(name).cloned(),
+        };
+        held.or_else(|| self.deferrable.origin(name))
     }
 }
 

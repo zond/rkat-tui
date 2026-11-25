@@ -1084,14 +1084,7 @@ fn open_wires(
         .ssh()
         .set_tell(Arc::new(move |agent: &str, warn: bool, text: String| {
             if let Some(decisions) = decisions.upgrade() {
-                decisions.broadcast(
-                    protocol::AGENT_NOTICE,
-                    &protocol::AgentNotice {
-                        agent: agent.to_string(),
-                        warn,
-                        text,
-                    },
-                );
+                decisions.agent_notice(agent, warn, text);
             }
         }));
     if let Some(problem) = problem {

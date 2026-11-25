@@ -28,21 +28,7 @@ pub(super) fn save_unsent(
     held: Vec<(Option<PendingId>, String)>,
     delivered: &[PendingId],
 ) -> Option<SavedUnsent> {
-    let unsent = unsent_texts(held, delivered);
-    if unsent.is_empty() {
-        return None;
-    }
-    let path = realm_root.join(UNSENT_FILE);
-    match append_unsent(&path, &unsent) {
-        Ok(()) => Some(SavedUnsent {
-            count: unsent.len(),
-            path,
-        }),
-        Err(err) => {
-            tracing::warn!(error = %err, path = %path.display(), "could not save unsent messages");
-            None
-        }
-    }
+    save_texts(realm_root, &unsent_texts(held, delivered))
 }
 
 /// Append `texts` (messages of the user's never sent, oldest first) to the

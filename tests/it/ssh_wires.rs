@@ -351,7 +351,7 @@ async fn wires_of(daemon: &Running) -> Vec<(String, Option<String>, Option<Strin
         .map(|row| {
             row.wires
                 .iter()
-                .map(|w| (w.label(), w.host.clone(), w.link.clone()))
+                .map(|w| (w.label(), w.host.clone(), w.link.map(|l| l.to_string())))
                 .collect()
         })
         .unwrap_or_default()
@@ -411,7 +411,7 @@ async fn remote_side(markers: Markers) {
         .wires[0];
     let this_machine = rkat_tui::paths::local_host().unwrap_or_default();
     assert_eq!(row.from.as_deref(), Some(this_machine.as_str()));
-    assert_eq!(row.link.as_deref(), Some("up"));
+    assert_eq!(row.link, Some(rkat_tui::daemon::remote_wire::LinkState::Up));
     assert_eq!(
         row.shown(),
         format!(

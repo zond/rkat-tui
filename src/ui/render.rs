@@ -904,13 +904,7 @@ fn skip_columns(s: &str, cols: usize) -> String {
 
 /// Compact token count: `950`, `12.3k`, `1.2M`.
 pub fn fmt_tokens(n: u64) -> String {
-    if n < 1_000 {
-        n.to_string()
-    } else if n < 1_000_000 {
-        format!("{:.1}k", n as f64 / 1_000.0)
-    } else {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    }
+    crate::text::tokens_with(n, true)
 }
 
 pub(crate) use crate::text::tokens as fmt_ctx_tokens;
@@ -1464,15 +1458,20 @@ fn block_lines_raw(block: &Block, width: u16) -> Vec<Line<'static>> {
             first,
             text,
             failed,
+            kind,
             collapsed,
             ..
         } => {
             // How the helper ended, then (folded) its answer's first line,
             // as a tool call's line is; a click or Ctrl-O shows the note.
+            use crate::daemon::agents::endings::NoteKind;
             let style = Style::default().fg(Color::Magenta);
             let icon = if *failed {
                 "✗"
-            } else if title.contains("stopped") {
+            } else if matches!(
+                kind,
+                NoteKind::Stopped | NoteKind::DaemonStopped | NoteKind::Checkpoint
+            ) {
                 "■"
             } else {
                 "✓"
@@ -1522,14 +1521,15 @@ fn block_lines_raw(block: &Block, width: u16) -> Vec<Line<'static>> {
                 prefixed(&text, w, "  ", "  ", dim, &mut out);
             }
         }
-        Block::Triggered { label, text } => {
+        Block::Triggered { cause, label, text } => {
+            use crate::daemon::protocol::TriggerCause;
             let style = Style::default().fg(Color::Cyan);
-            let icon = if label.starts_with("files changed") {
-                "◉"
-            } else if label.starts_with("approved") {
-                "✓"
-            } else {
-                "⏰"
+            let icon = match cause {
+                TriggerCause::Watch => "◉",
+                TriggerCause::Approval => "✓",
+                TriggerCause::Schedule | TriggerCause::Checkpoint | TriggerCause::HelperEnding => {
+                    "⏰"
+                }
             };
             out.push(Line::from(Span::styled(
                 format!("{icon} {label}"),
@@ -2035,6 +2035,7 @@ mod tests {
     #[test]
     fn a_triggered_run_is_labelled_with_its_trigger() {
         let block = Block::Triggered {
+            cause: crate::daemon::protocol::TriggerCause::Schedule,
             label: "scheduled: nightly".into(),
             text: "run the checks".into(),
         };

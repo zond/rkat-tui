@@ -375,6 +375,21 @@ async fn read_reply<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<String, C
     Ok(line)
 }
 
+/// A JSON-RPC error's code (0 when it names none that fits) and message.
+fn rpc_error(error: &Value) -> (i32, String) {
+    let code = error
+        .get("code")
+        .and_then(Value::as_i64)
+        .and_then(|code| i32::try_from(code).ok())
+        .unwrap_or(0);
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    (code, message)
+}
+
 /// The daemon's nonce from its answer to the first attach request, once
 /// its proof checks out for `token`. Nothing else is trusted: an answer
 /// without a valid proof is [`ClientError::Unproven`] (the token is not
@@ -392,12 +407,8 @@ fn check_challenge(
         return Err(unproven("it answered another request".into()));
     }
     if let Some(error) = reply.get("error") {
-        let code = error.get("code").and_then(Value::as_i64);
-        let message = error.get("message").and_then(Value::as_str);
-        return Err(ClientError::Refused {
-            code: code.and_then(|code| i32::try_from(code).ok()).unwrap_or(0),
-            message: message.unwrap_or_default().to_string(),
-        });
+        let (code, message) = rpc_error(error);
+        return Err(ClientError::Refused { code, message });
     }
     let Some(Challenged { challenge }) = reply
         .get("result")
@@ -425,18 +436,8 @@ fn check_attached(line: &str) -> Result<crate::daemon::protocol::Attached, Clien
         )));
     }
     if let Some(error) = reply.get("error") {
-        return Err(ClientError::Refused {
-            code: error
-                .get("code")
-                .and_then(Value::as_i64)
-                .and_then(|code| i32::try_from(code).ok())
-                .unwrap_or(0),
-            message: error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        });
+        let (code, message) = rpc_error(error);
+        return Err(ClientError::Refused { code, message });
     }
     if reply.pointer("/result/attached") == Some(&Value::Bool(true)) {
         reply
@@ -497,19 +498,14 @@ fn route(message: Value, pending: &Pending, notify: &mpsc::UnboundedSender<Notif
                 return;
             };
             let reply = match message.get("error") {
-                Some(error) => Err(ClientError::Rpc {
-                    method: String::new(),
-                    code: error
-                        .get("code")
-                        .and_then(Value::as_i64)
-                        .and_then(|code| i32::try_from(code).ok())
-                        .unwrap_or(0),
-                    message: error
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                }),
+                Some(error) => {
+                    let (code, message) = rpc_error(error);
+                    Err(ClientError::Rpc {
+                        method: String::new(),
+                        code,
+                        message,
+                    })
+                }
                 None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
             };
             let _ = waiter.send(reply);

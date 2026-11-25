@@ -910,14 +910,6 @@ pub fn truncate_to_width(s: &str, width: usize) -> String {
     out
 }
 
-/// Truncate `s` to at most `max_chars` characters (char-boundary safe), appending `...`.
-pub fn truncate_chars(s: &str, max_chars: usize) -> String {
-    match s.char_indices().nth(max_chars) {
-        Some((byte, _)) => format!("{}...", &s[..byte]),
-        None => s.to_string(),
-    }
-}
-
 fn push_trimmed(out: &mut Vec<String>, cur: &mut String) {
     let trimmed_len = cur.trim_end_matches(' ').len();
     cur.truncate(trimmed_len);
@@ -1014,8 +1006,6 @@ mod tests {
     fn truncation_helpers() {
         assert_eq!(truncate_to_width("abcdef", 4), "abc…");
         assert_eq!(truncate_to_width("abc", 4), "abc");
-        assert_eq!(truncate_chars("héllo", 2), "hé...");
-        assert_eq!(truncate_chars("hi", 2), "hi");
     }
 
     #[test]

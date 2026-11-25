@@ -972,6 +972,11 @@ fn host_origin(level: Level) -> HostOrigin {
 /// How a statement's note says the classifier reads it.
 const NARROWLY: &str = " The safety review reads it narrowly: actions of that kind are no longer blocked for that reason; other actions are reviewed as before.";
 
+/// How the note of an approval of the agent's own blocked call opens: a
+/// client reads a run it starts by it
+/// (`crate::ui::transcript::composed_input`).
+pub const APPROVED_OPENING: &str = "The user approved your blocked call";
+
 /// What an approval from `/permissions` of the blocked call `what` tells the
 /// user (`notice`) and the agent (`note`): its own call, or the call its
 /// helper `helper` made (the agent is told either way: an approval holds
@@ -993,7 +998,7 @@ fn approval(
             } else {
                 " Run it again and go on."
             };
-            format!("The user approved your blocked call {what} {how}.{detail}{again}")
+            format!("{APPROVED_OPENING} {what} {how}.{detail}{again}")
         }
         Some(helper) => {
             let exactly = if once {
@@ -1061,6 +1066,11 @@ mod tests {
     #[test]
     fn an_approval_tells_the_agent_to_go_on_and_names_a_helper_s_call() {
         let once = approval("n".into(), "`shell cargo fetch`", None, "once", "", true);
+        assert_eq!(
+            crate::ui::transcript::composed_input(&once.note),
+            Some(crate::daemon::agents::APPROVED_LABEL),
+            "a client reads the note's run as the approval's"
+        );
         assert_eq!(
             once.note,
             "The user approved your blocked call `shell cargo fetch` once. Run it again exactly as before (any other call is reviewed as usual)."

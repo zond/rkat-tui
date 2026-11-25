@@ -84,17 +84,9 @@ pub fn server_base_url(base_url: &str, style: ApiStyle) -> String {
 }
 
 /// The [`ENDPOINT_REALM`] section entries of the configured endpoints of
-/// `endpoints` (built-in endpoints add nothing).
-///
-/// # Errors
-///
-/// As [`connections`].
-pub fn endpoint_section(endpoints: &[Endpoint]) -> Result<RealmConfigSection, EndpointError> {
-    connections(endpoints)
-}
-
-/// One connection (backend, auth profile, binding, each named after the
-/// endpoint) per configured endpoint of `endpoints`.
+/// `endpoints` (built-in endpoints add nothing): one connection (backend,
+/// auth profile, binding, each named after the endpoint) per configured
+/// endpoint.
 ///
 /// # Errors
 ///
@@ -103,7 +95,7 @@ pub fn endpoint_section(endpoints: &[Endpoint]) -> Result<RealmConfigSection, En
 /// API-key backend for a dialect. A configured endpoint always names the
 /// environment variable its key comes from (the document never holds a
 /// key).
-fn connections(endpoints: &[Endpoint]) -> Result<RealmConfigSection, EndpointError> {
+pub fn endpoint_section(endpoints: &[Endpoint]) -> Result<RealmConfigSection, EndpointError> {
     let mut section = RealmConfigSection::default();
     let configured = endpoints
         .iter()
@@ -195,20 +187,22 @@ pub fn endpoint_patch(
     projection: &EndpointProjection,
 ) -> Result<Option<ConfigDelta>, EndpointError> {
     let mut realms = serde_json::Map::new();
-    for (realm, section) in [(ENDPOINT_REALM, &projection.section)] {
-        let existing = config.realm.get(realm);
-        let backend = changed(&section.backend, existing.map(|s| &s.backend))?;
-        let auth = changed(&section.auth, existing.map(|s| &s.auth))?;
-        let binding = changed(&section.binding, existing.map(|s| &s.binding))?;
-        let mut realm_section = serde_json::Map::new();
-        for (key, map) in [("backend", backend), ("auth", auth), ("binding", binding)] {
-            if !map.is_empty() {
-                realm_section.insert(key.to_string(), serde_json::Value::Object(map));
-            }
+    let section = &projection.section;
+    let existing = config.realm.get(ENDPOINT_REALM);
+    let backend = changed(&section.backend, existing.map(|s| &s.backend))?;
+    let auth = changed(&section.auth, existing.map(|s| &s.auth))?;
+    let binding = changed(&section.binding, existing.map(|s| &s.binding))?;
+    let mut realm_section = serde_json::Map::new();
+    for (key, map) in [("backend", backend), ("auth", auth), ("binding", binding)] {
+        if !map.is_empty() {
+            realm_section.insert(key.to_string(), serde_json::Value::Object(map));
         }
-        if !realm_section.is_empty() {
-            realms.insert(realm.to_string(), serde_json::Value::Object(realm_section));
-        }
+    }
+    if !realm_section.is_empty() {
+        realms.insert(
+            ENDPOINT_REALM.to_string(),
+            serde_json::Value::Object(realm_section),
+        );
     }
     let servers = changed(&projection.servers, Some(&config.self_hosted.servers))?;
     let mut patch = serde_json::Map::new();
@@ -459,6 +453,21 @@ pub fn check_catalogued(
         where_,
         dialect: endpoint.dialect,
     })
+}
+
+/// A model's context window by the one rule: a configured endpoint's own
+/// listing (`listed`) before the engine's registry, a built-in endpoint's
+/// registry entry before its listing.
+pub fn context_window(
+    configured: bool,
+    registry: impl FnOnce() -> Option<u64>,
+    listed: impl FnOnce() -> Option<u64>,
+) -> Option<u64> {
+    if configured {
+        listed().or_else(registry)
+    } else {
+        registry().or_else(listed)
+    }
 }
 
 /// The context window the engine's model registry knows for `model` on

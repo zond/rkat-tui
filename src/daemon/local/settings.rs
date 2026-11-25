@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::config::registry::{Hook, Level, Setting};
-use crate::daemon::protocol::{SetSettingParams, SettingNote, SettingOutcome, SettingsList};
+use crate::daemon::protocol::{Outcome, SetSettingParams, SettingNote, SettingsList};
 use crate::daemon::settings::Written;
 use crate::endpoints::EndpointRef;
 
@@ -17,13 +17,9 @@ impl Local {
     /// workspace's file, and when the value in force changed apply it
     /// ([`Self::apply_setting`]); audited. The answer is the
     /// confirmation, or why nothing was written.
-    pub(super) async fn set_setting(&self, params: SetSettingParams) -> SettingOutcome {
+    pub(super) async fn set_setting(&self, params: SetSettingParams) -> Outcome {
         let SetSettingParams { key, value, user } = params;
-        let refused = |text: String| SettingOutcome {
-            ok: false,
-            text,
-            warning: None,
-        };
+        let refused = Outcome::failed::<String>;
         if let Err(why) = self.precheck(&key, value.as_deref()) {
             return refused(why);
         }
@@ -50,10 +46,9 @@ impl Local {
             }
             warnings.extend(warning);
         }
-        SettingOutcome {
-            ok: true,
-            text,
+        Outcome {
             warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
+            ..Outcome::ok(text)
         }
     }
 
@@ -435,15 +430,8 @@ impl Local {
     /// A notice every attached client shows (one per live agent: each
     /// client shows its own agent's).
     fn tell_every_client(&self, warn: bool, text: String) {
-        for agent in self.agents.names() {
-            self.core.decisions.broadcast(
-                protocol::AGENT_NOTICE,
-                &protocol::AgentNotice {
-                    agent,
-                    warn,
-                    text: text.clone(),
-                },
-            );
-        }
+        self.core
+            .decisions
+            .notice_every_agent(self.agents.names(), warn, &text);
     }
 }

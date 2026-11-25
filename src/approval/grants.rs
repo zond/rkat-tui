@@ -182,8 +182,16 @@ pub struct GrantRow {
     pub target: GrantTarget,
     /// Where it comes from.
     pub origin: GrantOrigin,
-    /// Whether `/permissions` can remove it (a session grant).
-    pub removable: bool,
+}
+
+impl GrantRow {
+    /// Whether `/permissions` can remove it: a session grant (the dialog
+    /// decides by the origin itself).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn removable(&self) -> bool {
+        self.origin == GrantOrigin::Session
+    }
 }
 
 /// Where a grant in force comes from.
@@ -579,7 +587,6 @@ impl Grants {
                 id: 0,
                 target: dir(path),
                 origin: GrantOrigin::Default,
-                removable: false,
             })
             .collect();
         // The ones named for writing (a read grant is no `GrantTarget`).
@@ -588,7 +595,6 @@ impl Grants {
                 id: named.id,
                 target: dir(&named.path),
                 origin: named.origin,
-                removable: false,
             });
         }
         if let Some(grants) = session.and_then(|s| self.sessions.lock().get(s).cloned()) {
@@ -597,7 +603,6 @@ impl Grants {
                     id,
                     target,
                     origin: GrantOrigin::Session,
-                    removable: true,
                 });
             }
         }

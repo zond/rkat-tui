@@ -251,25 +251,86 @@ impl AuditLog {
 ///
 /// # Errors
 ///
-/// The file cannot be read (a missing rotated generation is no error).
+/// The file cannot be read (a missing rotated generation is no error), or
+/// a line read is not UTF-8.
+///
+/// Each file is read from its end, a chunk at a time, until `n` lines are
+/// kept: the newest generation first, the rotated one only when that one
+/// holds fewer.
 pub fn tail(path: &Path, n: usize, keep: impl Fn(&Line) -> bool) -> std::io::Result<Vec<String>> {
-    let mut lines = Vec::new();
+    let mut newest_first = Vec::new();
     let rotated = path.with_file_name(ROTATED_FILE);
-    for file in [rotated.as_path(), path] {
-        let text = match std::fs::read_to_string(file) {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound && file == rotated => continue,
+    for file in [path, rotated.as_path()] {
+        if newest_first.len() >= n {
+            break;
+        }
+        match last_lines(file, n, &keep, &mut newest_first) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && file == rotated => {}
             Err(err) => return Err(err),
-        };
-        for line in text.lines().filter(|line| !line.trim().is_empty()) {
-            let kept = serde_json::from_str::<Line>(line).map_or(true, |parsed| keep(&parsed));
-            if kept {
-                lines.push(line.to_string());
-            }
         }
     }
-    let skip = lines.len().saturating_sub(n);
-    Ok(lines.split_off(skip))
+    newest_first.reverse();
+    Ok(newest_first)
+}
+
+/// Push onto `out`, newest first, the lines of `file` that `keep` accepts
+/// (blank ones left out, one that does not parse kept), until `out` holds
+/// `n`; read backwards a chunk at a time.
+fn last_lines(
+    file: &Path,
+    n: usize,
+    keep: &impl Fn(&Line) -> bool,
+    out: &mut Vec<String>,
+) -> std::io::Result<()> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    const CHUNK: u64 = 64 * 1024;
+    let mut reader = File::open(file)?;
+    let mut end = reader.metadata()?.len();
+    // The start of the line the last chunk read began inside: its rest
+    // came after it in the file.
+    let mut carry: Vec<u8> = Vec::new();
+    while end > 0 && out.len() < n {
+        let start = end.saturating_sub(CHUNK);
+        reader.seek(SeekFrom::Start(start))?;
+        let mut chunk = Vec::new();
+        (&mut reader).take(end - start).read_to_end(&mut chunk)?;
+        chunk.extend_from_slice(&carry);
+        let mut parts: Vec<&[u8]> = chunk.split(|byte| *byte == b'\n').collect();
+        let first = if start > 0 && !parts.is_empty() {
+            parts.remove(0).to_vec()
+        } else {
+            Vec::new()
+        };
+        for part in parts.into_iter().rev() {
+            if out.len() >= n {
+                break;
+            }
+            push_kept(part, keep, out)?;
+        }
+        carry = first;
+        end = start;
+    }
+    Ok(())
+}
+
+/// Push the line `bytes` onto `out` when it is not blank and `keep`
+/// accepts it (a line that does not parse is kept).
+fn push_kept(
+    bytes: &[u8],
+    keep: &impl Fn(&Line) -> bool,
+    out: &mut Vec<String>,
+) -> std::io::Result<()> {
+    let line = std::str::from_utf8(bytes)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    if line.trim().is_empty() {
+        return Ok(());
+    }
+    if serde_json::from_str::<Line>(line).map_or(true, |parsed| keep(&parsed)) {
+        out.push(line.to_string());
+    }
+    Ok(())
 }
 
 /// The audit log files of the workspace `args` names, oldest generation
@@ -396,6 +457,46 @@ mod tests {
         })
         .unwrap();
         assert!(none.is_empty());
+    }
+
+    /// The tail is read from the end in chunks: lines that cross a chunk's
+    /// edge come whole and in order, the filter skips lines without
+    /// counting them, and the rotated generation fills in what the newest
+    /// lacks.
+    #[test]
+    fn the_tail_reads_back_from_the_end_across_chunks_and_generations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(AUDIT_FILE);
+        let line = |n: usize| {
+            serde_json::to_string(
+                &Line::event("mode", format!("change {n} {}", "x".repeat(n % 97))).of_agent(
+                    if n.is_multiple_of(3) {
+                        "main-a"
+                    } else {
+                        "main-b"
+                    },
+                ),
+            )
+            .unwrap()
+        };
+        let old: Vec<String> = (0..50).map(line).collect();
+        let new: Vec<String> = (50..3_000).map(line).collect();
+        std::fs::write(dir.path().join(ROTATED_FILE), old.join("\n") + "\n").unwrap();
+        std::fs::write(&path, new.join("\r\n") + "\n\n").unwrap();
+        assert_eq!(
+            tail(&path, 2_000, |_| true).unwrap(),
+            new[new.len() - 2_000..]
+        );
+        let all: Vec<String> = old.iter().chain(&new).cloned().collect();
+        assert_eq!(tail(&path, 10_000, |_| true).unwrap(), all);
+        let mine: Vec<String> = all
+            .iter()
+            .filter(|l| l.contains("main-a"))
+            .cloned()
+            .collect();
+        let kept = tail(&path, 5, |l| l.agent.as_deref() == Some("main-a")).unwrap();
+        assert_eq!(kept, mine[mine.len() - 5..]);
+        assert!(tail(&path, 0, |_| true).unwrap().is_empty());
     }
 
     #[cfg(unix)]

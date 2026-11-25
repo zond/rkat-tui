@@ -20,12 +20,8 @@ fn export_path(
 ) -> PathBuf {
     match typed.map(str::trim).filter(|t| !t.is_empty()) {
         Some(typed) => {
-            let typed = match typed.strip_prefix("~/") {
-                Some(rest) => {
-                    dirs::home_dir().map_or_else(|| PathBuf::from(typed), |h| h.join(rest))
-                }
-                None => PathBuf::from(typed),
-            };
+            let typed = crate::paths::expand_tilde_in(typed, dirs::home_dir().as_deref())
+                .unwrap_or_else(|_| PathBuf::from(typed));
             if typed.is_absolute() {
                 typed
             } else {

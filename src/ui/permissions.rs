@@ -459,22 +459,21 @@ fn in_force_page(rules: &[RuleRow], grants: &[GrantRow], statements: &[Statement
     use crate::approval::statements::StatementOrigin;
     let grant_rows = grants.iter().map(|grant| {
         let what = grant.target.describe();
-        let key = if grant.removable {
-            PickKey::confirmed(
+        let refused = |why| PickKey::refused(KeyCode::Char('d'), why);
+        let key = match grant.origin {
+            GrantOrigin::Session => PickKey::confirmed(
                 KeyCode::Char('d'),
                 PickAct::RemoveGrant(grant.id),
                 format!("Remove the session grant of {what}?"),
-            )
-        } else {
-            PickKey::refused(
-                KeyCode::Char('d'),
-                match grant.origin {
-                    GrantOrigin::Default => "the sandbox grants it by default",
-                    GrantOrigin::Flag => "it comes from the daemon's command line",
-                    GrantOrigin::Always => "it is in the realm's tui.toml ([confinement] extra_write): edit that file to drop it",
-                    GrantOrigin::Config | GrantOrigin::Session => "it is in a tui.toml ([confinement]): edit that file to drop it",
-                },
-            )
+            ),
+            GrantOrigin::Default => refused("the sandbox grants it by default"),
+            GrantOrigin::Flag => refused("it comes from the daemon's command line"),
+            GrantOrigin::Always => refused(
+                "it is in the realm's tui.toml ([confinement] extra_write): edit that file to drop it",
+            ),
+            GrantOrigin::Config => {
+                refused("it is in a tui.toml ([confinement]): edit that file to drop it")
+            }
         };
         PickRow::new(
             format!("grant {what} · {}", grant.origin.word()),

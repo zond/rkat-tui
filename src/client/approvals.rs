@@ -30,21 +30,15 @@ pub const MAX_ALLOW_REASON_CHARS: usize = 100;
 /// [`MAX_ALLOW_REASON_CHARS`].
 #[must_use]
 pub fn classifier_allow_note(reason: Option<&str>) -> String {
-    let one_line = reason
-        .unwrap_or_default()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let one_line = crate::text::one_line(reason.unwrap_or_default());
     if one_line.is_empty() {
         return "allowed by classifier".to_string();
     }
-    let reason = if one_line.chars().count() > MAX_ALLOW_REASON_CHARS {
-        let kept: String = one_line.chars().take(MAX_ALLOW_REASON_CHARS - 1).collect();
-        format!("{kept}…")
-    } else {
-        one_line
-    };
-    format!("allowed by classifier: {reason}")
+    if one_line.chars().count() <= MAX_ALLOW_REASON_CHARS {
+        return format!("allowed by classifier: {one_line}");
+    }
+    let (kept, _) = crate::text::head_chars(&one_line, MAX_ALLOW_REASON_CHARS - 1);
+    format!("allowed by classifier: {kept}…")
 }
 
 /// What the UI shows for an approval note the daemon pushed

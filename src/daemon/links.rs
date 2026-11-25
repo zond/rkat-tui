@@ -580,29 +580,62 @@ async fn descriptor(
     Ok(Some(descriptor))
 }
 
-/// [`descriptor`], waiting within [`SEAT_WAIT`] for an end not seated yet
-/// (a fork whose spawn is still building).
+/// Why one try of [`until_seated`] did not succeed.
+pub(super) enum Unseated<W> {
+    /// What it needs is not seated in its mob yet (`W` says which): it is
+    /// tried again.
+    NotYet(W),
+    /// It failed for good, in these words.
+    Failed(String),
+}
+
+/// `attempt`, tried again while what it needs is not seated in its mob
+/// yet (a fork whose spawn is still building is listed only later), at
+/// most [`SEAT_WAIT`] with pauses doubling from [`SEAT_RECHECK_FIRST`] up
+/// to [`SEAT_RECHECK_MAX`]; past the wait, the last [`Unseated::NotYet`].
+/// It shrinks to one await when lukacf/meerkat#2433 ships.
+pub(super) async fn until_seated<T, W, F>(mut attempt: impl FnMut() -> F) -> Result<T, Unseated<W>>
+where
+    F: std::future::Future<Output = Result<T, Unseated<W>>>,
+{
+    let deadline = tokio::time::Instant::now() + SEAT_WAIT;
+    let mut pause = SEAT_RECHECK_FIRST;
+    loop {
+        match attempt().await {
+            Err(Unseated::NotYet(which)) => {
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
+                    return Err(Unseated::NotYet(which));
+                }
+                tokio::time::sleep(pause.min(deadline - now)).await;
+                pause = (pause * 2).min(SEAT_RECHECK_MAX);
+            }
+            done => return done,
+        }
+    }
+}
+
+/// [`descriptor`], waiting ([`until_seated`]) for an end not seated yet.
 async fn descriptor_when_seated(
     state: &MobMcpState,
     end: &End,
     at: &Path,
 ) -> Result<TrustedPeerDescriptor, String> {
-    let deadline = tokio::time::Instant::now() + SEAT_WAIT;
-    let mut pause = SEAT_RECHECK_FIRST;
-    loop {
-        if let Some(descriptor) = descriptor(state, end, at).await? {
-            return Ok(descriptor);
+    let found = until_seated(move || async move {
+        match descriptor(state, end, at).await {
+            Ok(Some(descriptor)) => Ok(descriptor),
+            Ok(None) => Err(Unseated::NotYet(())),
+            Err(why) => Err(Unseated::Failed(why)),
         }
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            return Err(format!(
-                "the helper `{}` is not seated in its mob yet (a fork's start can take a few seconds); call `connect_helpers` again in a moment",
-                end.name
-            ));
-        }
-        tokio::time::sleep(pause.min(deadline - now)).await;
-        pause = (pause * 2).min(SEAT_RECHECK_MAX);
-    }
+    })
+    .await;
+    found.map_err(|unseated| match unseated {
+        Unseated::NotYet(()) => format!(
+            "the helper `{}` is not seated in its mob yet (a fork's start can take a few seconds); call `connect_helpers` again in a moment",
+            end.name
+        ),
+        Unseated::Failed(why) => why,
+    })
 }
 
 #[cfg(test)]

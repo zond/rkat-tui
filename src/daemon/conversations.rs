@@ -323,7 +323,34 @@ struct LogWriter {
     written: parking_lot::Mutex<u64>,
 }
 
+/// One conversation's words file ([`Conversations::store_user_words`]),
+/// written as the log is, off the proxy's line loop and in order; the
+/// newest serialized words are kept for the daemon's stop to write when
+/// the write on its way has not run.
+#[derive(Debug)]
+struct WordsWriter {
+    writer: LogWriter,
+    latest: parking_lot::Mutex<Option<(u64, Vec<u8>)>>,
+}
+
+impl WordsWriter {
+    /// Write the newest words unless they are written already.
+    fn flush(&self) {
+        if let Some((order, bytes)) = self.latest.lock().take() {
+            self.writer.write(order, &bytes);
+        }
+    }
+}
+
 impl LogWriter {
+    fn new(file: PathBuf) -> Self {
+        Self {
+            file,
+            next: std::sync::atomic::AtomicU64::new(0),
+            written: parking_lot::Mutex::new(0),
+        }
+    }
+
     /// The next order number (taken under the log's lock).
     fn order(&self) -> u64 {
         self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
@@ -338,7 +365,9 @@ impl LogWriter {
         }
         match crate::paths::write_atomic(&self.file, bytes, crate::paths::FileMode::Private, None) {
             Ok(()) => *written = order,
-            Err(err) => tracing::warn!(error = %err, "cannot record the conversation"),
+            Err(err) => {
+                tracing::warn!(file = %self.file.display(), error = %err, "cannot write the conversation's record");
+            }
         }
     }
 }
@@ -352,6 +381,8 @@ pub struct Conversations {
     writer: Arc<LogWriter>,
     /// [`WORDS_DIR`] in the realm.
     words_dir: PathBuf,
+    /// The words files' writers, by conversation.
+    words_writers: parking_lot::Mutex<std::collections::HashMap<SessionId, Arc<WordsWriter>>>,
     /// One switch at a time per agent.
     switching: parking_lot::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// How many times each agent was seated (a switch, a reseat, a seat
@@ -401,11 +432,8 @@ impl Conversations {
             state,
             registry,
             words_dir: realm_root.join(WORDS_DIR),
-            writer: Arc::new(LogWriter {
-                file: log_file.clone(),
-                next: std::sync::atomic::AtomicU64::new(0),
-                written: parking_lot::Mutex::new(0),
-            }),
+            writer: Arc::new(LogWriter::new(log_file.clone())),
+            words_writers: parking_lot::Mutex::default(),
             log_file,
             log: parking_lot::Mutex::new(log),
             switching: parking_lot::Mutex::default(),
@@ -533,6 +561,10 @@ impl Conversations {
     pub fn flush(&self) {
         if let Some((order, bytes)) = self.changed(|_| {}) {
             self.writer.write(order, &bytes);
+        }
+        let words: Vec<Arc<WordsWriter>> = self.words_writers.lock().values().cloned().collect();
+        for writer in words {
+            writer.flush();
         }
     }
 
@@ -712,28 +744,57 @@ impl Conversations {
     /// Store `words`, the user's words the classifier's transcript of
     /// `session` keeps now ([`crate::approval::ApprovalEngine::user_words`]).
     /// A failed write is logged: the live transcript keeps them, only a
-    /// restart before the next write would not.
+    /// restart before the next write would not. Called on the proxy's line
+    /// loop for every prompt and steer: the file is written by a blocking
+    /// task, in the order the words were taken (an older write never lands
+    /// over a newer one), and the daemon's stop writes the newest
+    /// ([`Self::flush`]).
     pub fn store_user_words(&self, session: &SessionId, words: StoredWords) {
-        let path = self.words_path(session);
         let file = WordsFile {
             version: 1,
             words: words.words,
             kept: words.kept,
         };
-        let written = serde_json::to_vec(&file)
-            .map_err(|err| err.to_string())
-            .and_then(|bytes| {
-                crate::paths::write_atomic(&path, &bytes, crate::paths::FileMode::Private, None)
-                    .map_err(|err| err.to_string())
-            });
-        if let Err(err) = written {
-            tracing::warn!(%session, file = %path.display(), error = %err, "cannot store the user's words for the classifier");
+        let bytes = match serde_json::to_vec(&file) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::warn!(%session, error = %err, "cannot store the user's words for the classifier");
+                return;
+            }
+        };
+        let writer = Arc::clone(
+            self.words_writers
+                .lock()
+                .entry(session.clone())
+                .or_insert_with(|| {
+                    Arc::new(WordsWriter {
+                        writer: LogWriter::new(self.words_path(session)),
+                        latest: parking_lot::Mutex::new(None),
+                    })
+                }),
+        );
+        let order = {
+            let mut latest = writer.latest.lock();
+            let order = writer.writer.order();
+            *latest = Some((order, bytes.clone()));
+            order
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                drop(runtime.spawn_blocking(move || writer.writer.write(order, &bytes)));
+            }
+            Err(_) => writer.writer.write(order, &bytes),
         }
     }
 
     /// The user's words stored for `session` ([`Self::store_user_words`]);
-    /// none when there is no file, or one that cannot be read (logged).
+    /// none when there is no file, or one that cannot be read (logged). A
+    /// write still on its way is made first: the read is of the newest.
     fn stored_user_words(&self, session: &SessionId) -> StoredWords {
+        let pending = self.words_writers.lock().get(session).cloned();
+        if let Some(writer) = pending {
+            writer.flush();
+        }
         let path = self.words_path(session);
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,

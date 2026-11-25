@@ -59,17 +59,78 @@ pub fn prefix(s: &str, max: usize) -> &str {
     s.get(..s.floor_char_boundary(max)).unwrap_or_default()
 }
 
-/// Short token count for the context gauge: `950`, `8.5k`, `84k`, `1M`, `1.2M`.
+/// [`prefix`], and whether anything was cut.
 #[must_use]
-pub fn tokens(n: u64) -> String {
-    let (value, unit) = match n {
-        0..1_000 => return n.to_string(),
-        1_000..10_000 => (format!("{:.1}", n as f64 / 1_000.0), "k"),
-        10_000..1_000_000 => (format!("{:.0}", n as f64 / 1_000.0), "k"),
-        _ => (format!("{:.1}", n as f64 / 1_000_000.0), "M"),
+pub fn head_bytes(s: &str, max: usize) -> (&str, bool) {
+    let head = prefix(s, max);
+    (head, head.len() < s.len())
+}
+
+/// The longest suffix of `s` that is at most `max` bytes and starts on a
+/// character boundary: `tail_bytes("héllo", 4)` is `llo`.
+#[must_use]
+pub fn tail_bytes(s: &str, max: usize) -> &str {
+    let from = s.ceil_char_boundary(s.len().saturating_sub(max));
+    s.get(from..).unwrap_or_default()
+}
+
+/// The first `max` characters of `s`, and whether anything was cut.
+#[must_use]
+pub fn head_chars(s: &str, max: usize) -> (&str, bool) {
+    match s.char_indices().nth(max) {
+        Some((byte, _)) => (s.get(..byte).unwrap_or_default(), true),
+        None => (s, false),
+    }
+}
+
+/// `s` cut to at most `max_chars` characters, `...` after a cut.
+#[must_use]
+pub fn truncate_chars(s: &str, max_chars: usize) -> String {
+    match head_chars(s, max_chars) {
+        (head, true) => format!("{head}..."),
+        (whole, false) => whole.to_string(),
+    }
+}
+
+/// `text` on one line: every run of whitespace (line breaks included) one
+/// space, none at either end.
+#[must_use]
+pub fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Short token count: `950`, `8.5k`, `84k`, `1M`, `1.2M`; with `decimal`
+/// always one decimal (`12.3k`, `1.0k`, `2.0M`). The count is rounded
+/// first and the unit picked from the rounded value, so `999_960` is
+/// `1M` (`1.0M`), never `1000k`.
+#[must_use]
+pub fn tokens_with(n: u64, decimal: bool) -> String {
+    if n < 1_000 {
+        return n.to_string();
+    }
+    let thousands = n as f64 / 1_000.0;
+    let in_k = if decimal || n < 10_000 {
+        format!("{thousands:.1}")
+    } else {
+        format!("{thousands:.0}")
     };
+    // The unit from the value as rounded: `999.96` rounds to `1000.0`.
+    let (value, unit) = if in_k.parse::<f64>().is_ok_and(|v| v < 1_000.0) {
+        (in_k, "k")
+    } else {
+        (format!("{:.1}", n as f64 / 1_000_000.0), "M")
+    };
+    if decimal {
+        return format!("{value}{unit}");
+    }
     let value = value.strip_suffix(".0").unwrap_or(&value);
     format!("{value}{unit}")
+}
+
+/// [`tokens_with`] as the context gauge shows it (no tenth from 10k).
+#[must_use]
+pub fn tokens(n: u64) -> String {
+    tokens_with(n, false)
 }
 
 #[cfg(test)]
@@ -101,5 +162,50 @@ mod tests {
         assert_eq!(prefix("héllo", 3), "hé");
         assert_eq!(prefix("héllo", 6), "héllo");
         assert_eq!(prefix("héllo", 100), "héllo");
+        assert_eq!(head_bytes("héllo", 2), ("h", true));
+        assert_eq!(head_bytes("héllo", 6), ("héllo", false));
+        assert_eq!(tail_bytes("héllo", 4), "llo");
+        assert_eq!(tail_bytes("héllo", 5), "éllo");
+        assert_eq!(tail_bytes("héllo", 0), "");
+        assert_eq!(tail_bytes("héllo", 99), "héllo");
+        assert_eq!(head_chars("héllo", 2), ("hé", true));
+        assert_eq!(head_chars("héllo", 5), ("héllo", false));
+        assert_eq!(truncate_chars("héllo", 2), "hé...");
+        assert_eq!(truncate_chars("hi", 2), "hi");
+    }
+
+    #[test]
+    fn one_line_makes_every_whitespace_run_one_space() {
+        assert_eq!(one_line("  a\n\tb  c\r\n"), "a b c");
+        assert_eq!(one_line(""), "");
+    }
+
+    /// Rounded first, then the unit: no `1000k`, in either form.
+    #[test]
+    fn token_counts_round_before_they_pick_a_unit() {
+        let gauge = [
+            (950, "950"),
+            (8_500, "8.5k"),
+            (9_960, "10k"),
+            (84_000, "84k"),
+            (999_499, "999k"),
+            (999_960, "1M"),
+            (1_000_000, "1M"),
+            (1_240_000, "1.2M"),
+        ];
+        for (n, shown) in gauge {
+            assert_eq!(tokens(n), shown, "{n}");
+        }
+        let decimal = [
+            (950, "950"),
+            (1_000, "1.0k"),
+            (12_340, "12.3k"),
+            (999_940, "999.9k"),
+            (999_960, "1.0M"),
+            (2_000_000, "2.0M"),
+        ];
+        for (n, shown) in decimal {
+            assert_eq!(tokens_with(n, true), shown, "{n}");
+        }
     }
 }

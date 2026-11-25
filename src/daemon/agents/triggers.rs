@@ -9,6 +9,7 @@ use meerkat_core::SessionId;
 use super::Agents;
 use super::notes::{note_agent, steer_agent};
 use super::sent::Kind;
+use crate::daemon::protocol::TriggerCause;
 
 /// The label of a run a note of helpers' endings started.
 pub const HELPER_ENDED_LABEL: &str = "a helper ended";
@@ -96,6 +97,7 @@ impl Agents {
                 &crate::daemon::protocol::TriggeredNote {
                     agent: name.to_string(),
                     session_id: session.clone(),
+                    cause: TriggerCause::HelperEnding,
                     label: label.to_string(),
                     prompt: prompt.to_string(),
                     summary,
@@ -112,20 +114,20 @@ impl Agents {
             name,
             session,
             run,
-            label,
+            (TriggerCause::Schedule, label),
             prompt,
             &format!("schedule {} ({})", fired.name, fired.schedule_id),
         );
     }
 
-    /// Record and announce a run `trigger` started (`label` as the clients
-    /// show it, `detail` as the audit log names it).
+    /// Record and announce a run its `cause` started (with its label as
+    /// the clients show it, `detail` as the audit log names it).
     pub fn announce(
         &self,
         name: &str,
         session: &SessionId,
         run: &meerkat_core::RunId,
-        label: String,
+        cause: (TriggerCause, String),
         prompt: &str,
         detail: &str,
     ) {
@@ -135,7 +137,7 @@ impl Agents {
             "run_triggered",
             detail.to_string(),
         );
-        self.tell_triggered(name, session, label, prompt.to_string());
+        self.tell_triggered(name, session, cause, prompt.to_string());
     }
 
     /// The audit log's `event` line for `name` (of its `session`'s `run`,
@@ -163,7 +165,7 @@ impl Agents {
         &self,
         name: &str,
         session: &SessionId,
-        label: String,
+        (cause, label): (TriggerCause, String),
         prompt: String,
     ) {
         self.core.decisions.broadcast(
@@ -171,6 +173,7 @@ impl Agents {
             &crate::daemon::protocol::TriggeredNote {
                 agent: name.to_string(),
                 session_id: session.clone(),
+                cause,
                 label,
                 prompt,
                 summary: None,
@@ -227,7 +230,12 @@ impl Agents {
             return;
         }
         self.audit_run(&name, None, "watch_event", text.clone());
-        self.tell_triggered(&name, &session, "files changed".to_string(), text);
+        self.tell_triggered(
+            &name,
+            &session,
+            (TriggerCause::Watch, "files changed".to_string()),
+            text,
+        );
     }
 }
 
@@ -248,14 +256,7 @@ impl Agents {
         tokio::spawn(async move {
             let _sending = agents.core.activity.sending(&name);
             let notice = |warn: bool, text: String| {
-                agents.core.decisions.broadcast(
-                    crate::daemon::protocol::AGENT_NOTICE,
-                    &crate::daemon::protocol::AgentNotice {
-                        agent: name.clone(),
-                        warn,
-                        text,
-                    },
-                );
+                agents.core.decisions.agent_notice(name.clone(), warn, text);
             };
             let asked = || {
                 if reminder {

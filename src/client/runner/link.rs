@@ -334,14 +334,7 @@ impl Runner {
             Ok(read) => read
                 .notices
                 .into_iter()
-                .map(|notice| {
-                    let level = if notice.warn {
-                        NoticeLevel::Warn
-                    } else {
-                        NoticeLevel::Info
-                    };
-                    (level, notice.text)
-                })
+                .map(|notice| (NoticeLevel::of_warning(notice.warn), notice.text))
                 .collect(),
             Err(err) => {
                 tracing::debug!(error = %err, "cannot read what the agent was denied unattended");
@@ -356,14 +349,7 @@ impl Runner {
             Ok(read) => read
                 .notices
                 .into_iter()
-                .map(|notice| {
-                    let level = if notice.warn {
-                        NoticeLevel::Warn
-                    } else {
-                        NoticeLevel::Info
-                    };
-                    (level, notice.text)
-                })
+                .map(|notice| (NoticeLevel::of_warning(notice.warn), notice.text))
                 .collect(),
             Err(err) => {
                 tracing::debug!(error = %err, "cannot read the daemon's start-up notices");
@@ -479,6 +465,7 @@ impl Runner {
                 if fired.agent == link.connection.agent() && fired.session_id == link.session =>
             {
                 self.send(Msg::Triggered {
+                    cause: fired.cause,
                     label: fired.label,
                     prompt: fired.prompt,
                     summary: fired.summary,
@@ -545,18 +532,14 @@ impl Runner {
                 self.given_back(change);
             }
             Push::AgentNotice(notice) if notice.agent == link.connection.agent() => {
-                let level = if notice.warn {
-                    NoticeLevel::Warn
-                } else {
-                    NoticeLevel::Info
-                };
-                self.notice(level, notice.text);
+                self.notice(NoticeLevel::of_warning(notice.warn), notice.text);
             }
             Push::HelperEnded(ended)
                 if ended.agent == link.connection.agent() && ended.session_id == link.session =>
             {
                 self.send(Msg::HelperEnded {
                     path: ended.path,
+                    ending: ended.ending,
                     how: ended.how,
                     told: ended.told,
                 });

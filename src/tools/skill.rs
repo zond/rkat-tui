@@ -124,6 +124,9 @@ fn source_of(skill: &SkillDescriptor) -> String {
     }
 }
 
+/// A valid `skill_read` call that opens one skill.
+const READ_EXAMPLE: &str = r#"{"name": "release-checklist"}"#;
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReadArgs {
@@ -308,7 +311,9 @@ impl AgentToolDispatcher for SkillToolDispatcher {
             .parse_args()
             .map_err(|err| ToolError::InvalidArguments {
                 name: call.name.to_string(),
-                reason: err.to_string(),
+                reason: format!(
+                    "{err}; a valid call looks like {READ_EXAMPLE} (or {{}} to list the skills)"
+                ),
             })?;
         let outcome = with_runtime(&self.host, move |runtime| read(runtime, args)).await;
         let id = call.id.to_string();

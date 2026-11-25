@@ -24,12 +24,26 @@ use rig::{Client, Running};
 use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
 };
+use rkat_tui::approval::desk::RuleSpec;
 use rkat_tui::approval::mode::PermissionMode;
 use rkat_tui::bootstrap::{ApprovalOverrides, BootstrapOptions, HostPaths};
 use rkat_tui::daemon::{Daemon, DaemonError, DaemonOptions};
 use rkat_tui::ui::transcript::outcome::JobOutcome;
-use rkat_tui::ui::{Effect, EscalationAnswer, Msg, RuleEffect, StatusUpdate};
+use rkat_tui::ui::{Effect, EscalationAnswer, Msg, PermissionAct, StatusUpdate};
 use serde_json::{Value, json};
+
+/// `/permissions add deny <tool> [pattern]`.
+fn deny_rule(tool: &str, pattern: Option<&str>) -> Effect {
+    Effect::AddRule {
+        spec: RuleSpec {
+            deny: true,
+            tool: tool.into(),
+            pattern: pattern.map(Into::into),
+            literal: false,
+        },
+        user: false,
+    }
+}
 
 /// A classifier that replays verdicts (allow when the script is empty).
 #[derive(Default)]
@@ -431,12 +445,7 @@ async fn a_deny_rule_added_in_attach_mode_refuses_the_next_call() {
     let llm = ScriptedLlmClient::new(vec![write("w1", "a.txt", "NO"), Step::Text("refused")]);
     let daemon = start(&ws.root, &llm, &Setup::default()).await;
     let mut client = attach(&ws.root).await;
-    client.send(Effect::AddRule {
-        effect: RuleEffect::Deny,
-        tool: "write_file".into(),
-        pattern: None,
-        user: false,
-    });
+    client.send(deny_rule("write_file", None));
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "rule added"))
         .await;
@@ -466,12 +475,7 @@ async fn the_rule_picker_removes_a_rule_from_the_daemon() {
     let llm = ScriptedLlmClient::new(vec![]);
     let daemon = start(&ws.root, &llm, &Setup::default()).await;
     let mut client = attach(&ws.root).await;
-    client.send(Effect::AddRule {
-        effect: RuleEffect::Deny,
-        tool: "write_file".into(),
-        pattern: Some("*.lock".into()),
-        user: false,
-    });
+    client.send(deny_rule("write_file", Some("*.lock")));
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "rule added"))
         .await;
@@ -501,7 +505,7 @@ async fn the_rule_picker_removes_a_rule_from_the_daemon() {
     };
     assert!(question.contains("for good"));
     let n = *n;
-    client.send(Effect::PickedRuleRemoval(n));
+    client.send(Effect::Permissions(PermissionAct::RemoveRule(n)));
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "removed deny write_file *.lock"))
         .await;
@@ -532,7 +536,6 @@ async fn the_rule_picker_removes_a_rule_from_the_daemon() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_edited_deny_rule_applies_in_place_of_the_old_one() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
-    use rkat_tui::approval::desk::RuleSpec;
     use rkat_tui::ui::{App, PickerKind, Section, StatusInfo};
     let ws = Workspace::new();
     std::fs::write(ws.root.join("a.txt"), "A-CONTENT\n").unwrap();
@@ -554,12 +557,7 @@ async fn an_edited_deny_rule_applies_in_place_of_the_old_one() {
         ("read_file", "*a.txt"),
         ("write_file", "*.lock"),
     ] {
-        client.send(Effect::AddRule {
-            effect: RuleEffect::Deny,
-            tool: tool.into(),
-            pattern: Some(pattern.into()),
-            user: false,
-        });
+        client.send(deny_rule(tool, Some(pattern)));
         client
             .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "rule added"))
             .await;
@@ -619,7 +617,7 @@ async fn an_edited_deny_rule_applies_in_place_of_the_old_one() {
         app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
     }
     let fx = app.update(Msg::Key(KeyEvent::from(KeyCode::Enter)));
-    let [edit @ Effect::PickedRuleEdit { .. }] = fx.as_slice() else {
+    let [edit @ Effect::Permissions(PermissionAct::EditRule { .. })] = fx.as_slice() else {
         panic!("{fx:?}")
     };
     let spec = |tool: &str, pattern: &str| RuleSpec {
@@ -630,11 +628,11 @@ async fn an_edited_deny_rule_applies_in_place_of_the_old_one() {
     };
     assert_eq!(
         edit,
-        &Effect::PickedRuleEdit {
+        &Effect::Permissions(PermissionAct::EditRule {
             n,
             old: spec("read_file", "*a.txt"),
             new: spec("read_file", "*b.txt"),
-        }
+        })
     );
     client.send(edit.clone());
     client
@@ -663,11 +661,11 @@ async fn an_edited_deny_rule_applies_in_place_of_the_old_one() {
         "{second}"
     );
     // Unchanged: nothing written.
-    client.send(Effect::PickedRuleEdit {
+    client.send(Effect::Permissions(PermissionAct::EditRule {
         n,
         old: spec("read_file", "*b.txt"),
         new: spec("read_file", "*b.txt"),
-    });
+    }));
     client
         .wait_for(|msg| {
             matches!(msg, Msg::Notice { text, .. }
@@ -676,11 +674,11 @@ async fn an_edited_deny_rule_applies_in_place_of_the_old_one() {
         .await;
     assert_eq!(std::fs::read_to_string(&realm_toml).unwrap(), written);
     // What another rule says already: refused, the rule kept.
-    client.send(Effect::PickedRuleEdit {
+    client.send(Effect::Permissions(PermissionAct::EditRule {
         n,
         old: spec("read_file", "*b.txt"),
         new: spec("shell", "rm *"),
-    });
+    }));
     client
         .wait_for(|msg| {
             matches!(msg, Msg::Notice { text, .. }
@@ -753,7 +751,11 @@ async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
         "{note}"
     );
     let id = daemon.engine().blocks().list(&daemon.session)[0].id;
-    client.send(Effect::PickedApproval(id, GrantScope::Session, None));
+    client.send(Effect::Permissions(PermissionAct::Approve {
+        id,
+        scope: GrantScope::Session,
+        effect: None,
+    }));
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("granted for this session")))
         .await;
@@ -813,7 +815,7 @@ async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
             path: store.clone()
         }
     );
-    client.send(Effect::PickedGrantRemoval(grant.id));
+    client.send(Effect::Permissions(PermissionAct::RemoveGrant(grant.id)));
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("removed the session grant")))
         .await;
@@ -925,12 +927,7 @@ async fn a_restarted_daemon_keeps_the_application_policy_binding() {
     let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("hello".into()));
     client.turn_finished().await.unwrap();
-    client.send(Effect::AddRule {
-        effect: RuleEffect::Deny,
-        tool: "write_file".into(),
-        pattern: None,
-        user: false,
-    });
+    client.send(deny_rule("write_file", None));
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "rule added"))
         .await;

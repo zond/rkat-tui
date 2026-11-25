@@ -89,8 +89,8 @@ async fn ended(client: &mut Client, label: &str) -> (String, Option<String>) {
         // How it ended, not the notice that it left its mob (which may come
         // first: its note goes after the endings' batch wait).
         .saw(|m| {
-            matches!(m, Msg::HelperEnded { path, how, .. }
-            if path.last() == Some(&label) && how != rkat_tui::daemon::protocol::HELPER_RETIRED)
+            matches!(m, Msg::HelperEnded { path, ending, .. }
+            if path.last() == Some(&label) && *ending != rkat_tui::daemon::protocol::HelperEnding::Retired)
         })
         .await
     {

@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::text::one_line;
 use crate::ui::markdown::{display_width, truncate_to_width};
 
 /// How a line's object is shortened when the line does not fit.
@@ -169,20 +170,33 @@ pub struct Outcome {
     pub text: Option<String>,
     /// Whether it failed although the tool did not report an error.
     pub failed: bool,
+    /// The call made a new file (`text` says so, and a diff of it does
+    /// not replace its numbers).
+    pub new_file: bool,
 }
 
 impl Outcome {
     fn said(text: impl Into<String>) -> Self {
         Self {
             text: Some(text.into()),
-            failed: false,
+            ..Self::default()
         }
     }
 
-    fn failure(text: impl Into<String>) -> Self {
+    /// A failure, in `text`.
+    #[must_use]
+    pub fn failure(text: impl Into<String>) -> Self {
         Self {
             text: Some(text.into()),
             failed: true,
+            new_file: false,
+        }
+    }
+
+    fn new_file(text: impl Into<String>) -> Self {
+        Self {
+            new_file: true,
+            ..Self::said(text)
         }
     }
 }
@@ -298,13 +312,12 @@ const RULES: &[Rule] = &[
     Rule {
         tools: &["send_message"],
         head: |_, args, _| {
-            let to = args
-                .get("display_name")
-                .and_then(Value::as_str)
-                .or_else(|| args.get("peer_id").and_then(Value::as_str))
-                .unwrap_or("?");
             let body = one_line(str_arg(args, "body"));
-            Head::new("message →", format!("{to}: {body}"), Cut::End)
+            Head::new(
+                "message →",
+                format!("{}: {body}", recipient(args)),
+                Cut::End,
+            )
         },
         outcome: no_outcome,
     },
@@ -466,10 +479,6 @@ fn member(args: &Value) -> String {
 }
 
 /// `text` on one line: its whitespace runs as single spaces.
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 /// The first string argument's value (a JSON object's own order).
 fn first_string(args: &Value) -> Option<String> {
     args.as_object()?
@@ -532,8 +541,8 @@ fn write_outcome(result: &str) -> Outcome {
         .and_then(|(_, rest)| rest.strip_suffix(" lines)"))
         .and_then(|n| n.parse::<usize>().ok());
     match lines {
-        Some(n) => Outcome::said(format!("new, {}", crate::text::count(n, "line"))),
-        None => Outcome::said("new"),
+        Some(n) => Outcome::new_file(format!("new, {}", crate::text::count(n, "line"))),
+        None => Outcome::new_file("new"),
     }
 }
 
@@ -673,11 +682,13 @@ fn glob_outcome(result: &str) -> Outcome {
         return with_stop("no files".to_string(), result);
     }
     let shown = answer_lines(result).count();
+    // The total from the truncation note's own line (`… showing N of T
+    // matches; …`), never from a path that holds `of `.
     let total = result
-        .split("of ")
-        .nth(1)
-        .filter(|_| result.contains(answers::RESULTS_TRUNCATED))
-        .and_then(|rest| rest.split_whitespace().next())
+        .lines()
+        .find_map(|line| line.split_once(answers::RESULTS_TRUNCATED))
+        .and_then(|(_, note)| note.split_once(" of "))
+        .and_then(|(_, rest)| rest.split_whitespace().next())
         .and_then(|n| n.parse::<usize>().ok())
         .unwrap_or(shown);
     with_stop(crate::text::count(total, "file"), result)
@@ -701,6 +712,15 @@ fn json_count(result: &str) -> Option<usize> {
 /// The tool's own name, without a helper's tag (`[scout · m] glob`).
 pub(super) fn base(name: &str) -> &str {
     name.rsplit(' ').next().unwrap_or(name)
+}
+
+/// A `send_message`'s recipient as its line, header and note name it: the
+/// peer's name when known, else its id.
+pub(super) fn recipient(args: &Value) -> &str {
+    args.get("display_name")
+        .and_then(Value::as_str)
+        .or_else(|| args.get("peer_id").and_then(Value::as_str))
+        .unwrap_or("?")
 }
 
 /// A call's head, from its row, else `<tool>: <first string argument>`.
@@ -750,7 +770,10 @@ pub fn outcome(name: &str, args: &Value, result: &str) -> Outcome {
 /// message's first words.
 #[must_use]
 pub fn denial(reason: &str) -> String {
-    use crate::approval::{CLASSIFIER_SOURCE, REVIEW_INCOMPLETE};
+    use crate::approval::{
+        CLASSIFIER_SOURCE, FIXED_POLICY_DENIAL, HUMAN_COMMENT_DENIAL, HUMAN_DENIAL,
+        REVIEW_INCOMPLETE, STOPPED_DENIAL, TIMED_OUT_DENIAL, UNAVAILABLE_DENIAL, USER_RULE_DENIAL,
+    };
     if reason.contains(CLASSIFIER_SOURCE) {
         // The rule as the gate's notice names it (`[R1]`) or as the
         // tool's own result does (`(rule R1)`).
@@ -767,21 +790,25 @@ pub fn denial(reason: &str) -> String {
             None => "blocked by the classifier".to_string(),
         };
     }
-    if let Some(rest) = reason.split("denied by the user's deny rule ").nth(1) {
+    if let Some(rest) = reason.split(USER_RULE_DENIAL).nth(1) {
         let id = rest.split_whitespace().next().unwrap_or_default();
         return format!("denied by rule {id}");
     }
-    let table: [(&str, &str); 9] = [
-        ("denied by the user", "denied by you"),
-        ("the user denied this action", "denied by you"),
-        ("the user stopped this turn", "stopped by you"),
+    // The gate's own openings (`crate::approval::DenyReason`'s words);
+    // the shorter needles after them are kept for a stored conversation's
+    // results, which earlier builds worded.
+    let table: [(&str, &str); 13] = [
+        (HUMAN_COMMENT_DENIAL, "denied by you"),
+        (HUMAN_DENIAL, "denied by you"),
+        (STOPPED_DENIAL, "stopped by you"),
         ("plan mode", "plan mode"),
         (REVIEW_INCOMPLETE, "review not completed"),
+        (UNAVAILABLE_DENIAL, "classifier unavailable"),
+        (TIMED_OUT_DENIAL, "no answer in time"),
+        (FIXED_POLICY_DENIAL, "fixed policy"),
+        ("denied by the user", "denied by you"),
+        ("the user denied this action", "denied by you"),
         ("safety classifier is unavailable", "classifier unavailable"),
-        (
-            "did not answer the approval request in time",
-            "no answer in time",
-        ),
         ("fixed policy", "fixed policy"),
         ("no client", "no one to ask"),
     ];
@@ -917,7 +944,7 @@ impl Parts {
         // A replaced file's or an edit's numbers are its diff's; a new
         // file's are its own answer's.
         let numbers = match (&outcome.text, diff) {
-            (Some(text), _) if text.starts_with("new") => Some(text.clone()),
+            (Some(text), _) if outcome.new_file => Some(text.clone()),
             (_, Some(d)) => Some(format!("+{} −{}", d.added, d.removed)),
             (text, None) => text.clone(),
         };
@@ -1250,6 +1277,63 @@ mod tests {
             Some("2".into())
         );
         assert_eq!(o("note_forget", json!({}), "ok"), Some("removed".into()));
+    }
+
+    /// Each of the gate's denials, as the agent's tool result words it,
+    /// reads back as its few words: the openings are the gate's own
+    /// constants.
+    #[test]
+    fn every_denial_of_the_gate_reads_as_its_few_words() {
+        use crate::approval::rules::{RuleId, RuleKind};
+        use crate::approval::{DenyReason, deny_message};
+        let cases = [
+            (
+                DenyReason::UserRule {
+                    id: RuleId {
+                        kind: RuleKind::Deny,
+                        serial: 3,
+                    },
+                    rule: "shell rm*".into(),
+                },
+                "denied by rule deny#3",
+            ),
+            (
+                DenyReason::Sealed {
+                    detail: "`.git/` is sealed".into(),
+                },
+                "fixed policy",
+            ),
+            (
+                DenyReason::Classifier {
+                    rule: Some("R1".into()),
+                    explanation: "force push".into(),
+                    annotation: None,
+                    hint: None,
+                },
+                "blocked by the classifier (R1)",
+            ),
+            (DenyReason::Human { comment: None }, "denied by you"),
+            (
+                DenyReason::Human {
+                    comment: Some("use the branch".into()),
+                },
+                "denied by you",
+            ),
+            (DenyReason::Stopped, "stopped by you"),
+            (DenyReason::PlanMode, "plan mode"),
+            (
+                DenyReason::ClassifierUnavailable("no client for m".into()),
+                "classifier unavailable",
+            ),
+            (
+                DenyReason::ReviewIncomplete("timed out".into()),
+                "review not completed",
+            ),
+            (DenyReason::EscalationTimedOut, "no answer in time"),
+        ];
+        for (reason, short) in cases {
+            assert_eq!(denial(&deny_message(&reason)), short, "{reason:?}");
+        }
     }
 
     #[test]

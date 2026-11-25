@@ -271,7 +271,11 @@ impl Instructions {
     /// Over `runtime`'s sessions, writing the audit lines to `audit`.
     #[must_use]
     pub fn new(runtime: &Arc<SessionRuntime>, audit: Option<Arc<AuditLog>>) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new(Self::built(runtime, audit))
+    }
+
+    fn built(runtime: &Arc<SessionRuntime>, audit: Option<Arc<AuditLog>>) -> Self {
+        Self {
             runtime: Arc::downgrade(runtime),
             audit,
             waiting: parking_lot::Mutex::new(HashMap::new()),
@@ -279,7 +283,7 @@ impl Instructions {
             no_hook: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
             stale: false,
-        })
+        }
     }
 
     /// Tests: [`Self::new`], seating with [`stale`] sections.
@@ -287,12 +291,8 @@ impl Instructions {
     #[must_use]
     pub fn stale(runtime: &Arc<SessionRuntime>, audit: Option<Arc<AuditLog>>) -> Arc<Self> {
         Arc::new(Self {
-            runtime: Arc::downgrade(runtime),
-            audit,
-            waiting: parking_lot::Mutex::new(HashMap::new()),
-            on_updated: parking_lot::Mutex::new(None),
-            no_hook: std::sync::atomic::AtomicBool::new(false),
             stale: true,
+            ..Self::built(runtime, audit)
         })
     }
 

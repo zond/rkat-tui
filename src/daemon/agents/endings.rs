@@ -55,6 +55,12 @@ pub const MAX_ANSWER: usize = 4000;
 /// The file the held notes persist in, under the realm.
 pub const HELD_FILE: &str = "held-notes.json";
 
+/// How a [`crate::daemon::protocol::HelperEnded::told`] ends when the note
+/// reached its recipient now: a client then pairs its notice with the
+/// folded note of the run it started
+/// (`crate::ui::transcript::Transcript::ending_shown`).
+pub const TOLD: &str = " was told";
+
 /// One helper's ending as its note words it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteItem {
@@ -72,10 +78,7 @@ pub struct NoteItem {
 /// trimmed, then where the rest is when it was cut (`rest`: the file it was
 /// written to).
 fn bounded(answer: &str, rest: Option<&Path>) -> String {
-    let (shown, cut) = match answer.char_indices().nth(MAX_ANSWER) {
-        Some((byte, _)) => (&answer[..byte], true),
-        None => (answer, false),
-    };
+    let (shown, cut) = crate::text::head_chars(answer, MAX_ANSWER);
     let rest = match (rest, cut) {
         (_, false) => String::new(),
         (Some(path), true) => format!(
@@ -310,10 +313,7 @@ impl Entry {
 
 /// `text` on one line, with no `;` (the header separates entries by it).
 fn one_line(text: &str) -> String {
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .replace(';', ",")
+    crate::text::one_line(text).replace(';', ",")
 }
 
 /// A note's header line for `entries`.
@@ -604,11 +604,17 @@ const HELD_VERSION: u32 = 1;
 #[derive(Debug, Default)]
 pub struct HeldNotes {
     path: Option<PathBuf>,
-    notes: parking_lot::Mutex<Vec<Held>>,
+    held: parking_lot::Mutex<Holding>,
+}
+
+/// What [`HeldNotes`] holds, under its one lock.
+#[derive(Debug, Default)]
+struct Holding {
+    notes: Vec<Held>,
     /// The newest (agent, words) a run of a helper's note started with,
     /// [`SEEN`] at most: a failed steer's note is not held when a run took
-    /// it already. Read and written under `notes`' lock.
-    seen: parking_lot::Mutex<std::collections::VecDeque<(String, String)>>,
+    /// it already.
+    seen: std::collections::VecDeque<(String, String)>,
 }
 
 /// How many runs started by a helper's note [`HeldNotes`] remembers.
@@ -640,8 +646,10 @@ impl HeldNotes {
         };
         Self {
             path: Some(path),
-            notes: parking_lot::Mutex::new(notes),
-            seen: parking_lot::Mutex::default(),
+            held: parking_lot::Mutex::new(Holding {
+                notes,
+                seen: std::collections::VecDeque::new(),
+            }),
         }
     }
 
@@ -672,24 +680,23 @@ impl HeldNotes {
     /// Hold `text` for `agent`, which runs `session` (`unsure`: its steer
     /// failed, [`Held::unsure`]).
     fn hold(&self, agent: &str, session: &SessionId, text: String, unsure: bool) {
-        let mut notes = self.notes.lock();
-        if unsure {
-            let mut seen = self.seen.lock();
-            if let Some(at) = seen
+        let mut held = self.held.lock();
+        if unsure
+            && let Some(at) = held
+                .seen
                 .iter()
                 .position(|(seen_agent, words)| seen_agent == agent && *words == text)
-            {
-                seen.remove(at);
-                return;
-            }
+        {
+            held.seen.remove(at);
+            return;
         }
-        notes.push(Held {
+        held.notes.push(Held {
             agent: agent.to_string(),
             session: session.clone(),
             text,
             unsure,
         });
-        self.persist(&notes);
+        self.persist(&held.notes);
     }
 
     /// A run of `agent` started with `prompt`, a helper's note: one held
@@ -698,18 +705,18 @@ impl HeldNotes {
     /// steer's answer that comes after the run's start holds nothing.
     /// Whether one went.
     pub(super) fn delivered(&self, agent: &str, prompt: &str) -> bool {
-        let mut notes = self.notes.lock();
-        let before = notes.len();
-        notes.retain(|held| !(held.unsure && held.agent == agent && held.text == prompt));
-        let gone = notes.len() != before;
+        let mut held = self.held.lock();
+        let before = held.notes.len();
+        held.notes
+            .retain(|note| !(note.unsure && note.agent == agent && note.text == prompt));
+        let gone = held.notes.len() != before;
         if gone {
-            self.persist(&notes);
+            self.persist(&held.notes);
         } else {
-            let mut seen = self.seen.lock();
-            if seen.len() == SEEN {
-                seen.pop_front();
+            if held.seen.len() == SEEN {
+                held.seen.pop_front();
             }
-            seen.push_back((agent.to_string(), prompt.to_string()));
+            held.seen.push_back((agent.to_string(), prompt.to_string()));
         }
         gone
     }
@@ -720,14 +727,14 @@ impl HeldNotes {
     /// failed steer that `started_with` (the input of the run starting
     /// now) shows reached it after all.
     fn take(&self, agent: &str, session: &SessionId, started_with: Option<&str>) -> Option<String> {
-        let mut notes = self.notes.lock();
-        if !notes.iter().any(|held| held.agent == agent) {
+        let mut held = self.held.lock();
+        if !held.notes.iter().any(|note| note.agent == agent) {
             return None;
         }
         let (mine, rest): (Vec<Held>, Vec<Held>) =
-            notes.drain(..).partition(|held| held.agent == agent);
-        *notes = rest;
-        self.persist(&notes);
+            held.notes.drain(..).partition(|note| note.agent == agent);
+        held.notes = rest;
+        self.persist(&held.notes);
         let texts: Vec<String> = mine
             .into_iter()
             .filter(|held| &held.session == session)
@@ -739,7 +746,11 @@ impl HeldNotes {
 
     /// Whether a note is held for `agent`.
     fn holds(&self, agent: &str) -> bool {
-        self.notes.lock().iter().any(|held| held.agent == agent)
+        self.held
+            .lock()
+            .notes
+            .iter()
+            .any(|held| held.agent == agent)
     }
 }
 
@@ -827,12 +838,7 @@ impl Agents {
                 tracing::info!(helper = %ended.key, "a helper's ending at the daemon's stop: its agent runs another conversation; nobody is told");
                 continue;
             };
-            let item = NoteItem {
-                label: ended.tag.label().to_string(),
-                rest: self.write_rest(&ended),
-                how: ended.how.clone(),
-                with: ended.with.clone(),
-            };
+            let item = self.note_item(&ended);
             let recipient = (agent, ended.tag.owner.clone());
             match groups.iter_mut().find(|(r, _)| *r == recipient) {
                 Some((_, items)) => items.push(item),
@@ -941,15 +947,7 @@ impl Agents {
 
     /// Tell `recipient` of `endings`; what the clients are told of it.
     async fn tell(self: &Arc<Self>, recipient: &Recipient, endings: &[Ended]) -> String {
-        let items: Vec<NoteItem> = endings
-            .iter()
-            .map(|ended| NoteItem {
-                label: ended.tag.label().to_string(),
-                rest: self.write_rest(ended),
-                how: ended.how.clone(),
-                with: ended.with.clone(),
-            })
-            .collect();
+        let items: Vec<NoteItem> = endings.iter().map(|ended| self.note_item(ended)).collect();
         let text = note_text(&items);
         let mut recipient = recipient.clone();
         // Helpers passed over: they ended, or refused the note.
@@ -966,7 +964,7 @@ impl Agents {
                         self.sent
                             .record_summary(&name, text.clone(), summary_of(&items));
                         match self.steer_or_hold(&name, &session, text).await {
-                            Ok(()) => format!("{name} was told"),
+                            Ok(()) => format!("{name}{TOLD}"),
                             Err(reason) => {
                                 format!("{name} is told with its next run: {reason}")
                             }
@@ -991,7 +989,7 @@ impl Agents {
             match sent {
                 Some(Ok(())) => {
                     return with_passed(
-                        format!("its parent helper {} was told", tag.label()),
+                        format!("its parent helper {}{TOLD}", tag.label()),
                         &passed,
                     );
                 }
@@ -1080,16 +1078,13 @@ impl Agents {
             }
         });
         match (&written, agent) {
-            (Some(path), Some(agent)) => self.core.decisions.broadcast(
-                crate::daemon::protocol::AGENT_NOTICE,
-                &crate::daemon::protocol::AgentNotice {
-                    agent,
-                    warn: true,
-                    text: format!(
-                        "a note of your helpers' endings reached nobody (the helpers it went to ended, and that conversation is not running); it is in {}",
-                        path.display()
-                    ),
-                },
+            (Some(path), Some(agent)) => self.core.decisions.agent_notice(
+                agent,
+                true,
+                format!(
+                    "a note of your helpers' endings reached nobody (the helpers it went to ended, and that conversation is not running); it is in {}",
+                    path.display()
+                ),
             ),
             (Some(path), None) => {
                 tracing::warn!(path = %path.display(), "a note nobody could take was written; its agent is gone");
@@ -1099,6 +1094,17 @@ impl Agents {
             ),
         }
         written
+    }
+
+    /// `ended` as its note words it (a long answer written in full,
+    /// [`Self::write_rest`]).
+    fn note_item(&self, ended: &Ended) -> NoteItem {
+        NoteItem {
+            label: ended.tag.label().to_string(),
+            rest: self.write_rest(ended),
+            how: ended.how.clone(),
+            with: ended.with.clone(),
+        }
     }
 
     /// A finished helper's answer longer than a note carries, written in
@@ -1160,6 +1166,7 @@ impl Agents {
                 agent,
                 session_id: ended.tag.owner.clone(),
                 path: ended.tag.path.clone(),
+                ending: ended.how.ending(),
                 how: ended.how.text(),
                 told,
             },

@@ -4,11 +4,12 @@
 
 use super::dispatch::blocked_call;
 use super::*;
-use crate::approval::desk::RuleRow;
+use crate::approval::desk::{RuleRow, RuleSpec};
 use crate::approval::grants::{BlockedCall, GrantOrigin, GrantRow, GrantScope, GrantTarget};
 use crate::approval::hosts::{HostOrigin, HostRows, ProjectHost, TrustedHost};
 use crate::approval::rules::RuleOrigin;
 use crate::approval::statements::{StatementOrigin, StatementRow};
+use crate::daemon::protocol::TrustHostParams;
 
 fn press(code: KeyCode) -> KeyEvent {
     KeyEvent::from(code)
@@ -46,7 +47,6 @@ fn session_grant(id: u64) -> GrantRow {
             path: "/data/store".into(),
         },
         origin: GrantOrigin::Session,
-        removable: true,
     }
 }
 
@@ -331,7 +331,11 @@ fn e_edits_a_rule_in_its_own_entry() {
     };
     assert_eq!(
         app.update(key(KeyCode::Enter)),
-        vec![Effect::PickedRuleEdit { n: 1, old, new }]
+        vec![Effect::Permissions(PermissionAct::EditRule {
+            n: 1,
+            old,
+            new
+        })]
     );
     // The field stays, its text kept, until the answer; a refusal shows
     // in it and the text stays to fix.
@@ -493,21 +497,20 @@ fn in_force_rules_remove_by_number_after_saying_for_how_long() {
 /// grant can be removed there, the others say where to drop them.
 #[test]
 fn in_force_lists_grants_and_removes_session_ones() {
-    let grant = |id, origin: GrantOrigin, removable| GrantRow {
+    let grant = |id, origin: GrantOrigin| GrantRow {
         id,
         target: GrantTarget::Dir {
             path: format!("/data/{}", origin.word()).into(),
         },
         origin,
-        removable,
     };
     let mut picker = in_force(
         &[],
         &[
-            grant(0, GrantOrigin::Default, false),
-            grant(0, GrantOrigin::Flag, false),
-            grant(5, GrantOrigin::Always, false),
-            grant(9, GrantOrigin::Session, true),
+            grant(0, GrantOrigin::Default),
+            grant(0, GrantOrigin::Flag),
+            grant(5, GrantOrigin::Always),
+            grant(9, GrantOrigin::Session),
         ],
         &[],
     );
@@ -846,10 +849,10 @@ fn n_types_a_new_statement_for_the_scope_chosen() {
     type_str(&mut app, "pushing to my own fork");
     assert_eq!(
         app.update(key(KeyCode::Enter)),
-        vec![Effect::PickedStatement {
+        vec![Effect::Permissions(PermissionAct::AddStatement {
             scope: GrantScope::Always,
             text: "pushing to my own fork".into(),
-        }]
+        })]
     );
     assert!(!open(&app).editing());
     // The daemon's refusal lands on the dialog, which stays open.
@@ -900,11 +903,13 @@ fn r_adds_a_rule_from_a_small_form() {
     type_str(&mut app, "shell cargo test *");
     assert_eq!(
         app.update(key(KeyCode::Enter)),
-        vec![Effect::PickedRule(RuleForm {
-            deny: false,
-            tool: "shell".into(),
-            pattern: Some("cargo test *".into()),
-            literal: false,
+        vec![Effect::Permissions(PermissionAct::AddRule {
+            spec: RuleSpec {
+                deny: false,
+                tool: "shell".into(),
+                pattern: Some("cargo test *".into()),
+                literal: false,
+            },
             user: false,
         })]
     );
@@ -938,11 +943,13 @@ fn r_adds_a_rule_from_a_small_form() {
     type_str(&mut app, "shell git push --force");
     assert_eq!(
         app.update(key(KeyCode::Enter)),
-        vec![Effect::PickedRule(RuleForm {
-            deny: true,
-            tool: "shell".into(),
-            pattern: Some("git push --force".into()),
-            literal: true,
+        vec![Effect::Permissions(PermissionAct::AddRule {
+            spec: RuleSpec {
+                deny: true,
+                tool: "shell".into(),
+                pattern: Some("git push --force".into()),
+                literal: true,
+            },
             user: true,
         })]
     );
@@ -982,7 +989,11 @@ fn an_approval_shows_in_in_force_and_the_dialog_stays_open() {
     app.update(key(KeyCode::Char('s')));
     assert_eq!(
         app.update(key(KeyCode::Char('y'))),
-        vec![Effect::PickedApproval(2, GrantScope::Session, None)]
+        vec![Effect::Permissions(PermissionAct::Approve {
+            id: 2,
+            scope: GrantScope::Session,
+            effect: None,
+        })]
     );
     assert_eq!(open(&app).section(), Some(Section::Blocked.index()));
     // The daemon's lists again: the call is gone, its grant in force.
@@ -1346,14 +1357,18 @@ fn a_d5_block_s_hosts_are_trusted_with_one_key() {
     app.update(key(KeyCode::Char('t')));
     assert_eq!(
         app.update(key(KeyCode::Char('y'))),
-        vec![Effect::PickedCallHostTrust { id: 4, user: false }]
+        vec![Effect::Permissions(PermissionAct::TrustHost(
+            TrustHostParams::Call { id: 4, user: false }
+        ))]
     );
     app.update(key(KeyCode::BackTab));
     assert_eq!(open(&app).section(), Some(Section::Hosts.index()));
     app.update(key(KeyCode::Char('d')));
     assert_eq!(
         app.update(key(KeyCode::Char('y'))),
-        vec![Effect::PickedHostRemoval("ci.example.net".into())]
+        vec![Effect::Permissions(PermissionAct::UntrustHost(
+            "ci.example.net".into()
+        ))]
     );
     app.update(key(KeyCode::Char('n')));
     for c in "ci2.example.net".chars() {
@@ -1361,10 +1376,12 @@ fn a_d5_block_s_hosts_are_trusted_with_one_key() {
     }
     assert_eq!(
         app.update(key(KeyCode::Enter)),
-        vec![Effect::PickedHostTrust {
-            host: "ci2.example.net".into(),
-            user: false
-        }]
+        vec![Effect::Permissions(PermissionAct::TrustHost(
+            TrustHostParams::Host {
+                host: "ci2.example.net".into(),
+                user: false
+            }
+        ))]
     );
 }
 

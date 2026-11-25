@@ -22,6 +22,12 @@
   directory itself.
 - `grep -R` and `tree -l`, which follow symlinks out of the project, are
   reviewed instead of allowed as read-only commands.
+- In a workspace that holds rkat-tui's own state (one at your home
+  directory), a read-only command that walks a directory holding that
+  state below it (`grep -r x .`, `rg x`, `find .`, `tree`, `du`, `ls -R`,
+  a `**` glob) is reviewed instead of run without review; the same
+  commands from a directory beside it, and reads that do not walk, are
+  unchanged.
 - `/permissions add` and the dialog's edit refuse an allow rule too broad
   to keep (`allow shell *`, `make *`) and say why, instead of saying
   "rule added" of a rule that was dropped at once and never applied.
@@ -73,8 +79,16 @@
   the stored conversation unchanged.
 - `/wire ssh://` takes only a host of letters, digits and `._@:%[]-`, so
   no shell metacharacter reaches a `ProxyCommand` of your ssh config.
+- A token count just under a million reads `1M` (`1.0M` where a decimal
+  is shown), never `1000k`.
+- A helper named with `stopped` in it no longer draws its ending note
+  with the stopped icon.
 
 ### Changed
+
+- A `/permissions`, `/trust` or `/schedules` act the daemon refuses is a
+  warning (the daemon answered); an error is shown only when the call
+  itself failed, for each of them alike.
 
 - A classifier review whose answer names no clear verdict (the provider
   cut it off at its token limit, or the answer is unclear) asks you, as a

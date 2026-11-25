@@ -331,7 +331,15 @@ impl Agents {
         match self.steer(&name, text.clone(), Wake::Approved).await {
             Ok(()) => {
                 self.audit_run(&name, None, "approval_told", text.clone());
-                self.tell_triggered(&name, session, APPROVED_LABEL.to_string(), text);
+                self.tell_triggered(
+                    &name,
+                    session,
+                    (
+                        crate::daemon::protocol::TriggerCause::Approval,
+                        APPROVED_LABEL.to_string(),
+                    ),
+                    text,
+                );
             }
             Err(err) => self.approval_not_told(name, &err),
         }
@@ -341,15 +349,12 @@ impl Agents {
     /// clients.
     fn approval_not_told(&self, name: String, err: &str) {
         tracing::warn!(agent = %name, error = %err, "the agent was not told of the approval");
-        self.core.decisions.broadcast(
-            crate::daemon::protocol::AGENT_NOTICE,
-            &crate::daemon::protocol::AgentNotice {
-                agent: name,
-                warn: true,
-                text: format!(
-                    "the agent was not told of the approval (it runs the call when it tries it again): {err}"
-                ),
-            },
+        self.core.decisions.agent_notice(
+            name,
+            true,
+            format!(
+                "the agent was not told of the approval (it runs the call when it tries it again): {err}"
+            ),
         );
     }
 }

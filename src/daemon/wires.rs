@@ -695,7 +695,7 @@ impl Wires {
         agent: &str,
         workspace: &Path,
         peer: &str,
-    ) -> Result<(bool, Option<String>), WireError> {
+    ) -> Result<(bool, Option<super::protocol::RemoteHalf>), WireError> {
         let via = self
             .card_of(agent, workspace, peer)
             .and_then(|card| card.via.clone().map(|via| (card, via)));
@@ -730,11 +730,15 @@ impl Wires {
         Ok((
             removed,
             Some(match words {
-                Ok(_) => format!("removed on {} too", via.host),
-                Err(why) => format!(
-                    "the half on {} stays ({why}); it delivers nothing now, and `/wire` in that workspace there, then d on the row of {ours}, removes it",
-                    via.host
-                ),
+                Ok(_) => super::protocol::RemoteHalf::Removed {
+                    host: via.host.clone(),
+                },
+                Err(why) => super::protocol::RemoteHalf::Stays {
+                    text: format!(
+                        "the half on {} stays ({why}); it delivers nothing now, and `/wire` in that workspace there, then d on the row of {ours}, removes it",
+                        via.host
+                    ),
+                },
             }),
         ))
     }
@@ -838,17 +842,11 @@ impl Wires {
                             Some(
                                 self.ssh
                                     .state(agent, &card.label())
-                                    .unwrap_or(LinkState::Down)
-                                    .as_str()
-                                    .to_string(),
+                                    .unwrap_or(LinkState::Down),
                             )
                         } else if card.ssh_from.is_some() {
                             let up = socket_of(card).is_some_and(Path::exists);
-                            Some(
-                                if up { LinkState::Up } else { LinkState::Down }
-                                    .as_str()
-                                    .to_string(),
-                            )
+                            Some(if up { LinkState::Up } else { LinkState::Down })
                         } else {
                             None
                         },

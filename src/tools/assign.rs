@@ -236,60 +236,46 @@ impl AssignToolDispatcher {
         context: &ToolDispatchContext,
     ) -> Result<ToolDispatchOutcome, ToolError> {
         let caller = context.origin_session_id();
-        if call.name == CONTACTS {
-            let (text, is_error) = self.host.contacts(caller).await;
-            return Ok(ToolDispatchOutcome::from(ToolResult::new(
-                call.id.to_string(),
-                text,
-                is_error,
-            )));
-        }
-        if call.name == RETIRE_HELPER {
-            let args: RetireArgs =
-                call.parse_args()
-                    .map_err(|err| ToolError::InvalidArguments {
-                        name: RETIRE_HELPER.to_string(),
-                        reason: format!("{err}; a valid call looks like {RETIRE_EXAMPLE}"),
-                    })?;
-            let (text, is_error) = self.host.retire(caller, args).await;
-            return Ok(ToolDispatchOutcome::from(ToolResult::new(
-                call.id.to_string(),
-                text,
-                is_error,
-            )));
-        }
-        if call.name == CONNECT_HELPERS {
-            let args: ConnectArgs =
-                call.parse_args()
-                    .map_err(|err| ToolError::InvalidArguments {
-                        name: CONNECT_HELPERS.to_string(),
-                        reason: format!("{err}; a valid call looks like {CONNECT_EXAMPLE}"),
-                    })?;
-            let (text, is_error) = self.host.connect(caller, args).await;
-            return Ok(ToolDispatchOutcome::from(ToolResult::new(
-                call.id.to_string(),
-                text,
-                is_error,
-            )));
-        }
-        if call.name != ASSIGN {
-            return Err(ToolError::NotFound {
-                name: call.name.to_string(),
-            });
-        }
-        let args: AssignArgs = call
-            .parse_args()
-            .map_err(|err| ToolError::InvalidArguments {
-                name: ASSIGN.to_string(),
-                reason: format!("{err}; a valid call looks like {EXAMPLE}"),
-            })?;
-        let (text, is_error) = self.host.assign(caller, call.id, context, args).await;
+        let (text, is_error) = match call.name {
+            CONTACTS => self.host.contacts(caller).await,
+            RETIRE_HELPER => {
+                let args = args_of(&call, RETIRE_HELPER, RETIRE_EXAMPLE)?;
+                self.host.retire(caller, args).await
+            }
+            CONNECT_HELPERS => {
+                let args = args_of(&call, CONNECT_HELPERS, CONNECT_EXAMPLE)?;
+                self.host.connect(caller, args).await
+            }
+            ASSIGN => {
+                let args = args_of(&call, ASSIGN, EXAMPLE)?;
+                self.host.assign(caller, call.id, context, args).await
+            }
+            other => {
+                return Err(ToolError::NotFound {
+                    name: other.to_string(),
+                });
+            }
+        };
         Ok(ToolDispatchOutcome::from(ToolResult::new(
             call.id.to_string(),
             text,
             is_error,
         )))
     }
+}
+
+/// `call`'s arguments as the tool `name` takes them; refused with a valid
+/// call (`example`) when they do not read.
+fn args_of<T: serde::de::DeserializeOwned>(
+    call: &ToolCallView<'_>,
+    name: &str,
+    example: &str,
+) -> Result<T, ToolError> {
+    call.parse_args()
+        .map_err(|err| ToolError::InvalidArguments {
+            name: name.to_string(),
+            reason: format!("{err}; a valid call looks like {example}"),
+        })
 }
 
 #[async_trait]

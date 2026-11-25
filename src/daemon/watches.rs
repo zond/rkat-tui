@@ -57,6 +57,10 @@ pub enum Change {
     Other,
 }
 
+/// How [`Batch::text`] opens: a client reads a run it starts by it
+/// (`crate::ui::transcript::composed_input`).
+pub const FILES_CHANGED: &str = "files changed: ";
+
 /// One agent's changes, ready to deliver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Batch {
@@ -73,7 +77,7 @@ impl Batch {
     /// The message the agent gets: `files changed: a, b and 3 more`.
     #[must_use]
     pub fn text(&self) -> String {
-        let mut text = format!("files changed: {}", self.paths.join(", "));
+        let mut text = format!("{FILES_CHANGED}{}", self.paths.join(", "));
         if self.more > 0 {
             text.push_str(&format!(" and {} more", self.more));
         }
@@ -489,6 +493,20 @@ async fn batch(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A client reads a run a batch starts as the watch's.
+    #[test]
+    fn a_batch_s_text_is_read_back_as_the_watch_s() {
+        let batch = Batch {
+            agent: "main-ab12".into(),
+            paths: vec!["src/a.rs".into()],
+            more: 2,
+        };
+        assert_eq!(
+            crate::ui::transcript::composed_input(&batch.text()),
+            Some("files changed: the agent was told")
+        );
+    }
 
     fn watches() -> (Arc<Watches>, mpsc::UnboundedReceiver<Batch>) {
         Watches::new(PathBuf::from("/w"))

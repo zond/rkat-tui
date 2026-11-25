@@ -45,17 +45,18 @@ use super::push::Push;
 use super::remote::{self, ModelSwitch};
 use super::sessions;
 use super::transport::{ATTACH_TIMEOUT, Connection, Notification};
-use crate::approval::desk::{ModeStatus, RuleCommand, RuleOutcome};
+use crate::approval::desk::{ModeStatus, RuleCommand};
 use crate::bootstrap::RuntimeScope;
 use crate::cli::AttachMode;
 use crate::daemon::endpoint::Endpoint;
+use crate::daemon::protocol::Outcome;
 use crate::daemon::protocol::{self, AgentChoice, SetModeParams};
 use crate::endpoints::{EndpointRegistry, ModelRefError, WireDialect, parse_model_ref};
 use crate::models::{FetchResults, ModelCache};
 use crate::ui::delivery::{PendingId, SteerFailure};
 use crate::ui::{
     Block, Checklist, ChecklistView, CompactFailure, Effect, EscalationAnswer, EscalationId, Msg,
-    NoticeLevel, RuleEffect, StatusUpdate, TurnFailure, TurnSummary,
+    NoticeLevel, StatusUpdate, TurnFailure, TurnSummary,
 };
 use crate::ui::{Connection as LinkState, Departure, QuitDecision};
 use crate::user_shell::UserShell;
@@ -1228,20 +1229,11 @@ impl Runner {
             }
             Effect::RespondEscalation(id, answer) => self.respond_escalation(id, &answer),
             Effect::SetMode(mode) => self.set_mode(mode),
-            Effect::AddRule {
-                effect,
-                tool,
-                pattern,
-                user,
-            } => {
-                let command = RuleCommand::Add {
-                    deny: effect == RuleEffect::Deny,
-                    tool,
-                    pattern,
-                    user,
-                    literal: false,
-                };
-                self.outcome_command::<protocol::method::Rules>(command, "/permissions");
+            Effect::AddRule { spec, user } => {
+                self.outcome_command::<protocol::method::Rules>(
+                    RuleCommand::Add { spec, user },
+                    "/permissions",
+                );
             }
             Effect::RemoveRule(n) => {
                 self.outcome_command::<protocol::method::Rules>(
@@ -1250,24 +1242,7 @@ impl Runner {
                 );
             }
             Effect::RequestPermissions(open) => self.permissions(None, open),
-            Effect::PickedRuleRemoval(n) => {
-                self.permissions(Some(commands::Picked::RemoveRule(n)), None);
-            }
-            Effect::PickedGrantRemoval(id) => {
-                self.permissions(Some(commands::Picked::RemoveGrant(id)), None);
-            }
-            Effect::PickedStatementRemoval(id) => {
-                self.permissions(Some(commands::Picked::RemoveStatement(id)), None);
-            }
-            Effect::PickedStatement { scope, text } => {
-                self.permissions(Some(commands::Picked::AddStatement(text, scope)), None);
-            }
-            Effect::PickedRule(form) => {
-                self.permissions(Some(commands::Picked::AddRule(form)), None);
-            }
-            Effect::PickedRuleEdit { n, old, new } => {
-                self.permissions(Some(commands::Picked::EditRule { n, old, new }), None);
-            }
+            Effect::Permissions(act) => self.permissions(Some(act), None),
             Effect::AutoStats => {
                 self.outcome_command::<protocol::method::AutoStats>(
                     protocol::Empty {},
@@ -1275,23 +1250,6 @@ impl Runner {
                 );
             }
             Effect::ClassifierCheck(selection) => self.classifier_check(selection),
-            Effect::PickedApproval(id, scope, effect) => {
-                self.permissions(Some(commands::Picked::Approve(id, scope, effect)), None);
-            }
-            Effect::PickedWithdrawal(id) => {
-                self.permissions(Some(commands::Picked::Withdraw(id)), None);
-            }
-            Effect::PickedHostTrust { host, user } => {
-                let params = protocol::TrustHostParams::Host { host, user };
-                self.permissions(Some(commands::Picked::TrustHost(params)), None);
-            }
-            Effect::PickedCallHostTrust { id, user } => {
-                let params = protocol::TrustHostParams::Call { id, user };
-                self.permissions(Some(commands::Picked::TrustHost(params)), None);
-            }
-            Effect::PickedHostRemoval(host) => {
-                self.permissions(Some(commands::Picked::UntrustHost(host)), None);
-            }
             Effect::ListRules => {
                 self.outcome_command::<protocol::method::Rules>(RuleCommand::List, "/permissions");
             }
@@ -1403,21 +1361,22 @@ mod tests {
     fn the_schedule_picker_rows_pause_resume_and_delete_by_id() {
         use crate::ui::{ModalKey, PickAct, PickerLine};
         use protocol::ScheduleOp;
+        use protocol::ScheduleState;
         use ratatui::crossterm::event::{KeyCode, KeyEvent};
-        let row = |id: &str, name: &str, state: &str| protocol::ScheduleRow {
+        let row = |id: &str, name: &str, state: ScheduleState| protocol::ScheduleRow {
             id: id.into(),
             name: name.into(),
             expression: "every 86400s from 2026-11-11 02:00:00Z".into(),
-            next: (state == "active").then(|| "2026-11-12 02:00:00Z".into()),
-            state: state.into(),
+            next: (state == ScheduleState::Active).then(|| "2026-11-12 02:00:00Z".into()),
+            state,
             fired: 1,
             cost: None,
         };
         let prices = crate::pricing::PriceTable::default();
         let mut picker = schedule_picker(
             &[
-                row("s-1", "nightly", "active"),
-                row("s-2", "weekly", "paused"),
+                row("s-1", "nightly", ScheduleState::Active),
+                row("s-2", "weekly", ScheduleState::Paused),
             ],
             &prices,
         );

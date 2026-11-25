@@ -327,11 +327,7 @@ pub fn base64_encode(bytes: &[u8]) -> String {
 /// `text` cut (at a char boundary) so its base64 fits in [`CLIPBOARD_CAP`];
 /// the flag says whether anything was cut.
 pub fn cap_clipboard(text: &str) -> (&str, bool) {
-    let max = CLIPBOARD_CAP / 4 * 3;
-    if text.len() <= max {
-        return (text, false);
-    }
-    (crate::text::prefix(text, max), true)
+    crate::text::head_bytes(text, CLIPBOARD_CAP / 4 * 3)
 }
 
 /// The terminal multiplexer the UI runs in, as its environment says: what

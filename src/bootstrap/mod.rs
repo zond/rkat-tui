@@ -612,15 +612,12 @@ pub fn model_window(
             &choice.engine_model,
         )
     };
-    let listed = || listed.and_then(|entry| entry.context_window);
-    if endpoints
+    let configured = endpoints
         .get(choice.endpoint.as_str())
-        .is_some_and(|e| !e.is_builtin())
-    {
-        listed().or_else(registry)
-    } else {
-        registry().or_else(listed)
-    }
+        .is_some_and(|e| !e.is_builtin());
+    crate::endpoints::context_window(configured, registry, || {
+        listed.and_then(|entry| entry.context_window)
+    })
 }
 
 /// Whether `options` keep the user's token store closed (tests only).

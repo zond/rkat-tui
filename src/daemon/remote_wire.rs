@@ -791,6 +791,12 @@ impl LinkState {
     }
 }
 
+impl std::fmt::Display for LinkState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Tells the user about one agent's link (agent, warn, text).
 pub type Tell = Arc<dyn Fn(&str, bool, String) + Send + Sync>;
 

@@ -167,10 +167,12 @@ mod tests {
         let session = meerkat_core::SessionId::new();
         let ended = Push::decode(note(
             protocol::HELPER_ENDED,
-            json!({"agent": "main-a", "session_id": session, "path": ["scout"], "how": "stopped by you"}),
+            json!({"agent": "main-a", "session_id": session, "path": ["scout"], "ending": "stopped", "how": "stopped by you"}),
         ));
         assert!(
-            matches!(ended, Some(Push::HelperEnded(e)) if e.path == ["scout"] && e.how == "stopped by you" && e.told.is_none())
+            matches!(ended, Some(Push::HelperEnded(e)) if e.path == ["scout"]
+                && e.ending == protocol::HelperEnding::Stopped
+                && e.how == "stopped by you" && e.told.is_none())
         );
         let run = meerkat_core::RunId::new();
         let running = Push::decode(note(

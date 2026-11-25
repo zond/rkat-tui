@@ -435,7 +435,9 @@ pub async fn remove_wire(
     // Over ssh, this daemon took the remote half down itself.
     if row.host.is_some() {
         match here.remote {
-            Some(remote) if remote.starts_with("removed on ") => text.push_str(" on both sides"),
+            Some(crate::daemon::protocol::RemoteHalf::Removed { .. }) => {
+                text.push_str(" on both sides");
+            }
             Some(remote) => text.push_str(&format!("; {remote}")),
             None => {}
         }
@@ -625,14 +627,11 @@ fn wired_rows(wired: &[WireRow], others: &[Other]) -> Vec<crate::ui::PickRow> {
         .map(|w| {
             let other = others.iter().find(|o| o.status.workspace == w.workspace);
             let state = match (&w.host, other) {
-                (Some(host), _) => format!(
-                    "over ssh to {host}, link {}",
-                    w.link.as_deref().unwrap_or("down")
-                ),
+                (Some(host), _) => format!("over ssh to {host}, link {}", w.link_shown()),
                 (None, _) if w.from.is_some() => format!(
                     "over ssh from {}, link {}",
                     crate::daemon::protocol::machine(w.from.as_deref().unwrap_or_default()),
-                    w.link.as_deref().unwrap_or("down")
+                    w.link_shown()
                 ),
                 (None, None) => "its daemon is not running".to_string(),
                 (None, Some(o)) => match o.status.agents.iter().find(|a| a.name == w.agent) {
@@ -844,14 +843,14 @@ mod tests {
                 agent: "main-eeee".into(),
                 host: Some("box".into()),
                 from: None,
-                link: Some("down".into()),
+                link: Some(crate::daemon::remote_wire::LinkState::Down),
             },
             WireRow {
                 workspace: "/w/near".into(),
                 agent: "main-ffff".into(),
                 host: None,
                 from: Some("laptop".into()),
-                link: Some("up".into()),
+                link: Some(crate::daemon::remote_wire::LinkState::Up),
             },
         ];
         // No other daemon runs: the picker opens with the wires alone.

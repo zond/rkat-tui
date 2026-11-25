@@ -387,6 +387,12 @@ impl Deferrable {
         catalog.add_missing_from(&self.catalog.read());
     }
 
+    /// Where the deferrable tool `name` comes from, when it is one.
+    #[must_use]
+    pub fn origin(&self, name: &str) -> Option<crate::approval::catalog::ToolOrigin> {
+        self.catalog.read().get(name).cloned()
+    }
+
     /// Every deferrable tool noted, by name.
     #[must_use]
     pub fn all(&self) -> Vec<Arc<ToolDef>> {

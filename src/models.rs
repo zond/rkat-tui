@@ -412,12 +412,10 @@ fn decode<T: DeserializeOwned>(body: &str) -> Result<T, ListModelsError> {
 
 /// Collapse whitespace and truncate an error body for display.
 fn summarize_body(body: &str) -> String {
-    let collapsed = body.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() > MAX_ERROR_BODY_CHARS {
-        let truncated: String = collapsed.chars().take(MAX_ERROR_BODY_CHARS).collect();
-        format!("{truncated}…")
-    } else {
-        collapsed
+    let collapsed = crate::text::one_line(body);
+    match crate::text::head_chars(&collapsed, MAX_ERROR_BODY_CHARS) {
+        (head, true) => format!("{head}…"),
+        (_, false) => collapsed,
     }
 }
 

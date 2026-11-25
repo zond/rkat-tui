@@ -101,7 +101,7 @@ use crate::text::prefix;
 
 mod permissions;
 
-pub use permissions::{PermissionFiles, Writing};
+pub use permissions::{APPROVED_OPENING, PermissionFiles, Writing};
 
 /// The names of the engine's handles the daemon's start-up binds
 /// ([`crate::late`]).
@@ -779,7 +779,7 @@ impl ApprovalEngine {
     /// The origin of `name` among `session_id`'s live tools.
     pub async fn tool_origin(&self, session_id: &SessionId, name: &str) -> Option<ToolOrigin> {
         let origins = self.origins.get(ORIGINS)?;
-        origins.catalog(session_id).await?.get(name).cloned()
+        origins.origin(session_id, name).await
     }
 
     fn session(&self, session_id: &SessionId) -> MappedMutexGuard<'_, SessionState> {
@@ -5021,7 +5021,7 @@ mod tests {
             .grants()
             .rows(Some(&rig.session))
             .iter()
-            .any(|row| row.target == GrantTarget::Builds && row.removable)
+            .any(|row| row.target == GrantTarget::Builds && row.removable())
     }
 
     /// A write protected only for its content (`AGENTS.md`, `.env`,
@@ -5807,7 +5807,7 @@ mod tests {
         let rows = rig.engine.grants().rows(Some(&rig.session));
         let origins: Vec<&str> = rows.iter().map(|r| r.origin.word()).collect();
         assert_eq!(origins, ["always", "session", "session"]);
-        let session_dir = rows.iter().find(|r| r.removable).unwrap().id;
+        let session_dir = rows.iter().find(|r| r.removable()).unwrap().id;
         rig.engine.remove_grant(&rig.session, session_dir).unwrap();
         assert_eq!(rig.engine.grants().rows(Some(&rig.session)).len(), 2);
         assert!(rig.engine.remove_grant(&rig.session, 999).is_err());

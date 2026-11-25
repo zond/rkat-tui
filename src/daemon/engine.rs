@@ -973,7 +973,8 @@ fn follow_helpers(
                         agent: agent.member.to_string(),
                         session_id: tag.owner.clone(),
                         path: tag.path.clone(),
-                        how: super::protocol::HELPER_RETIRED.to_string(),
+                        ending: super::protocol::HelperEnding::Retired,
+                        how: super::protocol::HelperEnding::Retired.to_string(),
                         told: None,
                     },
                 );

@@ -447,6 +447,31 @@ impl Decisions {
         }
     }
 
+    /// Tell `agent`'s clients `text` (a warning with `warn`): the one way
+    /// an [`protocol::AGENT_NOTICE`] is sent.
+    pub fn agent_notice(&self, agent: impl Into<String>, warn: bool, text: impl Into<String>) {
+        self.broadcast(
+            protocol::AGENT_NOTICE,
+            &protocol::AgentNotice {
+                agent: agent.into(),
+                warn,
+                text: text.into(),
+            },
+        );
+    }
+
+    /// [`Self::agent_notice`] of the same `text` to each of `agents`.
+    pub fn notice_every_agent(
+        &self,
+        agents: impl IntoIterator<Item = String>,
+        warn: bool,
+        text: &str,
+    ) {
+        for agent in agents {
+            self.agent_notice(agent, warn, text);
+        }
+    }
+
     /// How many clients are attached.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
@@ -525,10 +550,7 @@ impl Decisions {
             return;
         };
         let notice = notice_of(row, notice_id);
-        let line = format!(
-            "{}\n",
-            json!({"jsonrpc": "2.0", "method": NOTICE, "params": notice})
-        );
+        let line = protocol::notification_line(NOTICE, &notice);
         let (written, acknowledged) = oneshot::channel();
         if client
             .out
@@ -680,10 +702,7 @@ impl Decisions {
                     added: diff.added,
                     removed: diff.removed,
                 };
-                let line = format!(
-                    "{}\n",
-                    json!({"jsonrpc": "2.0", "method": protocol::FILE_DIFF, "params": params})
-                );
+                let line = protocol::notification_line(protocol::FILE_DIFF, &params);
                 let clients: Vec<Arc<Client>> = hub.clients.lock().values().cloned().collect();
                 for client in clients {
                     let _ = client.out.send(Outgoing {
@@ -702,10 +721,7 @@ impl Decisions {
             decision_id: id.to_string(),
             phase: phase.map(wire_decision_phase),
         };
-        let line = format!(
-            "{}\n",
-            json!({"jsonrpc": "2.0", "method": ENDED, "params": params})
-        );
+        let line = protocol::notification_line(ENDED, &params);
         for client in clients {
             // After a presentation pass in flight on the client: its notice
             // goes out before this one.

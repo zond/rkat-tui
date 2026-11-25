@@ -277,6 +277,13 @@ pub trait ToolOrigins: Send + Sync {
     /// The tools `session_id` currently offers. `None` when they cannot be
     /// read: every call is then judged as a [`ToolFamily::Foreign`] tool.
     async fn catalog(&self, session_id: &SessionId) -> Option<ToolCatalog>;
+
+    /// Where the tool `name` that `session_id` offers comes from: the
+    /// catalog's entry (an implementation may look it up without building
+    /// the whole catalog).
+    async fn origin(&self, session_id: &SessionId, name: &str) -> Option<ToolOrigin> {
+        self.catalog(session_id).await?.get(name).cloned()
+    }
 }
 
 /// [`ToolOrigins`] that always answers with one fixed catalog (tests and

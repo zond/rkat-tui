@@ -842,7 +842,15 @@ impl HelperRegistry {
     /// ([`crate::mobs::cancel_helpers`] does that).
     pub fn forget_session(&self, session: &SessionId) {
         self.sessions.write().remove(session);
-        self.live.lock().retain(|_, tag| &tag.owner != session);
+        let mut gone = Vec::new();
+        self.live.lock().retain(|key, tag| {
+            let stays = &tag.owner != session;
+            if !stays {
+                gone.push(key.clone());
+            }
+            stays
+        });
+        self.activity.lock().retain(|key, _| !gone.contains(key));
         self.release(|_, held| &held.owner == session);
         self.bindings.forget_owner(session);
     }
@@ -1001,7 +1009,7 @@ impl HelperRegistry {
             .map(str::trim)
             .find(|line| !line.is_empty())
             .unwrap_or_default();
-        let line = crate::ui::markdown::truncate_chars(line, TASK_LINE);
+        let line = crate::text::truncate_chars(line, TASK_LINE);
         if let Err(err) = self.bindings.set_task(key, &line) {
             tracing::warn!(helper = %key, error = %err, "cannot record the helper's task");
         }
@@ -1088,6 +1096,7 @@ impl HelperRegistry {
             }
             stays
         });
+        self.activity.lock().retain(|key, _| &key.mob != mob);
         self.release(|key, _| &key.mob == mob);
         let _ = self.destroyed.send(mob.clone());
         if let Err(err) = self.bindings.remove_mob(mob) {

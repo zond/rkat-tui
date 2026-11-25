@@ -80,7 +80,7 @@ pub use permissions::{Section, permissions_dialog};
 pub use picker::Does;
 pub use picker::PickerLine;
 pub use picker::{
-    AgentEntry, Field, FieldFor, ListPicker, PickAct, PickKey, PickRow, PickerKind, RuleForm,
+    AgentEntry, Field, FieldFor, ListPicker, PermissionAct, PickAct, PickKey, PickRow, PickerKind,
     trust_picker,
 };
 
@@ -173,29 +173,9 @@ pub const CHORD_WINDOW: Duration = Duration::from_millis(1500);
 /// (triple) click.
 pub const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(400);
 
-/// A left button press not yet released.
-#[derive(Debug, Clone, Copy)]
-struct Press {
-    /// Cell pressed.
-    pos: CellPos,
-    /// Screen row pressed (for click-to-expand).
-    row: u16,
-    /// 1 = single, 2 = double, 3 = triple click.
-    clicks: u8,
-    /// Whether the pointer moved with the button held.
-    dragged: bool,
-}
-
-/// The last left press, for multi-click detection.
-#[derive(Debug, Clone, Copy)]
-struct LastDown {
-    at: Instant,
-    row: u16,
-    column: u16,
-    clicks: u8,
-}
-
+use helpers::OpenHelperView;
 use input_mode::{InputMode, Pressed};
+use keys::PathIndex;
 
 /// Result of a finished turn, reported by the runner.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -559,6 +539,8 @@ pub enum Msg {
     /// (`scheduled: <name>`).
     Triggered {
         /// What fired it.
+        cause: crate::daemon::protocol::TriggerCause,
+        /// What fired it, in words.
         label: String,
         /// The run's input.
         prompt: String,
@@ -574,7 +556,9 @@ pub enum Msg {
     HelperEnded {
         /// Its labels, outermost first.
         path: Vec<String>,
-        /// How it ended (`stopped by you`).
+        /// How it ended.
+        ending: crate::daemon::protocol::HelperEnding,
+        /// How it ended, in words (`stopped by you`).
         how: String,
         /// Who was told and when, when anyone was.
         told: Option<String>,
@@ -808,14 +792,10 @@ pub enum Effect {
     DroppedCommands(Vec<String>),
     /// Answer an escalation.
     RespondEscalation(EscalationId, EscalationAnswer),
-    /// Persist an approval rule.
+    /// Persist an approval rule (`/permissions add`).
     AddRule {
-        /// Allow or deny.
-        effect: RuleEffect,
-        /// Tool name.
-        tool: String,
-        /// Optional argument pattern.
-        pattern: Option<String>,
+        /// The rule.
+        spec: crate::approval::desk::RuleSpec,
         /// Written to the user's own `tui.toml`.
         user: bool,
     },
@@ -827,67 +807,15 @@ pub enum Effect {
     /// Blocked when a call is blocked or an approval waits, else on In
     /// force (answered with [`Msg::ShowPicker`]).
     RequestPermissions(Option<Section>),
-    /// The `/permissions` dialog's confirmed removal of rule `n`: as
-    /// `/permissions rm <n>`, then the dialog's lists again.
-    PickedRuleRemoval(u64),
-    /// The dialog's confirmed removal of session grant `id`, then its
-    /// lists again.
-    PickedGrantRemoval(u64),
-    /// The dialog's confirmed removal of statement `id`, then its lists
-    /// again.
-    PickedStatementRemoval(u64),
-    /// The dialog's `n`: allow the kind of action `text` describes for
-    /// the scope, then its lists again.
-    PickedStatement {
-        /// This session, always for this workspace or in every workspace.
-        scope: crate::approval::grants::GrantScope,
-        /// The statement as typed.
-        text: String,
-    },
-    /// The dialog's `r`: add the rule, then its lists again.
-    PickedRule(RuleForm),
-    /// The dialog's `e` on a rule: replace rule `n`, which read `old`,
-    /// with `new` in place, then its lists again (a refusal shows in the
-    /// open field).
-    PickedRuleEdit {
-        /// The rule's number.
-        n: u64,
-        /// The rule as the dialog showed it.
-        old: crate::approval::desk::RuleSpec,
-        /// The rule as edited.
-        new: crate::approval::desk::RuleSpec,
-    },
+    /// An act of the `/permissions` dialog (a removal it confirmed, its
+    /// `n`, `r`, `e`, a Blocked or Hosts choice), then the dialog's lists
+    /// again (a refused edit shows in the open field).
+    Permissions(PermissionAct),
     /// `/auto stats`: the review numbers, as a notice.
     AutoStats,
     /// `/auto check`: measure the classifier model on these corpus cases
     /// (the daemon's `rkat/classifier_check`), the result as a notice.
     ClassifierCheck(crate::approval::corpus::Selection),
-    /// The `/permissions` dialog's Blocked choice: approve blocked call
-    /// `id` for the scope (with a statement: allow that kind of action
-    /// instead), then the dialog's lists again.
-    PickedApproval(u64, crate::approval::grants::GrantScope, Option<String>),
-    /// The Blocked section's `w`: withdraw the approval once of call
-    /// `id`, then the dialog's lists again.
-    PickedWithdrawal(u64),
-    /// The Hosts section's `n`: trust the host typed, in this workspace
-    /// or (`user`) every workspace, then the dialog's lists again.
-    PickedHostTrust {
-        /// As typed.
-        host: String,
-        /// The user's own `tui.toml`.
-        user: bool,
-    },
-    /// The Blocked section's `t`/`T`: trust the hosts blocked call `id`'s
-    /// D5 block names, then the dialog's lists again.
-    PickedCallHostTrust {
-        /// The blocked call.
-        id: u64,
-        /// The user's own `tui.toml`.
-        user: bool,
-    },
-    /// The Hosts section's `d`: stop trusting the host, then the dialog's
-    /// lists again.
-    PickedHostRemoval(String),
     /// `/trust`: ask the daemon what each project input would run, and show
     /// it with the question ([`PickerKind::Trust`]); nothing is recorded
     /// before the yes ([`Self::TrustShown`]).
@@ -1289,21 +1217,13 @@ const QUOTE_MAX_CHARS: usize = 40;
 /// `“text”`, shortened to its first line and [`QUOTE_MAX_CHARS`] characters.
 fn quote_short(text: &str) -> String {
     let line = text.lines().next().unwrap_or_default().trim();
-    let mut out: String = line.chars().take(QUOTE_MAX_CHARS).collect();
-    if out.len() < line.len() || text.trim().lines().count() > 1 {
-        out.push('…');
-    }
-    format!("“{out}”")
-}
-
-/// An open helper full view: the helper's header and the view's own
-/// scroll position (it follows new output while at the bottom).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OpenHelperView {
-    header: BlockId,
-    scroll: ScrollState,
-    /// Esc asked whether to stop the (running) helper.
-    confirm_stop: bool,
+    let (head, cut) = crate::text::head_chars(line, QUOTE_MAX_CHARS);
+    let more = if cut || text.trim().lines().count() > 1 {
+        "…"
+    } else {
+        ""
+    };
+    format!("“{head}{more}”")
 }
 
 /// Transcript scroll position.
@@ -1481,17 +1401,6 @@ pub(crate) struct FoldAnchor {
     pub folded: Option<BlockId>,
 }
 
-/// The `@` menu's workspace paths.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PathIndex {
-    /// None held (no path menu open).
-    Dropped,
-    /// Asked for with this generation ([`LocalEffect::IndexPaths`]).
-    Indexing(u64),
-    /// The paths.
-    Ready(Vec<crate::mentions::PathEntry>),
-}
-
 /// What keeps a session-level command from running now
 /// ([`App::blocker`]). Its `Display` is the notice that says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1624,16 +1533,6 @@ pub struct App {
     /// there ([`ScrollState::anchor_bottom`]).
     fold_anchor: Option<FoldAnchor>,
     dirty: bool,
-}
-
-/// A `!` command on its way ([`Effect::RunShell`] sent, no
-/// [`Msg::ShellFinished`] yet).
-#[derive(Debug, Clone)]
-struct RunningShell {
-    id: ShellRunId,
-    block: BlockId,
-    command: String,
-    since: Instant,
 }
 
 impl App {
@@ -2122,17 +2021,28 @@ impl App {
                     .peer_message(self.run_first_block, from, text);
             }
             Msg::Triggered {
+                cause,
                 label,
                 prompt,
                 summary,
             } => {
                 self.failures.origin = Some(format!(" ({label})"));
-                self.transcript
-                    .label_triggered(self.run_first_block, label, prompt, summary);
+                self.transcript.label_triggered(
+                    self.run_first_block,
+                    (cause, label),
+                    prompt,
+                    summary,
+                );
             }
             Msg::SeatedHelpers(members) => self.transcript.seated_helpers(members),
-            Msg::HelperEnded { path, how, told } => {
-                self.transcript.helper_ended(&path, &how, told.as_deref());
+            Msg::HelperEnded {
+                path,
+                ending,
+                how,
+                told,
+            } => {
+                self.transcript
+                    .helper_ended(&path, ending, &how, told.as_deref());
             }
             Msg::ResetTranscript(blocks) => {
                 self.clear_selection();

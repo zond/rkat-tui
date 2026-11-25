@@ -433,6 +433,15 @@ impl ProjectRoot {
         &self.secret_roots
     }
 
+    /// Whether a secret root lies at or below `abs` (an absolute, resolved
+    /// path): a walk from `abs` reaches rkat-tui's own state.
+    #[must_use]
+    pub fn holds_secret(&self, abs: &Path) -> bool {
+        self.secret_roots
+            .iter()
+            .any(|secret| below(secret, abs, self.fold_case))
+    }
+
     /// The canonical root path.
     #[must_use]
     pub fn as_path(&self) -> &Path {

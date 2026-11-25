@@ -302,6 +302,10 @@ pub struct HelperBindings {
     /// The changes the file misses; locked after `memory`.
     owed: Mutex<Vec<Change>>,
     outlet: std::sync::OnceLock<SavingOutlet>,
+    /// Whether memory dropped entries the file still holds
+    /// ([`Self::forget_owner`]): only then can a lookup that misses in
+    /// memory find anything in the file.
+    partial: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for HelperBindings {
@@ -327,6 +331,7 @@ impl HelperBindings {
             memory: Mutex::new(memory),
             owed: Mutex::new(Vec::new()),
             outlet: std::sync::OnceLock::new(),
+            partial: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -449,6 +454,11 @@ impl HelperBindings {
     fn lookup<T>(&self, f: impl Fn(&Bindings) -> Option<T>) -> Option<T> {
         if let Some(found) = f(&self.memory.lock()) {
             return Some(found);
+        }
+        // Memory holds all the file does until an owner is forgotten:
+        // a miss then is a miss (no blocking read on every one).
+        if !self.partial.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
         }
         let store = self.store.as_ref()?;
         match store.read() {
@@ -675,7 +685,10 @@ impl HelperBindings {
 
     /// Drop what `owner` holds from memory (the file keeps it). Idempotent.
     pub fn forget_owner(&self, owner: &SessionId) {
-        self.memory.lock().forget_owner(owner);
+        let mut memory = self.memory.lock();
+        memory.forget_owner(owner);
+        self.partial
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     /// Bindings held in memory (tests and diagnostics): mobs, members.

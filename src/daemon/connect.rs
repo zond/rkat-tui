@@ -24,7 +24,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock, Weak};
-use std::time::Duration;
 
 use meerkat_core::SessionId;
 use meerkat_mob::{AgentIdentity, MobError, MobId};
@@ -34,14 +33,6 @@ use crate::mobs::{HelperKey, HelperRegistry, HelperTag};
 
 /// The source of the notes a connection sends.
 const NOTE_SOURCE: &str = "rkat-tui-connect";
-
-/// How long a helper not yet seated in its mob (a fork whose spawn is
-/// still building) is waited for.
-const SEAT_WAIT: Duration = Duration::from_secs(12);
-/// The first pause before trying again; each next doubles.
-const SEAT_RECHECK_FIRST: Duration = Duration::from_millis(25);
-/// The longest pause between two tries.
-const SEAT_RECHECK_MAX: Duration = Duration::from_millis(500);
 
 /// Who calls: the root of its tree and where in it it sits.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +70,34 @@ pub fn own_helpers(caller: &Caller, bound: &[(HelperKey, HelperTag)]) -> Vec<Cho
         .collect();
     own.sort_by(|a, b| a.name.cmp(&b.name));
     own
+}
+
+/// Which of the caller's own helpers `name` (`<name>` or `<mob>/<name>`)
+/// names.
+enum Named<'a> {
+    /// Exactly this one.
+    One(&'a Chosen),
+    /// None.
+    None,
+    /// Helpers in more than one mob.
+    Several,
+}
+
+/// The caller's own helper `name` names, among `own`.
+fn own_named<'a>(own: &'a [Chosen], name: &str) -> Named<'a> {
+    let mut matches = own
+        .iter()
+        .filter(|c| c.name == name || format!("{}/{}", c.key.mob, c.name) == name);
+    match (matches.next(), matches.next()) {
+        (Some(one), None) => Named::One(one),
+        (None, _) => Named::None,
+        (Some(_), Some(_)) => Named::Several,
+    }
+}
+
+/// The refusal of a `name` that names helpers in more than one mob.
+fn several_named(name: &str) -> String {
+    format!("`{name}` names helpers in more than one mob: name it as `<mob>/{name}`")
 }
 
 /// The names `own` holds, for a refusal.
@@ -124,27 +143,21 @@ pub fn choose(
     let mut chosen = Vec::new();
     let mut refused = Vec::new();
     for name in distinct {
-        let matches: Vec<&Chosen> = own
-            .iter()
-            .filter(|c| c.name == name || format!("{}/{}", c.key.mob, c.name) == name)
-            .collect();
-        match matches.as_slice() {
-            [one] => chosen.push((*one).clone()),
-            [] if name == self_name => refused.push(format!(
+        match own_named(own, name) {
+            Named::One(one) => chosen.push(one.clone()),
+            Named::None if name == self_name => refused.push(format!(
                 "`{name}` is you: name only helpers you started"
             )),
-            [] if agents.iter().any(|agent| agent == name) || super::agents::is_agent(name) => refused.push(format!(
+            Named::None if agents.iter().any(|agent| agent == name) || super::agents::is_agent(name) => refused.push(format!(
                 "`{name}` is an agent of this workspace, not a helper of yours (the agents are wired to each other already)"
             )),
-            [] if elsewhere.iter().any(|other| other == name) => refused.push(format!(
+            Named::None if elsewhere.iter().any(|other| other == name) => refused.push(format!(
                 "`{name}` is not a helper you started (it is another agent's or another helper's): you can connect only your own"
             )),
-            [] => refused.push(format!(
+            Named::None => refused.push(format!(
                 "`{name}` is no running helper of yours (a helper that finished or was retired takes no messages: start another)"
             )),
-            _ => refused.push(format!(
-                "`{name}` names helpers in more than one mob: name it as `<mob>/{name}`"
-            )),
+            Named::Several => refused.push(several_named(name)),
         }
     }
     if !refused.is_empty() {
@@ -251,29 +264,21 @@ impl Connector {
         let bound = self.registry.bound_members();
         let own = own_helpers(&caller, &bound);
         let name = name.trim();
-        let matches: Vec<&Chosen> = own
-            .iter()
-            .filter(|c| c.name == name || format!("{}/{}", c.key.mob, c.name) == name)
-            .collect();
-        let helper = match matches.as_slice() {
-            [one] => (*one).clone(),
-            [] if name == self_name => {
+        let helper = match own_named(&own, name) {
+            Named::One(one) => one.clone(),
+            Named::None if name == self_name => {
                 return Err(format!(
                     "`{name}` is you: name a helper you started; {}",
                     listed(&own)
                 ));
             }
-            [] => {
+            Named::None => {
                 return Err(format!(
                     "`{name}` is no running helper of yours (one that finished or was retired is gone already); {}",
                     listed(&own)
                 ));
             }
-            _ => {
-                return Err(format!(
-                    "`{name}` names helpers in more than one mob: name it as `<mob>/{name}`"
-                ));
-            }
+            Named::Several => return Err(several_named(name)),
         };
         state.handle_for(&helper.key.mob).await.map_err(|err| {
             format!("the mob of `{name}` cannot be reached, so it was not retired: {err}")
@@ -506,31 +511,29 @@ impl Connector {
 
 /// Wire `edges` of `mob` once their members are seated: a fork whose
 /// spawn is still building is listed in its mob only later, and the
-/// engine then answers "member not found"; tried again within
-/// [`SEAT_WAIT`].
+/// engine then answers "member not found"; tried again
+/// ([`super::links::until_seated`]).
 async fn wire_when_seated(
     state: &MobMcpState,
     mob: &MobId,
     edges: Vec<(AgentIdentity, AgentIdentity)>,
 ) -> Result<meerkat_mob::MobWireMembersBatchReport, String> {
-    let deadline = tokio::time::Instant::now() + SEAT_WAIT;
-    let mut pause = SEAT_RECHECK_FIRST;
-    loop {
+    use super::links::{Unseated, until_seated};
+    let edges = &edges;
+    let wired = until_seated(move || async move {
         match state.mob_wire_members_batch(mob, edges.clone()).await {
-            Ok(report) => return Ok(report),
-            Err(MobError::MemberNotFound(member)) => {
-                let now = tokio::time::Instant::now();
-                if now >= deadline {
-                    return Err(format!(
-                        "nothing was connected: the helper `{member}` is not seated in its mob yet (a fork's start can take a few seconds); call `connect_helpers` again in a moment"
-                    ));
-                }
-                tokio::time::sleep(pause.min(deadline - now)).await;
-                pause = (pause * 2).min(SEAT_RECHECK_MAX);
-            }
-            Err(err) => return Err(format!("nothing was connected: {err}")),
+            Ok(report) => Ok(report),
+            Err(MobError::MemberNotFound(member)) => Err(Unseated::NotYet(member)),
+            Err(err) => Err(Unseated::Failed(format!("nothing was connected: {err}"))),
         }
-    }
+    })
+    .await;
+    wired.map_err(|unseated| match unseated {
+        Unseated::NotYet(member) => format!(
+            "nothing was connected: the helper `{member}` is not seated in its mob yet (a fork's start can take a few seconds); call `connect_helpers` again in a moment"
+        ),
+        Unseated::Failed(why) => why,
+    })
 }
 
 #[cfg(test)]

@@ -58,6 +58,17 @@ use crate::text::tokens as fmt_ctx_tokens;
 /// The steer's last sentence: the one signal the agent gives.
 pub const READY_SUFFIX: &str = "Then call `compact_ready`, which compacts the context. After it, carry on with the task as if nothing had happened: do not stop, sum up or wait for the user.";
 
+/// How the request and the reminder with no backstop open (a client
+/// reads a run they start by them, `crate::ui::transcript::composed_input`).
+pub const CONTEXT_OPENING: &str = "Your context is at ";
+/// How the reminder with a backstop opens.
+pub const BACKSTOP_OPENING: &str = "Compaction happens automatically at ";
+/// How a reminder ends.
+pub const REMINDER_CLOSING: &str = ", then `compact_ready`.";
+/// What a client's transcript shows for a run the request or a reminder
+/// starts.
+pub const PREPARE_LABEL: &str = "the agent was asked to prepare for compaction";
+
 /// How far past the threshold (share of the window) the reminder comes
 /// when the engine never compacts on its own.
 pub const REMINDER_PERCENT: u64 = 10;
@@ -369,7 +380,7 @@ impl Prepare {
     /// instruction and the one signal.
     fn request_text(&self, instruction: &str, tokens: u64) -> String {
         format!(
-            "Your context is at {} of {} tokens and needs compacting soon. At the next good point in your work (finish the step you are in; do not start a large new piece of work first): {instruction}. {READY_SUFFIX}",
+            "{CONTEXT_OPENING}{} of {} tokens and needs compacting soon. At the next good point in your work (finish the step you are in; do not start a large new piece of work first): {instruction}. {READY_SUFFIX}",
             fmt_ctx_tokens(tokens),
             fmt_ctx_tokens(self.window_or_fallback())
         )
@@ -379,11 +390,11 @@ impl Prepare {
     fn reminder_text(&self, instruction: &str, tokens: u64) -> String {
         match self.backstop {
             Some(backstop) => format!(
-                "Compaction happens automatically at {} tokens whether or not you have prepared: do it now: {instruction}, then `compact_ready`.",
+                "{BACKSTOP_OPENING}{} tokens whether or not you have prepared: do it now: {instruction}{REMINDER_CLOSING}",
                 fmt_ctx_tokens(backstop)
             ),
             None => format!(
-                "Your context is at {} tokens and still growing: do it now: {instruction}, then `compact_ready`.",
+                "{CONTEXT_OPENING}{} tokens and still growing: do it now: {instruction}{REMINDER_CLOSING}",
                 fmt_ctx_tokens(tokens)
             ),
         }
@@ -645,6 +656,11 @@ mod tests {
             "Your context is at 310k of 1M tokens and needs compacting soon. At the next good point in your work (finish the step you are in; do not start a large new piece of work first): update PLAN.md. Then call `compact_ready`, which compacts the context. After it, carry on with the task as if nothing had happened: do not stop, sum up or wait for the user."
         );
         assert!(text.ends_with(READY_SUFFIX), "{text}");
+        assert_eq!(
+            crate::ui::transcript::composed_input(&text),
+            Some(PREPARE_LABEL),
+            "a client reads the request's run as the daemon's"
+        );
         assert_eq!(p.reading("main-a", 320_000, true), Crossing::Nothing);
         // Another agent has its own trigger.
         assert!(matches!(
@@ -686,6 +702,10 @@ mod tests {
             text,
             "Compaction happens automatically at 800k tokens whether or not you have prepared: do it now: update PLAN.md, then `compact_ready`."
         );
+        assert_eq!(
+            crate::ui::transcript::composed_input(&text),
+            Some(PREPARE_LABEL)
+        );
         assert_eq!(p.reading("main-a", 700_000, true), Crossing::Nothing);
         assert_eq!(p.reading("main-a", 790_000, false), Crossing::Nothing);
         assert_eq!(p.run_started("main-a"), None, "nothing held either");
@@ -725,6 +745,10 @@ mod tests {
         assert!(
             text.contains("still growing: do it now: update PLAN.md"),
             "{text}"
+        );
+        assert_eq!(
+            crate::ui::transcript::composed_input(&text),
+            Some(PREPARE_LABEL)
         );
     }
 

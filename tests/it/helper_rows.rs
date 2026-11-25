@@ -13,10 +13,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use common::{ScriptedLlmClient, Step, Workspace, is_helper, run_inputs, start};
-use meerkat_core::Message;
+use meerkat_core::{AgentEvent, Message, StreamScopeFrame};
 use rig::{Client, Running, Setup};
 use rkat_tui::client::transport::Connection;
-use rkat_tui::ui::{App, Effect, StatusInfo};
+use rkat_tui::ui::{App, Effect, Msg, StatusInfo};
 use serde_json::json;
 
 fn retire(id: &'static str, name: &str) -> Step {
@@ -261,6 +261,123 @@ async fn the_client_s_live_helper_rows_are_the_mob_s_seated_helpers_after_every_
         .saw(|m| matches!(m, rkat_tui::ui::Msg::Notice { text, .. } if text.starts_with("resumed conversation")))
         .await;
     rows_are(&mut client, &connection, &[]).await;
+    client.quit().await;
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// Whether `msg` is an event of the helper `label` for which `event` holds.
+fn helper_event(msg: &Msg, label: &str, event: impl Fn(&AgentEvent) -> bool) -> bool {
+    let Msg::Scoped(scoped) = msg else {
+        return false;
+    };
+    let last = scoped
+        .scope_path
+        .iter()
+        .rev()
+        .find_map(|frame| match frame {
+            StreamScopeFrame::MobMember { agent_identity, .. } => Some(agent_identity.as_str()),
+            _ => None,
+        });
+    last == Some(label) && event(&scoped.event)
+}
+
+fn text_is(event: &AgentEvent, text: &str) -> bool {
+    matches!(event, AgentEvent::TextComplete { content, .. } if content == text)
+}
+
+/// A kept helper's run after a daemon restart reaches a client that
+/// attached after the restart: the client de-duplicates a helper's events
+/// by their sequence (`client::helpers::Followers::show`), and the
+/// restarted daemon's sequences must not fall at or under what it showed
+/// from the backfill. Its new run starts (the header runs again) and its
+/// answer is in its view.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_kept_helper_s_run_after_a_restart_reaches_a_fresh_client() {
+    use rkat_tui::daemon::protocol::AgentChoice;
+    use rkat_tui::ui::Departure;
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if is_helper(messages, "K1-TASK") {
+            if format!("{messages:?}").contains("K1-AGAIN") {
+                return Step::Text("K1-SECOND");
+            }
+            return Step::Text("K1-FIRST");
+        }
+        if common::answers(messages, Some("t-m2")) {
+            return Step::Text("sent");
+        }
+        if common::answers(messages, Some("t-p2")) {
+            return Step::Tool {
+                id: "t-m2",
+                name: "send_message",
+                args: json!({
+                    "peer_id": crate::assign::peer_id(messages, "k1").unwrap_or_default(),
+                    "body": "K1-AGAIN",
+                    "handling_mode": "queue",
+                }),
+            };
+        }
+        let user = run_inputs(messages);
+        if user.contains("PHASE-KEEP") {
+            return common::keep("t-k1", "k1", "K1-TASK");
+        }
+        if user.contains("PHASE-ASK") {
+            return Step::Tool {
+                id: "t-p2",
+                name: "contacts",
+                args: json!({}),
+            };
+        }
+        Step::Text("noted")
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 60]);
+    let setup = Setup::args(&[]);
+    let args = setup.command_line(&ws.root);
+    let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
+    let mut client = Client::attach_args(&ws.root, &args, None).await;
+    let name = client.agent().await;
+    client.send(Effect::StartTurn("PHASE-KEEP".into()));
+    client
+        .saw(|m| helper_event(m, "k1", |e| text_is(e, "K1-FIRST")))
+        .await;
+    common::until(|| agent_heard(&llm, "K1-FIRST")).await;
+    daemon.idle(&daemon.agent).await;
+    client.send(Effect::Leave(Departure::Detach));
+    client.quit().await;
+    daemon.stop().await;
+
+    let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
+    let connection = daemon.connect().await;
+    let mut client = Client::attach_agent(&ws.root, AgentChoice::Agent { name }).await;
+    rows_are(&mut client, &connection, &["k1"]).await;
+    client.send(Effect::StartTurn("PHASE-ASK".into()));
+    client
+        .saw(|m| helper_event(m, "k1", |e| text_is(e, "K1-SECOND")))
+        .await;
+    // The new run's start came before its answer, after anything of the
+    // first run the backfill showed.
+    let at = |pred: &dyn Fn(&Msg) -> bool| client.seen.iter().position(pred);
+    let second = at(&|m| helper_event(m, "k1", |e| text_is(e, "K1-SECOND"))).unwrap();
+    let first = at(&|m| helper_event(m, "k1", |e| text_is(e, "K1-FIRST")));
+    assert!(
+        client.seen[first.map_or(0, |i| i + 1)..second]
+            .iter()
+            .any(|m| helper_event(m, "k1", |e| matches!(e, AgentEvent::RunStarted { .. }))),
+        "the helper's new run started on the fresh client"
+    );
+    // Its view holds the answer.
+    let app = app_of(&mut client);
+    let header = app.transcript.helper_header("k1").unwrap();
+    assert!(
+        app.transcript
+            .helper_view_blocks(header)
+            .iter()
+            .any(|id| matches!(app.transcript.block(*id),
+                Some(rkat_tui::ui::transcript::Block::Assistant { md }) if md == "K1-SECOND")),
+        "the helper's second answer is in its view"
+    );
+    daemon.idle(&daemon.agent).await;
     client.quit().await;
     drop(connection);
     daemon.stop().await;

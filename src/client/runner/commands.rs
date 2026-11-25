@@ -4,6 +4,7 @@
 //! `/context`.
 
 use super::*;
+use crate::ui::PermissionAct;
 
 /// The notices a daemon command's answer makes.
 pub(super) type Notices = Vec<(NoticeLevel, String)>;
@@ -344,7 +345,7 @@ impl Runner {
             Some((op, schedule)) => self.ask::<protocol::method::Schedule>(
                 protocol::ScheduleAction { op, schedule },
                 "the schedule was not changed",
-                |done| vec![schedule_notice(done)],
+                |done| vec![outcome_notice(done, schedule_failed)],
             ),
             None => self.schedule_picker(None),
         }
@@ -379,7 +380,7 @@ impl Runner {
                     remote::call::<protocol::method::Schedule>(&connection, &action),
                 )
                 .await;
-                let (level, text) = schedule_notice(done);
+                let (level, text) = outcome_notice(done, schedule_failed);
                 if level == NoticeLevel::Info {
                     changed = Some(text.clone());
                 }
@@ -410,7 +411,11 @@ impl Runner {
     /// a row, else In force). After the dialog's act `picked` (its notice
     /// shown) a refresh of the one open, on the section it shows; what
     /// the act did, or why it was refused, shows under its rows.
-    pub(super) fn permissions(&self, picked: Option<Picked>, open: Option<crate::ui::Section>) {
+    pub(super) fn permissions(
+        &self,
+        picked: Option<PermissionAct>,
+        open: Option<crate::ui::Section>,
+    ) {
         let Some(connection) = self.link_or_say("/permissions needs it") else {
             return;
         };
@@ -420,7 +425,9 @@ impl Runner {
             let mut refused = None;
             let mut done_words = None;
             if let Some(picked) = picked {
-                let (level, text) = outcome_notice(picked.run(&connection).await, "/permissions");
+                let (level, text) = outcome_notice(run_act(picked, &connection).await, |err| {
+                    format!("/permissions failed: {err}")
+                });
                 if level == NoticeLevel::Info {
                     done_words = Some(text.clone());
                 } else {
@@ -595,23 +602,21 @@ impl Runner {
         });
     }
 
-    /// A command whose answer is a [`RuleOutcome`] (`/permissions …` on the
+    /// A command whose answer is an [`Outcome`] (`/permissions …` on the
     /// daemon's engine, `/trust` on its trust record),
     /// named `name` in what goes wrong.
-    pub(super) fn outcome_command<M: protocol::Method<Result = RuleOutcome>>(
+    pub(super) fn outcome_command<M: protocol::Method<Result = Outcome>>(
         &self,
         params: M::Params,
         name: &str,
     ) where
         M::Params: 'static,
     {
-        let failed = format!("{name} failed");
+        let name = name.to_string();
         self.ask::<M>(params, &format!("{name} needs it"), move |answer| {
-            vec![match answer {
-                Ok(outcome) if outcome.ok => (NoticeLevel::Info, outcome.text),
-                Ok(outcome) => (NoticeLevel::Error, outcome.text),
-                Err(err) => (NoticeLevel::Error, format!("{failed}: {err}")),
-            }]
+            vec![outcome_notice(answer, |err| {
+                format!("{name} failed: {err}")
+            })]
         });
     }
 
@@ -1165,163 +1170,66 @@ pub(super) fn settings_picker(
     )
 }
 
-/// What the `/permissions` dialog's act asks of the daemon.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Picked {
-    /// Approve blocked call `id` for the scope (with a statement: allow
-    /// that kind of action instead).
-    Approve(u64, crate::approval::grants::GrantScope, Option<String>),
-    /// Withdraw the approval once of call `id`.
-    Withdraw(u64),
-    /// Remove rule `n` (as `/permissions rm <n>`).
-    RemoveRule(u64),
-    /// Remove session grant `id`.
-    RemoveGrant(u64),
-    /// Remove statement `id`.
-    RemoveStatement(u64),
-    /// Allow the kind of action `text` describes for the scope (`n`).
-    AddStatement(String, crate::approval::grants::GrantScope),
-    /// Add the rule (`r`).
-    AddRule(crate::ui::RuleForm),
-    /// Replace rule `n`, which read `old`, with `new` (`e`).
-    EditRule {
-        /// The rule's number.
-        n: u64,
-        /// The rule as the dialog showed it.
-        old: crate::approval::desk::RuleSpec,
-        /// The rule as edited.
-        new: crate::approval::desk::RuleSpec,
-    },
-    /// Trust a host typed (Hosts' `n`) or a blocked call's (Blocked's `t`).
-    TrustHost(protocol::TrustHostParams),
-    /// Stop trusting a host (Hosts' `d`).
-    UntrustHost(String),
-}
-
-impl Picked {
-    /// Ask the daemon.
-    async fn run(self, connection: &Connection) -> Result<RuleOutcome, CallFailure> {
-        match self {
-            Self::Approve(id, scope, effect) => {
-                bounded(
-                    CALL_TIMEOUT,
-                    remote::call::<protocol::method::Approve>(
-                        connection,
-                        &protocol::ApproveParams { id, scope, effect },
-                    ),
-                )
+/// Ask the daemon for the `/permissions` dialog's `act`.
+async fn run_act(act: PermissionAct, connection: &Connection) -> Result<Outcome, CallFailure> {
+    use protocol::method;
+    async fn call<M: protocol::Method<Result = Outcome>>(
+        connection: &Connection,
+        params: &M::Params,
+    ) -> Result<Outcome, CallFailure> {
+        bounded(CALL_TIMEOUT, remote::call::<M>(connection, params)).await
+    }
+    match act {
+        PermissionAct::Approve { id, scope, effect } => {
+            call::<method::Approve>(connection, &protocol::ApproveParams { id, scope, effect })
                 .await
-            }
-            Self::Withdraw(id) => {
-                bounded(
-                    CALL_TIMEOUT,
-                    remote::call::<protocol::method::WithdrawApproval>(
-                        connection,
-                        &protocol::GrantParams { id },
-                    ),
-                )
+        }
+        PermissionAct::Withdraw(id) => {
+            call::<method::WithdrawApproval>(connection, &protocol::GrantParams { id }).await
+        }
+        PermissionAct::RemoveRule(n) => {
+            call::<method::Rules>(connection, &RuleCommand::Remove { n }).await
+        }
+        PermissionAct::RemoveGrant(id) => {
+            call::<method::RemoveGrant>(connection, &protocol::GrantParams { id }).await
+        }
+        PermissionAct::RemoveStatement(id) => {
+            call::<method::RemoveStatement>(connection, &protocol::GrantParams { id }).await
+        }
+        PermissionAct::AddStatement { scope, text } => {
+            call::<method::AllowStatement>(connection, &protocol::StatementParams { text, scope })
                 .await
-            }
-            Self::RemoveRule(n) => {
-                bounded(
-                    CALL_TIMEOUT,
-                    remote::call::<protocol::method::Rules>(connection, &RuleCommand::Remove { n }),
-                )
-                .await
-            }
-            Self::RemoveGrant(id) => {
-                bounded(
-                    CALL_TIMEOUT,
-                    remote::call::<protocol::method::RemoveGrant>(
-                        connection,
-                        &protocol::GrantParams { id },
-                    ),
-                )
-                .await
-            }
-            Self::RemoveStatement(id) => {
-                bounded(
-                    CALL_TIMEOUT,
-                    remote::call::<protocol::method::RemoveStatement>(
-                        connection,
-                        &protocol::GrantParams { id },
-                    ),
-                )
-                .await
-            }
-            Self::AddStatement(text, scope) => {
-                bounded(
-                    CALL_TIMEOUT,
-                    remote::call::<protocol::method::AllowStatement>(
-                        connection,
-                        &protocol::StatementParams { text, scope },
-                    ),
-                )
-                .await
-            }
-            Self::AddRule(form) => {
-                bounded(
-                    CALL_TIMEOUT,
-                    remote::call::<protocol::method::Rules>(
-                        connection,
-                        &RuleCommand::Add {
-                            deny: form.deny,
-                            tool: form.tool,
-                            pattern: form.pattern,
-                            user: form.user,
-                            literal: form.literal,
-                        },
-                    ),
-                )
-                .await
-            }
-            Self::EditRule { n, old, new } => {
-                bounded(
-                    CALL_TIMEOUT,
-                    remote::call::<protocol::method::Rules>(
-                        connection,
-                        &RuleCommand::Edit { n, old, new },
-                    ),
-                )
-                .await
-            }
-            Self::TrustHost(params) => {
-                bounded(
-                    CALL_TIMEOUT,
-                    remote::call::<protocol::method::TrustHost>(connection, &params),
-                )
-                .await
-            }
-            Self::UntrustHost(host) => {
-                bounded(
-                    CALL_TIMEOUT,
-                    remote::call::<protocol::method::UntrustHost>(
-                        connection,
-                        &protocol::HostParams { host },
-                    ),
-                )
-                .await
-            }
+        }
+        PermissionAct::AddRule { spec, user } => {
+            call::<method::Rules>(connection, &RuleCommand::Add { spec, user }).await
+        }
+        PermissionAct::EditRule { n, old, new } => {
+            call::<method::Rules>(connection, &RuleCommand::Edit { n, old, new }).await
+        }
+        PermissionAct::TrustHost(params) => call::<method::TrustHost>(connection, &params).await,
+        PermissionAct::UntrustHost(host) => {
+            call::<method::UntrustHost>(connection, &protocol::HostParams { host }).await
         }
     }
 }
 
-/// What a daemon command's answer says, as a notice.
-fn outcome_notice(done: Result<RuleOutcome, CallFailure>, what: &str) -> (NoticeLevel, String) {
+/// What a daemon command's answer says, as a notice: information when it
+/// was done, a warning when the daemon refused it, an error (worded by
+/// `failed`) only when the call itself failed.
+fn outcome_notice<E>(
+    done: Result<Outcome, E>,
+    failed: impl FnOnce(E) -> String,
+) -> (NoticeLevel, String) {
     match done {
         Ok(outcome) if outcome.ok => (NoticeLevel::Info, outcome.text),
         Ok(outcome) => (NoticeLevel::Warn, outcome.text),
-        Err(err) => (NoticeLevel::Error, format!("{what} failed: {err}")),
+        Err(err) => (NoticeLevel::Error, failed(err)),
     }
 }
 
-/// What a pause, resume or delete of a schedule did, as a notice.
-fn schedule_notice(done: Result<RuleOutcome, CallFailure>) -> (NoticeLevel, String) {
-    match done {
-        Ok(outcome) if outcome.ok => (NoticeLevel::Info, outcome.text),
-        Ok(outcome) => (NoticeLevel::Warn, outcome.text),
-        Err(err) => (NoticeLevel::Warn, format!("schedule not changed: {err}")),
-    }
+/// A schedule act's call that failed, in words.
+fn schedule_failed(err: CallFailure) -> String {
+    format!("schedule not changed: {err}")
 }
 
 /// The `/schedules` picker: a row per schedule (name, when, next
@@ -1358,7 +1266,7 @@ pub(super) fn schedule_picker(
                 row.fired,
                 cost,
             );
-            let toggle = if row.state == "paused" {
+            let toggle = if row.state == protocol::ScheduleState::Paused {
                 ScheduleOp::Resume
             } else {
                 ScheduleOp::Pause

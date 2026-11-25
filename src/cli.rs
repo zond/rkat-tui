@@ -348,13 +348,8 @@ pub fn parse_attach(value: &str) -> Result<AttachTarget, String> {
         _ => {}
     }
     if value.contains('/') || value.starts_with('.') || value.starts_with('~') {
-        let path = match value.strip_prefix('~') {
-            Some(rest) if rest.is_empty() || rest.starts_with('/') => {
-                let home = dirs::home_dir().ok_or("no home directory to expand `~`")?;
-                home.join(rest.trim_start_matches('/'))
-            }
-            _ => PathBuf::from(value),
-        };
+        let path = crate::paths::expand_tilde_in(value, dirs::home_dir().as_deref())
+            .map_err(|_| "no home directory to expand `~`")?;
         return Ok(AttachTarget::Directory(path));
     }
     match value.rsplit_once(':') {
