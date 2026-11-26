@@ -200,6 +200,12 @@ repository). Open upstream issues this code waits on:
   every provider-native tool under our gate, so no agent searches).
   `agent.web_search = true` (`src/mobs/customizer.rs` `WebSearch`) sets
   the opt-in when it ships; until then it only leaves the engine's choice.
+- #2583 (filed 2026-11-26): extra HTTP request headers on a backend
+  (`extra_headers` on `BackendProfileConfig`, applied by the OpenAI,
+  OpenAI-compatible and Anthropic clients). Nothing is worked around: a
+  user-only `endpoints.<name>.headers` written into the projected backend
+  (`src/endpoints/project.rs`), and the same headers on our own listing
+  requests (`src/models.rs`), come when it ships.
 - #2432 (filed 2026-11-19): a host switch for the comms tools' usage
   section and the preloaded `mob-communication` skill, which teach
   `reply_to_peer`, `send_request`, `send_response` and `peers` to

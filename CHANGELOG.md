@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-26
+
 ### Changed
 
 - Two test values that a secret scanner reads as credentials (the dead
