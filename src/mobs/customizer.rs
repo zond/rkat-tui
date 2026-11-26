@@ -1247,6 +1247,30 @@ mod tests {
     use super::*;
     use crate::config::helper_models::{HelperModels, ModelPattern, ModelRule};
 
+    /// The self-hosted OpenAI-dialect endpoint `litellm` of these tests.
+    fn litellm() -> crate::endpoints::Endpoint {
+        crate::endpoints::Endpoint::configured(
+            "litellm",
+            crate::endpoints::WireDialect::OpenAi,
+            Some("http://localhost:4000".to_string()),
+            crate::endpoints::SecretString::new("k"),
+            "KEY",
+            0,
+            crate::endpoints::ApiStyle::default(),
+        )
+    }
+
+    /// An agent's session on `model` through `auth_binding` as a helper's
+    /// owner.
+    fn owner(model: &str, auth_binding: Option<meerkat_core::AuthBindingRef>) -> Owner {
+        Owner {
+            session: SessionId::new(),
+            path: Vec::new(),
+            model: model.into(),
+            auth_binding,
+        }
+    }
+
     /// The scratch line names the directory and says that the engine's
     /// `blob_save_file` and `view_image` refuse it (their own check keeps
     /// them inside the project root), with the way around.
@@ -1312,12 +1336,7 @@ mod tests {
             gateway.clone(),
             other,
         ];
-        let owner = Owner {
-            session: SessionId::new(),
-            path: Vec::new(),
-            model: "claude-sonnet-4-6".into(),
-            auth_binding: gateway.binding(),
-        };
+        let owner = owner("claude-sonnet-4-6", gateway.binding());
         // The same model, another model of the endpoint's dialect, and one
         // the catalog does not know: the owner's endpoint.
         for model in ["claude-sonnet-4-6", "claude-opus-4-6", "house-model"] {
@@ -1353,23 +1372,9 @@ mod tests {
     /// endpoint keeps the plain name.
     #[test]
     fn a_helper_of_a_self_hosted_owner_asks_for_the_endpoint_s_alias() {
-        use crate::endpoints::{Endpoint, SecretString, WireDialect};
-        let proxy = Endpoint::configured(
-            "litellm",
-            WireDialect::OpenAi,
-            Some("http://localhost:4000".to_string()),
-            SecretString::new("k"),
-            "KEY",
-            0,
-            crate::endpoints::ApiStyle::default(),
-        );
+        let proxy = litellm();
         let endpoints = vec![proxy.clone()];
-        let owner = Owner {
-            session: SessionId::new(),
-            path: Vec::new(),
-            model: "litellm:gpt-5.5".into(),
-            auth_binding: proxy.binding(),
-        };
+        let owner = owner("litellm:gpt-5.5", proxy.binding());
         let none = HelperModels::default();
         let choose = |owner: &Owner, spec: &mut SpawnMemberSpec| {
             choose_model(owner, spec, &endpoints, &none, Asked::Spawn, Seat::Carried)
@@ -1413,23 +1418,9 @@ mod tests {
     /// provider and refuses against the self-hosted binding.
     #[test]
     fn an_inline_profile_s_model_is_qualified_on_a_self_hosted_endpoint() {
-        use crate::endpoints::{Endpoint, SecretString, WireDialect};
-        let proxy = Endpoint::configured(
-            "litellm",
-            WireDialect::OpenAi,
-            Some("http://localhost:4000".to_string()),
-            SecretString::new("k"),
-            "KEY",
-            0,
-            crate::endpoints::ApiStyle::default(),
-        );
+        let proxy = litellm();
         let endpoints = vec![proxy.clone()];
-        let owner = Owner {
-            session: SessionId::new(),
-            path: Vec::new(),
-            model: "litellm:local-coder".into(),
-            auth_binding: proxy.binding(),
-        };
+        let owner = owner("litellm:local-coder", proxy.binding());
         let mut spec = SpawnMemberSpec::new("delegate", "worker");
         let profile: meerkat_mob::Profile =
             serde_json::from_value(serde_json::json!({"model": "gpt-5.5", "provider": "openai"}))
@@ -1480,23 +1471,9 @@ mod tests {
     /// refused with what to do.
     #[test]
     fn a_stored_profile_s_model_never_decides() {
-        use crate::endpoints::{Endpoint, SecretString, WireDialect};
-        let proxy = Endpoint::configured(
-            "litellm",
-            WireDialect::OpenAi,
-            Some("http://localhost:4000".to_string()),
-            SecretString::new("k"),
-            "KEY",
-            0,
-            crate::endpoints::ApiStyle::default(),
-        );
+        let proxy = litellm();
         let endpoints = vec![proxy.clone()];
-        let owner = Owner {
-            session: SessionId::new(),
-            path: Vec::new(),
-            model: "litellm:local-coder".into(),
-            auth_binding: proxy.binding(),
-        };
+        let owner = owner("litellm:local-coder", proxy.binding());
         let mut stored: meerkat_mob::Profile = serde_json::from_value(serde_json::json!({
             "model": "claude-sonnet-4-6",
             "provider": "anthropic",
@@ -1573,12 +1550,7 @@ mod tests {
     /// for each case that says what to do.
     #[test]
     fn a_helper_s_model_is_named_then_the_default_then_the_owner_s() {
-        let owner = Owner {
-            session: SessionId::new(),
-            path: Vec::new(),
-            model: "claude-opus-4-8".into(),
-            auth_binding: None,
-        };
+        let owner = owner("claude-opus-4-8", None);
         let haiku = |models: &HelperModels, named: Option<&str>, asked: Asked| {
             let mut spec = SpawnMemberSpec::new("worker", "w1");
             spec.model_override = named.map(str::to_string);
@@ -1653,16 +1625,7 @@ mod tests {
     /// one without is refused naming the endpoint's registered models.
     #[test]
     fn an_unregistered_self_hosted_model_is_refused_with_the_registered_ones() {
-        use crate::endpoints::{Endpoint, SecretString, WireDialect};
-        let proxy = Endpoint::configured(
-            "litellm",
-            WireDialect::OpenAi,
-            Some("http://localhost:4000".to_string()),
-            SecretString::new("k"),
-            "KEY",
-            0,
-            crate::endpoints::ApiStyle::default(),
-        );
+        let proxy = litellm();
         let tmp = tempfile::tempdir().unwrap();
         let config = tmp.path().join("config.toml");
         std::fs::write(

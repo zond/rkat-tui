@@ -2117,23 +2117,7 @@ mod tests {
     }
 
     #[test]
-    fn permissions_and_rules_parse_identically() {
-        for line in [
-            "",
-            " list",
-            " add allow shell cargo test *",
-            " add deny web_fetch",
-            " rm 3",
-            " trust",
-            " rm x",
-            " add maybe t",
-        ] {
-            assert_eq!(
-                parse(&format!("/permissions{line}")),
-                parse(&format!("/permissions{line}")),
-                "{line}"
-            );
-        }
+    fn permissions_usage_names_every_form() {
         assert_eq!(
             usage_of("/permissions rm x"),
             "/permissions [blocked | rules | hosts | list | add [--user] allow|deny <tool> [pattern] | rm <n>]"

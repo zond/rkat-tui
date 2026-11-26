@@ -91,12 +91,8 @@ fn user_messages_are_a_full_width_band() {
     app.transcript.push(Block::User {
         text: "a long message that wraps onto a second line of the narrow view".into(),
     });
-    let mut terminal = Terminal::new(TestBackend::new(W, H)).unwrap();
-    terminal
-        .draw(|f| draw_at(f, &mut app, Instant::now()))
-        .unwrap();
-    let buffer = terminal.backend().buffer();
-    let texts = rows(buffer);
+    let buffer = render_buffer(&mut app, W, H);
+    let texts = rows(&buffer);
     let banded = |y: u16| (0..W).all(|x| buffer[(x, y)].bg == Color::Indexed(238));
     // Rows: the short message, a spacer, the answer, a spacer, the long
     // message on two rows, a spacer.
@@ -384,6 +380,13 @@ fn render_buffer(app: &mut App, width: u16, height: u16) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|f| draw_at(f, app, Instant::now())).unwrap();
     terminal.backend().buffer().clone()
+}
+
+/// The row of `all` where the picker titled `title` begins.
+fn picker_top(all: &[String], title: &str) -> usize {
+    all.iter()
+        .position(|row| row.contains(title))
+        .expect("the picker is drawn")
 }
 
 #[test]
@@ -697,12 +700,8 @@ fn model_picker_snapshot() {
     app.update(Msg::Key(ratatui::crossterm::event::KeyEvent::from(
         ratatui::crossterm::event::KeyCode::Down,
     )));
-    let mut terminal = Terminal::new(TestBackend::new(72, H)).unwrap();
-    terminal
-        .draw(|f| draw_at(f, &mut app, Instant::now()))
-        .unwrap();
-    let buffer = terminal.backend().buffer();
-    let all = rows(buffer);
+    let buffer = render_buffer(&mut app, 72, H);
+    let all = rows(&buffer);
     let modal: Vec<&str> = all[1..9].iter().map(String::as_str).collect();
     assert_eq!(
         modal,
@@ -772,17 +771,10 @@ fn agent_picker_snapshot() {
     ]));
     let key = |code| Msg::Key(ratatui::crossterm::event::KeyEvent::from(code));
     use ratatui::crossterm::event::KeyCode;
-    let draw = |app: &mut App| {
-        let mut terminal = Terminal::new(TestBackend::new(72, H)).unwrap();
-        terminal.draw(|f| draw_at(f, app, Instant::now())).unwrap();
-        terminal.backend().buffer().clone()
-    };
+    let draw = |app: &mut App| render_buffer(app, 72, H);
     let buffer = draw(&mut app);
     let all = rows(&buffer);
-    let top = all
-        .iter()
-        .position(|row| row.contains("┌ Agents"))
-        .expect("the picker is drawn");
+    let top = picker_top(&all, "┌ Agents");
     let modal: Vec<&str> = all[top..top + 7].iter().map(String::as_str).collect();
     // The highlighted row wraps to show all of it.
     assert_eq!(
@@ -850,17 +842,10 @@ fn schedule_picker_snapshot() {
         )
     };
     let key = |code| Msg::Key(ratatui::crossterm::event::KeyEvent::from(code));
-    let draw = |app: &mut App, height| {
-        let mut terminal = Terminal::new(TestBackend::new(72, height)).unwrap();
-        terminal.draw(|f| draw_at(f, app, Instant::now())).unwrap();
-        terminal.backend().buffer().clone()
-    };
+    let draw = |app: &mut App, height| render_buffer(app, 72, height);
     let modal = |buffer: &Buffer, lines: usize| {
         let all = rows(buffer);
-        let top = all
-            .iter()
-            .position(|row| row.contains("┌ Schedules"))
-            .expect("the picker is drawn");
+        let top = picker_top(&all, "┌ Schedules");
         all[top..top + lines].to_vec()
     };
     let mut app = App::new(StatusInfo::default());
@@ -950,15 +935,8 @@ fn rule_picker_snapshot() {
     app.update(Msg::Key(ratatui::crossterm::event::KeyEvent::from(
         KeyCode::Char('d'),
     )));
-    let mut terminal = Terminal::new(TestBackend::new(72, H)).unwrap();
-    terminal
-        .draw(|f| draw_at(f, &mut app, Instant::now()))
-        .unwrap();
-    let all = rows(terminal.backend().buffer());
-    let top = all
-        .iter()
-        .position(|row| row.contains("┌ Permissions: Blocked 0 · [In force 1]"))
-        .expect("the picker is drawn");
+    let all = rows(&render_buffer(&mut app, 72, H));
+    let top = picker_top(&all, "┌ Permissions: Blocked 0 · [In force 1]");
     assert_eq!(
         all[top..top + 6].to_vec(),
         vec![
@@ -990,16 +968,9 @@ fn mode_picker_snapshot() {
         app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
     }
     app.update(Msg::Key(KeyEvent::from(KeyCode::Enter)));
-    let mut terminal = Terminal::new(TestBackend::new(72, 16)).unwrap();
-    terminal
-        .draw(|f| draw_at(f, &mut app, Instant::now()))
-        .unwrap();
-    let buffer = terminal.backend().buffer().clone();
+    let buffer = render_buffer(&mut app, 72, 16);
     let all = rows(&buffer);
-    let top = all
-        .iter()
-        .position(|row| row.contains("┌ Permission mode"))
-        .expect("the picker is drawn");
+    let top = picker_top(&all, "┌ Permission mode");
     assert_eq!(
         all[top + 1..top + 10].to_vec(),
         vec![
@@ -1048,16 +1019,9 @@ fn memory_picker_snapshot() {
     app.update(Msg::Key(ratatui::crossterm::event::KeyEvent::from(
         KeyCode::Enter,
     )));
-    let mut terminal = Terminal::new(TestBackend::new(72, H)).unwrap();
-    terminal
-        .draw(|f| draw_at(f, &mut app, Instant::now()))
-        .unwrap();
-    let buffer = terminal.backend().buffer().clone();
+    let buffer = render_buffer(&mut app, 72, H);
     let all = rows(&buffer);
-    let top = all
-        .iter()
-        .position(|row| row.contains("┌ Instruction files"))
-        .expect("the picker is drawn");
+    let top = picker_top(&all, "┌ Instruction files");
     assert_eq!(
         all[top + 1..top + 5].to_vec(),
         vec![
@@ -1182,11 +1146,7 @@ fn the_helper_panel_renders_under_the_input() {
         KeyCode::Down,
         KeyModifiers::CONTROL,
     )));
-    let mut terminal = Terminal::new(TestBackend::new(70, H)).unwrap();
-    terminal
-        .draw(|f| draw_at(f, &mut app, Instant::now()))
-        .unwrap();
-    let buffer = terminal.backend().buffer().clone();
+    let buffer = render_buffer(&mut app, 70, H);
     let selected = self::rows(&buffer);
     assert!(buffer[(4, 10)].modifier.contains(Modifier::REVERSED));
     assert!(!buffer[(4, 2)].modifier.contains(Modifier::REVERSED));
@@ -1207,16 +1167,9 @@ fn helper_picker_snapshot() {
         app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
     }
     app.update(Msg::Key(KeyEvent::from(KeyCode::Enter)));
-    let mut terminal = Terminal::new(TestBackend::new(72, H)).unwrap();
-    terminal
-        .draw(|f| draw_at(f, &mut app, Instant::now()))
-        .unwrap();
-    let buffer = terminal.backend().buffer().clone();
+    let buffer = render_buffer(&mut app, 72, H);
     let all = rows(&buffer);
-    let top = all
-        .iter()
-        .position(|row| row.contains("┌ Helpers"))
-        .expect("the picker is drawn");
+    let top = picker_top(&all, "┌ Helpers");
     assert_eq!(
         all[top + 1..top + 4].to_vec(),
         vec![
@@ -1273,11 +1226,7 @@ fn a_helper_full_view_renders_title_prose_reasoning_and_tools() {
         KeyModifiers::CONTROL,
     )));
     app.update(Msg::Key(KeyEvent::from(KeyCode::Enter)));
-    let mut terminal = Terminal::new(TestBackend::new(70, H)).unwrap();
-    terminal
-        .draw(|f| draw_at(f, &mut app, Instant::now()))
-        .unwrap();
-    let buffer = terminal.backend().buffer().clone();
+    let buffer = render_buffer(&mut app, 70, H);
     let rows = rows(&buffer);
     // At 70 columns the status is cut so the keys stay whole.
     assert!(
@@ -1517,11 +1466,7 @@ fn the_checklist_renders_under_the_input() {
         "{hidden:?}"
     );
     app.update(ctrl_t());
-    let mut terminal = Terminal::new(TestBackend::new(W, H)).unwrap();
-    terminal
-        .draw(|f| draw_at(f, &mut app, Instant::now()))
-        .unwrap();
-    let buffer = terminal.backend().buffer().clone();
+    let buffer = render_buffer(&mut app, W, H);
     let shown = rows(&buffer);
     // Input border and line (rows 6-7), three items (8-10), the status bar.
     assert!(

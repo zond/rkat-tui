@@ -319,30 +319,11 @@ async fn two_daemons_on_one_users_file_follow_each_others_changes_and_hand_edits
     let first = Workspace::new();
     let second = Workspace::new();
     let cfg = first.sibling("shared-cfg");
-    std::fs::create_dir_all(&cfg).unwrap();
     let user_file = cfg.join("tui.toml");
-    // The process daemon reaches no model: an endpoint it never calls.
-    std::fs::write(
-        &user_file,
-        "[endpoints.fake]\ndialect = \"anthropic\"\nbase_url = \"http://127.0.0.1:9\"\napi_key_env = \"HOME\"\n",
-    )
-    .unwrap();
     let cfg_arg = cfg.to_str().unwrap().to_string();
     let args_a = common::args_with(&first.root, &["--config-dir", &cfg_arg]);
     let file_a = first.sibling("first.endpoint");
-    let argv = rkat_tui::client::launch::with_endpoint_file(
-        &rkat_tui::client::launch::daemon_argv(&args_a, &first.root),
-        &file_a,
-    );
-    let _first_daemon = tokio::process::Command::new(env!("CARGO_BIN_EXE_rkat-tui-mob"))
-        .args(&argv)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
-    common::until(|| file_a.exists()).await;
+    let _first_daemon = common::process_daemon(&cfg, &args_a, &first.root, &file_a).await;
     let mut a = rig::Client::attach_setup(&args_a, None, common::no_lists(), &file_a).await;
     let llm = ScriptedLlmClient::new(vec![]);
     let mut b =

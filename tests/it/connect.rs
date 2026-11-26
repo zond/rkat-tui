@@ -662,6 +662,22 @@ fn in_tui(member: &str, task: &str) -> serde_json::Value {
     json!({"name": member, "task": task, "keep": true})
 }
 
+/// [`team_script`] with the kept helper `a` in the workspace's mob and
+/// the member `w1` of `team`, connected to each other.
+fn a_and_w1_script() -> Step {
+    team_script(
+        vec![
+            ("s1", "assign", in_tui("a", "TASK-OF-A")),
+            ("s2", "mob_spawn_member", in_team("w1", "TASK-OF-W1")),
+        ],
+        vec![
+            ("TASK-OF-A", "A", "team/worker/w1"),
+            ("TASK-OF-W1", "W1", "tui/main/a"),
+        ],
+        &["a", "w1"],
+    )
+}
+
 /// A script in which the agent, prompted `go`, creates the mob `team`
 /// (its members addressable by their owner's client, so the test can
 /// drive them), seats `seats` in order, connects `pair` and is done;
@@ -784,17 +800,7 @@ const W2: (&str, &str, &str, &str) = ("team", "w2", "TASK-OF-W2", "W2");
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn helpers_in_different_mobs_connected_talk_both_ways_across_a_restart() {
     let ws = Workspace::new();
-    let step = team_script(
-        vec![
-            ("s1", "assign", in_tui("a", "TASK-OF-A")),
-            ("s2", "mob_spawn_member", in_team("w1", "TASK-OF-W1")),
-        ],
-        vec![
-            ("TASK-OF-A", "A", "team/worker/w1"),
-            ("TASK-OF-W1", "W1", "tui/main/a"),
-        ],
-        &["a", "w1"],
-    );
+    let step = a_and_w1_script();
     let llm = ScriptedLlmClient::new(vec![step.clone(); 60]);
     let (daemon, classifier) = strict(&ws, &llm).await;
     daemon.reveal(&daemon.session, &MOB_TOOLS).await;
@@ -861,17 +867,7 @@ async fn helpers_in_different_mobs_connected_talk_both_ways_across_a_restart() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_destroyed_mob_s_member_leaves_its_connected_peer() {
     let ws = Workspace::new();
-    let step = team_script(
-        vec![
-            ("s1", "assign", in_tui("a", "TASK-OF-A")),
-            ("s2", "mob_spawn_member", in_team("w1", "TASK-OF-W1")),
-        ],
-        vec![
-            ("TASK-OF-A", "A", "team/worker/w1"),
-            ("TASK-OF-W1", "W1", "tui/main/a"),
-        ],
-        &["a", "w1"],
-    );
+    let step = a_and_w1_script();
     let llm = ScriptedLlmClient::new(vec![step; 60]);
     let (daemon, _classifier) = strict(&ws, &llm).await;
     daemon.reveal(&daemon.session, &MOB_TOOLS).await;
@@ -897,17 +893,7 @@ async fn a_destroyed_mob_s_member_leaves_its_connected_peer() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recorded_connection_whose_end_is_gone_ends_at_the_next_start() {
     let ws = Workspace::new();
-    let step = team_script(
-        vec![
-            ("s1", "assign", in_tui("a", "TASK-OF-A")),
-            ("s2", "mob_spawn_member", in_team("w1", "TASK-OF-W1")),
-        ],
-        vec![
-            ("TASK-OF-A", "A", "team/worker/w1"),
-            ("TASK-OF-W1", "W1", "tui/main/a"),
-        ],
-        &["a", "w1"],
-    );
+    let step = a_and_w1_script();
     let llm = ScriptedLlmClient::new(vec![step.clone(); 60]);
     let (daemon, _classifier) = strict(&ws, &llm).await;
     daemon.reveal(&daemon.session, &MOB_TOOLS).await;

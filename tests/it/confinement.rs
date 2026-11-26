@@ -110,6 +110,43 @@ async fn run_confined(ws: &Workspace, mode: &str, command: &'static str) -> Opti
     Some(text)
 }
 
+/// Whether this host cannot run `--confinement=workspace`, after printing
+/// a `SKIPPED:` line with the reason.
+async fn workspace_unavailable(ws: &Workspace) -> bool {
+    let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await else {
+        return false;
+    };
+    common::sandbox_skipped(&format!(
+        "--confinement=workspace is unavailable on this host: {reason}"
+    ));
+    true
+}
+
+/// Run one shell call with `args` in a session of a daemon started with
+/// `setup`, and return the call's output and the scripted model.
+async fn run_shell(
+    ws: &Workspace,
+    setup: Setup,
+    args: serde_json::Value,
+) -> (String, Arc<ScriptedLlmClient>) {
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "sh",
+            name: "shell",
+            args,
+        },
+        Step::Text("done"),
+    ]);
+    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
+        .await
+        .unwrap_or_else(|err| panic!("daemon start: {err}"));
+    rig.send(Effect::StartTurn("run it".into()));
+    let _ = rig.turn_finished().await;
+    let output = tool_text(&llm.requests()[1], "sh");
+    rig.quit().await;
+    (output, llm)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn workspace_mode_confines_writes_to_the_workspace() {
     let ws = Workspace::new();
@@ -135,26 +172,14 @@ async fn workspace_mode_confines_writes_to_the_workspace() {
 /// of the rest (a sentinel `RKAT_TUI_TEST_SECRET` stands in for a provider
 /// API key: set in rkat-tui's environment, not on the allowlist).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[allow(clippy::disallowed_methods)] // test-only process launch: this test rerun
 async fn workspace_mode_passes_the_curated_environment() {
-    // A sentinel variable the curated environment must drop. The test
-    // process cannot set one on itself (`set_var` is unsafe, and the crate
-    // denies unsafe code), so the test reruns itself with it set.
-    if std::env::var_os(SENTINEL_VAR).is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "confinement::workspace_mode_passes_the_curated_environment",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(SENTINEL_VAR, "sentinel-secret")
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(output.status.success(), "{stdout}\n{stderr}");
-        assert!(stdout.contains("1 passed"), "{stdout}\n{stderr}");
+    // A sentinel variable the curated environment must drop, set in a
+    // rerun of the test.
+    if common::reran_with(
+        "confinement::workspace_mode_passes_the_curated_environment",
+        SENTINEL_VAR,
+        "sentinel-secret",
+    ) {
         return;
     }
     let ws = Workspace::new();
@@ -187,32 +212,14 @@ const SENTINEL_VAR: &str = "RKAT_TUI_TEST_SECRET";
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn workspace_mode_resolves_localhost() {
     let ws = Workspace::new();
-    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        common::sandbox_skipped(&format!(
-            "--confinement=workspace is unavailable on this host: {reason}"
-        ));
+    if workspace_unavailable(&ws).await {
         return;
     }
     let host = HostPaths::detect();
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "sh",
-            name: "shell",
-            args: json!({
-                "command": "getent hosts localhost && echo LOCAL-OK; echo END"
-            }),
-        },
-        Step::Text("done"),
-    ]);
     let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
     assert_eq!(setup.host_paths.as_ref(), Some(&host));
-    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
-        .await
-        .unwrap_or_else(|err| panic!("daemon start: {err}"));
-    rig.send(Effect::StartTurn("resolve".into()));
-    let _ = rig.turn_finished().await;
-    let output = tool_text(&llm.requests()[1], "sh");
-    rig.quit().await;
+    let command = "getent hosts localhost && echo LOCAL-OK; echo END";
+    let (output, _) = run_shell(&ws, setup, json!({ "command": command })).await;
     assert!(output.contains("END"), "{output}");
     assert!(
         output.contains("LOCAL-OK"),
@@ -294,31 +301,14 @@ async fn workspace_mode_runs_the_rust_toolchain() {
         return;
     }
     let ws = Workspace::new();
-    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        common::sandbox_skipped(&format!(
-            "--confinement=workspace is unavailable on this host: {reason}"
-        ));
+    if workspace_unavailable(&ws).await {
         return;
     }
     let command = "echo pid=$$; printf 'fn main() { println!(\"linked-ok\"); }\n' > m.rs && rustc m.rs -o m && ./m; echo END";
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "sh",
-            name: "shell",
-            args: json!({ "command": command }),
-        },
-        Step::Text("done"),
-    ]);
     // The host's real paths: the toolchain lives in the rustup and cargo
     // homes, which the rig's hermetic default leaves out.
     let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
-    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
-        .await
-        .unwrap_or_else(|err| panic!("daemon start: {err}"));
-    rig.send(Effect::StartTurn("build it".into()));
-    let _ = rig.turn_finished().await;
-    let output = tool_text(&llm.requests()[1], "sh");
-    rig.quit().await;
+    let (output, _) = run_shell(&ws, setup, json!({ "command": command })).await;
     assert!(output.contains("END"), "{output}");
     assert!(output.contains("pid=2\n"), "{output}");
     assert!(output.contains("linked-ok"), "{output}");
@@ -596,28 +586,15 @@ async fn the_realm_confinement_table_does_not_decide_the_shell() {
 /// see a variable outside the curated environment, and the same command
 /// typed as `!` sees both (and writes outside the workspace).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[allow(clippy::disallowed_methods)] // test-only process launch: this test rerun
 async fn a_bang_command_runs_as_the_user_unlike_the_agents_shell() {
     use rkat_tui::ui::{Msg, ShellOutcome, ShellRunId};
 
-    // The test process cannot set a variable on itself (`set_var` is
-    // unsafe, and the crate denies unsafe code), so it reruns itself with
-    // the sentinel set.
-    if std::env::var_os(BANG_VAR).is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "confinement::a_bang_command_runs_as_the_user_unlike_the_agents_shell",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(BANG_VAR, "users-own-value")
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(output.status.success(), "{stdout}\n{stderr}");
-        assert!(stdout.contains("1 passed"), "{stdout}\n{stderr}");
+    // The sentinel is set in a rerun of the test.
+    if common::reran_with(
+        "confinement::a_bang_command_runs_as_the_user_unlike_the_agents_shell",
+        BANG_VAR,
+        "users-own-value",
+    ) {
         return;
     }
     let ws = Workspace::new();
@@ -686,10 +663,7 @@ const BANG_VAR: &str = "RKAT_TUI_TEST_BANG";
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cargo_builds_under_the_narrowed_cargo_home_grant() {
     let ws = Workspace::new();
-    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        common::sandbox_skipped(&format!(
-            "--confinement=workspace is unavailable on this host: {reason}"
-        ));
+    if workspace_unavailable(&ws).await {
         return;
     }
     let Some(home) = std::env::var_os("CARGO_HOME")
@@ -719,22 +693,9 @@ async fn cargo_builds_under_the_narrowed_cargo_home_grant() {
         bin = home.join("bin").display(),
         config = home.join("config.toml").display(),
     ));
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "sh",
-            name: "shell",
-            args: json!({ "command": command, "timeout_secs": 300 }),
-        },
-        Step::Text("done"),
-    ]);
     let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
-    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
-        .await
-        .unwrap_or_else(|err| panic!("daemon start: {err}"));
-    rig.send(Effect::StartTurn("build it".into()));
-    let _ = rig.turn_finished().await;
-    let output = tool_text(&llm.requests()[1], "sh");
-    rig.quit().await;
+    let args = json!({ "command": command, "timeout_secs": 300 });
+    let (output, _) = run_shell(&ws, setup, args).await;
     assert!(output.contains("END"), "{output}");
     assert!(
         output.contains("BUILD=0") && output.contains("built-ok unix"),
@@ -754,10 +715,7 @@ async fn cargo_builds_under_the_narrowed_cargo_home_grant() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_confined_shell_cannot_read_or_write_the_audit_log() {
     let ws = Workspace::new();
-    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        common::sandbox_skipped(&format!(
-            "--confinement=workspace is unavailable on this host: {reason}"
-        ));
+    if workspace_unavailable(&ws).await {
         return;
     }
     let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
@@ -769,21 +727,7 @@ async fn the_confined_shell_cannot_read_or_write_the_audit_log() {
         "cat '{log}' >/dev/null 2>&1 && echo LOG-READ; echo forged >> '{log}' 2>/dev/null && echo LOG-WRITTEN; echo END",
         log = log.display()
     ));
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "sh",
-            name: "shell",
-            args: json!({ "command": command }),
-        },
-        Step::Text("done"),
-    ]);
-    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
-        .await
-        .unwrap_or_else(|err| panic!("daemon start: {err}"));
-    rig.send(Effect::StartTurn("look".into()));
-    let _ = rig.turn_finished().await;
-    let output = tool_text(&llm.requests()[1], "sh");
-    rig.quit().await;
+    let (output, _) = run_shell(&ws, setup, json!({ "command": command })).await;
     assert!(output.contains("END"), "{output}");
     assert!(!output.contains("LOG-READ"), "{output}");
     assert!(!output.contains("LOG-WRITTEN"), "{output}");
@@ -805,10 +749,7 @@ async fn the_confined_shell_cannot_read_or_write_the_audit_log() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_confined_shell_does_not_see_the_users_ssh_directory() {
     let ws = Workspace::new();
-    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        common::sandbox_skipped(&format!(
-            "--confinement=workspace is unavailable on this host: {reason}"
-        ));
+    if workspace_unavailable(&ws).await {
         return;
     }
     let Some(ssh) = dirs::home_dir()
@@ -822,22 +763,8 @@ async fn the_confined_shell_does_not_see_the_users_ssh_directory() {
         "test -e '{ssh}' && echo SSH-VISIBLE; ls -a \"$HOME\" 2>/dev/null | grep -qx .ssh && echo SSH-LISTED; echo END",
         ssh = ssh.display()
     ));
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "sh",
-            name: "shell",
-            args: json!({ "command": command }),
-        },
-        Step::Text("done"),
-    ]);
     let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
-    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
-        .await
-        .unwrap_or_else(|err| panic!("daemon start: {err}"));
-    rig.send(Effect::StartTurn("look".into()));
-    let _ = rig.turn_finished().await;
-    let output = tool_text(&llm.requests()[1], "sh");
-    rig.quit().await;
+    let (output, _) = run_shell(&ws, setup, json!({ "command": command })).await;
     assert!(output.contains("END"), "{output}");
     assert!(!output.contains("SSH-VISIBLE"), "{output}");
     assert!(!output.contains("SSH-LISTED"), "{output}");
@@ -852,10 +779,7 @@ async fn the_confined_shell_does_not_see_the_users_ssh_directory() {
 async fn the_confined_shell_cannot_read_the_cargo_credentials() {
     use rkat_tui::bootstrap::confinement::CargoHome;
     let ws = Workspace::new();
-    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        common::sandbox_skipped(&format!(
-            "--confinement=workspace is unavailable on this host: {reason}"
-        ));
+    if workspace_unavailable(&ws).await {
         return;
     }
     let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
@@ -873,14 +797,6 @@ async fn the_confined_shell_cannot_read_the_cargo_credentials() {
          test -e '{h}/credentials.toml' && echo CREDENTIALS-VISIBLE; echo END",
         h = home.path().display()
     ));
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "sh",
-            name: "shell",
-            args: json!({ "command": command }),
-        },
-        Step::Text("done"),
-    ]);
     let setup = Setup {
         host_paths: Some(HostPaths {
             write: cargo.write,
@@ -889,13 +805,7 @@ async fn the_confined_shell_cannot_read_the_cargo_credentials() {
         }),
         ..Setup::args(&["--confinement=workspace"])
     };
-    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
-        .await
-        .unwrap_or_else(|err| panic!("daemon start: {err}"));
-    rig.send(Effect::StartTurn("look".into()));
-    let _ = rig.turn_finished().await;
-    let output = tool_text(&llm.requests()[1], "sh");
-    rig.quit().await;
+    let (output, _) = run_shell(&ws, setup, json!({ "command": command })).await;
     assert!(output.contains("END"), "{output}");
     assert!(
         output.contains("config-visible"),
@@ -919,10 +829,7 @@ async fn the_confined_shell_cannot_read_the_cargo_credentials() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_realm_is_out_of_reach_and_git_stays_writable_until_engine_ask_8() {
     let ws = Workspace::new();
-    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        common::sandbox_skipped(&format!(
-            "--confinement=workspace is unavailable on this host: {reason}"
-        ));
+    if workspace_unavailable(&ws).await {
         return;
     }
     std::fs::create_dir_all(ws.root.join(".git/hooks")).unwrap();
@@ -934,21 +841,7 @@ async fn the_realm_is_out_of_reach_and_git_stays_writable_until_engine_ask_8() {
         "echo x > .git/hooks/probe && echo GIT-WRITTEN; echo x > '{realm}/probe' 2>/dev/null && echo REALM-WRITTEN; ls '{realm}' >/dev/null 2>&1 && echo REALM-LISTED; echo END",
         realm = realm.display()
     ));
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "sh",
-            name: "shell",
-            args: json!({ "command": command }),
-        },
-        Step::Text("done"),
-    ]);
-    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
-        .await
-        .unwrap_or_else(|err| panic!("daemon start: {err}"));
-    rig.send(Effect::StartTurn("probe".into()));
-    let _ = rig.turn_finished().await;
-    let output = tool_text(&llm.requests()[1], "sh");
-    rig.quit().await;
+    let (output, _) = run_shell(&ws, setup, json!({ "command": command })).await;
     assert!(output.contains("END"), "{output}");
     assert!(!output.contains("REALM-WRITTEN"), "{output}");
     assert!(!output.contains("REALM-LISTED"), "{output}");
@@ -967,10 +860,7 @@ async fn the_realm_is_out_of_reach_and_git_stays_writable_until_engine_ask_8() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_confined_shell_cannot_reach_the_users_skills() {
     let ws = Workspace::new();
-    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        common::sandbox_skipped(&format!(
-            "--confinement=workspace is unavailable on this host: {reason}"
-        ));
+    if workspace_unavailable(&ws).await {
         return;
     }
     let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
@@ -996,22 +886,8 @@ async fn the_confined_shell_cannot_reach_the_users_skills() {
         mine = mine.display(),
         skills = skills.display()
     ));
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "sh",
-            name: "shell",
-            args: json!({ "command": command }),
-        },
-        Step::Text("done"),
-    ]);
-    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
-        .await
-        .unwrap_or_else(|err| panic!("daemon start: {err}"));
-    rig.send(Effect::StartTurn("probe".into()));
-    let _ = rig.turn_finished().await;
-    let output = tool_text(&llm.requests()[1], "sh");
+    let (output, llm) = run_shell(&ws, setup, json!({ "command": command })).await;
     let system = llm.recorded()[0].system();
-    rig.quit().await;
     assert!(output.contains("END"), "{output}");
     assert!(!output.contains("SKILL-WRITTEN"), "{output}");
     assert!(!output.contains("PLANTED"), "{output}");
@@ -1042,10 +918,7 @@ async fn the_confined_shell_cannot_reach_the_users_skills() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_shell_that_could_reach_the_realm_refuses_the_start() {
     let ws = Workspace::new();
-    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        common::sandbox_skipped(&format!(
-            "--confinement=workspace is unavailable on this host: {reason}"
-        ));
+    if workspace_unavailable(&ws).await {
         return;
     }
     let ancestor = ws.root.parent().unwrap().to_path_buf();

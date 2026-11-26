@@ -106,16 +106,7 @@ fn heard(llm: &ScriptedLlmClient, helper: bool, text: &str) -> bool {
 }
 
 async fn members(connection: &rkat_tui::client::transport::Connection) -> Vec<String> {
-    let members = connection
-        .call("mob/members", json!({"mob_id": "tui"}))
-        .await
-        .unwrap();
-    members["members"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|member| member["agent_identity"].as_str().unwrap().to_string())
-        .collect()
+    common::members(connection, "tui").await
 }
 
 /// The whole life of an `assign` helper, each claim shown positively:

@@ -13,7 +13,7 @@ use crate::rig;
 
 use std::sync::Arc;
 
-use common::{ScriptedLlmClient, Step, Workspace, after, assign, is_helper};
+use common::{ScriptedLlmClient, Step, Workspace, after, assign, is_helper, members};
 use meerkat_core::Message;
 use rig::{Client, Running};
 use rkat_tui::approval::mode::PermissionMode;
@@ -67,19 +67,6 @@ fn held(gate: &Arc<tokio::sync::Notify>) -> Step {
             args: json!({"pattern": "*.nothing"}),
         }),
     )
-}
-
-async fn members(connection: &Connection, mob: &str) -> Vec<String> {
-    let members = connection
-        .call("mob/members", json!({"mob_id": mob}))
-        .await
-        .unwrap();
-    members["members"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|member| member["agent_identity"].as_str().unwrap().to_string())
-        .collect()
 }
 
 /// The client's `HelperEnded` for `label`: how, and who was told.

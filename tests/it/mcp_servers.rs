@@ -25,23 +25,12 @@ const MCP_ENV_VAR: &str = "RKAT_TUI_TEST_MCP_ENV";
 /// with the daemon's environment is what is pinned, not the protocol.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[allow(clippy::disallowed_methods)] // test-only process launch: this test rerun
 async fn a_command_line_stdio_server_starts_with_the_daemon_s_environment() {
-    if std::env::var_os(MCP_ENV_VAR).is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "mcp_servers::a_command_line_stdio_server_starts_with_the_daemon_s_environment",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(MCP_ENV_VAR, "from-the-environment")
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(output.status.success(), "{stdout}\n{stderr}");
-        assert!(stdout.contains("1 passed"), "{stdout}\n{stderr}");
+    if common::reran_with(
+        "mcp_servers::a_command_line_stdio_server_starts_with_the_daemon_s_environment",
+        MCP_ENV_VAR,
+        "from-the-environment",
+    ) {
         return;
     }
     let ws = Workspace::new();

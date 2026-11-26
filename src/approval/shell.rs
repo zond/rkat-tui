@@ -2301,6 +2301,8 @@ mod tests {
         assert_eq!(segs[3].words[0].text, "pwd");
     }
 
+    /// Which commands the read-only allowlist passes unreviewed in a
+    /// project whose builds are trusted: one row per command.
     #[test]
     fn allowlist_table() {
         let (dir, root) = project();
@@ -2517,6 +2519,25 @@ mod tests {
             ("git status --porcelain=v2", true),
             ("git status -uno", true),
             ("uniq -f 1 input.txt", true),
+            // Option value globs: plain values, attached (short and long)
+            // and in the next word.
+            ("sort -k* input.txt", false),
+            ("sort -k *.txt input.txt", false),
+            ("sort --key=* input.txt", false),
+            ("grep -r --exclude=*.x foo src", false),
+            ("grep -r --exclude='*.x' foo src", true),
+            ("sort -k2 input.txt", true),
+            // Find expression globs (`find . -name '*.rs'` is above).
+            ("find . -name *.rs", false),
+            ("find . -path ./src/*", false),
+            ("find src/*.rs -name x", true),
+            ("find *.rs -name x", false),
+            // An fd dup to a file.
+            ("echo hi >&out.txt", false),
+            ("echo hi >& out.txt", false),
+            ("echo hi 2>&out.txt", false),
+            ("echo hi 1>&2", false),
+            ("echo hi 2>&1", true),
         ];
         let c = ctx(&root, true);
         let mut failures = Vec::new();
@@ -2615,41 +2636,6 @@ mod tests {
         assert!(allowlisted("sort ./*.md", &c).is_ok());
         assert!(allowlisted("ls src/*.rs", &c).is_ok());
         assert!(allowlisted("ls src/**/*.rs", &c).is_ok());
-    }
-
-    #[test]
-    fn option_value_globs_are_refused() {
-        let (_dir, root) = project();
-        let c = ctx(&root, true);
-        // Plain values, attached (short and long) and in the next word.
-        assert!(allowlisted("sort -k* input.txt", &c).is_err());
-        assert!(allowlisted("sort -k *.txt input.txt", &c).is_err());
-        assert!(allowlisted("sort --key=* input.txt", &c).is_err());
-        assert!(allowlisted("grep -r --exclude=*.x foo src", &c).is_err());
-        assert!(allowlisted("grep -r --exclude='*.x' foo src", &c).is_ok());
-        assert!(allowlisted("sort -k2 input.txt", &c).is_ok());
-    }
-
-    #[test]
-    fn find_expression_globs_are_refused() {
-        let (_dir, root) = project();
-        let c = ctx(&root, true);
-        assert!(allowlisted("find . -name *.rs", &c).is_err());
-        assert!(allowlisted("find . -path ./src/*", &c).is_err());
-        assert!(allowlisted("find . -name '*.rs'", &c).is_ok());
-        assert!(allowlisted("find src/*.rs -name x", &c).is_ok());
-        assert!(allowlisted("find *.rs -name x", &c).is_err());
-    }
-
-    #[test]
-    fn fd_dup_to_a_file_is_refused() {
-        let (_dir, root) = project();
-        let c = ctx(&root, true);
-        assert!(allowlisted("echo hi >&out.txt", &c).is_err());
-        assert!(allowlisted("echo hi >& out.txt", &c).is_err());
-        assert!(allowlisted("echo hi 2>&out.txt", &c).is_err());
-        assert!(allowlisted("echo hi 1>&2", &c).is_err());
-        assert!(allowlisted("echo hi 2>&1", &c).is_ok());
     }
 
     #[test]

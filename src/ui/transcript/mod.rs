@@ -2706,22 +2706,6 @@ mod tests {
         assert!(!text.contains("secret thoughts"));
     }
 
-    #[test]
-    fn text_deltas_accumulate_into_one_assistant_block() {
-        let mut t = Transcript::new();
-        t.apply_agent_event(&AgentEvent::TurnStarted {
-            turn_number: 0,
-            assistant_message_id: None,
-        });
-        t.apply_agent_event(&text("Hel"));
-        t.apply_agent_event(&text("lo"));
-        t.apply_agent_event(&AgentEvent::TextComplete {
-            content: "Hello".into(),
-            assistant_message_id: None,
-        });
-        assert_eq!(t.blocks(), &[Block::Assistant { md: "Hello".into() }]);
-    }
-
     /// The rule: the exact line `thought` (blank space and lines before it
     /// allowed, nothing after it on the line) opens a model's reasoning
     /// sent as text; a start of that line is undecided; anything else,
@@ -2874,20 +2858,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn text_complete_without_deltas_creates_block() {
-        let mut t = Transcript::new();
-        t.apply_agent_event(&AgentEvent::TurnStarted {
-            turn_number: 0,
-            assistant_message_id: None,
-        });
-        t.apply_agent_event(&AgentEvent::TextComplete {
-            content: "whole".into(),
-            assistant_message_id: None,
-        });
-        assert_eq!(t.blocks(), &[Block::Assistant { md: "whole".into() }]);
-    }
-
     fn reasoning(d: &str) -> AgentEvent {
         AgentEvent::ReasoningDelta {
             delta: d.into(),
@@ -2913,6 +2883,25 @@ mod tests {
         AgentEvent::TurnStarted {
             turn_number: 0,
             assistant_message_id: None,
+        }
+    }
+
+    /// A step's `TextComplete` is one assistant block: after text deltas,
+    /// which accumulate into it, and with no deltas before it.
+    #[test]
+    fn text_complete_is_one_assistant_block_with_or_without_deltas() {
+        for (deltas, whole) in [(&["Hel", "lo"][..], "Hello"), (&[], "whole")] {
+            let mut t = Transcript::new();
+            t.apply_agent_event(&turn_started());
+            for delta in deltas {
+                t.apply_agent_event(&text(delta));
+            }
+            t.apply_agent_event(&text_done(whole));
+            assert_eq!(
+                t.blocks(),
+                &[Block::Assistant { md: whole.into() }],
+                "{deltas:?}"
+            );
         }
     }
 

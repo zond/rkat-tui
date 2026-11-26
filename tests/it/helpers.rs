@@ -11,12 +11,11 @@ use crate::rig;
 use std::sync::Arc;
 use std::time::Instant;
 
-use common::{MODEL, ScriptedLlmClient, Step, Workspace};
+use common::{MODEL, ScriptedLlmClient, Step, Workspace, members};
 use meerkat_core::{AgentEvent, Message, StreamScopeFrame};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use rig::{Client, Running};
-use rkat_tui::client::transport::Connection;
 use rkat_tui::ui::{App, Effect, Msg, StatusInfo, StatusUpdate, TurnFailure};
 use serde_json::json;
 
@@ -406,20 +405,6 @@ async fn a_helper_assigned_after_a_model_switch_runs_on_the_new_model() {
         .session_metadata()
         .unwrap();
     assert_eq!(meta.model, SWITCHED);
-}
-
-/// The member identities `mob` lists, by `connection`.
-async fn members(connection: &Connection, mob: &str) -> Vec<String> {
-    let members = connection
-        .call("mob/members", json!({"mob_id": mob}))
-        .await
-        .unwrap();
-    members["members"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|member| member["agent_identity"].as_str().unwrap().to_string())
-        .collect()
 }
 
 /// A helper whose own run fails is told to its agent as failed, with the

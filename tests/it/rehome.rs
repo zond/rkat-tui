@@ -415,27 +415,10 @@ async fn a_pull_stops_the_idle_daemon_of_the_adopted_realm() {
     let old = realm_home::find(&realms(&ws.root), &ws.root)
         .unwrap()
         .unwrap();
-    // The original's daemon runs as its own process (two daemons cannot
-    // share one process): the real binary, on an endpoint it never calls.
+    // The original's daemon runs as its own process.
     let user = common::config_dir_for(&ws.root);
-    std::fs::write(
-        user.join("tui.toml"),
-        "[endpoints.fake]\ndialect = \"anthropic\"\nbase_url = \"http://127.0.0.1:9\"\napi_key_env = \"HOME\"\n",
-    )
-    .unwrap();
-    let argv = rkat_tui::client::launch::with_endpoint_file(
-        &rkat_tui::client::launch::daemon_argv(&args_for(&ws.root), &ws.root),
-        &file(&ws.root),
-    );
-    let mut original = tokio::process::Command::new(env!("CARGO_BIN_EXE_rkat-tui-mob"))
-        .args(&argv)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
-    common::until(|| file(&ws.root).exists()).await;
+    let mut original =
+        common::process_daemon(&user, &args_for(&ws.root), &ws.root, &file(&ws.root)).await;
     let llm = ScriptedLlmClient::new(vec![]);
     let copy = ws.sibling("copy");
     common::copy_tree(&ws.root, &copy);

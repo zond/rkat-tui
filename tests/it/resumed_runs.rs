@@ -12,10 +12,9 @@ use crate::rig;
 
 use std::sync::Arc;
 
-use common::{ScriptedLlmClient, Step, Workspace};
+use common::{ScriptedLlmClient, Step, Workspace, members};
 use meerkat_core::{AgentEvent, Message};
 use rig::{Client, Running};
-use rkat_tui::client::transport::Connection;
 use rkat_tui::daemon::protocol::AgentChoice;
 use rkat_tui::daemon::protocol::engine::{FORCE_CANCEL, HARD_CANCEL_MEMBER, STOP_MEMBER_RUN};
 use rkat_tui::ui::{Departure, Effect, Msg, PendingId, TurnFailure};
@@ -35,19 +34,6 @@ fn agent_heard(llm: &ScriptedLlmClient, text: &str) -> bool {
         .iter()
         .filter(|r| !common::is_helper(&r.messages, "HELPER-TASK"))
         .any(|r| common::user_texts(&r.messages).iter().any(|t| t == text))
-}
-
-async fn members(connection: &Connection, mob: &str) -> Vec<String> {
-    let members = connection
-        .call("mob/members", json!({"mob_id": mob}))
-        .await
-        .unwrap();
-    members["members"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|member| member["agent_identity"].as_str().unwrap().to_string())
-        .collect()
 }
 
 /// The agent's script: `call` first, `went on` once a result is in, an

@@ -724,6 +724,78 @@ pub fn sandbox_skipped(reason: &str) {
     println!("SKIPPED: {reason}");
 }
 
+/// The real `rkat-tui-mob` as a process of its own (two daemons cannot
+/// share one process) for the workspace `root` under `args`, with its
+/// endpoint file at `endpoint_file`, once that file is written. The user's
+/// `tui.toml` in `config_dir` gets an endpoint the daemon never calls: it
+/// reaches no model. Killed when dropped.
+pub async fn process_daemon(
+    config_dir: &Path,
+    args: &Args,
+    root: &Path,
+    endpoint_file: &Path,
+) -> tokio::process::Child {
+    std::fs::create_dir_all(config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("tui.toml"),
+        "[endpoints.fake]\ndialect = \"anthropic\"\nbase_url = \"http://127.0.0.1:9\"\napi_key_env = \"HOME\"\n",
+    )
+    .unwrap();
+    let argv = rkat_tui::client::launch::with_endpoint_file(
+        &rkat_tui::client::launch::daemon_argv(args, root),
+        endpoint_file,
+    );
+    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_rkat-tui-mob"))
+        .args(&argv)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    until(|| endpoint_file.exists()).await;
+    child
+}
+
+/// The member identities `mob` lists, asked over `connection`.
+pub async fn members(
+    connection: &rkat_tui::client::transport::Connection,
+    mob: &str,
+) -> Vec<String> {
+    let members = connection
+        .call("mob/members", serde_json::json!({"mob_id": mob}))
+        .await
+        .unwrap();
+    members["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|member| member["agent_identity"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Rerun the test `test` (its path in the `it` binary) in a child process
+/// with `var` set to `value`, and assert that it passed there; `false`
+/// when `var` is set already, in the rerun itself. A test that needs a
+/// variable in its own environment reruns so: the test process cannot set
+/// one on itself (`set_var` is unsafe, and the crate denies unsafe code).
+#[allow(clippy::disallowed_methods)] // test-only process launch: the test's rerun
+pub fn reran_with(test: &str, var: &str, value: &str) -> bool {
+    if std::env::var_os(var).is_some() {
+        return false;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture", "--test-threads=1"])
+        .env(var, value)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(stdout.contains("1 passed"), "{stdout}\n{stderr}");
+    true
+}
+
 /// Why this host cannot run a launch confined by `mode` over `workspace`,
 /// probed directly: the requirement is compiled by the sandbox backend and a
 /// confined `/bin/true` must exit successfully. `None` when it can.

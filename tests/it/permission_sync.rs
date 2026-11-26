@@ -357,34 +357,15 @@ async fn always_in_every_workspace_in_one_daemon_reaches_the_other() {
     let first = Workspace::new();
     let second = Workspace::new();
     let cfg = first.sibling("shared-cfg");
-    std::fs::create_dir_all(&cfg).unwrap();
     // Not beside the first's endpoint file: its directory is sealed there
     // (that daemon would skip the grant and say so).
     let granted = second.sibling("granted");
     std::fs::create_dir_all(&granted).unwrap();
     let granted = std::fs::canonicalize(&granted).unwrap();
-    // The process daemon reaches no model: an endpoint it never calls.
-    std::fs::write(
-        cfg.join("tui.toml"),
-        "[endpoints.fake]\ndialect = \"anthropic\"\nbase_url = \"http://127.0.0.1:9\"\napi_key_env = \"HOME\"\n",
-    )
-    .unwrap();
     let cfg_arg = cfg.to_str().unwrap().to_string();
     let args_a = common::args_with(&first.root, &["--config-dir", &cfg_arg]);
     let file_a = first.sibling("first.endpoint");
-    let argv = rkat_tui::client::launch::with_endpoint_file(
-        &rkat_tui::client::launch::daemon_argv(&args_a, &first.root),
-        &file_a,
-    );
-    let _first_daemon = tokio::process::Command::new(env!("CARGO_BIN_EXE_rkat-tui-mob"))
-        .args(&argv)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
-    common::until(|| file_a.exists()).await;
+    let _first_daemon = common::process_daemon(&cfg, &args_a, &first.root, &file_a).await;
     let endpoint_a = rkat_tui::daemon::endpoint::Endpoint::read(&file_a).unwrap();
     let rows_a = async || -> RuleRows {
         let (connection, _notes) = rkat_tui::client::transport::Connection::attach_as(
