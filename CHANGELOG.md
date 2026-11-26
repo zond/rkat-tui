@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Two test values that a secret scanner reads as credentials (the dead
+  token in the stored-state copy of the endpoint file, the key in one
+  permission-corpus URL) are now plainly fake, and CI scans the tree and
+  each new commit with gitleaks.
+
 ## [0.1.2] - 2026-11-26
 
 ### Added

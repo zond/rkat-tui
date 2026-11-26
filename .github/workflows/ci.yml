@@ -92,6 +92,28 @@ jobs:
   # Recommendation 10 of the security review: advisories, licences and
   # sources (deny.toml). Not part of the local gate; docs/testing.md says
   # how to run it.
+  # The repository is mirrored into a host whose secret scanner (gitleaks)
+  # refuses a commit that adds a value looking like a credential, a fake
+  # one in test data included. Scan the tree and every commit after the
+  # one before this job was added (older commits hold two such values).
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tar.gz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      - run: '"$RUNNER_TEMP/gitleaks" dir . --no-banner --redact --verbose'
+      - run: '"$RUNNER_TEMP/gitleaks" git . --no-banner --redact --verbose --log-opts="a646192c200c5e8e44b2ce630270b7c0e2640d02..HEAD"'
+
   deny:
     runs-on: ubuntu-latest
     timeout-minutes: 30

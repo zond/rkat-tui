@@ -48,6 +48,19 @@ goes into `deny.toml`'s `ignore` list with the date and what lifts it,
 never silently; one with a fix in semver range is fixed with `cargo update
 -p <crate>`.
 
+## Secret scan (CI only)
+
+CI's `secrets` job runs gitleaks (the version pinned in
+`.github/workflows/ci.yml`, default rules) over the tree (`gitleaks dir
+.`) and over every commit since the job was added (`gitleaks git .
+--log-opts="<that commit>..HEAD"`). The repository is mirrored into a host
+whose scanner refuses a commit that adds a value looking like a
+credential, so test data must not hold one, real or fake: write a secret
+in a test, a fixture or a corpus case as plainly fake text of low
+randomness (`sk-EXAMPLE-NOT-A-REAL-SECRET`, all zeros), never a
+random-looking string. Removing the value in a later commit does not help,
+because the commit that added it is still refused.
+
 ## While iterating
 
 Scope the run to what changed, then run the full gate once at the end:
