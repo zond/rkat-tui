@@ -30,18 +30,14 @@ pub enum WriteError {
     Io {
         /// What was being done.
         what: &'static str,
-        /// The file.
         path: PathBuf,
-        /// The failure.
         #[source]
         source: std::io::Error,
     },
     /// The file does not parse as TOML: it is left as it is.
     #[error("{} does not parse, so it was left as it is: {source}", path.display())]
     Parse {
-        /// The file.
         path: PathBuf,
-        /// The parse error.
         #[source]
         source: Box<toml_edit::TomlError>,
     },
@@ -50,7 +46,6 @@ pub enum WriteError {
     Invalid {
         /// The file.
         path: PathBuf,
-        /// Why.
         why: String,
     },
     /// A key on the way is not a table (`auto = 3`).
@@ -58,7 +53,6 @@ pub enum WriteError {
     Shape {
         /// The file.
         path: PathBuf,
-        /// The key.
         key: String,
     },
     /// The atomic replace refused or failed.
@@ -94,10 +88,6 @@ impl SettingsFile {
     }
 
     /// Read it as the layering does (missing: empty).
-    ///
-    /// # Errors
-    ///
-    /// [`crate::approval::rules::RulesError`] when it cannot be read or parsed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn read(&self) -> Result<RulesFile, crate::approval::rules::RulesError> {
         RulesFile::load(&self.path)
@@ -356,7 +346,7 @@ impl SettingsFile {
         })?;
         if new != old {
             let (mode, trusted) = match self.level {
-                // The realm's: owner-only, as it always was written.
+                // The realm's: owner-only.
                 Level::Workspace => (
                     crate::paths::FileMode::Private,
                     self.path.parent().and_then(Path::parent),

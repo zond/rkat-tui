@@ -75,9 +75,7 @@ pub const HELPER_ENDED: &str = "rkat/helper_ended";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HelperEnding {
-    /// It finished its task.
     Finished,
-    /// Its run failed.
     Failed,
     /// It was stopped (by the user, the daemon's stop, its checkpoint).
     Stopped,
@@ -130,7 +128,6 @@ pub struct HelperEnded {
     pub session_id: SessionId,
     /// Its labels, outermost first (its own last).
     pub path: Vec<String>,
-    /// How it ended.
     pub ending: HelperEnding,
     /// How it ended, in the words its line shows (`stopped by you`).
     pub how: String,
@@ -143,12 +140,10 @@ pub struct HelperEnded {
 /// What [`AGENT_NOTICE`] carries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentNotice {
-    /// The agent it is about.
     pub agent: String,
     /// A warning (else information).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub warn: bool,
-    /// What it says.
     pub text: String,
 }
 
@@ -191,7 +186,6 @@ pub struct SetSettingParams {
 /// text to show.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outcome {
-    /// It did what it was asked.
     pub ok: bool,
     /// The notice: the confirmation, or why nothing was done.
     pub text: String,
@@ -567,9 +561,7 @@ pub const CANCELLED_ON_LEAVE: &[&str] = &[
 /// [`method::ClassifierCheck`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClassifierChecked {
-    /// The classifier's model.
     pub model: String,
-    /// What came out.
     pub report: crate::approval::corpus::Report,
 }
 
@@ -752,14 +744,11 @@ pub const RELOADED: &str = "rkat/reloaded";
 /// A local method's refusal: a JSON-RPC error code and message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
-    /// The JSON-RPC error code.
     pub code: i32,
-    /// Its message.
     pub message: String,
 }
 
 impl Refusal {
-    /// A refusal with `code`.
     #[must_use]
     pub fn new(code: i32, message: impl Into<String>) -> Self {
         Self {
@@ -962,7 +951,6 @@ impl RunWord {
 }
 
 impl AgentRow {
-    /// Whether it runs.
     #[must_use]
     pub fn run(&self) -> RunWord {
         match self.running {
@@ -1032,7 +1020,6 @@ pub struct AttachChallenge {
 /// [`ATTACH`]'s first result in the mutual handshake.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Challenged {
-    /// The challenge.
     pub challenge: AttachChallenge,
 }
 
@@ -1062,12 +1049,10 @@ pub struct Status {
     /// The canonical workspace path the daemon serves.
     pub workspace: std::path::PathBuf,
     /// The host name of the machine the daemon runs on (`None`: it could
-    /// not read it). A client reached through a
-    /// tunnel compares it with its own to tell whether the workspace is
-    /// on its machine.
+    /// not read it). A client reached through a tunnel compares it with its
+    /// own to tell whether the workspace is on its machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
-    /// The daemon's process id.
     pub pid: u32,
     /// When it started, RFC 3339 in UTC.
     pub started_at: String,
@@ -1202,7 +1187,6 @@ pub struct Recalled {
 pub struct BtwParams {
     /// The client's number for it ([`method::BtwCancel`] names it).
     pub id: u64,
-    /// The user's question.
     pub question: String,
     /// The tool call the agent is running as the client saw it: its name
     /// and how long it has run, in seconds.
@@ -1217,7 +1201,6 @@ pub struct BtwParams {
 /// [`method::Btw`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BtwAnswer {
-    /// The answer's text.
     pub answer: String,
 }
 
@@ -1235,7 +1218,6 @@ pub enum InterruptTarget {
     /// This run, and no other: once it has ended the interrupt stops
     /// nothing.
     Run {
-        /// The run.
         run_id: meerkat_core::lifecycle::RunId,
     },
     /// The run the agent has as the daemon reads it (a client that knows no
@@ -1249,7 +1231,6 @@ pub enum InterruptTarget {
 /// [`method::Interrupt`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterruptParams {
-    /// The run to interrupt.
     #[serde(flatten)]
     pub target: InterruptTarget,
     /// The caller's messages the agent has not read yet (the inputs
@@ -1327,9 +1308,7 @@ pub enum InputFate {
 /// One input and its fate ([`InputFates`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputRow {
-    /// The input.
     pub input_id: meerkat_core::lifecycle::InputId,
-    /// What became of it.
     #[serde(flatten)]
     pub fate: InputFate,
 }
@@ -1379,11 +1358,9 @@ pub const GIVEN_BACK: &str = "rkat/given_back";
 /// [`GIVEN_BACK`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GivenBack {
-    /// The agent.
     pub agent: String,
     /// The messages, by the inputs the engine admitted them as.
     pub ids: Vec<meerkat_core::lifecycle::InputId>,
-    /// How they came back.
     pub now: GivenBackNow,
 }
 
@@ -1401,7 +1378,6 @@ pub enum GivenBackNow {
     /// the engine does not keep it (why, in words): the client that sent
     /// it, which saw it delivered, takes this text back.
     Unkept {
-        /// Why.
         why: String,
         /// What the message said.
         text: String,
@@ -1418,7 +1394,6 @@ pub struct InputFates {
 /// What retired ([`QuitOutcome::Retired`], [`method::RetireAgent`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Retired {
-    /// The agent that retired.
     pub agent: String,
     /// The conversation it ran as (it stays in the conversation list).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1471,7 +1446,6 @@ pub enum ScheduleOp {
 /// [`method::Schedule`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleAction {
-    /// What to do.
     pub op: ScheduleOp,
     /// The schedule's name or id.
     pub schedule: String,
@@ -1512,7 +1486,6 @@ pub struct ScheduleRow {
     /// The next occurrence due, when one is planned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
-    /// Whether it fires.
     pub state: ScheduleState,
     /// How many times it fired (occurrences delivered to the agent).
     pub fired: usize,
@@ -1547,11 +1520,9 @@ pub enum TriggerCause {
 /// [`TRIGGERED`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TriggeredNote {
-    /// The agent whose run it is.
     pub agent: String,
     /// The run's session.
     pub session_id: SessionId,
-    /// What fired it.
     pub cause: TriggerCause,
     /// What fired it, in words: `scheduled: <name>`, `files changed`.
     pub label: String,
@@ -1566,7 +1537,6 @@ pub struct TriggeredNote {
 /// [`SWITCHED`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwitchedNote {
-    /// The agent.
     pub agent: String,
     /// The conversation it runs as now.
     pub session_id: SessionId,
@@ -1575,7 +1545,6 @@ pub struct SwitchedNote {
 /// [`IDLE`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdleNote {
-    /// The agent.
     pub agent: String,
     /// The conversation it runs as.
     pub session_id: SessionId,
@@ -1593,11 +1562,9 @@ pub struct IdleNote {
 /// [`RUNNING`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunningNote {
-    /// The agent.
     pub agent: String,
     /// The conversation the run is of.
     pub session_id: SessionId,
-    /// The open run.
     pub run_id: meerkat_core::RunId,
 }
 
@@ -1618,16 +1585,13 @@ pub enum MobChange {
 /// [`MOB`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MobNote {
-    /// The mob.
     pub mob_id: meerkat_mob::MobId,
-    /// What happened.
     pub change: MobChange,
 }
 
 /// [`COST`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CostNote {
-    /// The conversation.
     pub session_id: SessionId,
     /// Its totals now.
     pub cost: crate::cost::SessionCost,
@@ -1640,18 +1604,14 @@ pub struct CostNote {
 /// A file and its trust in words (`absent`, `trusted`, `not trusted: …`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustedFile {
-    /// The file.
     pub path: std::path::PathBuf,
-    /// Its trust in words.
     pub trust: String,
 }
 
 /// [`method::Report`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
-    /// The realm directory.
     pub realm: std::path::PathBuf,
-    /// The realm id.
     pub realm_id: String,
     /// The shell's confinement mode (`workspace`, `strict`, `off`).
     pub confinement: String,
@@ -1674,7 +1634,6 @@ pub struct Report {
 /// [`method::SetMode`]'s parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetModeParams {
-    /// The mode.
     pub mode: crate::approval::mode::PermissionMode,
     /// Recorded in the user's own `tui.toml` (`/mode <mode> --user`)
     /// instead of the workspace's.
@@ -1870,7 +1829,6 @@ impl std::fmt::Display for RemoteHalf {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WireSshParams {
-    /// The ssh host.
     pub host: String,
     /// The agent there; `None`: only list them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1971,7 +1929,6 @@ pub struct StopHelperParams {
 /// The parameters of the methods on one conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionParams {
-    /// The conversation's session.
     pub session_id: SessionId,
 }
 
@@ -2012,9 +1969,7 @@ pub enum ApprovalNote {
         /// The helper that made the call (`None`: the agent itself).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
-        /// Its tool-use id.
         tool_use_id: String,
-        /// The tool.
         tool: String,
         /// The tier and who decided.
         verdict: crate::approval::policy::VerdictSummary,
@@ -2024,7 +1979,6 @@ pub enum ApprovalNote {
     },
     /// Auto mode paused.
     Paused {
-        /// Why.
         cause: crate::approval::counters::PauseCause,
     },
     /// Auto mode resumed.
@@ -2120,7 +2074,6 @@ pub struct SessionEndpoint {
 /// [`method::Context`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextReport {
-    /// The conversation.
     pub session_id: SessionId,
     /// Its messages by kind.
     pub messages: super::context::MessageCounts,
@@ -2144,9 +2097,7 @@ pub struct ContextReport {
 /// [`method::Usage`]'s result.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
-    /// Input tokens.
     pub input_tokens: u64,
-    /// Output tokens.
     pub output_tokens: u64,
     /// The token totals by model.
     #[serde(default)]
@@ -2167,7 +2118,6 @@ pub struct Tasks {
 /// [`method::SetModel`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetModelParams {
-    /// The model id.
     pub model: String,
     /// Its provider (`anthropic`, `openai`, `gemini`); `None` keeps the
     /// session's.
@@ -2206,9 +2156,7 @@ pub struct ListedModel {
 pub struct ModelSet {
     /// The session the switch applied to.
     pub session_id: SessionId,
-    /// Its model now.
     pub model: String,
-    /// Its provider now.
     pub provider: String,
     /// The agent was seated again on the session first (its agent
     /// rebuilt for a model it had no profile for): the conversation's
@@ -2224,7 +2172,6 @@ pub struct ModelSet {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecideParams {
-    /// The decision.
     pub decision_id: String,
     /// Approved (else rejected).
     pub approve: bool,
@@ -2233,7 +2180,6 @@ pub struct DecideParams {
     /// The decider's reason (the dialog's comment).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// The dialog's answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<RemoteAnswer>,
 }
@@ -2243,18 +2189,15 @@ pub struct DecideParams {
 pub struct StartupNotice {
     /// A warning (else information).
     pub warn: bool,
-    /// What it says.
     pub text: String,
 }
 
 impl StartupNotice {
-    /// Information.
     #[must_use]
     pub fn info(text: String) -> Self {
         Self { warn: false, text }
     }
 
-    /// A warning.
     #[must_use]
     pub fn warn(text: String) -> Self {
         Self { warn: true, text }
@@ -2272,7 +2215,6 @@ pub struct AuditParams {
 /// [`method::Audit`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditTail {
-    /// The audit log's file.
     pub path: std::path::PathBuf,
     /// Its last lines for the agent, oldest first, as written (JSON).
     pub lines: Vec<String>,
@@ -2311,18 +2253,14 @@ pub struct FileDiffNote {
     pub tool_use_id: String,
     /// The file (relative to the workspace when inside it).
     pub path: String,
-    /// The unified diff.
     pub unified: String,
-    /// Lines added.
     pub added: usize,
-    /// Lines removed.
     pub removed: usize,
 }
 
 /// [`DECISION_ENDED`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionEnded {
-    /// The decision.
     pub decision_id: String,
     /// The phase it ended in, when known.
     pub phase: Option<WireDecisionPhase>,

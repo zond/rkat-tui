@@ -916,10 +916,7 @@ fn compact_now_goes_at_once_during_a_turn_and_waits_for_queued_messages() {
 /// (held in the queue, run then; the pickers open at once and their
 /// choice waits; `/compact` during a turn goes at once, otherwise it is
 /// refused with the guard's notice); with messages being sent next or
-/// recalled each is refused, with the same notice. These were the drift
-/// cases when every command spelled its own guard (`/model` and `/init`
-/// ignored a running `!` command; `/clear` and `/resume` ignored a
-/// message being sent next or recalled).
+/// recalled each is refused, with the same notice.
 #[test]
 fn session_commands_share_one_idle_guard() {
     let commands = [

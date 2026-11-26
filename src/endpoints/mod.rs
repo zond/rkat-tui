@@ -56,6 +56,7 @@
 //!
 //! Which endpoint a session runs on is derived from its persisted identity
 //! ([`endpoint_of`]): the binding names a configured endpoint, else the
+//! session runs on the provider's built-in endpoint.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -183,8 +184,7 @@ impl fmt::Display for WireDialect {
 /// `[endpoints.<name>]` (and `--endpoint-def`'s `api_style=`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ApiStyle {
-    /// The Responses API (`<base>/v1/responses`), what rkat-tui's OpenAI
-    /// dialect always spoke.
+    /// The Responses API (`<base>/v1/responses`).
     #[default]
     Responses,
     /// Chat Completions (`<base>/v1/chat/completions`), for a proxy or
@@ -256,7 +256,6 @@ impl<'de> serde::Deserialize<'de> for ApiStyle {
 pub struct SecretString(String);
 
 impl SecretString {
-    /// Wrap a secret.
     #[must_use]
     pub fn new(secret: impl Into<String>) -> Self {
         Self(secret.into())
@@ -287,11 +286,9 @@ impl fmt::Debug for SecretString {
 pub struct Endpoint {
     /// Unique name (`anthropic`, `litellm`, …); the `endpoint` of `endpoint:model`.
     pub name: String,
-    /// Protocol the endpoint speaks.
     pub dialect: WireDialect,
     /// Base URL override; `None` uses the dialect's public API.
     pub base_url: Option<String>,
-    /// API key.
     pub api_key: SecretString,
     /// Tie-break when several endpoints list the same bare model id
     /// (higher wins; built-ins are 0).
@@ -310,7 +307,6 @@ pub struct Endpoint {
     AllowedList(.allowed)
 )]
 pub struct ModelNotAllowed {
-    /// The endpoint.
     pub endpoint: String,
     /// The model asked for (the endpoint's id of it).
     pub model: String,
@@ -590,7 +586,6 @@ pub enum ModelRefError {
     /// `name:` (or `--endpoint name`) names no configured endpoint.
     #[error("unknown endpoint `{name}` (configured: {})", NameList(.known))]
     UnknownEndpoint {
-        /// The name given.
         name: String,
         /// Configured endpoint names.
         known: Vec<String>,
@@ -602,7 +597,6 @@ pub enum ModelRefError {
         NameList(.known)
     )]
     Ambiguous {
-        /// The model id.
         model: String,
         /// Configured endpoint names.
         known: Vec<String>,
@@ -656,17 +650,14 @@ pub enum EndpointError {
         "model `{model}` is not in Meerkat's model catalog, and {where_} runs only catalogued models ({dialect} dialect); to use any model a proxy serves, configure it as an `openai`-dialect endpoint ([endpoints.<name>] dialect = \"openai\" with its OpenAI-compatible base_url), where every model it lists runs as `<name>:<model>`"
     )]
     Uncatalogued {
-        /// The model.
         model: String,
         /// `the built-in endpoint `x`` or `endpoint `x``.
         where_: String,
-        /// The endpoint's dialect.
         dialect: WireDialect,
     },
     /// The effective model registry could not be built.
     #[error("model registry: {0}")]
     Registry(#[source] ConfigError),
-    /// The realm's config document could not be read.
     #[error("cannot read the realm config: {0}")]
     ConfigRead(#[source] ConfigError),
     /// The realm's config runtime could not read the document (or its
@@ -699,7 +690,6 @@ pub enum EndpointError {
         "no model selected and endpoint `{endpoint}` offers none ({why}); pass --model {endpoint}:<id>"
     )]
     NothingListed {
-        /// The endpoint.
         endpoint: String,
         /// Why its list is empty or missing.
         why: String,

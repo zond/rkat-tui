@@ -64,9 +64,7 @@ impl RuleGroup {
 pub struct BlockRule {
     /// Stable id (`D1`, `S2`, ...), reported back in stage-2 `RULE:` lines.
     pub id: &'static str,
-    /// Group.
     pub group: RuleGroup,
-    /// Rule text.
     pub text: &'static str,
 }
 
@@ -575,10 +573,6 @@ The agent changed these dependency manifests or lockfiles in this session; \
 the shell is contained, so building and installing from them is still covered \
 by the build and install exceptions:";
 
-/// The directories the user allows outside the project root (nothing when
-/// none is granted): the ones the user named first, then the defaults, each
-/// group in sorted order, each list bounded by [`MAX_GRANTED_LIST_BYTES`]
-/// of paths.
 /// What `<environment>` says of rkat-tui's own configuration and state.
 pub const OWN_STATE_NOTE: &str = "rkat-tui's own configuration and state, and the user's own agent configuration (the approval gate's permissions and settings, its trust records, every workspace's sessions and audit log, the daemon's attach token, the user-global mcp.toml, hooks, AGENTS.md, skills and comms keys). The user writes these, never the agent: reading, listing, copying or changing anything under them, or connecting with what they hold, is S1 whatever the stated purpose, unless the user's own message asks for exactly that action:";
 
@@ -595,6 +589,10 @@ fn render_own_state(out: &mut String, dirs: &[PathBuf]) {
     }
 }
 
+/// The directories the user allows outside the project root (nothing when
+/// none is granted): the ones the user named first, then the defaults, each
+/// group in sorted order, each list bounded by [`MAX_GRANTED_LIST_BYTES`]
+/// of paths.
 fn render_granted(out: &mut String, granted: &super::classifier::GrantedDirs) {
     let section = |out: &mut String, note: &str, named: &[PathBuf], defaults: &[PathBuf]| {
         if named.is_empty() && defaults.is_empty() {
@@ -725,7 +723,6 @@ pub fn render_stage2(input: &ClassifierInput<'_>, mode: Stage2Mode) -> (String, 
 /// One tool round-trip, replayed as text in the final tool-less call.
 #[derive(Debug, Clone, Copy)]
 pub struct Evidence<'a> {
-    /// Tool name.
     pub tool: &'a str,
     /// Raw JSON arguments.
     pub args: &'a str,
@@ -792,12 +789,10 @@ pub fn parse_stage1(text: &str) -> Stage1 {
 /// Stage-2 result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stage2Verdict {
-    /// Allow.
     Allow {
         /// Stated reason.
         reason: String,
     },
-    /// Block.
     Block {
         /// Rule id, `None` for `NONE`.
         rule: Option<String>,
@@ -942,9 +937,9 @@ mod tests {
         }
     }
 
-    /// The policy judges effects, not location (the owner's decision): no
-    /// rule makes leaving the project root a violation in
-    /// itself, D1 and T3 are narrowed to what existed and what lasts, the
+    /// The policy judges effects, not location: no rule makes leaving the
+    /// project root a violation in itself, D1 and T3 are narrowed to what
+    /// existed and what lasts, the
     /// effect rules that guard what this opens are there, and the routine
     /// development effects are explicit allow exceptions.
     #[test]

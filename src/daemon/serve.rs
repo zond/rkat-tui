@@ -243,13 +243,11 @@ impl Listener {
         })
     }
 
-    /// The bound address.
     #[must_use]
     pub fn address(&self) -> SocketAddr {
         self.address
     }
 
-    /// The endpoint file.
     #[must_use]
     pub fn endpoint_file(&self) -> &Path {
         &self.file
@@ -721,15 +719,14 @@ fn running_line(
 /// `decision/decide` is decided by the daemon's consent surface (likewise),
 /// and anything else goes (observed) to the engine; the engine's lines go
 /// back to the client, with the decision methods added to an `initialize`
-/// answer, and so do the decision notices the
-/// consent surface offers this client. Ends when the client closes (the
-/// engine then sees its end of input) or the engine's side closes; a local
-/// call still running then finishes (a conversation switch is not cut in
-/// half), and its answer is dropped, except one of
-/// [`protocol::CANCELLED_ON_LEAVE`], which is dropped itself. Ends too when the client's queue
-/// fills ([`CLIENT_QUEUE`]): a client that does not read is dropped.
-/// `caller` is what the client proved at attach (the lifecycle methods
-/// answer for it).
+/// answer, and so do the decision notices the consent surface offers this
+/// client. Ends when the client closes (the engine then sees its end of
+/// input) or the engine's side closes; a local call still running then
+/// finishes (a conversation switch is not cut in half), and its answer is
+/// dropped, except one of [`protocol::CANCELLED_ON_LEAVE`], which is
+/// dropped itself. Ends too when the client's queue fills
+/// ([`CLIENT_QUEUE`]): a client that does not read is dropped. `caller` is
+/// what the client proved at attach (the lifecycle methods answer for it).
 pub async fn proxy<R, W, E, L>(
     client_read: R,
     client_write: W,
@@ -1210,16 +1207,13 @@ fn with_decision_methods(answer: &mut Value) -> bool {
 pub enum Routed {
     /// A `decision/decide`, for the daemon's consent surface.
     Decide {
-        /// The request id.
         id: Option<RpcId>,
         /// Its params (`Null` when absent).
         params: Value,
     },
     /// A local method call, to answer with [`answer`].
     Local {
-        /// The request id.
         id: Option<RpcId>,
-        /// The method.
         method: String,
         /// Its params (`Null` when absent).
         params: Value,
@@ -1230,7 +1224,6 @@ pub enum Routed {
     Denied {
         /// The request id (`None`: a notification).
         id: Option<RpcId>,
-        /// Why.
         refusal: Refusal,
     },
     /// The line for the engine (newline included): the proxy's own
@@ -1238,7 +1231,6 @@ pub enum Routed {
     /// with what its answer is for, under its id, when the proxy waits for
     /// it (an input on its way, [`Observed::input`], among them).
     Forward {
-        /// The line.
         line: String,
         /// The request id (as JSON text) and what its answer is for.
         awaits: Option<(String, Awaiting)>,
@@ -1259,7 +1251,6 @@ pub enum Routed {
     Refused {
         /// The request id (`None`: a notification, which gets no answer).
         id: Option<RpcId>,
-        /// The method.
         method: String,
     },
 }
@@ -1555,11 +1546,8 @@ mod tests {
         (admitted, seen)
     }
 
-    /// The CI failure this guards: the acknowledgement was written before
-    /// the connection's seat was taken, so a client that had attached could
-    /// be missing from another connection's `rkat/status`. The seat is
-    /// taken first: at the moment the acknowledgement is written the
-    /// client is counted.
+    /// The connection's seat is taken before its acknowledgement is written:
+    /// a client that read it is never missing from another `rkat/status`.
     #[tokio::test]
     async fn the_client_is_counted_before_its_attach_is_acknowledged() {
         let lifecycle = super::super::lifecycle::Lifecycle::new(
@@ -1633,9 +1621,8 @@ mod tests {
         line
     }
 
-    /// The finding this guards: the proxy awaited each local call before
-    /// reading the client's next line, so a slow `rkat/resume` held back
-    /// the client's Esc (`mob/stop_member_run`) and its other calls.
+    /// A slow local call (`rkat/resume`) holds back neither the client's Esc
+    /// (`mob/stop_member_run`) nor its other calls.
     #[tokio::test]
     async fn a_slow_local_call_holds_back_no_other_line() {
         let (client, client_side) = tokio::io::duplex(1 << 16);
@@ -1716,10 +1703,8 @@ mod tests {
         })
     }
 
-    /// The finding this guards: the engine's
-    /// lines for a client went into an unbounded queue, so a client that
-    /// stopped reading (a suspended TUI, a stalled tunnel) made the daemon
-    /// buffer its whole event stream.
+    /// A client that stops reading (a suspended TUI, a stalled tunnel) is
+    /// dropped: the daemon never buffers its whole event stream.
     #[tokio::test]
     async fn a_client_that_does_not_read_is_dropped_and_another_keeps_streaming() {
         let limits = Limits {
@@ -1766,9 +1751,8 @@ mod tests {
         drop(stalled_client);
     }
 
-    /// The finding this guards: one failed
-    /// `accept` (out of file descriptors, a connection aborted before it
-    /// was accepted) ended the serve loop and with it the daemon.
+    /// A failed `accept` (out of file descriptors, a connection aborted
+    /// before it was accepted) ends neither the serve loop nor the daemon.
     #[tokio::test]
     async fn a_failed_accept_does_not_end_accepting() {
         let peer = SocketAddr::from(([127, 0, 0, 1], 1));

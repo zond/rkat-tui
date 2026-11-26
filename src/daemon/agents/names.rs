@@ -9,7 +9,6 @@ pub const NAME_PREFIX: &str = "main-";
 /// How many characters an agent's id has.
 pub const ID_CHARS: usize = 4;
 
-/// The characters an agent's id is drawn from.
 const ID_ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyz23456789";
 
 /// Whether `name` is an agent's member identity: `main-<id>` (lower-case

@@ -1,4 +1,4 @@
-//! Checkpoints of long runs (the owner's decision).
+//! Checkpoints of long runs.
 //!
 //! The engine ends a run after `[agent] max_turns` model calls
 //! (`TurnLimitReached`, error class `MaxTurns`) at a clean boundary: the
@@ -81,7 +81,6 @@ pub fn status_request(steps: u64) -> String {
 pub enum Subject {
     /// A live agent, by name.
     Agent(String),
-    /// A helper.
     Helper(HelperKey),
 }
 
@@ -224,7 +223,6 @@ impl std::fmt::Debug for Checkpoints {
 /// A checkpoint begun ([`Checkpoints::begin`]).
 #[derive(Debug)]
 pub struct Begun {
-    /// Its id.
     pub id: u64,
     /// Turns `true` when the user cancels it.
     pub cancelled: watch::Receiver<bool>,

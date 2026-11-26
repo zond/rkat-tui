@@ -166,7 +166,6 @@ impl EndpointRegistry {
         &self.endpoints
     }
 
-    /// Whether no endpoint is configured.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.endpoints.is_empty()
@@ -182,7 +181,6 @@ impl EndpointRegistry {
 /// Why one `[endpoints.<name>]` entry is skipped.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EndpointSkip {
-    /// The name is not a valid endpoint name.
     #[error("names may only use letters, digits, `_` and `-`")]
     InvalidName,
     /// The name is a built-in endpoint's.
@@ -190,10 +188,8 @@ pub enum EndpointSkip {
         "`{0}` is a built-in endpoint; configure its key and base URL in the realm config, or pick another name"
     )]
     BuiltinName(String),
-    /// No `dialect`.
     #[error("`dialect` is missing (anthropic, openai or gemini)")]
     NoDialect,
-    /// An unknown `dialect`.
     #[error("unknown dialect `{0}` (expected anthropic, openai or gemini)")]
     UnknownDialect(String),
     /// A project file may not name environment variables.
@@ -201,13 +197,10 @@ pub enum EndpointSkip {
         "a project tui.toml may not read keys from the environment (`api_key_env = \"{0}\"`); define the endpoint in your own tui.toml"
     )]
     ProjectEnvKey(String),
-    /// `api_key_env` names an unset variable.
     #[error("environment variable `{0}` (api_key_env) is not set")]
     UnsetEnv(String),
-    /// No key at all.
     #[error("no key: set `api_key_env` to the environment variable that holds it")]
     NoKey,
-    /// `api_style` on an endpoint that is not of the `openai` dialect.
     #[error("`api_style` applies to the openai dialect only, not {0}")]
     ApiStyleDialect(WireDialect),
 }

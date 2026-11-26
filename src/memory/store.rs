@@ -105,13 +105,10 @@ pub enum NoteError {
     /// The note content is empty after trimming.
     #[error("note content is empty")]
     Empty,
-    /// The note content exceeds [`NOTE_MAX_BYTES`].
     #[error("note is too large (limit {NOTE_MAX_BYTES} bytes); keep notes short")]
     TooLarge,
-    /// The scope already holds [`MAX_NOTES`] notes.
     #[error("too many notes (limit {MAX_NOTES}); forget or merge some first")]
     TooMany,
-    /// No note with this name exists.
     #[error("no note named `{0}` in this scope; note_list lists the notes of each scope")]
     NotFound(String),
     /// The notes directory or note file is a symlink.
@@ -120,7 +117,6 @@ pub enum NoteError {
     /// The atomic write of a note or the index failed or was refused.
     #[error("cannot write note: {0}")]
     Write(#[source] AtomicWriteError),
-    /// Underlying I/O failure.
     #[error("note I/O error: {0}")]
     Io(#[from] io::Error),
 }
@@ -200,7 +196,6 @@ impl NoteStore {
         }
     }
 
-    /// The notes directory.
     #[must_use]
     pub fn dir(&self) -> &Path {
         &self.dir
@@ -213,7 +208,6 @@ impl NoteStore {
         &self.root
     }
 
-    /// The scope of this store.
     #[must_use]
     pub fn scope(&self) -> Scope {
         self.scope

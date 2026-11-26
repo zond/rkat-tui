@@ -32,10 +32,8 @@ use meerkat_mob_mcp::MobMcpState;
 
 use crate::mobs::{HelperKey, HelperRegistry, HelperTag};
 
-/// The tool's name.
 pub const CONTACTS: &str = "contacts";
 
-/// The tool's description.
 pub const DESCRIPTION: &str = "List everyone you can message now and what each is: you, your \
      parent (for a helper), your helpers (kind, running or idle, task, whom they are connected \
      to), helpers you were connected with, this workspace's agents and agents of other \
@@ -56,7 +54,6 @@ pub trait Roster: Send + Sync {
 /// One helper the caller holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held {
-    /// Its name.
     pub name: String,
     /// Its kind's words (`fresh · kept`), when known.
     pub kind: Option<String>,
@@ -93,7 +90,6 @@ pub struct Peer {
     pub name: String,
     /// What it is (`whose helper`, an agent's state, a wire's workspace).
     pub what: String,
-    /// Its peer id.
     pub peer: String,
 }
 

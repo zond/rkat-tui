@@ -38,7 +38,6 @@ pub struct ModelEntry {
     pub id: String,
     /// Human-readable name, when known.
     pub display_name: Option<String>,
-    /// Where this entry came from.
     pub source: ModelSource,
     /// Maximum input context window in tokens, as reported by the endpoint.
     pub context_window: Option<u64>,
@@ -173,9 +172,7 @@ pub async fn list_models(
 /// One endpoint's section of the `/model` picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelGroup {
-    /// Endpoint name.
     pub endpoint: String,
-    /// Its dialect.
     pub dialect: WireDialect,
     /// Its base URL override.
     pub base_url: Option<String>,
@@ -189,7 +186,6 @@ pub struct ModelGroup {
 /// the per-model prices from `/model/info` (USD per million tokens).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EndpointListing {
-    /// The endpoint's models.
     pub models: Vec<ModelEntry>,
     /// Prices by model id, first deployment first.
     pub prices: Vec<(String, ModelPrice)>,

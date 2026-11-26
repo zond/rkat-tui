@@ -1,8 +1,7 @@
 //! The connection's lifecycle as one state ([`Conn`]): which of connecting,
 //! attached, waiting to retry, failed, stopped or re-homing the runner is
-//! in, with each state's own data. A combination the flags it replaces
-//! could hold (a link and a failed first connect, a stop and a retry) is
-//! not representable.
+//! in, with each state's own data. A combination such as a link and a
+//! failed first connect, or a stop and a retry, is not representable.
 
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -19,12 +18,10 @@ pub(super) enum Conn {
     Idle,
     /// A connect runs; `tries` connects failed before it in a row.
     Connecting {
-        /// The connect.
         task: ConnectTask,
         /// The failed connects before it ([`super::START_RETRIES`]).
         tries: u32,
     },
-    /// Attached.
     Up {
         /// The connection and the agent's stream.
         link: Link,
@@ -33,7 +30,6 @@ pub(super) enum Conn {
     },
     /// A connect failed; the next is made by itself at `at`.
     Retrying {
-        /// When.
         at: Instant,
         /// The failed connects so far.
         tries: u32,
@@ -66,7 +62,6 @@ pub(super) enum ConnEvent {
     Lost,
     /// The connect ended.
     Connected(Result<Result<Established, ClientError>, tokio::task::JoinError>),
-    /// The retry is due.
     RetryDue,
 }
 

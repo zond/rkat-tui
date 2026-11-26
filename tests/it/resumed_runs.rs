@@ -282,10 +282,8 @@ async fn interrupt_and_go_on(daemon: &Running, client: &mut Client, llm: &Script
 /// The daemon's stop catches the agent inside a model call while its
 /// `assign` helper works. The next daemon resumes the run, which makes
 /// that call again, and restores the helper, which runs anew: the agent
-/// shows as running, truly. Esc stops the run at once; before, the client
-/// knew no run id for a resumed run, force-cancelled the member (which
-/// waits for a boundary) and the run ended only when the hard cancel took
-/// it after the interrupt's 10 s deadline.
+/// shows as running, truly. Esc stops the run at once, by its id, not
+/// through a force-cancel of the member that waits for a boundary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_run_stopped_with_a_helper_resumes_and_esc_stops_it_at_once() {
     let ws = Workspace::new();
@@ -315,8 +313,7 @@ async fn a_run_stopped_with_a_helper_resumes_and_esc_stops_it_at_once() {
 /// its call again, and the restored helper made its call, so it sees
 /// neither the run's `run_resumed` nor any other event of it. The daemon
 /// tells it the open run as it attaches: it joins the turn, the message
-/// typed meanwhile waits, and Esc stops the run by its id at once. Before,
-/// it showed no turn at all.
+/// typed meanwhile waits, and Esc stops the run by its id at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_attaching_inside_a_resumed_run_stops_the_run_by_its_id() {
     let ws = Workspace::new();
@@ -342,8 +339,7 @@ async fn a_client_attaching_inside_a_resumed_run_stops_the_run_by_its_id() {
 /// shell call, and a client that attaches again joins that turn from the
 /// daemon's note (no event of the run comes while the command sleeps).
 /// Esc stops the run by its id at once, the message typed meanwhile comes
-/// back unread, and the next one gets its model call. Before, the attaching client
-/// showed no turn.
+/// back unread, and the next one gets its model call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_reattaching_inside_a_slow_shell_call_stops_the_run_by_its_id() {
     let ws = Workspace::new();
@@ -463,15 +459,11 @@ async fn a_run_stopped_inside_a_shell_call_resumes_with_its_outcome_uncertain() 
 /// seating it.
 const LEFT_ENDED: &str = "ended when the daemon stopped";
 
-/// The cause of `stopping_the_helper_of_a_resumed_run_tells_the_agent_in_that_run`
-/// failing on a slow runner (`within` of the second daemon's start ran out):
-/// the start read each agent's tool catalog, and the engine's read waits
-/// behind a running turn, up to 30 s; on a slow host the restore had
-/// already resumed the agent's run (then inside a `delegate` call waiting
-/// for its hanging helper), so the start (and every client) waited the
-/// 30 s. Here the start is held until the resumed run made its call again,
-/// so the catalog read meets a running turn every time; the daemon must
-/// still serve at once.
+/// The start reads each agent's tool catalog, and the engine's read waits
+/// behind a running turn, up to 30 s; on a slow host the restore has
+/// already resumed the agent's run by then. Here the start is held until
+/// the resumed run made its call again, so the catalog read meets a
+/// running turn every time; the daemon must still serve at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_start_does_not_wait_behind_a_resumed_run_s_turn() {
     let ws = Workspace::new();

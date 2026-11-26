@@ -37,7 +37,6 @@ pub struct HelperTag {
     /// Helper labels from the outermost helper to this one (its depth is the
     /// length).
     pub path: Vec<String>,
-    /// The model the helper runs on.
     pub model: String,
     /// How it was started, which decides what its parent is told of it
     /// ([`super::endings`]). Absent in the bindings an earlier build wrote:
@@ -99,8 +98,8 @@ pub enum HelperKind {
     /// parent is told each time it goes idle. A fork's first run is told
     /// by the engine ("Background fork_off job … finished").
     Started(HelperContext, HelperLife),
-    /// Anything else (a `delegate` helper, a council's participant, a
-    /// member an earlier build bound without a kind).
+    /// Anything else (a council's participant, a member an earlier build
+    /// bound as a `delegate` helper or without a kind).
     #[default]
     Other,
 }
@@ -229,9 +228,7 @@ impl HelperTag {
 pub struct HelperStatus {
     /// Member identity.
     pub label: String,
-    /// The model it runs on.
     pub model: String,
-    /// Nesting depth.
     pub depth: usize,
 }
 
@@ -289,13 +286,11 @@ pub enum OwnerError {
     /// The spawning member is no helper this daemon bound.
     #[error("the spawning member {0} works for no session of this daemon")]
     UnknownSpawner(HelperKey),
-    /// The mob was not created by a session of this daemon.
     #[error("mob {0} was created by no session of this daemon")]
     UnknownMob(MobId),
     /// The mob's creator is neither an agent's session nor a helper.
     #[error("session {0} is neither a session of this daemon nor a helper")]
     UnknownSession(SessionId),
-    /// The owner session is not open in this daemon.
     #[error("session {0} is not open")]
     OwnerNotOpen(SessionId),
     /// A restored member has no persisted owner.
@@ -306,7 +301,7 @@ pub enum OwnerError {
 /// How many destroyed mobs a slow listener may fall behind by.
 const DESTROYED_QUEUE: usize = 64;
 
-/// A agent's session's model, as helpers inherit it.
+/// An agent's session's model, as helpers inherit it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionModel {
     model: String,
@@ -446,7 +441,7 @@ impl Drop for Reservation<'_> {
 /// event followers, the session handles and the runner.
 #[derive(Debug)]
 pub struct HelperRegistry {
-    /// agent's sessions open in this process.
+    /// The agents' sessions open in this process.
     sessions: RwLock<HashMap<SessionId, SessionModel>>,
     /// Host-root members that are owners themselves (the mob daemon's
     /// agent), and the session each runs as: a member they spawn
@@ -1180,7 +1175,7 @@ mod tests {
         assert_eq!(owner.model, "m-root");
         assert_eq!(owner.auth_binding, Some(binding()));
         assert!(owner.path.is_empty());
-        // `delegate` from its session: the implicit mob its session created.
+        // A mob its session created (an `implicit-` one) works for it.
         let implicit = MobId::from(format!("implicit-{session}"));
         registry.record_mob(&implicit, &session).unwrap();
         assert_eq!(

@@ -45,7 +45,6 @@ use tokio::io::{
     AsyncBufRead, AsyncBufReadExt as _, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _,
 };
 
-/// The attach method.
 pub const ATTACH_METHOD: &str = protocol::ATTACH;
 
 /// How long a client may take to send its attach line.
@@ -93,10 +92,6 @@ fn proves(expected: Result<String, ProofKeyError>, given: &str) -> bool {
 }
 
 /// The daemon's proof that it holds `token`, for the two nonces.
-///
-/// # Errors
-///
-/// [`ProofKeyError`] when the token cannot key one.
 pub fn daemon_proof(
     token: &str,
     client_nonce: &str,
@@ -106,10 +101,6 @@ pub fn daemon_proof(
 }
 
 /// The client's proof that it holds `token`, for the two nonces.
-///
-/// # Errors
-///
-/// [`ProofKeyError`] when the token cannot key one.
 pub fn client_proof(
     token: &str,
     client_nonce: &str,
@@ -155,7 +146,6 @@ pub enum HandshakeError {
     /// The client closed before a full line.
     #[error("the client closed before attaching")]
     Closed,
-    /// The first line is not an attach request.
     #[error("the first request is not `{ATTACH_METHOD}`: {0}")]
     NotAttach(String),
     /// Missing or wrong token, or a wrong proof.
@@ -167,7 +157,6 @@ pub enum HandshakeError {
     /// The daemon could not compute its own proof: nobody is let in.
     #[error("{0}")]
     Proof(ProofKeyError),
-    /// Reading or writing the connection failed.
     #[error("connection error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -175,7 +164,6 @@ pub enum HandshakeError {
 /// A valid attach line, not acknowledged yet ([`acknowledge`]).
 #[derive(Debug)]
 pub struct Pending {
-    /// The request's id.
     pub id: RpcId,
     /// What the client presented besides the token (its start token,
     /// whether it is a probe).

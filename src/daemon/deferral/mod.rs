@@ -439,7 +439,6 @@ pub enum HiddenFamily {
 }
 
 impl HiddenFamily {
-    /// Every family.
     pub const ALL: [Self; 2] = [Self::Schedule, Self::Mob];
 
     /// Its name, as a search and `/context` say it.
@@ -678,7 +677,6 @@ forward_dispatcher! {
 /// again before anything else may build, and seats agents under
 /// [`Self::building`], so no agent is built while a router is made.
 pub struct Deferral {
-    /// The deferrable tools.
     pub deferrable: Arc<Deferrable>,
     /// Each conversation's reveals.
     pub reveals: Arc<reveal::Reveals>,

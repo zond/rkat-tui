@@ -56,7 +56,6 @@ pub type SideClients = Arc<
 /// The tool call the agent is running, as the client saw it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Running {
-    /// The tool.
     pub name: String,
     /// How long it has run.
     pub secs: u64,
@@ -211,10 +210,6 @@ pub fn prompt(
 
 /// Ask `model` on `client`: no tools, [`SYSTEM`] and `prompt`. The answer's
 /// text and the usage the provider reported.
-///
-/// # Errors
-///
-/// The provider's failure, in words.
 pub async fn ask(
     client: &dyn LlmClient,
     model: &str,

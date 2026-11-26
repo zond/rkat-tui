@@ -35,7 +35,6 @@ pub struct UsageTotals {
     /// Uncached input tokens.
     #[serde(default)]
     pub input: u64,
-    /// Output tokens.
     #[serde(default)]
     pub output: u64,
     /// Input tokens read from the prompt cache.
@@ -66,7 +65,6 @@ impl UsageTotals {
         self.cache_write = self.cache_write.saturating_add(other.cache_write);
     }
 
-    /// Whether no token was counted.
     #[must_use]
     pub fn is_zero(&self) -> bool {
         *self == Self::default()
@@ -156,7 +154,6 @@ impl SessionCost {
         self.add(model, &totals);
     }
 
-    /// Whether no token was counted.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.per_model.values().all(UsageTotals::is_zero)

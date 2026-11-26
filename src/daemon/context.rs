@@ -159,7 +159,6 @@ pub fn def_bytes(def: &ToolDef) -> usize {
 /// One family's share of a request's tool definitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FamilySize {
-    /// The family.
     pub family: ToolFamily,
     /// Its tools.
     pub tools: usize,
@@ -194,11 +193,8 @@ pub struct MessageCounts {
     pub system: usize,
     /// Their text's bytes as sent (the system prompt).
     pub system_bytes: usize,
-    /// User messages.
     pub user: usize,
-    /// Assistant messages.
     pub assistant: usize,
-    /// Tool-result messages.
     pub tool_results: usize,
     /// System notices.
     pub notices: usize,

@@ -94,7 +94,6 @@ pub enum GrantTarget {
     },
     /// The literal allow rule of this tool and subject.
     Rule {
-        /// The tool.
         tool: String,
         /// The call's subject, matched literally.
         subject: String,
@@ -124,7 +123,6 @@ impl GrantTarget {
 pub struct BlockedCall {
     /// Its number in the daemon (stable while it is listed).
     pub id: u64,
-    /// The tool.
     pub tool: String,
     /// The helper that made the call (`None`: the agent itself).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -227,13 +225,10 @@ impl GrantOrigin {
 /// Why no directory grant fits a path.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum GrantRefusal {
-    /// The path does not resolve.
     #[error("`{0}` does not resolve")]
     Unresolved(String),
-    /// Neither the path nor its parent is an existing directory.
     #[error("neither `{0}` nor its parent is an existing directory")]
     NoDirectory(String),
-    /// The directory is one no grant may name.
     #[error("`{0}` is never granted ({1})")]
     Refused(String, &'static str),
 }
@@ -248,8 +243,7 @@ const SYSTEM_DIRS: &[&str] = &[
 /// names: the path itself when it is an existing directory, else its
 /// parent when that is one. Never wider than the parent, and refused for
 /// the root, the home directory or a directory holding it, a system
-/// directory, the project
-/// itself and the gate's sealed and secret roots.
+/// directory, the project itself and the gate's sealed and secret roots.
 ///
 /// # Errors
 ///
@@ -541,11 +535,8 @@ impl Grants {
     }
 
     /// The directory an "always" grant of `path` writes for a project at
-    /// `root`, checked against the directories already named.
-    ///
-    /// # Errors
-    ///
-    /// Why it cannot be granted always, for the user.
+    /// `root`, checked against the directories already named; the error
+    /// says why it cannot be granted always, for the user.
     pub(super) fn always_dir(&self, path: &Path, root: &Path) -> Result<PathBuf, String> {
         let named: Vec<PathBuf> = self
             .named

@@ -1,6 +1,5 @@
-//! The workspace's agents: several
-//! agent members of the daemon's mob `tui`, one per agent a user
-//! works with.
+//! The workspace's agents: several agent members of the daemon's mob
+//! `tui`, one per agent a user works with.
 //!
 //! An agent is named `main-<id>` ([`new_name`], a short random id; stable
 //! for the member's life, shown in the status bar, `--list`, `/agents` and
@@ -56,10 +55,8 @@ pub enum BindError {
     /// The named agent is not live.
     #[error("no agent `{0}` works in this workspace (rkat-tui --list shows the agents)")]
     NoSuchAgent(String),
-    /// A connection that is no probe named no agent choice.
     #[error("an attach that is no probe names the agent it works with")]
     Unnamed,
-    /// Seating the agent failed.
     #[error("cannot seat the agent: {0}")]
     Seat(#[from] SwitchError),
 }
@@ -67,7 +64,6 @@ pub enum BindError {
 /// What a connection was bound to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bound {
-    /// The agent.
     pub name: String,
     /// It was seated for this connection (a new agent, or an agent seated
     /// again on its conversation).
@@ -127,7 +123,6 @@ const MISSED_KEPT: usize = 32;
 
 /// The live agents.
 pub struct Agents {
-    /// What the agents share with the local methods.
     core: Arc<Core>,
     /// What the daemon last sent each agent (a watch event, a note of a
     /// helper's ending with its folded line, an approval's note): the run
@@ -209,7 +204,6 @@ impl Agents {
         })
     }
 
-    /// The checkpoints of the agents' and helpers' long runs.
     #[must_use]
     pub fn checkpoints(&self) -> &super::checkpoint::Checkpoints {
         &self.checkpoints
@@ -1205,8 +1199,6 @@ impl Agents {
             .filter_map(|agent| agent.watcher.take())
             .collect();
         for mut watcher in watchers {
-            // Each counts what its stream holds already, then ends; one
-            // that does not within the bound is stopped.
             if tokio::time::timeout(WATCHER_DRAIN, &mut watcher)
                 .await
                 .is_err()
@@ -1284,7 +1276,6 @@ pub struct Binding {
 }
 
 impl Binding {
-    /// The agent.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name

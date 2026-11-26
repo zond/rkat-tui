@@ -115,10 +115,6 @@ impl ApprovalEngine {
     /// Remove a rule: one of the realm or of the user's own `tui.toml`
     /// leaves its file too; one of the command line or the project's file
     /// is removed for this process only.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RulesError`] when the file was not written.
     pub fn remove_rule(&self, id: RuleId) -> Result<Option<Rule>, RulesError> {
         let _writing = self.writing();
         let removed = self.rules.write().remove(id);
@@ -285,10 +281,6 @@ impl ApprovalEngine {
     /// Make `target` a grant of `session_id` for `scope` (session or
     /// always), live; an "always" grant is written to the realm too. The
     /// agent is told in a system note ([`ApprovalEvent::Granted`]).
-    ///
-    /// # Errors
-    ///
-    /// Why it was not made, for the user.
     pub fn grant(
         &self,
         session_id: &SessionId,
@@ -842,7 +834,6 @@ impl ApprovalEngine {
             .replace(&[RuleOrigin::Global, RuleOrigin::Realm], rules);
         change.rules_added = added.iter().map(describe_rule).collect();
         change.rules_removed = removed.iter().map(describe_rule).collect();
-        // Statements.
         let (added, removed) = self.statements.replace(&lasting.statements, || {
             self.next_id.fetch_add(1, Ordering::Relaxed)
         });
@@ -973,8 +964,7 @@ fn host_origin(level: Level) -> HostOrigin {
 const NARROWLY: &str = " The safety review reads it narrowly: actions of that kind are no longer blocked for that reason; other actions are reviewed as before.";
 
 /// How the note of an approval of the agent's own blocked call opens: a
-/// client reads a run it starts by it
-/// (`crate::ui::transcript::composed_input`).
+/// client reads a run it starts by it (`crate::ui::transcript::composed_input`).
 pub const APPROVED_OPENING: &str = "The user approved your blocked call";
 
 /// What an approval from `/permissions` of the blocked call `what` tells the

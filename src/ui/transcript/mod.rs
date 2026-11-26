@@ -86,7 +86,6 @@ pub enum NoticeLevel {
     Info,
     /// Something degraded but the run continues.
     Warn,
-    /// A failure.
     Error,
 }
 
@@ -133,7 +132,6 @@ pub enum ShellState {
     },
     /// It ended.
     Done {
-        /// How.
         exit: crate::user_shell::ShellExit,
         /// Wall-clock time.
         duration_ms: u64,
@@ -287,9 +285,7 @@ pub struct DiffView {
     pub path: String,
     /// Unified diff text.
     pub unified: String,
-    /// Added line count.
     pub added: usize,
-    /// Removed line count.
     pub removed: usize,
 }
 
@@ -315,7 +311,6 @@ pub enum Block {
     Queued {
         /// Pending-queue id.
         id: PendingId,
-        /// Message text.
         text: String,
         /// Delivery state.
         label: QueuedLabel,
@@ -327,7 +322,6 @@ pub enum Block {
     },
     /// Model reasoning / thinking.
     Reasoning {
-        /// Reasoning text.
         text: String,
         /// Whether only a one-line summary is shown.
         collapsed: bool,
@@ -348,7 +342,6 @@ pub enum Block {
         /// Whole seconds it has run, while it runs (the line's clock,
         /// advanced by [`Transcript::tick_tools`]).
         ticked: u64,
-        /// Lifecycle state.
         state: ToolState,
         /// Truncated result preview.
         result_preview: Option<Preview>,
@@ -370,7 +363,6 @@ pub enum Block {
         tool: String,
         /// Tier / mechanism that decided.
         tier: String,
-        /// Whether the call was allowed.
         allowed: bool,
         /// Optional explanation.
         reason: Option<String>,
@@ -379,7 +371,6 @@ pub enum Block {
     Notice {
         /// Severity.
         level: NoticeLevel,
-        /// Text.
         text: String,
     },
     /// A helper's header (see [`HelperFold`]).
@@ -390,7 +381,6 @@ pub enum Block {
     Task {
         /// Who gave it, or what it is.
         label: String,
-        /// The input's text.
         text: String,
     },
     /// A message another agent of the workspace sent this one (a peer
@@ -427,7 +417,6 @@ pub enum Block {
     /// turn, not part of the conversation (the agent never sees it, and a
     /// conversation shown again from the daemon does not have it).
     Btw {
-        /// The question.
         question: String,
         /// The answer (`Ok`), why there is none (`Err`), or `None` while
         /// it is pending.
@@ -483,7 +472,6 @@ pub enum Block {
     Shell {
         /// The command line.
         command: String,
-        /// Lifecycle state.
         state: ShellState,
         /// The output preview (capped like a tool result).
         output: Option<Preview>,
@@ -590,7 +578,6 @@ pub struct Transcript {
     /// ([`Stream::deciding`]): a start of the line `thought`, held so a
     /// model's reasoning sent as text never flashes as a reply.
     held: IndexMap<Option<BlockId>, String>,
-    /// What the transcript knows of its helpers besides their blocks.
     helpers: Helpers,
     /// Where tool lines show paths from.
     paths: tool_line::PathView,
@@ -716,7 +703,6 @@ struct HelperScope<'a> {
 }
 
 impl Transcript {
-    /// Create an empty transcript.
     pub fn new() -> Self {
         Self::default()
     }
@@ -945,7 +931,6 @@ impl Transcript {
         BlockId(self.next_id)
     }
 
-    /// Block by id.
     pub fn block(&self, id: BlockId) -> Option<&Block> {
         self.entry(id).map(|entry| &entry.block)
     }
@@ -3121,12 +3106,9 @@ mod tests {
         assert!(matches!(t.last(), Some(Block::Assistant { md }) if md == "After."));
     }
 
-    /// The owner's sighting on 0.0.16: the agent's sentence cut into three
-    /// blocks while a kept helper ran folded, after a peer message with an
-    /// empty body. None of a folded helper's events (its tool calls'
-    /// start and end, its streamed text, its run's start) nor a peer
-    /// message without words parts the agent's prose, and the blank
-    /// message draws nothing.
+    /// None of a folded kept helper's events (its tool calls' start and
+    /// end, its streamed text, its run's start) nor a peer message without
+    /// words parts the agent's prose, and the blank message draws nothing.
     #[test]
     fn a_folded_helper_s_events_and_a_blank_peer_message_do_not_part_the_agent_s_prose() {
         let mut t = Transcript::new();

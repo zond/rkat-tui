@@ -183,8 +183,7 @@ impl ProtectedSet {
 /// directory of an enclosing repository or of a worktree, the user config
 /// directory `~/.rkat/tui`) is sealed through
 /// [`ProjectRoot::with_sealed_roots`]; the workspace's realm directory is a
-/// secret root,
-/// [`ProjectRoot::with_secret_roots`].
+/// secret root, [`ProjectRoot::with_secret_roots`].
 pub const SEALED_PATTERNS: &[&str] = &[
     ".rkat",
     ".rkat/**",
@@ -276,13 +275,10 @@ pub fn is_secret_file_name(name: &std::ffi::OsStr) -> bool {
 /// Errors from resolving a model-supplied path.
 #[derive(Debug, thiserror::Error)]
 pub enum PathError {
-    /// The supplied path was empty.
     #[error("path is empty")]
     Empty,
-    /// The supplied path contained a NUL byte.
     #[error("path contains a NUL byte")]
     NulByte,
-    /// `~` was used but the home directory is unknown.
     #[error("cannot expand `~`: home directory is unknown")]
     NoHome,
     /// Canonicalization of an existing ancestor failed.
@@ -290,7 +286,6 @@ pub enum PathError {
     Io {
         /// Path being resolved.
         path: PathBuf,
-        /// Underlying I/O error.
         #[source]
         source: std::io::Error,
     },
@@ -709,7 +704,6 @@ pub enum FileMode {
 /// Failures of [`write_atomic`] and [`check_no_symlinks`].
 #[derive(Debug, thiserror::Error)]
 pub enum AtomicWriteError {
-    /// The target has no parent directory.
     #[error("{0} has no parent directory")]
     NoParent(PathBuf),
     /// The target or one of its ancestors is a symlink.
@@ -720,7 +714,6 @@ pub enum AtomicWriteError {
         /// The symlinked component.
         component: PathBuf,
     },
-    /// The target exists and is not a regular file.
     #[error("refusing to write {0}: it is not a regular file")]
     NotRegular(PathBuf),
     /// An I/O operation failed.
@@ -730,7 +723,6 @@ pub enum AtomicWriteError {
         op: &'static str,
         /// On which path.
         path: PathBuf,
-        /// The error.
         #[source]
         source: std::io::Error,
     },
@@ -738,10 +730,6 @@ pub enum AtomicWriteError {
 
 /// Create `dir` and its missing parents with mode 0700 (an existing
 /// directory is left as it is).
-///
-/// # Errors
-///
-/// When it cannot be created.
 pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
@@ -895,11 +883,7 @@ pub struct OpenedLog {
 /// generation is kept, as the audit log keeps one. A rename that fails is
 /// never a reason not to log: the old file is appended to and the error
 /// is in [`OpenedLog::not_rotated`]. The new file is created with the
-/// mode a plain create gives it (the umask's), as before.
-///
-/// # Errors
-///
-/// When the file cannot be opened.
+/// mode a plain create gives it (the umask's).
 pub fn open_log(path: &Path) -> std::io::Result<OpenedLog> {
     open_log_rotating_at(path, LOG_ROTATE_BYTES)
 }

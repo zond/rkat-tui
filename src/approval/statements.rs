@@ -65,7 +65,6 @@ impl StatementOrigin {
 pub struct StatementRow {
     /// Its number (`/permissions` removes it by it).
     pub id: u64,
-    /// The statement.
     pub text: String,
     /// Where it comes from.
     pub origin: StatementOrigin,
@@ -87,10 +86,8 @@ pub enum StatementRefusal {
         "the statement allows anything rather than a kind of action; name what kind (for example \"building the project after the agent changed its dependencies\")"
     )]
     TooBroad,
-    /// [`MAX_STATEMENTS`] are active already.
     #[error("{MAX_STATEMENTS} statements are active already; remove one in /permissions first")]
     TooMany,
-    /// The same statement is active already.
     #[error("that statement is active already")]
     Duplicate,
 }

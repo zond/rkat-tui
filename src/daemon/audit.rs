@@ -1,6 +1,5 @@
-//! The audit log (recommendation 11 of the security review): one JSON line
-//! per gate decision and per lifecycle event that changes authority,
-//! appended by the daemon only.
+//! The audit log: one JSON line per gate decision and per lifecycle event
+//! that changes authority, appended by the daemon only.
 //!
 //! Where: `audit.jsonl` in the workspace's realm
 //! (`<config dir>/workspaces/<id>/`, [`crate::bootstrap::realm_home`]), so
@@ -70,7 +69,6 @@ pub struct Line {
     /// The run the call belongs to, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
-    /// The tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     /// The decisive argument, whole.
@@ -82,10 +80,8 @@ pub struct Line {
     /// `allow` or `deny`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<String>,
-    /// Who decided.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decider: Option<String>,
-    /// Why it was denied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// A lifecycle event's detail.
@@ -130,9 +126,7 @@ pub enum AuditError {
     /// symbolic link).
     #[error("cannot open the audit log {path}: {source}")]
     Open {
-        /// The file.
         path: PathBuf,
-        /// Why.
         source: std::io::Error,
     },
 }
@@ -176,19 +170,11 @@ fn open_append(path: &Path) -> std::io::Result<(File, u64)> {
 
 impl AuditLog {
     /// The audit log in `dir` (the realm directory).
-    ///
-    /// # Errors
-    ///
-    /// [`AuditError::Open`] when the file cannot be opened.
     pub fn open(dir: &Path) -> Result<Arc<Self>, AuditError> {
         Self::open_rotating_at(dir, ROTATE_BYTES)
     }
 
     /// [`Self::open`], rotating past `rotate_at` bytes.
-    ///
-    /// # Errors
-    ///
-    /// [`AuditError::Open`].
     pub fn open_rotating_at(dir: &Path, rotate_at: u64) -> Result<Arc<Self>, AuditError> {
         let path = dir.join(AUDIT_FILE);
         let opened = open_append(&path).map_err(|source| AuditError::Open {
@@ -202,7 +188,6 @@ impl AuditLog {
         }))
     }
 
-    /// The file.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path

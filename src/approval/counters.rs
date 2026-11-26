@@ -47,9 +47,7 @@ impl fmt::Display for PauseCause {
 /// mode, and entering auto mode clears it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AutoMode {
-    /// The permission mode.
     pub mode: PermissionMode,
-    /// Denial counters.
     pub counters: DenialCounters,
     /// Why auto mode is paused (Tier-3 actions go to the human), if it is.
     pub paused: Option<PauseCause>,

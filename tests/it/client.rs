@@ -1,6 +1,6 @@
-//! The client: its runner against the `rkat-tui-mob` daemon started inside the test process with a scripted
-//! LLM, driven
-//! through the same `Effect`/`Msg` channels the UI uses.
+//! The client: its runner against the `rkat-tui-mob` daemon started inside
+//! the test process with a scripted LLM, driven through the same
+//! `Effect`/`Msg` channels the UI uses.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -20,8 +20,7 @@ use rkat_tui::workbench::build_app;
 
 /// The command line's prompt is sent as the UI opens, before the first
 /// attach finished: it is held until the link is up, not failed as "not
-/// attached" (with attach mode the default, `rkat-tui "fix it"` relies
-/// on it).
+/// attached" (`rkat-tui "fix it"` relies on it).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_prompt_sent_before_the_attach_finished_is_held_until_it_did() {
     let ws = Workspace::new();
@@ -93,7 +92,7 @@ async fn esc_interrupts_a_hanging_turn() {
     daemon.stop().await;
 }
 
-/// `/model` in attach mode switches the session in place
+/// `/model` switches the session in place
 /// (`rkat/set_model`): the session keeps the
 /// model, the next prompt is an ordinary send, and the switch is tied to no
 /// connection (the client that made it can leave; another client's prompt
@@ -280,7 +279,7 @@ async fn the_client_reconnects_to_a_restarted_daemon() {
     daemon.stop().await;
 }
 
-/// Ctrl+T in attach mode: the agent's task tools fill the checklist from
+/// Ctrl+T: the agent's task tools fill the checklist from
 /// the daemon's task store (`rkat/tasks`), the view is saved as the realm's
 /// `[ui] checklist` by the daemon, and a client attaching later gets the
 /// list before any turn.
@@ -371,7 +370,7 @@ async fn the_task_tools_fill_the_checklist_over_the_daemon() {
     daemon.stop().await;
 }
 
-/// `/context` in attach mode: the conversation's messages read from the
+/// `/context`: the conversation's messages read from the
 /// daemon, the instruction files on disk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn context_reports_the_daemons_conversation() {
@@ -740,8 +739,8 @@ async fn attach_by_address_refuses_a_readable_or_missing_token_file() {
 }
 
 /// The workspace's daemon is the default; `attach` in a `tui.toml` is no
-/// key: a file that
-/// sets it is refused naming the file, as any unknown key is.
+/// key: a file that sets it is refused naming the file, as any unknown
+/// key is.
 #[test]
 fn the_daemon_is_the_default_and_a_tui_toml_attach_key_is_refused() {
     use rkat_tui::bootstrap::read_layers;
@@ -1075,8 +1074,8 @@ async fn a_reconnect_restarts_a_daemon_that_died() {
     client.quit().await;
 }
 
-/// The findings this guards: attach mode never pushed prices (`/cost`
-/// showed `$?`) and its `!` hint said "sandbox" under `--no-confinement`.
+/// The daemon pushes prices (without them `/cost` shows `$?`), and the
+/// `!` hint does not say "sandbox" under `--no-confinement`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn attach_mode_prices_the_cost_readout_and_says_the_shell_runs_as_you() {
     let ws = Workspace::new();
@@ -1153,8 +1152,8 @@ async fn the_client_builds_its_app_from_the_config() {
     assert!(app.shell_mode_hint().contains("as you, no sandbox"));
 }
 
-/// The finding this guards: attach mode dropped the messages the UI still
-/// held at quit and never said that earlier ones were saved.
+/// The messages the UI still holds at quit are saved, and the next attach
+/// says so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unsent_messages_are_saved_at_quit_and_announced_at_the_next_attach() {
     let ws = Workspace::new();
@@ -1180,7 +1179,7 @@ async fn unsent_messages_are_saved_at_quit_and_announced_at_the_next_attach() {
     daemon.stop().await;
 }
 
-/// ↑/↓ recall and Ctrl+R search in attach mode: the attach runner's UI
+/// ↑/↓ recall and Ctrl+R search: the runner's UI
 /// loads the history files of the workspace's realm and of the user (the
 /// scope the daemon resolves too), a line submitted is appended to them,
 /// and the next start recalls it.
@@ -1214,7 +1213,7 @@ async fn attach_mode_recalls_and_searches_the_shared_input_history() {
     submit("fix the parser", &mut history, &mut global);
     submit("run the tests", &mut history, &mut global);
 
-    // The next attach-mode start.
+    // The next start.
     let (history, global) = load_histories(&config.scope);
     let mut app = build_app(
         &rkat_tui::client::app_setup(&config),

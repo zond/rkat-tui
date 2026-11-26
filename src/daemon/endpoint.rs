@@ -125,10 +125,6 @@ pub fn default_file(workspace: &Path) -> Result<PathBuf, std::io::Error> {
 
 /// Create `dir` and its missing parents with mode 0700 (an existing
 /// directory is left as it is).
-///
-/// # Errors
-///
-/// [`DaemonError::Io`] when it cannot be created.
 pub fn create_private_dir(dir: &Path) -> Result<(), DaemonError> {
     crate::paths::create_private_dir(dir)
         .map_err(|err| DaemonError::io("create endpoint directory", dir, err))
@@ -177,7 +173,6 @@ pub struct Endpoint {
     pub address: std::net::SocketAddr,
     /// The token the attach handshake requires.
     pub token: String,
-    /// The daemon's process id.
     pub pid: u32,
     /// The canonical workspace path the daemon serves (every file names
     /// it; `None`: not known yet, for a daemon reached by address).
@@ -218,10 +213,6 @@ impl Endpoint {
 
     /// Write it to `path` with mode 0600 (via a temporary file and a
     /// rename, so a reader never sees half a file).
-    ///
-    /// # Errors
-    ///
-    /// [`DaemonError::Io`] when the directory or the file cannot be written.
     pub fn write(&self, path: &Path) -> Result<(), DaemonError> {
         let dir = path.parent().unwrap_or_else(|| Path::new("."));
         create_private_dir(dir)?;
@@ -503,10 +494,10 @@ mod tests {
         check_stale(&path).await.unwrap();
     }
 
-    /// The finding this guards: a probe that timed
-    /// out, or a file that could not be read, was taken as stale, so a
-    /// daemon could start beside a live one that was slow to accept. The
-    /// probe is given (no test touches a real network).
+    /// A probe that timed out, or a file that could not be read, is no
+    /// proof of a stale file: taking it as one would start a daemon beside
+    /// a live one that was slow to accept. The probe is given (no test
+    /// touches a real network).
     #[tokio::test]
     async fn only_a_refused_connect_proves_a_file_stale() {
         let dir = tempfile::tempdir().unwrap();

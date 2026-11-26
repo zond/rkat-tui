@@ -45,7 +45,7 @@ fn dialects_come_from_the_catalog_never_from_a_prefix() {
         WireDialect::of_catalog_model(GEMINI_MODEL),
         Some(WireDialect::Gemini)
     );
-    // Prefixes that used to decide no longer do.
+    // A name prefix decides no endpoint.
     for unknown in [
         "claude-not-catalogued",
         "gpt-not-catalogued",

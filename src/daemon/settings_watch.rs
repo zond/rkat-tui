@@ -201,7 +201,7 @@ mod tests {
     /// A file whose directory did not exist when the watch started (a
     /// project with no `.rkat/` yet, a user with no `~/.rkat/tui/`) is
     /// followed once the directory appears: the nearest existing directory
-    /// is watched until then. Before, such a file was never followed.
+    /// is watched until then.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_file_whose_directory_appears_later_is_followed() {
         let tmp = tempfile::tempdir().unwrap();

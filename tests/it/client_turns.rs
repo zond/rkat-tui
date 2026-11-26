@@ -3,7 +3,7 @@
 //! a turn, a queued turn, a steered message applied at a tool boundary
 //! (and one typed while a slow shell call runs), interrupt (also during a
 //! slow tool), `-c` and `--resume` across daemon lifetimes, and a moved
-//! workspace offered its old state (the re-home is `tests/rehome.rs`).
+//! workspace offered its old state (the re-home is `tests/it/rehome.rs`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -143,9 +143,9 @@ async fn a_prompt_queued_behind_a_running_turn_runs_next() {
 /// comes when the carrying request starts, not when its answer ends); (c)
 /// typed while request 2 streams text rides request 3. (d) Two typed while
 /// request 3 is in flight both ride request 4 (since Meerkat 0.9.18 every
-/// steer waiting when a request's input is fixed joins it; 0.9.17 put the
-/// second in request 5). (e) A note of ours and a message typed while
-/// request 5 is in flight both ride request 6; (g) two notes while request
+/// steer waiting when a request's input is fixed joins it). (e) A note of
+/// ours and a message typed while request 5 is in flight both ride request
+/// 6; (g) two notes while request
 /// 6 is in flight, nobody typing, both ride request 7; (f) the prepare
 /// request read after request 7's tools rides request 8 or 9, and a
 /// message typed while request 8 is in flight rides request 9: a note of
@@ -480,10 +480,9 @@ async fn probe_slots(probe: Probe) -> Vec<(&'static str, Option<usize>)> {
 /// recalled while the tools of request 0 run, and a combined one admitted
 /// after it; (2) the same while request 1 is in flight; (3) the control,
 /// two steers left alone; (4) of two waiting steers the second recalled
-/// and a third admitted. Up to Meerkat 0.9.17 a steer recalled from the
-/// front of the queue left its request empty (what came after it rode
-/// N+2); since 0.9.18 the recall gives the request to the steers behind
-/// it, so the combined one rides the next request (N+1). The outcomes are
+/// and a third admitted. Since Meerkat 0.9.18 a recall gives the request
+/// to the steers behind it, so the combined one rides the next request
+/// (N+1), not N+2. The outcomes are
 /// `docs/evidence.md`'s ("A recalled steer's slot", and its 0.9.18
 /// entry).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1132,7 +1131,7 @@ async fn a_classifier_allowed_call_gets_a_note_and_a_tier1_call_does_not() {
         .filter(|msg| matches!(msg, Msg::ToolNote { .. }))
         .collect();
     assert_eq!(notes.len(), 1, "only the reviewed call is noted: {notes:?}");
-    // The classifier allow no longer logs a separate approval line.
+    // A classifier allow logs no separate approval line.
     assert!(!rig.seen.iter().any(|msg| matches!(msg, Msg::Approval(_))));
     rig.quit().await;
 }
@@ -1193,13 +1192,11 @@ const RAW_INTERRUPT_TEXTS: &[&str] = &[
 
 /// The owner's report, in its order: the agent inside a
 /// long foreground shell call, a message typed meanwhile (admitted as a
-/// steer, waiting for the tool), then Esc three times. Before the fix the
-/// first press stopped the run, the runtime ran the typed message as a
-/// follow-up run, and the later presses (force, the 10 s hard cancel) hit
-/// that run. Now the first press stops the run once, by its id, and takes
-/// the message back: no run starts from it, it is back in the editor, the
-/// later presses act on nothing and say so once, and the transcript holds
-/// none of the engine's words, only the one line.
+/// steer, waiting for the tool), then Esc three times. The first press
+/// stops the run once, by its id, and takes the message back: no run
+/// starts from it, it is back in the editor, the later presses (force, the
+/// 10 s hard cancel) act on nothing and say so once, and the transcript
+/// holds none of the engine's words, only the one line.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn three_presses_during_a_slow_shell_stop_one_run_and_return_the_typed_message() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -2304,7 +2301,7 @@ async fn start_other_run(daemon: &rig::Running) -> rkat_tui::client::transport::
 
 /// A client that attached while its agent ran (so it has
 /// no turn of its own for that run) interrupts it with Esc, and says what
-/// it did; before, the press did nothing.
+/// it did.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn esc_interrupts_a_run_the_client_did_not_start() {
     let ws = Workspace::new();
@@ -2404,16 +2401,13 @@ fn pending_labels(app: &rkat_tui::ui::App) -> Vec<rkat_tui::ui::transcript::Queu
         .collect()
 }
 
-/// The owner's report: runs no client started came one after another (a
-/// helper's message each, here the daemon's notes, which start runs the
-/// same way), and the user's Enter landed between two of them: the UI
-/// still showed the first run, the runner had ended its turn, so the
-/// steer was refused (`NotRunning`) and went again as a prompt. That
-/// prompt was a `queue` input, and the next run had begun meanwhile: it
-/// waited behind that whole run (measured before: request 2, the next
-/// one after it, did not carry it; it ran as a fourth request of its
-/// own). Every input of the user's is a steer now: it rides the next
-/// model request of the run that began, and the UI shows it sent, never
+/// Runs no client started come one after another (a helper's message
+/// each, here the daemon's notes, which start runs the same way), and the
+/// user's Enter lands between two of them: the UI still shows the first
+/// run, the runner has ended its turn, so the steer is refused
+/// (`NotRunning`) and goes again. Every input of the user's is a steer,
+/// not a `queue` input that would wait behind the whole next run: it
+/// rides that run's next model request, and the UI shows it sent, never
 /// held for a turn's end.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_message_typed_as_a_run_ends_rides_the_next_run_s_next_request() {

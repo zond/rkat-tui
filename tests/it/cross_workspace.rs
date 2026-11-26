@@ -792,14 +792,12 @@ async fn the_daemon_wires_unwires_and_refuses() {
     a.stop().await;
 }
 
-/// The owner's report: `/wire` to an agent in the middle of
-/// a model call said "nothing was wired: the daemon of … did not answer"
-/// (the client's 10 s bound), while that daemon wired its side all the
-/// same: its handler awaited the note to its agent, which the engine
-/// applies only at the step's end. Now `rkat/wire` and `rkat/unwire`
-/// answer as soon as the wire is made or removed (here within 3 s while
-/// the agent's model call is held), the wire is listed at once, and the
-/// agent reads each note in its next model request, after the held step.
+/// `/wire` to an agent in the middle of a model call: `rkat/wire` and
+/// `rkat/unwire` answer as soon as the wire is made or removed (here
+/// within 3 s while the agent's model call is held), not after the note to
+/// the agent, which the engine applies only at the step's end (past the
+/// client's 10 s bound). The wire is listed at once, and the agent reads
+/// each note in its next model request, after the held step.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wiring_a_busy_agent_answers_at_once_and_its_note_lands_after_the_step() {
     let (ws, root) = workspace("alpha");

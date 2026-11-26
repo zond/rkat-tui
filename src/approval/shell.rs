@@ -56,7 +56,6 @@ pub enum RedirectKind {
 pub struct Redirect {
     /// Explicit file descriptor (`2>`), if any.
     pub fd: Option<u32>,
-    /// Operator kind.
     pub kind: RedirectKind,
     /// Target word after quote removal.
     pub target: String,
@@ -76,9 +75,7 @@ pub struct Word {
 /// A lexer token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tok {
-    /// A word.
     Word(Word),
-    /// A control operator.
     Op(Op),
     /// A redirection including its target.
     Redirect(Redirect),
@@ -1076,8 +1073,7 @@ pub fn runs_git(command: &str) -> bool {
 
 /// Whether `command` may change what git runs: `git config`, anything
 /// under `.git/`, a git config file, git's config environment, or the
-/// keys that name programs. Conservative: a read of them
-/// counts too.
+/// keys that name programs. Conservative: a read of them counts too.
 #[must_use]
 pub fn touches_git_config(command: &str) -> bool {
     const MARKS: [&str; 7] = [
@@ -2089,8 +2085,7 @@ mod tests {
         assert_eq!(words("ls\t-la\nls"), ["ls", "-la", "ls"]);
     }
 
-    /// What counts as touching git's configuration, and as
-    /// running git.
+    /// What counts as touching git's configuration, and as running git.
     #[test]
     fn git_config_touches_and_git_runs_are_recognised() {
         for touches in [
@@ -2158,8 +2153,7 @@ mod tests {
     /// rkat-tui's own state below it (a project at the home directory
     /// holds the config directory), are reviewed; the same commands from a
     /// sibling, and reads that do not walk, stay allowed. In a project
-    /// whose secret roots lie outside it every one of them is allowed, as
-    /// before.
+    /// whose secret roots lie outside it every one of them is allowed.
     #[test]
     fn a_walk_that_reaches_rkat_tuis_own_state_is_not_allowlisted() {
         const WALKS: &[&str] = &[

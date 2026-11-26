@@ -161,28 +161,22 @@ pub enum DaemonError {
     /// The realm declares a hosting mode its stores cannot provide.
     #[error("{0}")]
     Hosting(#[from] meerkat::HostingUnavailable),
-    /// The approval side cannot be composed.
     #[error("cannot compose the approval gate: {0}")]
     Approval(String),
-    /// The runtime refused the composition.
     #[error("cannot compose the session runtime: {0}")]
     Composition(#[from] meerkat::surface::RuntimeBackedCompositionError),
-    /// The mob host could not attach to the runtime.
     #[error("cannot attach the mob host: {0}")]
     Driver(#[from] meerkat_runtime::RuntimeDriverError),
     /// Creating, restoring or spawning into the mob failed.
     #[error("mob {mob}: {source}")]
     Mob {
-        /// The mob.
         mob: String,
-        /// The engine's error.
         #[source]
         source: Box<meerkat_mob::MobError>,
     },
     /// The conversation log cannot be read.
     #[error(transparent)]
     ConversationLog(#[from] conversations::LogError),
-    /// The workspace's first agent could not be seated.
     #[error("cannot seat the workspace's first agent: {0}")]
     FirstAgent(String),
     /// The agent has no session after its spawn or restore.
@@ -194,11 +188,8 @@ pub enum DaemonError {
         file.display()
     )]
     AlreadyRunning {
-        /// The live daemon's address.
         address: std::net::SocketAddr,
-        /// Its process id.
         pid: u32,
-        /// Its endpoint file.
         file: PathBuf,
     },
     /// An endpoint file names a daemon nobody can say is gone (its
@@ -208,7 +199,6 @@ pub enum DaemonError {
         file.display()
     )]
     EndpointUndecided {
-        /// The endpoint file.
         file: PathBuf,
         /// What the check found.
         why: String,
@@ -220,32 +210,25 @@ pub enum DaemonError {
         grant.display()
     )]
     EndpointExposed {
-        /// The endpoint file.
         file: PathBuf,
         /// The shell's grant that contains it.
         grant: PathBuf,
     },
-    /// The listen address is not a loopback address.
     #[error("refusing to listen on {0}: only loopback addresses are served")]
     NotLoopback(std::net::SocketAddr),
-    /// No random token could be drawn.
     #[error("cannot draw the daemon token: {0}")]
     Token(#[source] std::io::Error),
     /// A filesystem or socket operation failed.
     #[error("{context} {}: {source}", path.display())]
     Io {
-        /// What was being attempted.
         context: &'static str,
-        /// On which path.
         path: PathBuf,
-        /// Underlying error.
         #[source]
         source: std::io::Error,
     },
     /// A flag only the interactive TUI understands.
     #[error("{0} is not supported by rkat-tui-mob")]
     Unsupported(&'static str),
-    /// The runtime did not shut down cleanly.
     #[error("session runtime shutdown was incomplete: {0}")]
     Shutdown(#[from] meerkat_core::SessionError),
 }
@@ -412,7 +395,6 @@ impl DaemonOptions {
     }
 }
 
-/// What tests reach of a started daemon.
 #[cfg(any(test, feature = "test-support"))]
 impl Daemon {
     /// What tests reach of a started daemon.
@@ -548,10 +530,6 @@ impl Daemon {
     /// Bootstrap the workspace realm `args` names, compose the runtime and
     /// the mob host, create or restore the mob and its agent, and
     /// bind the socket.
-    ///
-    /// # Errors
-    ///
-    /// [`DaemonError`] for every step.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn start(args: &Args, options: DaemonOptions) -> Result<Self, DaemonError> {
         let (layers, config) = bootstrap::prepare(args).await?;
@@ -559,10 +537,6 @@ impl Daemon {
     }
 
     /// [`Daemon::start`] on already read layers and config.
-    ///
-    /// # Errors
-    ///
-    /// See [`Daemon::start`].
     pub async fn start_with(
         mut layers: bootstrap::Layers,
         config: meerkat_core::Config,
@@ -933,12 +907,7 @@ pub mod testing {
 
     impl EngineSide {
         /// Call `method` on the engine directly; its result, or its error
-        /// as text.
-        ///
-        /// # Errors
-        ///
-        /// The engine's error, or why the call could not be made (the
-        /// daemon stopped).
+        /// as text (also when the daemon stopped).
         pub async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
             let (Some(runtime), Some(config_store), Some(deferral)) = (
                 self.runtime.upgrade(),
@@ -1124,8 +1093,8 @@ async fn start_agents(
     // daemon serves; but the engine's read waits behind a running turn
     // (`live_visible_tool_defs`, up to `CATALOG_READ`), and a run the
     // restore resumed may already be in one (a tool call dispatched
-    // again, waiting for its end). Awaited in full, that held the
-    // start, and so every client, for 30 s; such a read goes on in the
+    // again, waiting for its end). Awaited in full, that would hold the
+    // start, and so every client, for 30 s: such a read goes on in the
     // background.
     #[cfg(any(test, feature = "test-support"))]
     if let Some(gate) = before_catalogs {
@@ -1508,10 +1477,6 @@ fn is_a_stop_that_met_a_retire(reason: &str) -> bool {
 }
 
 /// Run the daemon in the foreground until SIGTERM or an interrupt.
-///
-/// # Errors
-///
-/// [`DaemonError`] when it cannot start or does not shut down cleanly.
 pub async fn run(cli: DaemonCli) -> Result<(), DaemonError> {
     cli.check()?;
     let (layers, config) = bootstrap::prepare(&cli.tui).await?;
@@ -1704,8 +1669,8 @@ mod tests {
         closer.await.unwrap();
     }
 
-    /// The owner's log was full of escape codes: a daemon whose stderr is
-    /// the launching client's log file writes it plain, and only there.
+    /// A daemon whose stderr is the launching client's log file writes it
+    /// plain (no escape codes), and only there.
     #[test]
     fn a_daemon_logs_plain_and_once_when_its_stderr_is_a_file() {
         assert_eq!(
@@ -1742,7 +1707,7 @@ mod tests {
             DaemonCli::try_parse_from(["rkat-tui-mob"]).unwrap().listen,
             DEFAULT_LISTEN.parse().unwrap()
         );
-        // `--foreground` was the only mode and is gone as a flag.
+        // No `--foreground` flag: the foreground is the only mode.
         assert!(DaemonCli::try_parse_from(["rkat-tui-mob", "--foreground"]).is_err());
         assert_eq!(cli.tui.model.as_deref(), Some("claude-sonnet-4-6"));
         assert!(cli.check().is_ok());
@@ -1770,8 +1735,8 @@ mod tests {
         assert!(default.ends_with(Path::new("rkat-tui").join(&key).join(ENDPOINT_NAME)));
     }
 
-    /// The finding this guards: the token was in `<workspace>/.rkat/tui`,
-    /// which the agent's confined shell can read.
+    /// No grant of the agent's confined shell holds the endpoint file and
+    /// its token; a place in the workspace (`<workspace>/.rkat/tui`) is refused.
     #[test]
     fn the_confined_shell_is_granted_nothing_that_holds_the_endpoint_file() {
         let workspace = tempfile::tempdir().unwrap();

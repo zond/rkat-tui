@@ -105,7 +105,6 @@ pub struct WorkbenchParts {
     pub ui_tx: mpsc::UnboundedSender<Msg>,
     /// The workspace and realm.
     pub scope: RuntimeScope,
-    /// The user's `!` shell.
     pub user_shell: Arc<UserShell>,
     /// The cost readout's prices at start and how to refresh them.
     pub pricing: PricingSetup,
@@ -121,9 +120,7 @@ pub struct WorkbenchParts {
 pub struct Workbench {
     ui_tx: mpsc::UnboundedSender<Msg>,
     scope: RuntimeScope,
-    /// What runs `!` commands.
     user_shell: Arc<UserShell>,
-    /// The `!` command running now.
     shell_task: Option<shell::ShellTask>,
     /// `/memory`: the file being edited and its bytes before (`None`:
     /// missing), to tell an edit from an unchanged close.
@@ -132,7 +129,6 @@ pub struct Workbench {
     prices: Arc<PriceTable>,
     /// The start-up pricing, until [`Workbench::start`] spawns its refresh.
     pricing: Option<PricingSetup>,
-    /// A community price-list refresh running in the background.
     price_fetch: Option<cost::PriceFetch>,
     endpoints: EndpointRegistry,
     lister: ModelLister,

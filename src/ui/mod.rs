@@ -182,9 +182,7 @@ use keys::PathIndex;
 pub struct TurnSummary {
     /// Final assistant text.
     pub text: String,
-    /// Input tokens consumed by the run.
     pub input_tokens: u64,
-    /// Output tokens produced by the run.
     pub output_tokens: u64,
 }
 
@@ -241,13 +239,10 @@ pub fn merge_turn_end(
 /// An approval decision to show in the transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalNotice {
-    /// Tool name.
     pub tool: String,
     /// Tier / mechanism that decided (e.g. `rule`, `classifier`, `user`).
     pub tier: String,
-    /// Whether the call was allowed.
     pub allowed: bool,
-    /// Optional explanation.
     pub reason: Option<String>,
 }
 
@@ -258,7 +253,6 @@ pub enum StatusUpdate {
     Model {
         /// The endpoint's name.
         endpoint: String,
-        /// Model id.
         model: String,
     },
     /// Active session id (shortened for display).
@@ -267,12 +261,10 @@ pub enum StatusUpdate {
     Tokens {
         /// Input tokens.
         input: u64,
-        /// Output tokens.
         output: u64,
     },
     /// The permission mode, auto mode's pause and the denial counters.
     Mode {
-        /// The permission mode.
         mode: PermissionMode,
         /// Whether auto mode is paused after too many classifier blocks.
         paused: bool,
@@ -323,9 +315,7 @@ pub struct QueuedCopy {
 pub enum EditorTarget {
     /// An instruction file (`/memory`), edited in place.
     Memory {
-        /// Which one.
         target: MemoryTarget,
-        /// Its path.
         path: std::path::PathBuf,
     },
     /// The input draft (Ctrl-G, Ctrl-X Ctrl-E), through a temporary file.
@@ -337,11 +327,8 @@ pub enum EditorTarget {
 pub enum EditorClosed {
     /// An instruction file; `Err` says why the edit may not have been saved.
     Memory {
-        /// Which one.
         target: MemoryTarget,
-        /// Its path.
         path: std::path::PathBuf,
-        /// The run's outcome.
         result: Result<(), String>,
     },
     /// The draft: its new text, or why the input is kept unchanged.
@@ -351,7 +338,6 @@ pub enum EditorClosed {
 /// Input to [`App::update`].
 #[derive(Debug, Clone)]
 pub enum Msg {
-    /// A key press.
     Key(KeyEvent),
     /// Bracketed paste.
     Paste(String),
@@ -383,9 +369,7 @@ pub enum Msg {
     /// first; back to the editor), and the cancels that failed. Admitted
     /// messages not listed already reached the agent.
     Recalled {
-        /// Abandoned messages.
         recalled: Vec<PendingId>,
-        /// Failed cancels.
         errors: Vec<String>,
     },
     /// The user's interrupt took these messages back (oldest first): the
@@ -400,7 +384,6 @@ pub enum Msg {
     /// (abandoned: the run was stopped, the agent retired, …): the agent
     /// never reads it, and it returns to the editor as a recalled one does.
     NotDelivered {
-        /// The message.
         id: PendingId,
         /// Why, in words, when the runtime recorded why.
         why: Option<String>,
@@ -409,7 +392,6 @@ pub enum Msg {
     /// stop cut off: the engine does not keep it, so it returns to the
     /// editor.
     Unkept {
-        /// What it said.
         text: String,
         /// Why, in words.
         why: String,
@@ -418,13 +400,10 @@ pub enum Msg {
     Diff {
         /// Tool-use id of the producing call.
         tool_use_id: String,
-        /// File path.
         path: String,
         /// Unified diff.
         unified: String,
-        /// Added lines.
         added: usize,
-        /// Removed lines.
         removed: usize,
     },
     /// The approval engine needs a human decision.
@@ -438,24 +417,19 @@ pub enum Msg {
     ToolNote {
         /// Tool-use id of the call, as the model issued it.
         tool_use_id: String,
-        /// The note.
         text: String,
     },
     /// A notice to show in the transcript.
     Notice {
-        /// Severity.
         level: NoticeLevel,
-        /// Text.
         text: String,
     },
-    /// Status-bar update.
     Status(StatusUpdate),
     /// A `[ui]` setting in force changed (`rkat/setting`): the key and its
     /// value as the file holds it (`None`: the default).
     Setting {
         /// The dotted key.
         key: String,
-        /// The value.
         value: Option<String>,
     },
     /// Open the resume picker with `(ref, label)` items.
@@ -480,17 +454,13 @@ pub enum Msg {
     /// Why a picker's act was refused by the daemon: a picker of `kind`
     /// open or waiting shows it under its rows.
     PickerRefused {
-        /// Whose picker.
         kind: PickerKind,
-        /// Why.
         why: String,
     },
     /// What a picker's act did ("approved once: …"): a picker of `kind`
     /// open or waiting states it under its rows (after the refreshed list).
     PickerDone {
-        /// Whose picker.
         kind: PickerKind,
-        /// What happened.
         text: String,
     },
     /// Show a list picker (`/schedules`, `/permissions`, `/memory`). A
@@ -498,7 +468,6 @@ pub enum Msg {
     /// only a picker of its kind still open (or waiting behind an approval
     /// dialog).
     ShowPicker {
-        /// The picker.
         picker: ListPicker,
         /// Replace an open picker of its kind only.
         refresh: bool,
@@ -508,7 +477,6 @@ pub enum Msg {
     /// directory (canonical) it moves this workspace's state to, or why
     /// not, shown in the field.
     RehomeChecked {
-        /// The text checked.
         typed: String,
         /// The question and the directory, or the refusal.
         answer: Result<(String, std::path::PathBuf), String>,
@@ -538,7 +506,6 @@ pub enum Msg {
     /// watch), not typed by a user: its prompt is shown labelled
     /// (`scheduled: <name>`).
     Triggered {
-        /// What fired it.
         cause: crate::daemon::protocol::TriggerCause,
         /// What fired it, in words.
         label: String,
@@ -556,7 +523,6 @@ pub enum Msg {
     HelperEnded {
         /// Its labels, outermost first.
         path: Vec<String>,
-        /// How it ended.
         ending: crate::daemon::protocol::HelperEnding,
         /// How it ended, in words (`stopped by you`).
         how: String,
@@ -579,9 +545,7 @@ pub enum Msg {
     /// The client runner resolved `/memory`'s file (and created a missing
     /// `SYSTEM.md`): open it in the external editor.
     EditFile {
-        /// Which instruction file.
         target: MemoryTarget,
-        /// Its path.
         path: std::path::PathBuf,
     },
     /// The UI loop's answer to [`LocalEffect::ExternalEditor`].
@@ -589,9 +553,7 @@ pub enum Msg {
     /// The runner's answer to [`Effect::RunShell`] (or to
     /// [`Effect::CancelShell`]).
     ShellFinished {
-        /// The run's id.
         id: ShellRunId,
-        /// How it went.
         outcome: ShellOutcome,
     },
     /// The current session's task checklist, read from the engine's task
@@ -613,7 +575,6 @@ pub enum Msg {
     PathIndex {
         /// The request it answers (an older one's answer is dropped).
         generation: u64,
-        /// The workspace's paths.
         paths: Vec<crate::mentions::PathEntry>,
     },
     /// The runner's answer to [`Effect::DecideQuit`].
@@ -622,7 +583,6 @@ pub enum Msg {
     /// mentions complete there, and the input history and drafts are the
     /// realm's at `realm`.
     Rerooted {
-        /// The workspace.
         workspace: ProjectRoot,
         /// Its realm directory.
         realm: std::path::PathBuf,
@@ -675,7 +635,6 @@ pub struct ShellRunId(pub u64);
 pub enum ShellOutcome {
     /// It ran; `context` says whether the session took its output.
     Ran {
-        /// The run.
         run: crate::user_shell::ShellRun,
         /// `Err`: why its output could not join the context.
         context: Result<(), String>,
@@ -711,9 +670,7 @@ pub enum Effect {
     /// the client) and add its output to the session's context; answer
     /// with [`Msg::ShellFinished`].
     RunShell {
-        /// The run's id.
         id: ShellRunId,
-        /// The command line.
         command: String,
     },
     /// Cancel the running `!` command (answered with
@@ -750,7 +707,6 @@ pub enum Effect {
     /// (queued, deferred, or the Ctrl-X Ctrl-S prompt as `None`). The
     /// client runner saves those the model never received.
     SaveUnsent(Vec<(Option<PendingId>, String)>),
-    /// Start a fresh session.
     NewSession,
     /// Resume a session by reference (`last`, `~N`, id prefix).
     ResumeSession(String),
@@ -761,7 +717,6 @@ pub enum Effect {
     /// `None` removes the level's value), at the user's level (`user`) or
     /// the workspace's; each answer a notice.
     SetSettings {
-        /// The changes.
         changes: Vec<(String, Option<String>)>,
         /// The user's own `tui.toml`.
         user: bool,
@@ -772,7 +727,6 @@ pub enum Effect {
     /// The settings picker's change: as [`Self::SetSettings`] of one
     /// change, then the picker's list again.
     PickedSetting {
-        /// The key.
         key: String,
         /// The value (`None`: remove it).
         value: Option<String>,
@@ -790,11 +744,9 @@ pub enum Effect {
     /// Leaving with commands still held for the turn's end: they are
     /// dropped; the runner says so after the UI closes too.
     DroppedCommands(Vec<String>),
-    /// Answer an escalation.
     RespondEscalation(EscalationId, EscalationAnswer),
     /// Persist an approval rule (`/permissions add`).
     AddRule {
-        /// The rule.
         spec: crate::approval::desk::RuleSpec,
         /// Written to the user's own `tui.toml`.
         user: bool,
@@ -829,7 +781,6 @@ pub enum Effect {
     /// Record the checklist panel's view (Ctrl+T) as `[ui] checklist` in
     /// the realm `tui.toml`.
     SetChecklistView(ChecklistView),
-    /// Switch model.
     SetModel(String),
     /// `/auto model`: open the model picker for the classifier (answered
     /// with [`Msg::ShowClassifierPicker`]).
@@ -861,7 +812,6 @@ pub enum Effect {
     /// with the tool the agent is running and for how long; answered with
     /// [`Msg::BtwAnswered`].
     Btw {
-        /// The question.
         question: String,
         /// The running tool's name and its seconds so far.
         running_tool: Option<(String, u64)>,
@@ -878,7 +828,6 @@ pub enum Effect {
     Export {
         /// Where to write, as typed.
         path: Option<String>,
-        /// The transcript text.
         text: String,
     },
     /// `/status`: the client runner answers with one [`Msg::Notice`] naming
@@ -900,7 +849,6 @@ pub enum Effect {
     /// state `discard` (a realm id) that refused it: replaced whatever it
     /// holds (a turn or another client there still refuses).
     RehomeDiscarding {
-        /// The `/rehome` argument.
         argument: String,
         /// The realm to delete.
         discard: String,
@@ -967,9 +915,7 @@ pub enum Effect {
     /// An instruction file was edited (`/memory`): push its new content to
     /// the live session where it can go, or say it applies from the next.
     MemoryEdited {
-        /// Which instruction file.
         target: MemoryTarget,
-        /// Its path.
         path: std::path::PathBuf,
     },
 }
@@ -1015,11 +961,8 @@ pub enum LocalEffect {
 /// Everything the status bar shows.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StatusInfo {
-    /// The endpoint's name.
     endpoint: String,
-    /// Model id.
     model: String,
-    /// Short session id.
     session_short: String,
     /// Cumulative input tokens.
     input_tokens: u64,
@@ -1050,7 +993,6 @@ pub struct StatusInfo {
     /// Whether the helper panel lists any helper (the status bar names the
     /// key that selects them).
     helper_panel: bool,
-    /// Whether the classifier is running.
     classifying: bool,
     /// When the classifier review running now started.
     classifying_since: Option<Instant>,
@@ -1441,11 +1383,8 @@ pub struct App {
     pub transcript: Transcript,
     /// Prompt editor.
     pub input: InputEditor,
-    /// Transcript scroll position.
     pub scroll: ScrollState,
-    /// Status-bar data.
     pub status: StatusInfo,
-    /// Open modal, if any.
     pub modal: Option<Modal>,
     /// Messages typed while a turn was running, not yet delivered.
     pending: PendingQueue,

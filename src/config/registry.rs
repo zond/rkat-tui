@@ -170,11 +170,9 @@ pub enum Kind {
     /// `true` or `false`.
     Bool,
     /// A whole number in `min..=max`. With `clamp`, a file's value below
-    /// `min` is read as `min` (what the layering always did).
+    /// `min` is read as `min`.
     Int {
-        /// The least value.
         min: u64,
-        /// The greatest value.
         max: u64,
         /// A file's value below `min` reads as `min`.
         clamp: bool,
@@ -232,9 +230,7 @@ impl Kind {
 pub enum Fallback {
     /// No value; the text says what that means.
     Unset(&'static str),
-    /// This boolean.
     Bool(bool),
-    /// This number.
     Int(u64),
     /// This word or text.
     Text(&'static str),

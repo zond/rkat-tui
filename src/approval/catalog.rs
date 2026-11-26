@@ -257,14 +257,12 @@ impl ToolCatalog {
         }
     }
 
-    /// Number of tools.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn len(&self) -> usize {
         self.tools.len()
     }
 
-    /// Whether the catalog is empty.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {

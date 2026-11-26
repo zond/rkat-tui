@@ -29,7 +29,6 @@ impl Transcript {
         }
     }
 
-    /// The last block.
     pub fn last(&self) -> Option<&Block> {
         self.entries.last().map(|entry| &entry.block)
     }
@@ -42,12 +41,10 @@ impl Transcript {
             .collect()
     }
 
-    /// Number of blocks.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Whether the transcript has no blocks.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

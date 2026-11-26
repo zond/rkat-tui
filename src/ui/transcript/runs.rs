@@ -52,7 +52,6 @@ pub(crate) enum RunRole {
     /// The first block of a run: the run's line, and while `open` its
     /// own lines after it.
     Head {
-        /// The run's line.
         line: RunLine,
         /// Whether the run is opened.
         open: bool,
@@ -76,7 +75,6 @@ pub(crate) enum RunLine {
         depth: usize,
         /// The receiving helper's tag, when a helper received them.
         tag: Option<String>,
-        /// How many messages.
         count: usize,
         /// The senders, each once, in the order they first sent.
         senders: Vec<String>,

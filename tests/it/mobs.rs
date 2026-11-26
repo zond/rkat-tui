@@ -8,7 +8,7 @@
 //! the sidecar; a configured endpoint's session hands its model and binding
 //! on; the depth limit holds; a mob nobody owns gets no helper; and a
 //! helper's owner survives a daemon restart until it retires.
-//! (`tests/helpers.rs` has the follower view, Esc and the model
+//! (`tests/it/helpers.rs` has the follower view, Esc and the model
 //! switch.)
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -771,9 +771,9 @@ async fn a_nested_helper_s_note_after_its_parent_was_decided_reaches_the_parent(
     rig.quit().await;
 }
 
-/// Item 20: an agent that writes a mob profile read-only with comms on is
-/// told, by its next turn, that the profile's members cannot send
-/// messages (whatever the engine made of the call).
+/// An agent that writes a mob profile read-only with comms on is told, by
+/// its next turn, that the profile's members cannot send messages
+/// (whatever the engine made of the call).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_only_profile_with_comms_gets_the_agent_a_note() {
     let ws = Workspace::new();
@@ -788,7 +788,7 @@ async fn a_read_only_profile_with_comms_gets_the_agent_a_note() {
         Step::Text("next"),
     ]);
     let mut rig = Attached::start(&ws.root, &llm).await;
-    // Revealed as a `tool_search` would (`tests/deferral.rs`).
+    // Revealed as a `tool_search` would (`tests/it/deferral.rs`).
     let session = rig.current_session().await;
     rig.daemon.reveal(&session, &["mob_profile_create"]).await;
     rig.send(Effect::StartTurn("make a reviewer profile".into()));

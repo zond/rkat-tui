@@ -33,7 +33,7 @@ fn tool_results(messages: &[Message]) -> String {
 
 /// An agent cannot seat a member under an agent's name: the names are the
 /// daemon's (a member so named would be shaped as an agent without being
-/// one of the daemon's). Another name is seated as a helper as before.
+/// one of the daemon's). Another name is seated as a helper.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_cannot_seat_a_member_under_an_agents_name() {
     let ws = Workspace::new();
@@ -845,7 +845,7 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
     let gate = Arc::new(tokio::sync::Notify::new());
     // Each agent's step from its own requests: B, woken by A's message,
     // starts its first call as A's last one starts (a fixed order of
-    // steps across both was a race, which once timed a gate run out).
+    // steps across both would race).
     let step = {
         let b_name = Arc::clone(&b_name);
         let gate = Arc::clone(&gate);
@@ -983,7 +983,7 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
 }
 
 /// The other half of unattended turns: a turn the user started stays attended after its
-/// client detaches (D2: a detached agent keeps running): its `curl` goes to
+/// client detaches (a detached agent keeps running): its `curl` goes to
 /// the classifier, not to the unattended denial. This pins that the run a
 /// tool call names is the run the daemon saw start after the user's input.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1095,11 +1095,10 @@ async fn a_quit_agent_is_announced_and_takes_no_more_messages() {
     daemon.stop().await;
 }
 
-/// The finding this guards (second review, item 9): a switch whose
-/// target failed to spawn, and whose previous conversation could not be
-/// seated again either, left the agent out of the mob but listed as live
-/// (a ghost: `/agents`, `--list` and the proxy counted it, and its
-/// prompts met engine errors).
+/// A switch whose target fails to spawn, and whose previous conversation
+/// cannot be seated again either, must not leave the agent out of the mob
+/// but listed as live (a ghost: `/agents`, `--list` and the proxy would
+/// count it, and its prompts meet engine errors).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_lost_in_a_failed_switch_is_no_ghost() {
     use rkat_tui::client::transport::Connection;
@@ -1233,7 +1232,7 @@ async fn a_new_agent_attaches_while_another_agents_helper_runs() {
     daemon.stop().await;
 }
 
-/// Item 11: in manual mode a message to another agent of the workspace
+/// In manual mode a message to another agent of the workspace
 /// asks nothing (tier 1: the recipient's own calls still pass its gate),
 /// and a message to any other peer id is still reviewed, so manual mode
 /// asks.
@@ -1304,10 +1303,9 @@ async fn a_message_to_another_agent_is_tier_one_and_any_other_send_asks() {
 
 /// Each agent's question is shown on its own client at once: with agent
 /// A's dialog left open on A's client, agent B's call is put to B's client
-/// and answered there, while A's still waits. The broker once serialized
-/// every escalation of the daemon, so B's question waited unseen behind
-/// A's (a client shows its own agent's dialogs only) until its budget ran
-/// out as "the user did not answer".
+/// and answered there, while A's still waits. A broker that serialized
+/// every escalation would leave B's question unseen behind A's (a client
+/// shows its own agent's dialogs only) until its budget ran out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn each_agents_question_is_shown_on_its_client_while_another_is_open() {
     use rkat_tui::approval::mode::PermissionMode;

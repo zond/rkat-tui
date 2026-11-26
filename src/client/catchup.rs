@@ -32,7 +32,6 @@ pub const CURSOR_NAME: &str = "attach.cursor";
 /// The last event shown, by session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cursor {
-    /// The agent's session.
     pub session_id: String,
     /// The sequence of the last event shown.
     pub sequence: u64,
@@ -86,7 +85,6 @@ impl CursorFile {
         }
     }
 
-    /// Its path.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn path(&self) -> &Path {
@@ -150,7 +148,6 @@ impl Mark {
         }
     }
 
-    /// The session.
     #[must_use]
     pub fn session_id(&self) -> &str {
         &self.session_id

@@ -101,7 +101,6 @@ pub enum RemoteError {
     BadSocket {
         /// The path.
         path: String,
-        /// Why.
         why: String,
     },
     /// No `ssh` on this machine.
@@ -112,7 +111,6 @@ pub enum RemoteError {
         "ssh to {host} failed: {said}. rkat-tui runs ssh without prompts (BatchMode): make `ssh {host} true` work first (your key in the agent or ~/.ssh/config, the host in known_hosts)"
     )]
     Ssh {
-        /// The host.
         host: String,
         /// What ssh said last.
         said: String,
@@ -122,11 +120,9 @@ pub enum RemoteError {
         "no rkat-tui on {host} for a non-interactive shell ({said}): install rkat-tui there (the same version as here, {build}), or name it with `/wire ssh://{host}/… --remote-rkat-tui <path>`"
     )]
     NoRemote {
-        /// The host.
         host: String,
         /// What the remote said.
         said: String,
-        /// This build.
         build: String,
     },
     /// The remote rkat-tui does not speak this protocol.
@@ -134,17 +130,14 @@ pub enum RemoteError {
         "the rkat-tui on {host} cannot answer this one ({said}): install the same rkat-tui there as here ({build})"
     )]
     Version {
-        /// The host.
         host: String,
         /// What was wrong.
         said: String,
-        /// This build.
         build: String,
     },
     /// The remote side refused (its words).
     #[error("{host}: {said}")]
     Refused {
-        /// The host.
         host: String,
         /// Its words.
         said: String,
@@ -152,7 +145,6 @@ pub enum RemoteError {
     /// No answer in time.
     #[error("{host} did not answer within {secs} s")]
     Timeout {
-        /// The host.
         host: String,
         /// The bound.
         secs: u64,
@@ -380,7 +372,6 @@ impl Reply {
 pub struct RemoteAgent {
     /// Its workspace there.
     pub workspace: PathBuf,
-    /// Its name.
     pub agent: String,
     /// `running`, `idle` or `unknown`.
     pub run: String,
@@ -461,9 +452,7 @@ pub fn forwardable(path: &Path, limit: usize) -> Result<String, RemoteError> {
 /// What one link forwards ([`link_argv`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkSpec {
-    /// The host.
     pub host: SshHost,
-    /// The remote program.
     pub program: String,
     /// The `-L` socket here, which this agent's card for the remote one
     /// names.
@@ -773,7 +762,6 @@ impl Transport for Ssh {
 pub enum LinkState {
     /// Being made (the first time since the daemon started).
     Connecting,
-    /// Up.
     Up,
     /// Down; the daemon tries again.
     Down,

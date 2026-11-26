@@ -37,19 +37,14 @@ pub const SCRATCH_VARS: [&str; 3] = ["TMPDIR", "TMP", "TEMP"];
 /// Why an agent has no scratch directory.
 #[derive(Debug, thiserror::Error)]
 pub enum ScratchError {
-    /// There is no usable temp directory to hold it.
     #[error("no temp directory to hold it")]
     NoBase,
-    /// The directory could not be created.
     #[error("creating {}: {source}", .path.display())]
     Create {
-        /// The directory.
         path: PathBuf,
-        /// Why.
         #[source]
         source: std::io::Error,
     },
-    /// Something is in its place that this user did not make private.
     #[error(
         "{} exists but is not a private directory of this user (a link, another user's, or open to others); remove it to get a scratch directory",
         .0.display()

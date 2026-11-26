@@ -73,9 +73,7 @@ const LIST_READS: usize = 8;
 #[derive(Debug, thiserror::Error)]
 #[error("cannot read the conversation log {}: {why}", file.display())]
 pub struct LogError {
-    /// The log.
     pub file: PathBuf,
-    /// Why.
     pub why: String,
 }
 
@@ -104,7 +102,6 @@ pub fn has_user_turn(messages: &[Message]) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
-    /// The session.
     pub session_id: SessionId,
     /// The agent (member identity) that ran it; a session belongs to it.
     pub agent: String,
@@ -135,11 +132,8 @@ impl Log {
         realm_root.join(LOG_NAME)
     }
 
-    /// Read `path` strictly: `None` when there is no file.
-    ///
-    /// # Errors
-    ///
-    /// [`LogError`] naming the file when it cannot be read or parsed.
+    /// Read `path` strictly: `None` when there is no file, [`LogError`] when
+    /// it cannot be read or parsed.
     pub fn read(path: &Path) -> Result<Option<Self>, LogError> {
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
@@ -229,7 +223,6 @@ impl Log {
 /// One row of `rkat/conversations`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Listed {
-    /// The session.
     pub session_id: SessionId,
     /// The agent that ran it.
     pub agent: String,
@@ -256,7 +249,6 @@ pub enum SwitchError {
     /// session only under the identity that ran it.
     #[error("conversation {session} is agent {agent}'s")]
     OtherAgent {
-        /// The conversation.
         session: SessionId,
         /// Its agent.
         agent: String,
@@ -273,11 +265,9 @@ pub enum SwitchError {
     Mob {
         /// What was being done.
         step: &'static str,
-        /// The engine's error.
         #[source]
         source: Box<meerkat_mob::MobError>,
     },
-    /// The member has no session after the switch.
     #[error("the agent has no session after the switch")]
     NoSession,
     /// The switch failed after the member left the mob, and seating its
@@ -285,7 +275,6 @@ pub enum SwitchError {
     /// conversations stay in the log).
     #[error("agent {agent} was lost: {cause}, and its conversation could not be seated again")]
     Lost {
-        /// The agent.
         agent: String,
         /// Why the switch failed.
         #[source]
@@ -685,10 +674,6 @@ impl Conversations {
     }
 
     /// `session`'s committed messages.
-    ///
-    /// # Errors
-    ///
-    /// The engine's error reading the history.
     pub async fn messages(
         &self,
         session: &SessionId,
@@ -708,9 +693,8 @@ impl Conversations {
 
     /// Seed the approval `engine`'s classifier transcript of `session` from
     /// its committed history (the human's words and tool calls): the
-    /// classifier of a restored or resumed
-    /// conversation then sees what the user asked before. A session that
-    /// cannot be read is left unseeded.
+    /// classifier of a restored or resumed conversation then sees what the
+    /// user asked before. A session that cannot be read is left unseeded.
     ///
     /// The stored conversation alone does not say which messages were the
     /// user's (a `mob/member_send` carries no typed authorship) and a
@@ -856,10 +840,6 @@ impl Conversations {
     /// A conversation's total token usage, as the engine keeps it with the
     /// session (`SessionService::read`'s billing; the wire's
     /// `events/snapshot` and `session/read` carry no usage).
-    ///
-    /// # Errors
-    ///
-    /// The engine's refusal.
     pub async fn usage(
         &self,
         session: &SessionId,
@@ -877,10 +857,6 @@ impl Conversations {
     /// Returns the session it runs as now. The member leaves its mob for
     /// the switch: its wiring goes with it, which the caller restores
     /// ([`super::agents::Agents::switch`]).
-    ///
-    /// # Errors
-    ///
-    /// [`SwitchError`].
     pub async fn switch(&self, agent: &str, target: Target) -> Result<SessionId, SwitchError> {
         self.seat(agent, target, false).await
     }
@@ -1323,7 +1299,7 @@ pub fn resolve(
             )),
         };
     }
-    // A prefix as before; else the short form shown everywhere
+    // A prefix first; else the short form shown everywhere
     // ([`crate::text::short_id`]: the id's end).
     let reference_lower = reference.to_ascii_lowercase();
     let ids: Vec<(String, &Listed)> = listed
@@ -1357,9 +1333,8 @@ pub fn resolve(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
 
-    /// The finding this guards: a status without
-    /// a run state read as idle, so a retire skipped the cancel and
-    /// `/agents` said idle.
+    /// A status without a run state is unknown, not idle: as idle, a retire
+    /// would skip the cancel and `/agents` say idle.
     #[test]
     fn a_status_without_a_run_state_is_unknown_not_idle() {
         use meerkat_mob::MemberRunState;
@@ -1438,9 +1413,9 @@ mod tests {
         assert!(back.has(&a) && back.has(&b));
         assert_eq!(back.newest_first()[0].session_id, a);
         assert_eq!(back.agent_of(&b), Some("main-b"));
-        // Used in the same second, the one touched later is the newer:
-        // a turn on `b` after `a` was seated (the CI failure this guards:
-        // `-c` after a restart joined the idle agent seated last).
+        // Used in the same second, the one touched later is the newer: a
+        // turn on `b` after `a` was seated (else `-c` after a restart joins
+        // the idle agent seated last).
         let mut tie = back.clone();
         for entry in &mut tie.sessions {
             entry.last_used = 7;

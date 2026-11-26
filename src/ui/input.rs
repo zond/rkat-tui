@@ -355,7 +355,6 @@ impl InputEditor {
         &self.history
     }
 
-    /// Current lines.
     pub fn lines(&self) -> &[String] {
         &self.lines
     }

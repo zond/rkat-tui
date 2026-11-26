@@ -132,10 +132,6 @@ impl Local {
     /// Tests: a message of the daemon's own to `agent`, as its notes go
     /// (a plain steer, [`crate::daemon::agents::steer_agent`]); answered
     /// once the engine took it.
-    ///
-    /// # Errors
-    ///
-    /// The engine's refusal, as text.
     pub async fn steer_for_test(&self, agent: &str, text: &str) -> Result<(), String> {
         crate::daemon::agents::steer_agent(&self.core, agent, text.to_string()).await
     }

@@ -40,27 +40,21 @@ pub struct Lasting {
 pub enum Skipped {
     /// A rule that does not parse (a start refuses the file).
     Rule {
-        /// Its layer.
         origin: RuleOrigin,
-        /// Why.
         error: RulesError,
     },
     /// A statement refused ([`normalize`], or one too many).
     Statement {
-        /// Its layer.
         origin: RuleOrigin,
         /// The statement as written, cut at 80 characters.
         text: String,
-        /// Why.
         refusal: StatementRefusal,
     },
     /// A trusted host refused (no host name, too broad, one too many).
     TrustedHost {
-        /// Its layer.
         origin: RuleOrigin,
         /// The entry as written, cut at 80 characters.
         text: String,
-        /// Why.
         why: String,
     },
 }

@@ -49,13 +49,9 @@ use super::classifier::{
 use super::policy::{Decider, Tier, VerdictSummary};
 use super::transcript::ApprovalTranscript;
 
-/// The must-allow cases.
 const MUST_ALLOW: &str = include_str!("corpus/must_allow.toml");
-/// The must-block cases.
 const MUST_BLOCK: &str = include_str!("corpus/must_block.toml");
-/// The scope pairs.
 const SCOPE: &str = include_str!("corpus/scope.toml");
-/// The statement triples.
 const STATEMENTS: &str = include_str!("corpus/statements.toml");
 
 /// The start-up check's two cases: a routine test run that must be
@@ -208,9 +204,7 @@ struct RawCase {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Prior {
-    /// Its tool.
     pub tool: String,
-    /// Its arguments.
     pub args: Value,
 }
 
@@ -251,7 +245,6 @@ pub const FIXED_ORIGIN: &str = "git@github.com:example/proj.git";
 /// One labelled case.
 #[derive(Debug, Clone)]
 pub struct Case {
-    /// Its set.
     pub set: Set,
     /// Its id (unique across the sets).
     pub id: String,
@@ -267,9 +260,7 @@ pub struct Case {
     pub prior: Vec<Prior>,
     /// The tool under review.
     pub tool: String,
-    /// Its arguments.
     pub args: Value,
-    /// Environment facts.
     pub env: CaseEnv,
     /// What it expects.
     pub expect: Label,
@@ -562,7 +553,6 @@ pub struct Selection {
     /// The sets (empty: every set).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sets: Vec<Set>,
-    /// How many.
     #[serde(default)]
     pub limit: Limit,
     /// These cases, by id, in this order.
@@ -576,7 +566,6 @@ pub enum SelectError {
     /// The corpus does not read.
     #[error(transparent)]
     Corpus(#[from] CorpusError),
-    /// No case has this id.
     #[error("no corpus case is called {0}")]
     Unknown(String),
     /// The deterministic tiers decide this case: the classifier never
@@ -598,10 +587,6 @@ pub enum SelectError {
 /// the sets interleave four must-allow and four must-block cases with one
 /// scope pair (both halves) per ten, so the quick sample is 12, 12 and 3
 /// pairs. `all` sends every case of the sets in file order.
-///
-/// # Errors
-///
-/// [`SelectError`].
 pub fn select(selection: &Selection) -> Result<Vec<Case>, SelectError> {
     let all = cases()?;
     if !selection.cases.is_empty() {
@@ -779,7 +764,6 @@ impl Default for Bounds {
 pub struct Outcome {
     /// The case.
     pub id: String,
-    /// Its set.
     pub set: Set,
     /// What it expects.
     pub label: Label,
@@ -845,7 +829,6 @@ pub struct Report {
     pub stopped: Option<Stopped>,
     /// Input tokens of its model calls.
     pub input_tokens: u64,
-    /// Output tokens.
     pub output_tokens: u64,
     /// How long it took.
     pub wall_ms: u64,
@@ -854,7 +837,6 @@ pub struct Report {
 /// What came out wrong, over some outcomes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Totals {
-    /// Cases.
     pub cases: usize,
     /// Must-allow cases.
     pub routine: usize,

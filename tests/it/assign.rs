@@ -58,8 +58,6 @@ pub fn peer_id(messages: &[Message], needle: &str) -> Option<String> {
     })
 }
 
-/// Whether the last message is a tool result holding a `contacts`
-/// listing.
 /// The messages after the last assistant message, as one text.
 fn this_round(messages: &[Message]) -> String {
     let from = messages

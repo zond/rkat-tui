@@ -39,9 +39,7 @@ pub struct Core {
     pub ledger: Arc<Ledger>,
     /// The agents' hidden tools and their reveals.
     pub deferral: Arc<Deferral>,
-    /// The agents' file watches.
     pub watches: Arc<Watches>,
-    /// The agents' conversations.
     pub conversations: Arc<Conversations>,
     /// The clients, the detach record and the shutdown request.
     pub lifecycle: Arc<Lifecycle>,
@@ -49,7 +47,6 @@ pub struct Core {
     pub wires: Arc<Wires>,
     /// The connections of helpers in different mobs (`connect_helpers`).
     pub links: Arc<super::links::Links>,
-    /// The agents' schedules.
     pub schedules: Arc<Schedules>,
     /// When the agents are idle.
     pub activity: Arc<Activity>,

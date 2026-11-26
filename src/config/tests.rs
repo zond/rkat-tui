@@ -455,8 +455,8 @@ fn the_layering_clamps_parses_no_mouse_and_reads_pricing_fetch_apart() {
         .unwrap();
     let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
     assert!(!layered.ui.mouse);
-    // E3 of the security review: `[pricing] fetch` beside the prices is
-    // no price entry, and a project's is no ignored price.
+    // `[pricing] fetch` beside the prices is no price entry, and a
+    // project's is no ignored price.
     write(
         &realm,
         "[pricing]\nfetch = false\n[pricing.\"m\"]\ninput = 1.0\n",

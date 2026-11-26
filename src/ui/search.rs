@@ -145,7 +145,6 @@ impl HistorySearch {
         SearchOutcome::Accept(text)
     }
 
-    /// Handle one key press.
     pub fn key(&mut self, key: &KeyEvent, corpus: &[String]) -> SearchOutcome {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);

@@ -23,11 +23,10 @@
 //! The daemon gives its agent a gate as the root member's admission
 //! (`crate::daemon::approvals::RootGate`), composed after any admission
 //! the build already carries ([`ApprovalGate::after`]), so every build of
-//! it (fresh or restored) runs behind one. A helper it delegates to (a mob
-//! member) gets a gate
-//! from [`ApprovalGate::for_helper`], installed on its spawn spec by the
-//! rkat-tui's spawn customizer ([`crate::mobs`]): its calls are decided as the
-//! delegating session's, naming the helper.
+//! it (fresh or restored) runs behind one. A helper (a mob member) gets a
+//! gate from [`ApprovalGate::for_helper`], installed on its spawn spec by
+//! rkat-tui's spawn customizer ([`crate::mobs`]): its calls are decided in
+//! the session of the agent it works for, naming the helper.
 
 use std::sync::Arc;
 
@@ -133,14 +132,12 @@ impl ApprovalGate {
         self
     }
 
-    /// The session this gate decides for.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn session_id(&self) -> &SessionId {
         &self.session_id
     }
 
-    /// The helper this gate decides for, if any.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn helper(&self) -> Option<&str> {

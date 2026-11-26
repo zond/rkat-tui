@@ -54,7 +54,6 @@ pub struct EscalationPrompt {
 /// decision's rendering carries it).
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct RecordedPrompt {
-    /// Tool name.
     pub tool: String,
     /// The helper making the call (`None`: the session's own agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]

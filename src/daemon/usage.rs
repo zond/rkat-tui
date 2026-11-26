@@ -58,7 +58,6 @@ impl Account {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextReading {
-    /// Tokens.
     pub tokens: u64,
     /// An estimate (a compaction's), not a provider's count.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -217,8 +216,7 @@ impl Ledger {
         .await;
     }
 
-    /// One model call of the helper `label` (on `model`) working for
-    /// `owner`.
+    /// One model call of the helper `label` (on `model`) for `owner`.
     pub async fn helper_turn(&self, owner: &SessionId, label: &str, model: &str, usage: &Usage) {
         self.change(Account::Session(owner.clone()), |record| {
             count(

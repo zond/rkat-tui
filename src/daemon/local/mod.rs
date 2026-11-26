@@ -89,9 +89,7 @@ pub(crate) const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
 
 /// What the local methods and the observer act on.
 pub struct Local {
-    /// What the local methods share with the agents.
     core: Arc<Core>,
-    /// The live agents.
     agents: Arc<Agents>,
     /// What only the local methods read.
     parts: LocalParts,
@@ -124,7 +122,6 @@ pub struct Local {
 
 /// What only [`Local`] reads, beside the [`Core`] it shares.
 pub struct LocalParts {
-    /// The daemon's approval desk.
     pub desk: Arc<Desk>,
     /// The `[thinking]` settings a model switch carries.
     pub thinking: ThinkingTable,
@@ -153,9 +150,7 @@ pub struct LocalParts {
 /// The fixed part of [`protocol::method::Report`]'s answer.
 #[derive(Debug, Clone)]
 pub struct ReportParts {
-    /// The realm directory.
     pub realm: std::path::PathBuf,
-    /// The realm id.
     pub realm_id: String,
     /// The shell's confinement mode.
     pub confinement: String,

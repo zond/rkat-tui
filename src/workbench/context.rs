@@ -1,9 +1,8 @@
 //! `/context`'s breakdown: the UI's header, the session's system prompt
 //! and message counts, its skills directories and its tool definitions by
 //! family, as the daemon reports them (`rkat/context`), and the
-//! instruction files on disk,
-//! found the same way the session builds find them
-//! ([`InstructionSources::of`]).
+//! instruction files on disk, found the same way the session builds find
+//! them ([`InstructionSources::of`]).
 
 use std::fmt::Write as _;
 use std::path::PathBuf;

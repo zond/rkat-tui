@@ -1,9 +1,6 @@
 //! End-to-end notes: approval tiers through [`classify_tier`], then
-//! the actual write through `NoteToolDispatcher`.
-//!
-//! The old crate decided through `ApprovalEngine` with a counting classifier;
-//! the engine returns in P2, until then the tier alone shows whether the
-//! classifier would be consulted (`Tier::Classifier`).
+//! the actual write through `NoteToolDispatcher`. The tier alone shows
+//! whether the classifier would be consulted (`Tier::Classifier`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use meerkat_core::{AgentToolDispatcher, ToolCallView};

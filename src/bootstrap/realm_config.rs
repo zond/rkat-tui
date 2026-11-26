@@ -132,7 +132,6 @@ impl RealmConfigStore {
         self.global.as_ref()
     }
 
-    /// The document's path.
     #[must_use]
     pub fn path(&self) -> &Path {
         self.document.path()

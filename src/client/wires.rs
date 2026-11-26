@@ -37,7 +37,6 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Another workspace's running daemon.
 #[derive(Debug, Clone)]
 pub struct Other {
-    /// Its endpoint.
     pub endpoint: Endpoint,
     /// Its status (its workspace and agents).
     pub status: Status,
@@ -47,9 +46,7 @@ pub struct Other {
 /// lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
-    /// Its workspace.
     pub workspace: PathBuf,
-    /// Its name.
     pub agent: String,
     /// Whether it runs.
     pub run: RunWord,

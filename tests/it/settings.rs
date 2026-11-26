@@ -144,9 +144,8 @@ async fn set_writes_either_file_keeps_the_rest_and_applies_at_once() {
 
 /// The client's `/settings` picker lists every setting with its value and
 /// layer; its change (`u`'s field, then Enter) writes the user's file and
-/// the list comes again with the new value and the picker's filter (before,
-/// unfiltered, and the highlight landed on another setting); a live `[ui]`
-/// setting reaches every attached client.
+/// the list comes again with the new value and the picker's filter; a live
+/// `[ui]` setting reaches every attached client.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_settings_picker_shows_and_changes_a_setting() {
     let ws = Workspace::new();

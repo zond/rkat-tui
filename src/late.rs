@@ -6,7 +6,7 @@
 //! finds nothing), which a correctly started daemon never meets; a
 //! binding forgotten there would be silent. So each [`Late`] says the
 //! first time it is reached unbound, in one warning naming it, and the
-//! daemon's own check (`daemon::local`'s `unbound_for_test`) lists every
+//! daemon's own check (`daemon::local::probe`'s `unbound_for_test`) lists every
 //! one that is unbound, which the daemon's start-up test holds empty.
 //! Unit tests make holders unbound on purpose: the warning is all they
 //! cause.
@@ -49,7 +49,6 @@ impl<T> Late<T> {
         self.cell.set(value).is_ok()
     }
 
-    /// Whether it is bound.
     pub(crate) fn is_bound(&self) -> bool {
         self.cell.get().is_some()
     }

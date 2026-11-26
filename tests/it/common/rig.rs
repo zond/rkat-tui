@@ -1,10 +1,8 @@
-//! The attach-mode rig shared by `tests/client.rs`,
-//! `tests/approvals.rs`, `tests/helpers.rs`,
-//! `tests/conversations.rs` and `tests/daemon.rs`: a daemon started
-//! inside the test process with a scripted LLM (an allow-all classifier unless the test
+//! The rig the integration tests share: a daemon started inside the test
+//! process with a scripted LLM (an allow-all classifier unless the test
 //! passes its own options), and attach runners driven through the UI's
-//! `Effect`/`Msg` channels. `tests/daemon.rs` keeps its own raw JSON-RPC
-//! client, which tests the wire below the attach runner.
+//! `Effect`/`Msg` channels. `tests/it/daemon.rs` keeps its own raw
+//! JSON-RPC client, which tests the wire below the attach runner.
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -99,7 +97,6 @@ impl Running {
         Self::start_with(&args_for(root), Self::options(root, llm)).await
     }
 
-    /// Start with these arguments and options.
     pub async fn start_with(args: &rkat_tui::Args, options: DaemonOptions) -> Self {
         Self::try_start_with(args, options)
             .await
@@ -157,7 +154,7 @@ impl Running {
 
     /// Reveal `names` for `session` as a `tool_search` would (tests about
     /// the revealed tools themselves, not about finding them:
-    /// `tests/deferral.rs` covers the search).
+    /// `tests/it/deferral.rs` covers the search).
     #[allow(dead_code)]
     pub async fn reveal(&self, session: &meerkat_core::SessionId, names: &[&str]) {
         let names: Vec<String> = names.iter().map(ToString::to_string).collect();
@@ -198,7 +195,6 @@ impl Running {
         self.engine.upgrade().expect("the daemon serves")
     }
 
-    /// The daemon's endpoint.
     pub fn endpoint(&self) -> Endpoint {
         Endpoint::read(&self.endpoint_file).unwrap()
     }
@@ -361,7 +357,6 @@ impl Client {
         Self::attach_with_config(config).await
     }
 
-    /// Attach a runner on `config`.
     pub async fn attach_with_config(config: rkat_tui::client::ClientConfig) -> Self {
         let mut client = Self {
             harness: spawn_attach_runner(config),
@@ -668,7 +663,6 @@ impl Setup {
         }
     }
 
-    /// With this classifier.
     pub fn classifier(mut self, classifier: Arc<dyn ActionClassifier>) -> Self {
         self.classifier = Some(classifier);
         self
@@ -767,7 +761,6 @@ impl Attached {
         self.daemon.transcript(&session).await
     }
 
-    /// The client quits, then the daemon stops.
     /// Quit the client, then stop the daemon; a timeout of either names
     /// the caller's line.
     #[track_caller]
@@ -926,7 +919,6 @@ pub async fn stored_session(root: &Path, id: &meerkat_core::SessionId) -> meerka
 pub struct ScriptedClassifier {
     verdicts: parking_lot::Mutex<Vec<Result<ClassifierVerdict, ClassifierError>>>,
     seen: parking_lot::Mutex<Vec<(String, serde_json::Value, String)>>,
-    /// The environment of every review.
     environments: parking_lot::Mutex<Vec<rkat_tui::approval::classifier::Environment>>,
     allow_when_done: bool,
     /// A review of a call whose arguments hold this text times out.

@@ -33,13 +33,10 @@ pub(super) enum Kind {
 /// What the daemon last sent one agent, by kind.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Sent {
-    /// The last watch event's text.
     watch: Option<String>,
-    /// The last helper-ending note's text.
     helper: Option<String>,
     /// The last helper-ending note steered in, with its folded line.
     helper_summary: Option<(String, NoteSummary)>,
-    /// The last approval note's text.
     approval: Option<String>,
 }
 

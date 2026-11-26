@@ -193,8 +193,7 @@ fn write(dir: &Path, table: &Table) {
 
 /// Every setting, from every combination of layers (each unset or one of
 /// two values): the layering's typed view and [`Setting::resolve`] give
-/// what the precedence and the project rule say. Written against the
-/// layering as it was before the registry, and kept as it moved onto it.
+/// what the precedence and the project rule say.
 #[test]
 fn every_setting_layers_as_it_always_did() {
     let tmp = tempfile::tempdir().unwrap();

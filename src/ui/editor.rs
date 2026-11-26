@@ -60,10 +60,6 @@ pub fn editor_from_env() -> Result<EditorCommand, String> {
 
 /// Run `command` on `path` with the terminal (inherited stdio) and wait for
 /// it. Blocking.
-///
-/// # Errors
-///
-/// A description when the editor cannot start or exits unsuccessfully.
 pub fn run_editor(command: &EditorCommand, path: &Path) -> Result<(), String> {
     let program = command.program.display();
     match Command::new(&command.program)
@@ -79,10 +75,6 @@ pub fn run_editor(command: &EditorCommand, path: &Path) -> Result<(), String> {
 
 /// Write the draft to a fresh private temporary file in `dir` (created if
 /// missing). The file is removed when the handle drops.
-///
-/// # Errors
-///
-/// Any I/O error creating or writing the file.
 pub fn write_draft(dir: &Path, text: &str) -> io::Result<tempfile::NamedTempFile> {
     std::fs::create_dir_all(dir)?;
     let mut file = tempfile::Builder::new()
@@ -113,10 +105,6 @@ pub fn read_draft(path: &Path) -> io::Result<String> {
 
 /// Write `text` to a temporary file in `scratch`, let `run` edit it and read
 /// it back; the file is removed afterwards.
-///
-/// # Errors
-///
-/// A description when the file cannot be written or read, or `run` fails.
 pub fn edit_draft(
     text: &str,
     scratch: &Path,

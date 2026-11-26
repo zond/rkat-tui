@@ -7,7 +7,7 @@
 //! not configurable per run or per host). A run nobody typed (another
 //! agent's message, a schedule, a helper's ending) whose model has nothing
 //! to add ends so too; that is no failure the user needs to act on. And a
-//! failed run was said twice: as the run's `error: …` and as the turn's
+//! failed run is reported twice: as the run's `error: …` and as the turn's
 //! `turn failed: …`, with the same text.
 //!
 //! So, per run ([`RunFailures`]): the empty-answer retries draw nothing;

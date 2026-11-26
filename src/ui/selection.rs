@@ -34,7 +34,6 @@ pub struct CellPos {
 }
 
 impl CellPos {
-    /// A cell position.
     pub const fn new(line: usize, col: usize) -> Self {
         Self { line, col }
     }
@@ -61,7 +60,6 @@ pub struct Selection {
     pub anchor: CellPos,
     /// First cell of the unit under the pointer.
     pub head: CellPos,
-    /// Granularity.
     pub mode: SelectMode,
     anchor_end: CellPos,
     head_end: CellPos,

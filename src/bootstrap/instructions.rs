@@ -66,9 +66,7 @@ pub enum SectionKind {
 /// One instruction file, ready to render into the system prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
-    /// Where the file came from.
     pub kind: SectionKind,
-    /// The file's path.
     pub path: PathBuf,
     /// The file's content (possibly truncated, trailing whitespace trimmed).
     pub body: String,

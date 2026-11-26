@@ -60,7 +60,6 @@ fn conventions_config(root: &Path) -> PathBuf {
 /// ([`ProjectInputs::preview`]); the client sends it back with the yes.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TrustPreview {
-    /// The file.
     pub file: PathBuf,
     /// The SHA-256 (lower-case hex) of the content shown; `None`: absent.
     pub digest: Option<String>,

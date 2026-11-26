@@ -52,7 +52,6 @@ pub(in crate::ui) fn window_lines(
         start -= 1;
         used += height(&rows[start]);
     }
-    // Rows after the selection fill what is left.
     let mut lines = Vec::new();
     for (i, mut row) in rows.into_iter().enumerate().skip(start) {
         if lines.len() + row.len() > room && i != selected {

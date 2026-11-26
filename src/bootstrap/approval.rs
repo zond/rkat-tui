@@ -29,7 +29,6 @@ use crate::tools::ReadOnlyProjectTools;
 
 use super::scope::RuntimeScope;
 
-/// Capacity of the escalation channel.
 const ESCALATION_CAPACITY: usize = 16;
 
 /// Engine-level overrides for the approval setup (tests and embedders).
@@ -77,7 +76,6 @@ pub(crate) struct ClassifierSource<'a> {
     /// The factory the sessions are built with (its credential resolution
     /// builds the classifier's client).
     pub factory: &'a AgentFactory,
-    /// Realm config.
     pub config: &'a Config,
     /// The start-up endpoint: the classifier's when `[auto]
     /// classifier_model` names a model without an endpoint, or none.
@@ -442,7 +440,6 @@ pub fn resolved_shell_program() -> Option<std::path::PathBuf> {
     })
 }
 
-/// Whether `program` is a POSIX shell.
 #[must_use]
 pub fn is_posix_shell(program: &Path) -> bool {
     program

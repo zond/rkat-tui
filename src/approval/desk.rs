@@ -174,7 +174,6 @@ pub fn answered(
 /// shows them (and `rkat/mode` pushes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModeStatus {
-    /// The permission mode.
     pub mode: PermissionMode,
     /// Auto mode is paused by classifier blocks.
     pub paused: bool,
@@ -251,7 +250,6 @@ pub enum RuleCommand {
     /// `/permissions add allow|deny <tool> [pattern]`, or the dialog's `r`
     /// form (a literal one too).
     Add {
-        /// The rule.
         #[serde(flatten)]
         spec: RuleSpec,
         /// Written to the user's own `tui.toml` (`--user`) instead of the
@@ -465,7 +463,6 @@ pub enum RuleEdit {
     Edited {
         /// The rule before.
         old: Rule,
-        /// The rule now.
         new: Rule,
     },
 }
@@ -474,7 +471,6 @@ pub enum RuleEdit {
 /// `/permissions list`'s order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuleRows {
-    /// The rules.
     pub rules: Vec<RuleRow>,
     /// The directory and session grants in force for the asking client's
     /// agent ([`super::grants::Grants::rows`]).

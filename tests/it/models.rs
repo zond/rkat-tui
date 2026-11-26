@@ -93,7 +93,7 @@ fn is_model(msg: &Msg, endpoint: &str, model: &str) -> bool {
     matches!(msg, Msg::Status(StatusUpdate::Model { endpoint: shown, model: m }) if shown == endpoint && m == model)
 }
 
-/// F109: a tool-call id the request's dialect refuses (a model behind a
+/// A tool-call id the request's dialect refuses (a model behind a
 /// proxy issued one thousands of characters long) goes out short, on the
 /// call and on its result alike, while the stored conversation keeps the
 /// id the model issued.
@@ -252,7 +252,7 @@ async fn the_picker_switches_the_live_model_and_the_next_turn_uses_it() {
         "{:?}",
         document.models.custom
     );
-    // V1: the switch persisted none of the load-time overrides the store's
+    // The switch persisted none of the load-time overrides the store's
     // reads carry (the turn limit, the user's skill repository): no engine
     // path the daemon serves writes a config it read back.
     assert_eq!(document.agent.max_turns, None);
@@ -445,7 +445,7 @@ async fn configured_thinking_reaches_the_request_on_create_and_after_a_switch() 
     assert_eq!(thinking_of(third), None, "{:?}", third.provider_params);
     rig.quit().await;
 
-    // Absent: the requests carry no thinking, as before the setting existed.
+    // Absent: the requests carry no thinking.
     let ws = Workspace::new();
     let plain = ScriptedLlmClient::new(vec![Step::Text("one"), Step::Text("two")]);
     let mut rig = Attached::start_with(&ws.root, &plain, options()).await;

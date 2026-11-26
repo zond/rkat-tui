@@ -30,14 +30,11 @@
 //! [`Open::is_over`]), or at once when the prompt's send failed, the
 //! interrupt went unconfirmed, the link was lost or the agent switched.
 //!
-//! The flags this replaces (`active`, `quiet`, `from_note`, `saw_run`,
-//! `prompt`, `steered`, an id, and eight fields of the interrupt) could
-//! hold combinations no transition makes: a quiet turn that took a later
-//! run (the regression of 4658a12, now the one arm of
-//! [`Turn::run_start`] that leaves the quiet turn), runs and a result kept
-//! on a turn that was not active, a prompt on a turn joined from another
-//! client, a deadline or a force with no interrupt, an interrupt with no
-//! first press.
+//! A combination no transition makes cannot be held: a quiet turn that took
+//! a later run (one arm of [`Turn::run_start`] leaves the quiet turn), runs
+//! and a result kept on a turn that is not open, a prompt on a turn joined
+//! from another client, a deadline or a force with no interrupt, an
+//! interrupt with no first press.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -54,7 +51,6 @@ pub(in crate::client::runner) enum Turn {
     /// No turn is open.
     #[default]
     Idle,
-    /// A turn is open.
     Open(Open),
 }
 
@@ -150,7 +146,6 @@ pub(in crate::client::runner) struct Interrupt {
     /// Which interrupt of the runner it is (the runner's `interrupts`); an
     /// answer of another is not its.
     pub(in crate::client::runner) epoch: u64,
-    /// The first press.
     pub(in crate::client::runner) first: Instant,
     /// The last press (presses within `INTERRUPT_REPEAT` of each other are
     /// one interrupt).
@@ -545,7 +540,7 @@ mod tests {
     use super::*;
 
     /// What a run's start means, by the turn's kind; the quiet turn takes
-    /// only the compaction's run (4658a12), and the noted turn's first
+    /// only the compaction's run, and the noted turn's first
     /// start makes it a joined one.
     #[test]
     fn a_run_start_means_what_the_turn_s_kind_says() {

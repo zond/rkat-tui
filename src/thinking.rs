@@ -11,8 +11,8 @@
 //! session's provider params ([`params_for`]), wherever the TUI names the
 //! session's model: a new session's build, a `/model` switch (the
 //! runtime's reconfigure request) and every resume (which a rebuild is).
-//! The realm config refuses a realm-level
-//! `[agent] provider_params`, so the host carries it per session.
+//! The realm config refuses a realm-level `[agent] provider_params`, so the
+//! host carries it per session.
 //!
 //! Why it exists: Anthropic binds replayed thinking blocks to the request
 //! prefix, so a request whose tool list changed (an MCP server connected, a

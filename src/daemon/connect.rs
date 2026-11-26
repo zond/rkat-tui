@@ -77,7 +77,6 @@ pub fn own_helpers(caller: &Caller, bound: &[(HelperKey, HelperTag)]) -> Vec<Cho
 enum Named<'a> {
     /// Exactly this one.
     One(&'a Chosen),
-    /// None.
     None,
     /// Helpers in more than one mob.
     Several,

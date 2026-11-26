@@ -1,7 +1,7 @@
-//! What the gate tells the audit log (recommendation 11 of the security
-//! review): every decision with who made it, and the changes of authority
-//! the engine makes itself (mode, rules). The daemon's sink writes them
-//! (`crate::daemon::audit`); without one the engine records nothing.
+//! What the gate tells the audit log: every decision with who made it, and
+//! the changes of authority the engine makes itself (mode, rules). The
+//! daemon's sink writes them (`crate::daemon::audit`); without one the
+//! engine records nothing.
 
 use std::sync::{Arc, OnceLock};
 
@@ -20,7 +20,6 @@ pub struct DecisionRecord<'a> {
     pub helper: Option<&'a str>,
     /// The run it belongs to, when known.
     pub run: Option<&'a RunId>,
-    /// The tool.
     pub tool: &'a str,
     /// The decisive argument, whole: the command, the paths, else the raw
     /// arguments.
@@ -52,7 +51,6 @@ pub struct ReviewRecord {
     pub latency_ms: u64,
     /// The classifier's input tokens (cache reads and writes included).
     pub input_tokens: u64,
-    /// Its output tokens.
     pub output_tokens: u64,
 }
 
@@ -90,7 +88,6 @@ impl Outlets {
         self.audit.get().is_some()
     }
 
-    /// The audit sink, when one is set.
     pub(super) fn audit(&self) -> Option<&Arc<dyn AuditSink>> {
         self.audit.get()
     }

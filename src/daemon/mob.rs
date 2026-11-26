@@ -19,9 +19,7 @@ use super::{AGENT_PROFILE, DaemonError, MOB_ID};
 /// restored, else the one it seated).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstAgent {
-    /// Its mob.
     pub mob_id: MobId,
-    /// Its member identity.
     pub identity: AgentIdentity,
     /// The session it runs as.
     pub session_id: meerkat_core::SessionId,
@@ -97,10 +95,6 @@ pub fn main_profile(plan: &RootPlan) -> Option<meerkat_mob::Profile> {
 
 /// Create the mob, or restore it (and resume it when it was stopped). Its
 /// agents are restored or seated by [`super::agents::Agents::start`].
-///
-/// # Errors
-///
-/// [`DaemonError::Mob`] when the mob cannot be created or resumed.
 pub async fn ensure_mob(state: &Arc<MobMcpState>, plan: &RootPlan) -> Result<(), DaemonError> {
     let mob_id = MobId::from(MOB_ID);
     let mob_err = |err| DaemonError::mob(&MobId::from(MOB_ID), err);

@@ -25,9 +25,7 @@ pub enum RulesCommand {
     List,
     /// Add a rule.
     Add {
-        /// Allow or deny.
         effect: RuleEffect,
-        /// Tool name.
         tool: String,
         /// Optional argument pattern (rest of the line).
         pattern: Option<String>,
@@ -224,7 +222,6 @@ pub enum MemoryTarget {
 /// Which helpers a `/helpers expand|fold` applies to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HelperTarget {
-    /// Every helper.
     All,
     /// The newest helper with this label.
     Label(String),
@@ -339,7 +336,6 @@ pub enum Command {
 /// Slash-command parse failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandError {
-    /// The command name is not known.
     Unknown(String),
     /// The command is known but its arguments are wrong; the message is
     /// the command's own [`CommandSpec::usage`].

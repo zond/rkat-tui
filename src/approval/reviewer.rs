@@ -22,12 +22,10 @@ use super::corpus;
 /// Why a classifier check ([`Reviewer::check`]) did not start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum CheckError {
-    /// No classifier model is configured.
     #[error(
         "no classifier model is configured, so there is nothing to check: set `[auto] classifier_model = \"<model>\"` in tui.toml (the model of the endpoint the agent uses), then restart the daemon"
     )]
     NotConfigured,
-    /// Another check runs.
     #[error("a classifier check is already running; wait for its result")]
     Busy,
 }
@@ -154,11 +152,7 @@ impl Reviewer {
     /// checks; audited (the setting's file is written by the daemon's
     /// settings path, `crate::daemon::settings`). The caller runs the
     /// start-up check against it ([`Self::probe_switched`]). Returns the
-    /// notice.
-    ///
-    /// # Errors
-    ///
-    /// Why the model was not changed, for the user.
+    /// notice, or why the model was not changed, for the user.
     pub async fn switch(
         &self,
         endpoint: crate::endpoints::Endpoint,

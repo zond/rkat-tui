@@ -20,7 +20,6 @@ pub(super) enum PathIndex {
     Dropped,
     /// Asked for with this generation ([`LocalEffect::IndexPaths`]).
     Indexing(u64),
-    /// The paths.
     Ready(Vec<crate::mentions::PathEntry>),
 }
 

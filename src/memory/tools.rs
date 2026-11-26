@@ -147,7 +147,6 @@ fn describe(err: NoteError) -> String {
     err.to_string()
 }
 
-/// Dispatcher for the note tools.
 pub struct NoteToolDispatcher {
     stores: Arc<Stores>,
     tools: Arc<[Arc<ToolDef>]>,
@@ -197,13 +196,11 @@ impl NoteToolDispatcher {
         }
     }
 
-    /// The user-level store, when available.
     #[must_use]
     pub fn user(&self) -> Option<&NoteStore> {
         self.stores.user.as_ref()
     }
 
-    /// The workspace store.
     #[must_use]
     pub fn workspace(&self) -> &NoteStore {
         &self.stores.workspace

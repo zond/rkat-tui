@@ -1,6 +1,7 @@
 //! Live-provider checks for `LlmClassifier` (ignored by default).
 //!
-//! Run with `cargo test --test e2e_classifier -- --ignored`.
+//! Run with `cargo nextest run --all-features --test it --run-ignored only
+//! -E 'test(/^e2e_classifier::/)'`.
 //! Each test skips when its provider's API key is not in the environment.
 //! The client comes from the facade's own credential resolution
 //! (`AgentFactory::build_llm_client_for_identity`), as in the TUI.

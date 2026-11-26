@@ -1,4 +1,4 @@
-//! Schedules (P6 item A) end to end through the `rkat-tui-mob` daemon
+//! Schedules end to end through the `rkat-tui-mob` daemon
 //! with a scripted LLM: the agent creates a schedule on its own session
 //! with the engine's `meerkat_schedule_create`, the daemon's runtime fires
 //! it, and the agent's turn runs labelled with the schedule; the gate
@@ -48,7 +48,7 @@ fn at_call(id: &'static str, name: &'static str, in_secs: i64, prompt: &'static 
 }
 
 /// Reveal the schedule tools for `session` as a `tool_search` would
-/// (`tests/deferral.rs` covers finding them).
+/// (`tests/it/deferral.rs` covers finding them).
 async fn reveal(daemon: &Running, session: &meerkat_core::SessionId) {
     daemon
         .reveal(

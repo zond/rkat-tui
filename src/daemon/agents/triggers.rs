@@ -58,7 +58,6 @@ impl Agents {
             );
             return;
         }
-        // The note of a helper's ending the daemon sent it.
         let from_helper = self
             .sent
             .take_if(name, Kind::HelperEnding, |text| text == prompt);

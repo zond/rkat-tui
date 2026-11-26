@@ -14,7 +14,7 @@ use super::{
 pub(super) struct OpenHelperView {
     pub(super) header: BlockId,
     pub(super) scroll: ScrollState,
-    /// Esc asked whether to stop the (running) helper.
+    /// Ctrl-C asked whether to stop the (running) helper.
     pub(super) confirm_stop: bool,
 }
 

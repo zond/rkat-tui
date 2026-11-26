@@ -70,7 +70,6 @@ pub enum TrustStatus {
     Missing,
     /// The file is what rkat-tui wrote or the user trusted.
     Trusted,
-    /// The file is not trusted.
     Untrusted(Untrusted),
 }
 
@@ -84,10 +83,8 @@ pub enum TrustError {
     Refused {
         /// The file.
         path: PathBuf,
-        /// Why.
         reason: Untrusted,
     },
-    /// The record could not be serialized.
     #[error("cannot encode the trust record: {0}")]
     Encode(#[from] toml::ser::Error),
     /// The record could not be written.

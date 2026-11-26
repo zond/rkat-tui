@@ -25,7 +25,6 @@ pub enum CompletionKind {
 /// The word under the cursor a menu completes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Word {
-    /// What it completes.
     pub kind: CompletionKind,
     /// Input line.
     pub row: usize,

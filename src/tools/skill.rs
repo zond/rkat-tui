@@ -66,10 +66,6 @@ pub trait SkillHost: Send + Sync {
 /// and the config store and the git and HTTP sources need tokio, so the
 /// thread blocks on the runtime's handle (not a plain executor, as
 /// `crate::bootstrap::skills` lists one directory).
-///
-/// # Errors
-///
-/// A message for the model.
 pub async fn with_runtime<T, F, Fut>(host: &Arc<dyn SkillHost>, work: F) -> Result<T, String>
 where
     T: Send + 'static,

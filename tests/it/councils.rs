@@ -1,4 +1,4 @@
-//! Councils from the daemon's agent (P6 item 17): the engine seats a
+//! Councils from the daemon's agent: the engine seats a
 //! council's participants in a temporary mob it creates for an owner
 //! session no session here has; the gate records which session convened it
 //! (`rkat_tui::mobs::council`), so the participants work for the agent:
@@ -109,8 +109,8 @@ async fn a_two_member_council_completes_with_its_participants_as_helpers() {
     let classifier = ScriptedClassifier::allowing(Vec::new());
     let setup = Setup::default().classifier(Arc::clone(&classifier) as _);
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
-    // The mob tools the script calls (`tests/deferral.rs` covers finding
-    // them).
+    // The mob tools the script calls (`tests/it/deferral.rs` covers
+    // finding them).
     let session = rig.current_session().await;
     rig.daemon
         .reveal(&session, &["mob_create", "mob_spawn_member", "council"])

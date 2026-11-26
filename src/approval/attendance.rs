@@ -1,4 +1,4 @@
-//! Unattended turns (the owner's decision after the security review).
+//! Unattended turns.
 //!
 //! A turn no human started (another agent's message woke the agent, a
 //! schedule or a file watch) runs unattended unless a client is attached

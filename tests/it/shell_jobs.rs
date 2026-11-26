@@ -1,8 +1,8 @@
-//! Background shell jobs on the daemon's agent (P6 item 9): the engine
+//! Background shell jobs on the daemon's agent: the engine
 //! cannot run them for a member with the mob tools (`docs/evidence.md`,
 //! "Background shell jobs"), so the job tools are withheld and `shell`
 //! with `background` is refused, typed, before the engine sees it. The
-//! foreground shell runs as before.
+//! foreground shell still runs.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

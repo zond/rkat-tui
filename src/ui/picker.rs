@@ -30,23 +30,14 @@ use crate::daemon::protocol::{ScheduleOp, TrustHostParams};
 /// picker of its own kind).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerKind {
-    /// `/schedules`.
     Schedules,
-    /// `/permissions`.
     Permissions,
-    /// `/helpers`.
     Helpers,
-    /// `/mode`.
     Mode,
-    /// `/memory`.
     Memory,
-    /// `/wire`.
     Wire,
-    /// `/agents`.
     Agents,
-    /// `/settings`.
     Settings,
-    /// `/rehome`.
     Rehome,
     /// `/trust`'s question.
     Trust,
@@ -111,7 +102,6 @@ pub enum PickAct {
     /// Add an approval rule (as `/permissions add`, or a literal one),
     /// to the user's own `tui.toml` with `user`, then the list again.
     AddRule {
-        /// The rule.
         spec: RuleSpec,
         /// Written to the user's own `tui.toml` (every workspace).
         user: bool,
@@ -165,7 +155,6 @@ pub enum PickAct {
     /// `/set <key> <value>` (`None`: `/unset <key>`), `--user` with
     /// `user`, then the list again with the picker's `filter`.
     SetSetting {
-        /// The setting's key.
         key: String,
         /// The value (`None`: remove the level's value).
         value: Option<String>,
@@ -252,9 +241,7 @@ impl PickAct {
 /// One key of a row: what it does there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickKey {
-    /// The key.
     pub code: KeyCode,
-    /// What it does.
     pub does: Does,
 }
 
@@ -324,7 +311,6 @@ impl PickKey {
 /// the last character, Esc closes it. It has no cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Field {
-    /// What it is for.
     pub what: FieldFor,
     /// The text as typed so far.
     pub text: String,
@@ -336,7 +322,6 @@ pub enum FieldFor {
     /// Setting `key`'s value at the user's level (`user`) or the
     /// workspace's; Enter is [`PickAct::SetSetting`].
     Setting {
-        /// The setting's key.
         key: String,
         /// The user's own `tui.toml`.
         user: bool,
@@ -438,7 +423,6 @@ pub enum PermissionAct {
     },
     /// Add the rule (`r`), to the user's own `tui.toml` with `user`.
     AddRule {
-        /// The rule.
         spec: RuleSpec,
         /// Written to the user's own `tui.toml` (every workspace).
         user: bool,
@@ -786,11 +770,9 @@ impl FieldFor {
 /// One row: its line, an optional dim line under it, and its keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickRow {
-    /// The row as shown.
     pub text: String,
     /// A second, dim line (an explanation, a path).
     pub note: Option<String>,
-    /// What the keys do on it.
     pub keys: Vec<PickKey>,
     /// Shown dim (an ended helper among live ones).
     pub dim: bool,
@@ -854,7 +836,6 @@ impl PickRow {
         self
     }
 
-    /// The row shown dim.
     #[must_use]
     pub fn dimmed(mut self) -> Self {
         self.dim = true;
@@ -907,9 +888,7 @@ pub enum PickerLine {
 /// A picker over rows ([`PickerKind`] says whose).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListPicker {
-    /// Whose picker.
     pub kind: PickerKind,
-    /// The rows, in order.
     pub rows: Vec<PickRow>,
     /// The highlighted row.
     pub cursor: ListCursor,
@@ -943,13 +922,9 @@ pub struct ListPicker {
 /// them, as [`ListPicker`]'s fields of the same names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
-    /// The rows, in order.
     pub rows: Vec<PickRow>,
-    /// The highlighted row.
     pub cursor: ListCursor,
-    /// What shows when there are no rows.
     pub empty: String,
-    /// The key hint at the bottom.
     pub footer: String,
     /// Keys of the section itself.
     pub keys: Vec<PickKey>,
@@ -1222,7 +1197,6 @@ impl ListPicker {
         self
     }
 
-    /// The highlighted row.
     #[must_use]
     pub fn selected(&self) -> Option<&PickRow> {
         self.rows.get(self.cursor.index())

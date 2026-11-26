@@ -96,7 +96,6 @@ impl InputKey {
         Self(key.into())
     }
 
-    /// The key.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn as_str(&self) -> &str {
@@ -118,7 +117,6 @@ pub enum TranscriptEntry {
     User {
         /// The input's key, when it was recorded live (`None`: seeded).
         key: Option<InputKey>,
-        /// Text.
         text: String,
     },
     /// Context that is not the user's words and not an agent action (an
@@ -131,7 +129,6 @@ pub enum TranscriptEntry {
     ToolCall {
         /// Provider tool-use id (not rendered).
         tool_use_id: String,
-        /// Tool name.
         name: String,
         /// Arguments, rendered compactly with long strings truncated
         /// ([`render_raw_args`]).
@@ -386,7 +383,6 @@ pub struct StoredWords {
 /// pushed out since, oldest first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selection {
-    /// The candidates.
     pub messages: Vec<String>,
 }
 
@@ -628,7 +624,6 @@ impl ApprovalTranscript {
         self.users + self.others
     }
 
-    /// Whether the transcript is empty.
     #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
@@ -979,8 +974,7 @@ mod tests {
                 })
                 .collect()
         };
-        // The stricter rule (since the daemon stores the user's words): a
-        // mark alone makes nothing the user's; only a stored word does.
+        // A mark alone makes nothing the user's; only a stored word does.
         let mut t = ApprovalTranscript::default();
         t.seed_with_words(&["MARKED-ONE run the tests".to_string()], &session);
         assert_eq!(users(&t), ["MARKED-ONE run the tests"]);
@@ -1054,8 +1048,8 @@ mod tests {
         );
     }
 
-    /// The owner's case: a request, then far more than a budget of tool
-    /// calls. The request is still there, in its place before them, and
+    /// A request, then far more than a budget of tool calls. The request
+    /// is still there, in its place before them, and
     /// the calls trimmed from between it and the newest ones are one
     /// `[omitted]` line after it.
     #[test]

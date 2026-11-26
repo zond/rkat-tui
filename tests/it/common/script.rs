@@ -35,7 +35,6 @@ type Make = Arc<dyn Fn(&[Message]) -> Step + Send + Sync>;
 /// What a rule answers with.
 #[derive(Clone)]
 pub enum Reply {
-    /// This step.
     Step(Step),
     /// What this script answers (a helper's own script, say).
     Script(Arc<Script>),

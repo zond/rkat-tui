@@ -74,7 +74,7 @@ async fn told(rig: &mut Attached, start: &str) -> String {
 
 /// A statement added by hand to your own `tui.toml` is in force without
 /// a restart (`/permissions` lists it), told once with its count, and
-/// audited. Before, it applied at the next start.
+/// audited.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_statement_added_by_hand_to_your_file_applies_without_a_restart() {
     let ws = Workspace::new();
@@ -215,10 +215,8 @@ async fn a_rule_added_by_hand_to_the_workspace_file_applies() {
 }
 
 /// A broad allow rule (`/permissions add allow shell *`, or an edit to
-/// one) is refused up front, saying why. Before, it was told "rule added"
-/// and written to the workspace's file, and the hold of the files that
-/// follows every rule command dropped it at once (as every start does):
-/// never in force.
+/// one) is refused up front, saying why: the hold of the files that
+/// follows every rule command would drop it at once (as every start does).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_broad_allow_rule_is_refused_not_added_and_dropped() {
     let ws = Workspace::new();
@@ -474,10 +472,7 @@ async fn always_in_every_workspace_in_one_daemon_reaches_the_other() {
 /// the workspace's file as one, as the commands do: a sync of that file
 /// that arrives between the two steps (forced here: the engine's test hook
 /// asks for one there) runs after both and finds nothing to do, so no
-/// client is told anything and the rule stays in force. Before, the sync
-/// ran between them, found the rule in the engine and not in the file,
-/// removed it and told every client; the file's next sync added it back
-/// and told them again.
+/// client is told anything and the rule stays in force.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn allow_and_add_a_rule_is_one_change_no_sync_splits() {
     use common::Step;

@@ -1,8 +1,7 @@
-//! How the main input takes the next key: one [`InputMode`] at a time, in
-//! place of the separate fields it was (`mode`, `search_corpus`, `chord`,
-//! `last_esc`, `quit.last_ctrl_c`). `main_key` asks it once
-//! ([`InputMode::key_pressed`]) and the modes cannot be on together. The
-//! Elm rule stands: it changes only inside `App::update`.
+//! How the main input takes the next key: one [`InputMode`] at a time.
+//! `main_key` asks it once ([`InputMode::key_pressed`]) and the modes
+//! cannot be on together. The Elm rule stands: it changes only inside
+//! `App::update`.
 //!
 //! # States
 //!
@@ -43,7 +42,7 @@
 //!   the open helper view's own, and gone with it.
 //! - A dialog's arming (`App::arming`): the dialogs' keys, not the input's.
 //!
-//! # What can no longer be represented
+//! # What cannot be represented
 //!
 //! - A pending chord, an armed Esc or an armed Ctrl-C during a history
 //!   search, or two of them at once.
@@ -72,7 +71,6 @@ pub(crate) enum InputMode {
 /// A reverse history search and the corpus it searches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Searching {
-    /// The search.
     pub(crate) search: HistorySearch,
     /// What it searches: newest first, deduplicated.
     pub(crate) corpus: Vec<String>,

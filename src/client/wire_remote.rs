@@ -24,10 +24,6 @@ const FORWARD_WAIT: Duration = Duration::from_secs(10);
 const FORWARD_POLL: Duration = Duration::from_millis(100);
 
 /// Answer one request from standard input on standard output.
-///
-/// # Errors
-///
-/// Reading standard input or writing standard output failed.
 pub async fn serve_stdio() -> Result<(), crate::TuiError> {
     let io = |context: &str| {
         let context = context.to_string();

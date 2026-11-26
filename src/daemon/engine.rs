@@ -434,10 +434,9 @@ pub fn compose(
         let fetch = helper_web_fetch.offered().then(|| Arc::clone(&web_fetch));
         helper_external_tools(files, &helper_skills, &assign_tools, fetch)
     });
-    // The daemon follows its helpers: the
-    // registry's running set (and how each ends), and each helper's
-    // session bound for the helpers it starts in turn. Clients see
-    // the helpers' events on the mobs' own streams.
+    // The daemon follows its helpers: the registry's running set (and how
+    // each ends), and each helper's session bound for the helpers it starts
+    // in turn. Clients see the helpers' events on the mobs' own streams.
     let (spawning, spawning_rx) = mpsc::unbounded_channel();
     let profiles = Arc::new(crate::mobs::profiles::MobProfiles::default());
     let customizer = HelperCustomizer::new(
@@ -1300,9 +1299,8 @@ fn tagged_diffs(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::tools::FileDiff>();
     tokio::spawn(async move {
         while let Some(diff) = rx.recv().await {
-            // The agent's own write, marked again now that it is done (it was
-            // marked before, `AgentHost::tools`): its watches do not report
-            // it back.
+            // The agent's own write, marked again now that it is done
+            // (`AgentHost::tools`): its watches do not report it back.
             if let Some(watches) = watches.upgrade() {
                 watches.own_write(&agent, &diff.path);
             }

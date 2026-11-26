@@ -94,7 +94,7 @@
 //! (program lookup, home-relative tool directories, locale, TLS roots,
 //! proxies). Every other variable, provider API keys included, stays
 //! outside the sandbox. An unconfined command (`off`) inherits the whole
-//! environment as before.
+//! environment.
 //!
 //! A mode this host's backend cannot enforce refuses the start (fail
 //! closed, no fallback) with [`ConfinementError::Unenforceable`], whose
@@ -119,10 +119,8 @@ use crate::cli::{Args, ConfinementArg};
 /// Why the shell's confinement cannot be installed.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfinementError {
-    /// The workspace root is not absolute.
     #[error("the workspace root '{}' is not absolute", .0.display())]
     RelativeWorkspace(PathBuf),
-    /// The lowered requirement is invalid.
     #[error("the confinement requirement is invalid: {0}")]
     Invalid(#[source] ConfinementRefusal),
     /// This host's backend cannot enforce the selected mode. The message
@@ -151,7 +149,6 @@ pub enum ConfinementError {
         flag: &'static str,
         /// The path as given.
         path: PathBuf,
-        /// What is wrong with it.
         problem: ExtraGrantProblem,
     },
 }
@@ -159,16 +156,13 @@ pub enum ConfinementError {
 /// Why an extra grant is refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExtraGrantProblem {
-    /// Not an absolute path.
     #[error("not an absolute path")]
     NotAbsolute,
     /// Does not exist (or cannot be resolved).
     #[error("does not exist")]
     Missing,
-    /// Passes through a symbolic link.
     #[error("passes through a symbolic link, which the sandbox refuses; pass {} instead", .0.display())]
     NotCanonical(PathBuf),
-    /// Not a directory.
     #[error("not a directory (only directories can be granted)")]
     NotADirectory,
     /// The root, the backend's baseline, or `/proc`, `/sys`, `/dev`.
@@ -179,7 +173,6 @@ pub enum ExtraGrantProblem {
     /// Overlaps the workspace (or the writable directory holding it).
     #[error("overlaps the workspace grant {}", .0.display())]
     OverlapsWorkspace(PathBuf),
-    /// Overlaps another extra grant.
     #[error("overlaps the extra grant {}", .0.display())]
     OverlapsGrant(PathBuf),
 }
@@ -479,7 +472,6 @@ impl ExtraGrants {
         self.file.extend_from(section);
     }
 
-    /// Whether nothing is added.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.read.is_empty() && self.write.is_empty() && self.file.is_empty()
@@ -492,10 +484,8 @@ impl ExtraGrants {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfinementSection {
-    /// Read-only directories.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_read: Vec<PathBuf>,
-    /// Read-write directories.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_write: Vec<PathBuf>,
 }
@@ -507,13 +497,11 @@ impl ConfinementSection {
         self.extra_write.extend(other.extra_write.iter().cloned());
     }
 
-    /// Number of grants (directories) listed.
     #[must_use]
     pub fn len(&self) -> usize {
         self.extra_read.len() + self.extra_write.len()
     }
 
-    /// Whether no grant is listed.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.extra_read.is_empty() && self.extra_write.is_empty()
@@ -1022,7 +1010,7 @@ pub struct ConfinementPlan {
     /// is [`ShellConfinement::Required`] (a confined command inherits
     /// nothing, so rkat-tui passes this set), `None` when it is
     /// [`ShellConfinement::TrustedHost`] (the command inherits the whole
-    /// environment, as before).
+    /// environment).
     pub shell_env: Option<HashMap<String, String>>,
     /// The directories outside the workspace the user allows, for the
     /// approval gate ([`PlannedGrants::granted`]), whatever the mode.
@@ -1238,10 +1226,6 @@ fn protected(_workspace: &Path) -> Vec<PathAccess> {
 }
 
 /// Whether this host's backend can enforce `requirement`.
-///
-/// # Errors
-///
-/// The backend's refusal.
 pub fn check(requirement: &ExecutionConfinement) -> Result<(), ConfinementRefusal> {
     meerkat_sandbox::CompiledConfinement::compile(requirement).map(|_| ())
 }
@@ -1358,9 +1342,9 @@ mod tests {
         }
     }
 
-    /// S3 of the security review: of the Cargo home only `registry/` and
-    /// `git/` are writable, the rest is read only entry by entry, and the
-    /// credentials are not granted at all.
+    /// Of the Cargo home only `registry/` and `git/` are writable, the rest
+    /// is read only entry by entry, and the credentials are not granted at
+    /// all.
     #[test]
     fn the_cargo_home_is_granted_entry_by_entry_without_credentials() {
         let dir = tempfile::tempdir().unwrap();

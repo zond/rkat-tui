@@ -136,7 +136,6 @@ const BACKOFF_MAX: Duration = Duration::from_secs(2);
 pub struct SpawnPlan {
     /// The `rkat-tui-mob` binary.
     pub program: PathBuf,
-    /// Its arguments.
     pub argv: Vec<std::ffi::OsString>,
     /// Where its output goes.
     pub log: PathBuf,
@@ -213,9 +212,7 @@ pub type Configure = Arc<
 /// file.
 #[derive(Clone)]
 pub struct Reroot {
-    /// The command line.
     pub args: crate::cli::Args,
-    /// The configuration for a command line.
     pub configure: Configure,
     /// Where a workspace's daemon writes its endpoint file.
     pub endpoint_files: super::rehome::EndpointFiles,
@@ -249,11 +246,9 @@ impl ClientConfig {
 /// configured endpoint its binding names (none: a built-in provider).
 #[derive(Debug, Clone)]
 pub(super) struct SessionModel {
-    /// The model id.
     model: String,
     /// The engine's provider.
     provider: String,
-    /// The configured endpoint.
     endpoint: Option<String>,
 }
 
@@ -268,9 +263,7 @@ impl SessionModel {
 /// The model the status bar shows, on the endpoint it names.
 #[derive(Debug, Clone)]
 pub(super) struct ShownModel {
-    /// The endpoint's name.
     endpoint: String,
-    /// The model id.
     model: String,
 }
 
@@ -317,7 +310,6 @@ impl Reporter {
 
 /// A mob's stream, opened.
 struct OpenedMob {
-    /// The stream.
     stream: String,
     /// Its members, each with its session when it could be read.
     members: Vec<(String, Option<SessionId>)>,
@@ -605,7 +597,6 @@ struct Reports {
 struct Helpers {
     /// The helpers and their views.
     followers: Followers,
-    /// Events of streams opened but not registered yet, by stream id.
     orphans: Orphans<meerkat_mob::AttributedEvent>,
     /// The mobs the daemon said host helpers (listed at the attach,
     /// pushed since): one is opened once it is this agent's
@@ -1826,9 +1817,9 @@ mod tests {
         }
     }
 
-    /// The finding this guards: a switch read on a connection lost before
-    /// the reattach installed that connection's stream id, and every
-    /// agent event after was dropped as another stream's.
+    /// A switch read on a connection lost before the reattach does not
+    /// install that connection's stream id (every later agent event would
+    /// be dropped as another stream's).
     #[tokio::test]
     async fn a_switch_read_on_a_lost_connection_is_not_installed_after_the_reattach() {
         let dir = tempfile::tempdir().unwrap();
@@ -1859,9 +1850,9 @@ mod tests {
         assert!(reset);
     }
 
-    /// The finding this guards: a shutdown whose connection dropped before
-    /// the daemon answered was reported as "stopped the daemon" although
-    /// the daemon never handled it and kept running.
+    /// A shutdown whose connection dropped before the daemon answered is not
+    /// reported as "stopped the daemon": the daemon may never have handled
+    /// it and still run.
     #[tokio::test(start_paused = true)]
     async fn a_shutdown_without_an_answer_is_reported_stopped_only_once_the_daemon_ended() {
         let dir = tempfile::tempdir().unwrap();
@@ -1911,10 +1902,9 @@ mod tests {
         }
     }
 
-    /// The finding this guards: through a tunnel a refused connect to the
-    /// local port was taken as the daemon's end, so an `ssh -L` forward
-    /// that exited during an unanswered shutdown was reported as a stopped
-    /// daemon while the remote daemon ran on.
+    /// Through a tunnel a refused connect to the local port is no evidence of
+    /// the daemon's end: an `ssh -L` forward that exited during an unanswered
+    /// shutdown says nothing of the remote daemon.
     #[tokio::test(start_paused = true)]
     async fn a_dropped_tunnel_leaves_an_unanswered_shutdown_unconfirmed() {
         let dir = tempfile::tempdir().unwrap();
@@ -1968,11 +1958,10 @@ mod tests {
         assert!(said.contains("stopped the daemon"), "{said}");
     }
 
-    /// The finding this guards: the loop awaited the daemon's answer to a
-    /// prompt (and to `/status`, `/agents`, …) inline, so an Esc behind a
-    /// slow call waited up to its 15 s bound. Against a daemon that
-    /// answers nothing after the attach, every effect returns at once and
-    /// Esc interrupts the turn the unanswered prompt started.
+    /// The loop awaits no answer inline (an Esc behind a slow call would wait
+    /// up to its 15 s bound): against a daemon that answers nothing after the
+    /// attach, every effect returns at once and Esc interrupts the turn the
+    /// unanswered prompt started.
     #[tokio::test]
     async fn no_effect_waits_on_a_daemon_that_does_not_answer() {
         let dir = tempfile::tempdir().unwrap();
@@ -2346,16 +2335,11 @@ mod tests {
         assert_eq!(turn_ends(&drain(&mut rx)), 1);
     }
 
-    /// The owner's report: while the agent worked,
-    /// his messages were held by the UI (↑ took them back, Esc sent them),
-    /// never steered. The cause: the quiet turn of `/compact`'s run took
-    /// every run that followed it before the agent went idle (a helper's
-    /// note or peer message queued behind the compaction, or ahead of it),
-    /// so the agent's work drew nothing and the UI held what was typed as
-    /// "the compaction runs". A run that is not the compaction's ends the
-    /// quiet turn: it opens the UI's turn (`RemoteTurn`, so typed messages
-    /// are steered), its events reach the UI, and the UI is told the
-    /// compaction's run is over, after the turn opened.
+    /// A run that is not the compaction's (a helper's note or peer message
+    /// queued behind the compaction, or ahead of it) ends `/compact`'s quiet
+    /// turn: it opens the UI's turn (`RemoteTurn`, so typed messages are
+    /// steered, not held as "the compaction runs"), its events reach the UI,
+    /// and the UI is told the compaction's run is over, after the turn opened.
     #[tokio::test]
     async fn a_run_after_the_compaction_s_ends_the_quiet_turn() {
         use crate::ui::COMPACT_PROMPT;
@@ -2627,9 +2611,7 @@ mod tests {
 
     /// A later run of the turn started by a daemon's note,
     /// while this client's steer is still queued behind it, does not mark
-    /// the steer delivered (before, every steer was taken as carried by
-    /// whatever run came next); the steer is marked when its own run
-    /// starts.
+    /// the steer delivered; the steer is marked when its own run starts.
     #[tokio::test]
     async fn a_run_of_a_note_does_not_deliver_a_queued_steer() {
         let dir = tempfile::tempdir().unwrap();
@@ -2958,12 +2940,10 @@ mod tests {
             .collect()
     }
 
-    /// The owner's report: the first press stopped the run,
-    /// a typed message started a follow-up run, and the next presses (and
-    /// the hard cancel at the deadline) hit that run. Now, once the
-    /// interrupted run has ended, presses in quick succession send nothing
-    /// and say once that the turn is already stopped, the deadline cancels
-    /// nothing, and the same after the turn's end.
+    /// Once the interrupted run has ended, presses in quick succession send
+    /// nothing and say once that the turn is already stopped, and the
+    /// deadline cancels nothing (a follow-up run a typed message started is
+    /// not hit); the same after the turn's end.
     #[tokio::test]
     async fn presses_after_the_interrupted_run_ended_touch_no_later_run() {
         let dir = tempfile::tempdir().unwrap();
@@ -3251,8 +3231,7 @@ mod tests {
     /// by itself; after a pause Esc again opens a new interrupt of the
     /// turn. The first call's late answer (or its timeout) still counts as
     /// this turn's: once both are answered, in either order, the turn ends
-    /// on the idle notice. Before, the first answer was "not current" and
-    /// the turn stayed running for good.
+    /// on the idle notice.
     #[tokio::test]
     async fn a_turn_ends_after_two_interrupts_answered_in_either_order() {
         let dir = tempfile::tempdir().unwrap();

@@ -53,7 +53,6 @@ const PROVIDER_PREFIXES: [&str; 4] = ["anthropic/", "openai/", "gemini/", "verte
 pub struct ModelPrice {
     /// Uncached input tokens.
     pub input: f64,
-    /// Output tokens.
     pub output: f64,
     /// Input tokens read from the prompt cache (`None`: priced as `input`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -216,7 +215,6 @@ impl CommunityPrices {
         }
     }
 
-    /// Whether nothing is known.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.models.is_empty()
@@ -367,12 +365,10 @@ impl PriceTable {
         }
     }
 
-    /// Replace the community list.
     pub fn set_community(&mut self, community: CommunityPrices) {
         self.community = Arc::new(community);
     }
 
-    /// The community list.
     #[must_use]
     pub fn community(&self) -> &CommunityPrices {
         &self.community

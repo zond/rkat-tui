@@ -30,9 +30,7 @@ pub enum HelperState {
     Running,
     /// Its run completed (or it left the running helpers).
     Done,
-    /// Its run failed.
     Failed,
-    /// Its run was cancelled.
     Cancelled,
 }
 
@@ -114,7 +112,6 @@ pub enum HelperLast {
     Nothing,
     /// A tool call: its name and a short argument preview.
     Tool {
-        /// Tool name.
         name: String,
         /// Short argument preview (the first string argument, quoted).
         args: String,
@@ -134,7 +131,6 @@ pub struct HelperFold {
     pub label: String,
     /// The model it runs on, when known.
     pub model: Option<String>,
-    /// Lifecycle state.
     pub state: HelperState,
     /// Tool calls requested so far.
     pub calls: usize,
@@ -255,7 +251,6 @@ pub(super) struct Helpers {
     /// The spinner clock of running helper headers (set by the first
     /// header).
     clock: Option<Instant>,
-    /// Number of helper headers.
     count: usize,
 }
 

@@ -133,10 +133,8 @@ pub enum ScheduleError {
     /// The engine's schedule service refused.
     #[error("{0}")]
     Service(#[from] ScheduleDomainError),
-    /// No live schedule of the agent has that name or id.
     #[error("this agent has no schedule `{0}` (/schedules lists them)")]
     Unknown(String),
-    /// Several of the agent's schedules have that name.
     #[error("several schedules are called `{0}`; name one by its id (/schedules shows them)")]
     Ambiguous(String),
 }
@@ -144,9 +142,7 @@ pub enum ScheduleError {
 /// A run attributed to the schedule that fired it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fired {
-    /// The schedule.
     pub schedule_id: ScheduleId,
-    /// Its name.
     pub name: String,
 }
 
@@ -186,10 +182,6 @@ impl Schedules {
     }
 
     /// `agent`'s live schedules (active and paused), in creation order.
-    ///
-    /// # Errors
-    ///
-    /// The service's refusal.
     pub async fn of_agent(&self, agent: &str) -> Result<Vec<Schedule>, ScheduleError> {
         Ok(self
             .service
@@ -220,10 +212,6 @@ impl Schedules {
     }
 
     /// `/schedules`: a row per live schedule of `agent`.
-    ///
-    /// # Errors
-    ///
-    /// The service's refusal.
     pub async fn rows(&self, agent: &str) -> Result<Vec<ScheduleRow>, ScheduleError> {
         let mut rows = Vec::new();
         for schedule in self.of_agent(agent).await? {
@@ -257,10 +245,6 @@ impl Schedules {
 
     /// The user's own `/schedules pause|resume|delete <name>` on one of
     /// `agent`'s schedules. Returns what was done.
-    ///
-    /// # Errors
-    ///
-    /// [`ScheduleError`].
     pub async fn act(
         &self,
         agent: &str,

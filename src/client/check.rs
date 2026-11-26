@@ -82,10 +82,6 @@ pub async fn run(args: &Args, limit: corpus::Limit) -> Result<(), TuiError> {
 /// How `--classifier-check` ends for `reading`: success within the
 /// targets, [`TuiError::ClassifierOutside`] (exit code 3) outside them,
 /// [`TuiError::ClassifierCheck`] (1) when it stopped early.
-///
-/// # Errors
-///
-/// As said.
 pub fn exit_for(reading: Reading) -> Result<(), TuiError> {
     match reading {
         Reading::Within => Ok(()),

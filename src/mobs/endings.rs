@@ -149,7 +149,6 @@ pub enum How {
         reason: String,
         /// Its status (its answer, for an `assign` helper).
         status: String,
-        /// It was retired.
         retired: bool,
     },
 }
@@ -205,7 +204,6 @@ pub fn plain_reason(reason: &str) -> String {
 /// One helper's ending, for the daemon to tell its parent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ended {
-    /// The helper.
     pub key: HelperKey,
     /// What it was and whom it worked for.
     pub tag: HelperTag,
@@ -238,7 +236,6 @@ pub enum Terminal {
     Completed(String),
     /// It failed, for this reason.
     Failed(String),
-    /// It was cancelled.
     Cancelled,
     /// It reached its turn limit after `steps` model calls: its checkpoint
     /// (`crate::daemon::checkpoint`), not a failure.
@@ -269,7 +266,6 @@ impl Terminal {
 /// ([`HelperEndings::delivering`]) is handed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LimitReached {
-    /// The helper.
     pub key: HelperKey,
     /// What it is and whom it works for.
     pub tag: HelperTag,
@@ -1801,7 +1797,7 @@ mod tests {
             How::CheckpointStopped { retired: false, .. }
         ));
         assert!(endings.is_live(&member));
-        // Without a checkpoint sink the limit is a failure, as it was.
+        // Without a checkpoint sink the limit is a failure.
         let (plain, mut told) = super::tests::endings();
         plain.spawned(
             &key,
@@ -1903,7 +1899,7 @@ mod tests {
         (registry, rx, parent, child)
     }
 
-    /// C1: a member below a single-use helper that `assign` did not start
+    /// A member below a single-use helper that `assign` did not start
     /// (a council's participant, [`crate::mobs::HelperKind::Other`]) is
     /// never decided idle, so it does not hold its parent: the parent is
     /// done when its own run ends, as with no such member.

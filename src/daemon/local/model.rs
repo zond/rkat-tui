@@ -307,7 +307,6 @@ impl Local {
     /// agents' plan-mode notes. The warnings.
     pub(super) async fn switch_mode(&self, mode: PermissionMode) -> Vec<String> {
         self.core.engine.set_mode(mode);
-        // Every client shows it.
         self.core
             .decisions
             .broadcast(protocol::MODE, &ModeStatus::of(&self.core.engine));

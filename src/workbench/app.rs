@@ -101,10 +101,6 @@ pub(crate) fn open(
 
 /// Run the UI until the user quits, then wait (up to `limit`) for the
 /// runner to wind down and say where it saved the unsent messages.
-///
-/// # Errors
-///
-/// When the terminal cannot be driven.
 pub(crate) async fn drive(
     opened: Opened,
     channels: UiChannels,

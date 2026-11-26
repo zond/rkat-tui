@@ -17,10 +17,9 @@
 //! `[pricing."<model id>"]` price overrides (see [`crate::pricing`]),
 //! `[confinement] extra_read`/`extra_write` sandbox grants (see
 //! [`crate::bootstrap::confinement`]), `[thinking]` Anthropic thinking per
-//! model (see [`crate::thinking`]), `[helpers]`, `[shell]`, `[ui]`,
-//! `[daemon]` (and the retired `attach`, read and ignored with a notice);
-//! like endpoints and prices, thinking, confinement grants and `[daemon]`
-//! are honoured from the user's own layers only.
+//! model (see [`crate::thinking`]), `[helpers]`, `[shell]`, `[ui]` and
+//! `[daemon]`; like endpoints and prices, thinking, confinement grants and
+//! `[daemon]` are honoured from the user's own layers only.
 //!
 //! - [`file`](mod@file): the schema ([`RulesFile`] and its sections, the settings
 //!   after layering);

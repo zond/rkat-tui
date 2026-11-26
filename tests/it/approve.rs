@@ -157,8 +157,7 @@ fn runs(client: &Client) -> Vec<meerkat_core::RunId> {
 /// Approving once while the agent is idle starts a run of the note: the
 /// client shows it headed by why, the agent repeats the call and it runs
 /// (the file exists), the run is the user's (attended), and the list is
-/// empty afterwards. Before the change the note was appended and nothing
-/// ran until the user's next message.
+/// empty afterwards.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_idle_agent_runs_its_call_again_once_approved() {
     let ws = Workspace::new();
@@ -197,8 +196,7 @@ async fn an_idle_agent_runs_its_call_again_once_approved() {
 /// The reported case: the user approves once while the agent's turn is
 /// still running (its model call after the block is held). The note is
 /// steered into that turn, which goes on and repeats the call: one turn
-/// ends, with the file there. Before the change the note was appended,
-/// read only by a later turn, and the turn ended asking for approval.
+/// ends, with the file there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_approval_during_the_turn_is_steered_into_it() {
     let ws = Workspace::new();
@@ -581,9 +579,9 @@ async fn an_ended_helper_s_approved_call_goes_to_its_agent() {
 
 /// The approval-events loop waits for no turn: with the agent's turn
 /// running, an approval from `/permissions` and then another block of the gate; that
-/// block's push reaches the client while the turn still runs. Before the
-/// fix the loop awaited the approval's note, which the engine applies only
-/// when the turn ends, and the push came after it.
+/// block's push reaches the client while the turn still runs (the engine
+/// applies the approval's note only when the turn ends, so the loop must
+/// not await it).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_decision_after_an_approval_reaches_the_client_during_the_turn() {
     let ws = Workspace::new();
@@ -630,8 +628,7 @@ async fn a_decision_after_an_approval_reaches_the_client_during_the_turn() {
 
 /// `rkat/set_mode` into plan mode while the agent's turn runs answers
 /// before the turn ends (its model call is held), and the note reaches
-/// that run: its next request carries it. Before the fix the answer waited
-/// for the turn's end.
+/// that run: its next request carries it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mode_change_during_a_turn_answers_before_the_turn_ends() {
     let ws = Workspace::new();

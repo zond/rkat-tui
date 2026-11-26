@@ -42,7 +42,6 @@ pub struct ReviewStats {
     pub asks_allowed: u64,
     /// The classifier's input tokens.
     pub input_tokens: u64,
-    /// Its output tokens.
     pub output_tokens: u64,
     /// The time its reviews took, in milliseconds.
     pub review_ms: u64,

@@ -52,7 +52,6 @@ pub enum Push {
     /// An event of the stream `stream` (the conversation's own, or a mob's;
     /// which one decides how `event` reads).
     Stream {
-        /// The stream.
         stream: String,
         /// The event, as sent.
         event: Value,

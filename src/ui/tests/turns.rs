@@ -291,8 +291,7 @@ fn tool_lifecycle_updates_block_states() {
     }
 }
 
-/// The client runner folds run ends with this; it once kept the later
-/// of two failures.
+/// The client runner folds run ends with this.
 #[test]
 fn a_turn_end_keeps_the_first_failure_and_the_last_completion() {
     let done = |text: &str| {
@@ -668,7 +667,7 @@ fn a_message_the_engine_did_not_keep_returns_to_the_editor() {
 fn esc_with_nothing_pending_interrupts() {
     let mut app = running_app();
     assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
-    // Idle as the UI knows it: the client asks the daemon (TU1).
+    // Idle as the UI knows it: the client asks the daemon.
     let mut idle = App::new(StatusInfo::default());
     assert_eq!(idle.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
 }
@@ -1235,8 +1234,7 @@ fn warn_mode_warns_once_on_crossing_then_every_turn_at_auto() {
 
 /// A command held while a `/compact now` request is out waits for its
 /// answer even when a turn started meanwhile ends first: [`App::run_held`]
-/// waits out what [`App::defers`] held it for. Before, the turn's end ran
-/// it with the request still unanswered.
+/// waits out what [`App::defers`] held it for.
 #[test]
 fn a_held_command_waits_for_an_unanswered_compact_request() {
     let mut app = App::new(StatusInfo::default());
@@ -1536,9 +1534,9 @@ fn a_compaction_run_holds_what_is_typed_and_the_bar_says_compacting() {
     assert!(!bar.contains("compacting"), "{bar}");
 }
 
-/// The owner's report on 0.0.17 (the runner's side is
-/// `client::runner::tests::a_run_after_the_compaction_s_ends_the_quiet_turn`):
-/// a message typed while the compaction's run holds the UI is drawn at
+/// The runner's side is
+/// `client::runner::tests::a_run_after_the_compaction_s_ends_the_quiet_turn`.
+/// A message typed while the compaction's run holds the UI is drawn at
 /// once (its placeholder, "will send after this turn"), ↑ takes it back,
 /// Ctrl-X Ctrl-S says what it does and stops the run; when the agent goes
 /// on with a run of its own (the turn opens, then the compaction's run is
@@ -1655,12 +1653,10 @@ fn notices(app: &App) -> Vec<(NoticeLevel, String)> {
         .collect()
 }
 
-/// The owner's report: an agent of another workspace's
-/// acknowledgement woke this agent, its model answered nothing, and the
-/// user read three retries, an error and "turn failed" with the same
-/// text. A run nobody here typed now ends in one quiet line; a run the
-/// user started in one plain error; neither draws the retries or says the
-/// failure twice.
+/// An empty answer after the engine's retries (as when another
+/// workspace's agent's acknowledgement woke this agent): a run nobody
+/// here typed ends in one quiet line; a run the user started in one plain
+/// error; neither draws the retries or says the failure twice.
 #[test]
 fn an_empty_answer_is_one_line_quiet_when_nobody_here_asked() {
     // As the engine reports it after its retries.

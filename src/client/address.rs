@@ -24,7 +24,6 @@ use crate::daemon::endpoint::Endpoint;
 use crate::daemon::protocol::{self, Status};
 use crate::error::TuiError;
 
-/// How long the probe may take.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The daemon `--attach=HOST:PORT` reached.
@@ -33,7 +32,6 @@ pub struct Reached {
     /// Its address and token, with the pid, workspace and start time its
     /// status reported.
     pub endpoint: Endpoint,
-    /// What it reported.
     pub status: Status,
     /// Why its workspace is not local (`None`: it is a directory here).
     pub remote: Option<String>,
@@ -53,12 +51,8 @@ impl Reached {
 }
 
 /// The token in `path`: refused when its group or others may read or
-/// write the file (any of mode `0o077`); the file
-/// holds the token alone, or is a copy of the daemon's endpoint file.
-///
-/// # Errors
-///
-/// Why the token cannot be used.
+/// write the file (any of mode `0o077`); the file holds the token alone,
+/// or is a copy of the daemon's endpoint file.
 pub fn read_token_file(path: &Path) -> Result<String, String> {
     let meta = std::fs::metadata(path).map_err(|err| format!("{}: {err}", path.display()))?;
     #[cfg(unix)]
@@ -221,10 +215,6 @@ async fn resolve(address: &str) -> Result<SocketAddr, String> {
 
 /// Attach to `endpoint` as a probe and read its `rkat/status`, all within
 /// `wait`.
-///
-/// # Errors
-///
-/// The connect, the attach or the call's error.
 pub async fn status_of(endpoint: &Endpoint, wait: Duration) -> Result<Status, ClientError> {
     tokio::time::timeout(wait, async {
         let (connection, _notes) =
@@ -295,10 +285,9 @@ mod tests {
         }
     }
 
-    /// The finding this guards: the same host name and an existing
-    /// directory counted as local, but two machines can share both; only
-    /// an endpoint file here naming the daemon's token for that workspace
-    /// does.
+    /// The same host name and an existing directory do not make a
+    /// workspace local (two machines can share both); only an endpoint file
+    /// here naming the daemon's token for that workspace does.
     #[test]
     fn a_daemon_is_local_only_when_an_endpoint_file_here_names_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -351,8 +340,8 @@ mod tests {
         std::fs::write(&file, "abc123\n").unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(read_token_file(&file).unwrap(), "abc123");
-        // The finding this guards: only the other bits were checked, so a
-        // group-readable (0640) or group-writable (0620) token passed.
+        // Group bits count too: a group-readable (0640) or group-writable
+        // (0620) token is refused.
         for mode in [0o644, 0o640, 0o620, 0o604, 0o602] {
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
             let refused = read_token_file(&file).unwrap_err();

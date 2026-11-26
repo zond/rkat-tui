@@ -131,14 +131,13 @@ fn has_key(value: &serde_json::Value, name: &str) -> bool {
     }
 }
 
-/// The section 8 rig test: a LiteLLM endpoint serving the catalogued
-/// `claude-opus-5-5` runs it on the endpoint's facts, not the catalog's.
-/// The request names the model as the endpoint does and carries the
-/// endpoint's key, no Anthropic beta header and no thinking field; the
-/// gauge and the agent's threshold follow the endpoint's 50k
-/// window; the cost uses the endpoint's prices; the realm document holds
-/// the alias and no `[models."claude-opus-5-5"]`, and names the key's
-/// variable, never the key.
+/// A LiteLLM endpoint serving the catalogued `claude-opus-5-5` runs it on
+/// the endpoint's facts, not the catalog's. The request names the model as
+/// the endpoint does and carries the endpoint's key, no Anthropic beta
+/// header and no thinking field; the gauge and the agent's threshold
+/// follow the endpoint's 50k window; the cost uses the endpoint's prices;
+/// the realm document holds the alias and no `[models."claude-opus-5-5"]`,
+/// and names the key's variable, never the key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_litellm_endpoint_runs_a_catalogued_claude_id_on_its_own_facts() {
     let fake = FakeEndpoint::start(models(), vec![Reply::Text("hello from the proxy")]).await;
@@ -290,7 +289,7 @@ async fn the_built_in_endpoint_keeps_the_catalog_row() {
     assert!(!config.models.custom.contains_key(CLAUDE));
 }
 
-/// Probe (b): the live member switches from an alias to a built-in
+/// The live member switches from an alias to a built-in
 /// provider's model and back (the built-in `openai` endpoint's realm
 /// binding points at the same fake), and a restarted daemon resumes the
 /// alias and runs it.
@@ -427,7 +426,7 @@ async fn until_told(rig: &Attached, fake: &FakeEndpoint, note: &str) {
     rig.daemon.idle(&rig.daemon.agent).await;
 }
 
-/// Probe (c): an `assign` helper of an agent on an alias inherits it,
+/// An `assign` helper of an agent on an alias inherits it,
 /// through the owner's endpoint: its request names the endpoint's model and
 /// carries the endpoint's key, as every request of its agent does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -703,7 +702,7 @@ async fn stream_once(
     (text, reasoning, tools)
 }
 
-/// Probe (a) and (e) at the engine's client: the realm document rkat-tui
+/// At the engine's client: the realm document rkat-tui
 /// projects for a self-hosted endpoint builds the OpenAI-compatible client
 /// with the key from the auth binding's environment variable (which the
 /// confined shell's environment never carries), in either of the engine's
@@ -798,7 +797,7 @@ async fn both_api_styles_stream_text_reasoning_and_tool_calls() {
     }
 }
 
-/// X2: the `api_style` setting end to end through the daemon. On the same
+/// The `api_style` setting end to end through the daemon. On the same
 /// base URL (the proxy's root, as the manual asks) the default speaks the
 /// Responses API and `api_style = "chat_completions"` Chat Completions; in
 /// both a turn streams reasoning, calls a tool through the gate, gets its
@@ -1318,7 +1317,7 @@ async fn an_answer_cut_across_parts_and_blank_reasoning_is_one_block() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-/// X2: an unknown `api_style` in a `tui.toml` is refused, naming the key
+/// An unknown `api_style` in a `tui.toml` is refused, naming the key
 /// and the values it takes; on another dialect the endpoint is skipped
 /// with a notice saying why.
 #[test]

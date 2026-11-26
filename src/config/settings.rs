@@ -284,9 +284,7 @@ impl<'de> Deserialize<'de> for PrepareAt {
 /// A setting's value, typed, and the layer it comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sourced<T> {
-    /// The value.
     pub value: T,
-    /// Where it comes from.
     pub source: Level,
 }
 

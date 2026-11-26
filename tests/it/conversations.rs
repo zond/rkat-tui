@@ -273,7 +273,7 @@ async fn the_token_counter_and_gauge_follow_the_conversation() {
     daemon.stop().await;
 }
 
-/// `/compact now` in attach mode asks the agent's next compaction
+/// `/compact now` asks the agent's next compaction
 /// check to compact (`mob/compact_member`) and, the agent being idle,
 /// starts the run whose check compacts itself: the summary call comes
 /// with no message of the user's, the client sees `compaction_completed`,

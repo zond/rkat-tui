@@ -58,10 +58,6 @@ fn decode<T: serde::de::DeserializeOwned>(
 }
 
 /// The model and provider the session runs on (`events/snapshot`).
-///
-/// # Errors
-///
-/// The call's error, or [`ClientError::Decode`].
 pub async fn identity(
     connection: &Connection,
     session: &SessionId,
@@ -76,7 +72,6 @@ pub async fn identity(
 pub struct Snapshot {
     /// The model it runs on.
     pub model: String,
-    /// Its provider.
     pub provider: String,
     /// The sequence of its last durable event (0: none), paired with the
     /// snapshot.
@@ -85,10 +80,6 @@ pub struct Snapshot {
 
 /// The session's snapshot (`events/snapshot`): its model and provider and
 /// its latest durable sequence.
-///
-/// # Errors
-///
-/// The call's error, or [`ClientError::Decode`].
 pub async fn snapshot(
     connection: &Connection,
     session: &SessionId,
@@ -121,10 +112,6 @@ pub async fn snapshot(
 /// `cursor` (`(epoch, seq)` of the last event shown) the events the member
 /// still retains after it first: of another epoch, from the earliest one
 /// the member retains.
-///
-/// # Errors
-///
-/// The call's error, or [`ClientError::Decode`].
 pub async fn open_stream(
     connection: &Connection,
     cursor: Option<(&str, u64)>,
@@ -146,10 +133,6 @@ pub async fn open_stream(
 /// One page of the session's durable events after `after` (a sequence; 0:
 /// from the start), as envelopes whose `seq` is the durable sequence; and
 /// whether more follow.
-///
-/// # Errors
-///
-/// The call's error, or [`ClientError::Decode`].
 pub async fn replay(
     connection: &Connection,
     session: &SessionId,
@@ -242,7 +225,6 @@ pub struct Admitted {
 /// (`None`: a built-in endpoint, whose binding is cleared).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSwitch {
-    /// The model id.
     pub model: String,
     /// Its provider (`anthropic`, `openai`, `gemini`).
     pub provider: Option<String>,
@@ -256,10 +238,6 @@ pub struct ModelSwitch {
 
 /// Call the daemon's own method `M` with `params`, its answer read as
 /// `M`'s result ([`Method`]).
-///
-/// # Errors
-///
-/// The call's error, or [`ClientError::Decode`].
 pub async fn call<M: Method>(
     connection: &Connection,
     params: &M::Params,
@@ -291,10 +269,6 @@ pub async fn decide(
 }
 
 /// Append `text` to the agent's system context under `key`.
-///
-/// # Errors
-///
-/// The call's error.
 pub async fn append_system_context(
     connection: &Connection,
     text: &str,
@@ -329,10 +303,6 @@ pub async fn open_mob_stream(connection: &Connection, mob: &str) -> Result<Strin
 }
 
 /// Close a stream.
-///
-/// # Errors
-///
-/// The call's error.
 pub async fn close_stream(connection: &Connection, stream: &str) -> Result<(), ClientError> {
     connection
         .call(engine::STREAM_CLOSE, json!({"stream_id": stream}))
@@ -342,10 +312,6 @@ pub async fn close_stream(connection: &Connection, stream: &str) -> Result<(), C
 
 /// The agent's live stream, opened again (after a conversation
 /// switch the old one still follows the retired session).
-///
-/// # Errors
-///
-/// The call's error.
 pub async fn reopen_stream(connection: &Connection, old: &str) -> Result<String, ClientError> {
     if let Err(err) = close_stream(connection, old).await {
         tracing::debug!(error = %err, "the old stream did not close");
@@ -354,10 +320,6 @@ pub async fn reopen_stream(connection: &Connection, old: &str) -> Result<String,
 }
 
 /// The mobs the daemon hosts.
-///
-/// # Errors
-///
-/// The call's error, or [`ClientError::Decode`].
 pub async fn mobs(connection: &Connection) -> Result<Vec<String>, ClientError> {
     let listed: meerkat_contracts::MobListResult = decode(
         engine::LIST,
@@ -367,10 +329,6 @@ pub async fn mobs(connection: &Connection) -> Result<Vec<String>, ClientError> {
 }
 
 /// The member identities of `mob`.
-///
-/// # Errors
-///
-/// The call's error.
 pub async fn members(connection: &Connection, mob: &str) -> Result<Vec<String>, ClientError> {
     let listed = connection
         .call(engine::MEMBERS, json!({"mob_id": mob}))
@@ -412,10 +370,6 @@ pub async fn member_session(
 }
 
 /// The agent's conversations (`rkat/conversations`).
-///
-/// # Errors
-///
-/// The call's error, or [`ClientError::Decode`].
 pub async fn conversations(
     connection: &Connection,
 ) -> Result<Vec<crate::daemon::conversations::Listed>, ClientError> {
@@ -448,10 +402,6 @@ fn session_params(session: &SessionId) -> SessionParams {
 }
 
 /// A conversation's committed messages (`rkat/transcript`).
-///
-/// # Errors
-///
-/// The call's error, or [`ClientError::Decode`].
 pub async fn transcript(
     connection: &Connection,
     session: &SessionId,
@@ -463,10 +413,6 @@ pub async fn transcript(
 
 /// A conversation's last message that is no system row or notice
 /// (`rkat/last_message`).
-///
-/// # Errors
-///
-/// The call's error, or [`ClientError::Decode`].
 pub async fn last_message(
     connection: &Connection,
     session: &SessionId,
@@ -478,10 +424,6 @@ pub async fn last_message(
 
 /// A conversation's total token usage and its totals by model
 /// (`rkat/usage`).
-///
-/// # Errors
-///
-/// The call's error, or [`ClientError::Decode`].
 pub async fn usage(
     connection: &Connection,
     session: &SessionId,
@@ -491,10 +433,6 @@ pub async fn usage(
 
 /// The helpers seated now for `session`'s whole tree, each by its labels
 /// (`rkat/seated_helpers`).
-///
-/// # Errors
-///
-/// The call's error, or [`ClientError::Decode`].
 pub async fn seated_helpers(
     connection: &Connection,
     session: &SessionId,
@@ -506,10 +444,6 @@ pub async fn seated_helpers(
 
 /// The configured endpoint `session`'s auth binding names (`rkat/endpoint`;
 /// `None`: a built-in endpoint).
-///
-/// # Errors
-///
-/// The call's error.
 pub async fn session_endpoint(
     connection: &Connection,
     session: &SessionId,
@@ -521,10 +455,6 @@ pub async fn session_endpoint(
 
 /// `/compact now` for the agent: `mob/compact_member` (its next
 /// compaction check compacts). Returns the engine's refusal as text.
-///
-/// # Errors
-///
-/// The call's error, as text.
 pub async fn compact_member(connection: &Connection) -> Result<(), String> {
     connection
         .call(engine::COMPACT_MEMBER, member(connection))
@@ -534,10 +464,6 @@ pub async fn compact_member(connection: &Connection) -> Result<(), String> {
 }
 
 /// `/compact now` through the agent's session (`session/compact`).
-///
-/// # Errors
-///
-/// The call's error, as text.
 pub async fn compact_session(connection: &Connection, session: &SessionId) -> Result<(), String> {
     connection
         .call(engine::SESSION_COMPACT, json!({"session_id": session}))

@@ -1,11 +1,11 @@
-//! The integration tests, one binary: every former `tests/<name>.rs` is
+//! The integration tests, one binary: each file `tests/it/<name>.rs` is
 //! the module `<name>` here, so the engine is linked into one test
 //! program instead of one per file. nextest still runs each test in its
 //! own process. Shared support: `common` (the scripted LLM, the
 //! workspace, the command lines), `rig` (the daemon rig) and `fake` (a
 //! fake OpenAI-compatible endpoint).
 //!
-//! Run one former file's tests with
+//! Run one file's tests with
 //! `cargo nextest run --all-features --test it -E 'test(/^<name>::/)'`.
 
 mod common;

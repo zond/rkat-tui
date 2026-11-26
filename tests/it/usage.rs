@@ -82,8 +82,7 @@ async fn a_turn_no_client_saw_is_counted_and_survives_a_restart() {
     let mut again = Client::attach(&ws.root).await;
     again.saw(|m| totals_of(m, (1_234, 5))).await;
     // The context gauge is seeded from the daemon's record of the last
-    // model call, also after the restart.
-    // Everything sent plus the reply.
+    // model call, also after the restart: everything sent plus the reply.
     let context = 1_234 + 5;
     again
         .saw(|m| {

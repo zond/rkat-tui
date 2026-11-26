@@ -62,7 +62,6 @@ impl ListCursor {
     }
 }
 
-/// Ctrl-C.
 pub(super) fn is_ctrl_c(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c')
 }
@@ -404,7 +403,6 @@ impl QuitDialog {
         }
     }
 
-    /// The rows, in order.
     fn rows(&self) -> [(QuitChoice, String); 2] {
         let terminate = if self.running {
             "Terminate: stop the daemon and retire every agent (interrupts the running turn; conversations stay)"
@@ -554,12 +552,10 @@ impl ModelPicker {
         })
     }
 
-    /// Move the selection up.
     pub fn up(&mut self) {
         self.cursor.up();
     }
 
-    /// Move the selection down.
     pub fn down(&mut self) {
         let len = self.filtered().count();
         self.cursor.down(len);
@@ -669,7 +665,6 @@ impl HelpView {
 /// writes nothing to the transcript; the agent goes on underneath.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HelpDialog {
-    /// The view shown.
     pub view: HelpView,
     /// The first wrapped line shown.
     pub scroll: usize,
@@ -693,7 +688,6 @@ impl HelpDialog {
         }
     }
 
-    /// Scroll up by `lines`.
     pub fn up(&mut self, lines: usize) {
         self.scroll = self.scroll.saturating_sub(lines);
     }
@@ -740,16 +734,13 @@ pub enum Modal {
     Escalation {
         /// Escalation id to answer.
         id: EscalationId,
-        /// What to show.
         prompt: RecordedPrompt,
         /// How many more escalations are queued behind this one.
         queued_behind: usize,
         /// The highlighted choice.
         dialog: EscalationDialog,
     },
-    /// Session picker.
     Resume(ResumePicker),
-    /// Model picker.
     Model(ModelPicker),
     /// A list picker (`/schedules`, `/permissions`, `/helpers`, `/mode`,
     /// `/memory`, `/wire`, `/agents`).

@@ -782,8 +782,8 @@ async fn grep_content_and_count_modes() {
 }
 
 /// `^b` over "a\nb\n" is a match in every mode: each one tests the pattern
-/// per line, the default `files_with_matches` included (it once tested the
-/// whole file, where `^` only means the file's start). A pattern spanning a
+/// per line, the default `files_with_matches` included (not the whole
+/// file, where `^` only means the file's start). A pattern spanning a
 /// line break matches in no mode.
 #[tokio::test]
 async fn grep_matches_per_line_in_every_mode() {

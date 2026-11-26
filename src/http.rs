@@ -1,9 +1,9 @@
 //! rkat-tui's own HTTP requests (model lists, LiteLLM model info, the
 //! community price list, the agents' `web_fetch`): the one client
-//! builder, bounded body reads (the
-//! body is read chunk by chunk and refused once it passes a cap, so a
-//! missing or lying `Content-Length` cannot exhaust memory), and the
-//! lenient reading of fields of documents rkat-tui does not own.
+//! builder, bounded body reads (the body is read chunk by chunk and
+//! refused once it passes a cap, so a missing or lying `Content-Length`
+//! cannot exhaust memory), and the lenient reading of fields of documents
+//! rkat-tui does not own.
 
 use std::time::Duration;
 
@@ -12,10 +12,6 @@ use serde::Deserialize as _;
 /// A client for requests to `url` (the base URL when known), timing out
 /// after `timeout` (the connect too). Like `meerkat-client`, a loopback
 /// URL never goes through a proxy.
-///
-/// # Errors
-///
-/// When the client cannot be built.
 pub fn client(url: Option<&str>, timeout: Duration) -> reqwest::Result<reqwest::Client> {
     builder(url, timeout).build()
 }
@@ -28,10 +24,6 @@ pub const USER_AGENT: &str = concat!("rkat-tui/", env!("CARGO_PKG_VERSION"));
 /// same proxy and TLS roots, a generic [`USER_AGENT`], and no redirect
 /// followed by the client (the tool follows a redirect within the same
 /// origin itself and reports any other).
-///
-/// # Errors
-///
-/// When the client cannot be built.
 pub fn fetch_client(url: &str, timeout: Duration) -> reqwest::Result<reqwest::Client> {
     builder(Some(url), timeout)
         .user_agent(USER_AGENT)
@@ -88,7 +80,6 @@ pub enum CappedReadError {
     /// Transport failure (the URL is stripped).
     #[error("network error: {0}")]
     Http(#[source] reqwest::Error),
-    /// The body is larger than the cap.
     #[error("response larger than {cap} bytes")]
     TooLarge {
         /// The cap in bytes.

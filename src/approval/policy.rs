@@ -110,16 +110,12 @@ pub enum Decider {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum VerdictSummary {
-    /// The action was allowed.
     Allowed {
-        /// Tier the action fell into.
         tier: Tier,
         /// Who allowed it.
         by: Decider,
     },
-    /// The action was denied.
     Denied {
-        /// Tier the action fell into.
         tier: Tier,
         /// Who denied it.
         by: Decider,
@@ -127,7 +123,6 @@ pub enum VerdictSummary {
 }
 
 impl VerdictSummary {
-    /// Whether the action was allowed.
     pub fn is_allowed(self) -> bool {
         matches!(self, Self::Allowed { .. })
     }
@@ -308,7 +303,6 @@ pub const NOT_OFFERED: [&str; 9] = [
 pub enum ActionKind {
     /// `shell`, parsed with [`ShellArgs`] (a copy of the tool's own argument type).
     Shell {
-        /// Command string.
         command: String,
         /// Optional working directory (relative to the project root).
         working_dir: Option<String>,
@@ -355,7 +349,6 @@ pub enum ActionKind {
     NoteRead,
     /// `note_save` / `note_forget` with a valid scope.
     NoteWrite {
-        /// Note scope.
         scope: Scope,
         /// Note name as supplied (rule subjects use its slug when valid).
         name: String,
@@ -367,7 +360,6 @@ pub enum ActionKind {
 /// A parsed tool call.
 #[derive(Debug, Clone)]
 pub struct Action<'a> {
-    /// Tool name.
     pub name: &'a str,
     /// Raw arguments, exactly as the model sent them.
     pub args: &'a RawValue,
@@ -623,7 +615,6 @@ pub fn pretty_args(args: &RawValue) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ShellArgs {
-    /// The command to execute.
     pub command: String,
     /// Working directory (relative to the project root).
     pub working_dir: Option<String>,
@@ -653,7 +644,6 @@ pub struct PolicyContext<'a> {
 /// Result of tier classification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TierDecision {
-    /// Tier.
     pub tier: Tier,
     /// Human-readable explanation.
     pub detail: String,
@@ -1514,10 +1504,9 @@ mod tests {
         }
     }
 
-    /// D3 of the security review: a secret root (the daemon's endpoint
-    /// directory) is sealed for reads, searches and writes alike, an allow
-    /// rule notwithstanding; its neighbours outside the project still go
-    /// to the classifier.
+    /// A secret root (the daemon's endpoint directory) is sealed for reads,
+    /// searches and writes alike, an allow rule notwithstanding; its
+    /// neighbours outside the project still go to the classifier.
     #[test]
     fn the_endpoint_directory_is_sealed_for_reads_and_searches() {
         let (dir, root) = project();

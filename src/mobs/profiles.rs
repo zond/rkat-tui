@@ -34,7 +34,6 @@ const READ_NOW: Duration = Duration::from_secs(5);
 /// What a mob's definition says of one profile name.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stored {
-    /// Its profile.
     Profile(Box<Profile>),
     /// The definition has no inline profile of the name (the engine refuses
     /// the spawn, naming it).

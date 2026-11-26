@@ -44,7 +44,6 @@ static PANIC_HOOK: Once = Once::new();
 /// Errors from the UI runtime.
 #[derive(Debug, thiserror::Error)]
 pub enum UiError {
-    /// Terminal I/O failed.
     #[error("terminal I/O failed: {0}")]
     Io(#[from] io::Error),
     /// The client runner dropped the effect receiver.

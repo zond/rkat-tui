@@ -1,25 +1,5 @@
 //! Pure-logic tests for the auto-mode tier policy: tiers, user rules and shell
 //! analysis, driven through [`classify_tier`] with a real project tree.
-//!
-//! The old crate drove these through `ApprovalEngine::decide` with a scripted
-//! classifier. The engine (classifier allow cache, pause/resume after
-//! repeated blocks, escalation, stop handling, agent-written tracking, build
-//! script payloads, transcript recording and the hook handlers) is ported in
-//! P2 on upstream's `ToolDispatchAdmission`; its tests return with it:
-//! `classifier_allow_is_cached_per_session`,
-//! `allowed_writes_are_shown_to_the_classifier_as_agent_written`,
-//! `disabled_auto_mode_denies_tier_three_outright`,
-//! `three_blocks_pause_then_human_decides_and_resumes`,
-//! `stop_denies_pending_escalations_until_next_prompt`,
-//! `classifier_error_escalates_and_is_not_counted`,
-//! `classifier_error_without_broker_denies`,
-//! `human_allow_and_add_rule_allows_future_calls`,
-//! `hook_engine_end_to_end`, `hook_classifier_block_reports_safety_violation`,
-//! `allow_and_add_rule_mints_a_literal_rule_from_the_subject`,
-//! `cargo_payload_includes_build_script`,
-//! `injected_prompt_does_not_clear_a_stop_but_a_new_run_does`,
-//! `forget_prompt_removes_the_recalled_message`,
-//! `sub_agent_prompt_is_an_action_on_the_primary_transcript`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use meerkat_core::ToolSourceKind;

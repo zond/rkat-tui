@@ -123,7 +123,6 @@ pub struct ApprovalConfig {
     pub root: ProjectRoot,
     /// Layered rules (sanitized for auto mode on construction).
     pub rules: RuleSet,
-    /// Layered settings.
     pub settings: AutoSettings,
     /// The permission mode at start.
     pub mode: PermissionMode,
@@ -150,7 +149,6 @@ pub struct ApprovalConfig {
 pub struct ToolCall<'a> {
     /// Provider tool-use id.
     pub id: &'a str,
-    /// Tool name.
     pub name: &'a str,
     /// Raw arguments as the model sent them.
     pub args: &'a RawValue,
@@ -286,9 +284,7 @@ struct SessionState {
 /// it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Approved {
-    /// For the user.
     pub notice: String,
-    /// For the agent.
     pub note: String,
 }
 
@@ -298,19 +294,13 @@ pub struct Approved {
 pub struct LastingChange {
     /// Rules added (as `/permissions` lists them).
     pub rules_added: Vec<String>,
-    /// Rules removed.
     pub rules_removed: Vec<String>,
-    /// Statements added.
     pub statements_added: Vec<String>,
-    /// Statements removed.
     pub statements_removed: Vec<String>,
-    /// Named directories added.
     pub dirs_added: Vec<super::grants::NamedDir>,
-    /// Named directories removed.
     pub dirs_removed: Vec<super::grants::NamedDir>,
     /// Trusted hosts added (`[auto] trusted_hosts`).
     pub hosts_added: Vec<String>,
-    /// Trusted hosts removed.
     pub hosts_removed: Vec<String>,
     /// The entries not taken, each with why.
     pub skipped: Vec<String>,
@@ -437,9 +427,8 @@ pub type ForgetHook = Arc<dyn Fn(&SessionId) + Send + Sync>;
 /// Locks: the engine's own (`rules`, `sessions`, `auto`, `answerers`,
 /// `forget_hooks`) and each part's are taken one at a time, never across
 /// an await and never while calling into a part. An escalation holds its
-/// session's
-/// serial lock (an async one, [`EscalationBroker::serial`]) across all of
-/// them.
+/// session's serial lock (an async one, [`EscalationBroker::serial`])
+/// across all of them.
 pub struct ApprovalEngine {
     root: ProjectRoot,
     rules: Arc<RwLock<RuleSet>>,
@@ -655,13 +644,11 @@ impl ApprovalEngine {
         rules
     }
 
-    /// The project root.
     #[must_use]
     pub fn root(&self) -> &ProjectRoot {
         &self.root
     }
 
-    /// Current rules.
     #[must_use]
     pub fn rules(&self) -> RuleSet {
         self.rules.read().clone()
@@ -1128,9 +1115,9 @@ impl ApprovalEngine {
     }
 
     /// Switch the permission mode (`Shift+Tab`, `/mode`, `/auto on|off`).
-    /// Entering auto mode resets the denial counters, as `/auto on` always
-    /// did; any other mode stops classifier review and ends a pause (it is
-    /// auto mode's). Returns the previous mode. Dialogs already open stay
+    /// Entering auto mode resets the denial counters; any other mode stops
+    /// classifier review and ends a pause (it is auto mode's). Returns the
+    /// previous mode. Dialogs already open stay
     /// open; queued ones are judged again under the new mode when their
     /// turn comes. Callers report the new mode themselves; a pause that
     /// ends here emits [`ApprovalEvent::Resumed`].
@@ -1329,7 +1316,7 @@ impl ApprovalEngine {
             }
         }
         drop(sessions);
-        // After the session's own record, as one lock held both before.
+        // After the session's own record, its lock released.
         if facts
             .subjects
             .iter()
@@ -2135,11 +2122,9 @@ impl ApprovalEngine {
     /// dialog is shown, not while it waits unseen; when the dialog ahead
     /// of it went unanswered for its whole budget, nobody is at that
     /// terminal and the queued call is denied as timed out without being
-    /// shown. After the lock is acquired the Stop, the rules, the
-    /// permission mode and the pause are checked again (they may have
-    /// changed while other dialogs were open): a call the new mode decides
-    /// is settled without asking, and one whose pause has ended meanwhile
-    /// gets the classifier's `fallback` verdict instead. A policy or mode
+    /// shown. Once it holds the lock, [`Self::wait_turn`] checks the call
+    /// again (the Stop, the rules, the mode and the pause may have changed
+    /// while other dialogs were open). A policy or mode
     /// question ([`Asking::Policy`], [`Asking::Mode`]) leaves the denial
     /// counters alone. The human's allow is an allow: nothing after the
     /// answer turns it into a denial.
@@ -2556,7 +2541,6 @@ fn allow_at(tier: Tier, by: Decider, why: impl Into<String>) -> Verdict {
 /// Whether a call is a comms send to another agent ([`ApprovalEngine`]'s
 /// agent peers).
 enum AgentSend {
-    /// It is not.
     No,
     /// It is, to this kind of peer: tier 1 (in plan mode, an agent of
     /// another workspace is put to the user).
@@ -2579,7 +2563,6 @@ enum Asking {
     /// The permission mode asks (manual or accept-edits mode) for a call of
     /// `tier`: why.
     Mode {
-        /// The call's tier.
         tier: Tier,
         /// Why the human is asked.
         reason: String,
@@ -3426,14 +3409,13 @@ mod tests {
         }
     }
 
-    /// In a run no user started,
-    /// with no client attached, the classifier still judges what auto mode
-    /// reviews. Its allow runs the call, its block denies it (counted like
-    /// any block); what would ask the user (a protected write, a failed
-    /// review, a paused auto mode, an action too large to review, a
-    /// question of manual mode) is denied without a question and its
-    /// notice queued. Plan mode stays plan mode. A read and an in-project
-    /// write run as always.
+    /// In a run no user started, with no client attached, the classifier
+    /// still judges what auto mode reviews. Its allow runs the call, its
+    /// block denies it (counted like any block); what would ask the user (a
+    /// protected write, a failed review, a paused auto mode, an action too
+    /// large to review, a question of manual mode) is denied without a
+    /// question and its notice queued. Plan mode stays plan mode. A read
+    /// and an in-project write run as always.
     #[tokio::test]
     async fn an_unattended_turn_has_the_classifier_judge_and_denies_what_would_ask() {
         let mut rig = rig(
@@ -4412,8 +4394,7 @@ mod tests {
     /// A Stop given while the classifier reviews a call denies it as
     /// stopped although the classifier then allows it, and the allow is
     /// not applied: nothing is cached (the same call is reviewed again in
-    /// the next run) and the denial counters are not reset by it. Before,
-    /// the allow ran the call.
+    /// the next run) and the denial counters are not reset by it.
     #[tokio::test]
     async fn a_stop_during_a_review_denies_the_call_the_classifier_allows() {
         let dir = tempfile::tempdir().unwrap();
@@ -5040,8 +5021,8 @@ mod tests {
     /// A write protected only for its content (`AGENTS.md`, `.env`,
     /// `build.rs`) is the classifier's in auto mode: its allow runs it, its
     /// block puts it to the user rather than refusing it; in manual mode it
-    /// asks as before. One that runs later (`.cargo/config.toml`) still
-    /// asks in auto mode, never the classifier.
+    /// asks. One that runs later (`.cargo/config.toml`) still asks in auto
+    /// mode, never the classifier.
     #[tokio::test]
     async fn content_protected_writes_go_to_the_classifier_in_auto_mode() {
         let mut rig = rig(
@@ -5625,10 +5606,10 @@ mod tests {
         );
     }
 
-    /// A blocked call keeps the whole call an approval once
-    /// approves (a 3 000-character command whole, though its row's summary
-    /// is cut at 200 bytes), and the audit line of the approval is as it
-    /// was (the summary). A call cut for its size cannot be approved once.
+    /// A blocked call keeps the whole call an approval once approves (a
+    /// 3 000-character command whole, though its row's summary is cut at
+    /// 200 bytes), and the audit line of the approval keeps the summary. A
+    /// call cut for its size cannot be approved once.
     #[tokio::test]
     async fn a_blocked_call_keeps_the_whole_call_it_approves() {
         let rig = rig(

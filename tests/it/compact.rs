@@ -311,8 +311,8 @@ async fn warn_mode_warns_and_compacts_only_on_compact() {
 
 /// The compaction policy of each start reaches an existing realm's agent.
 /// The mob is created once per realm and keeps the definition it was
-/// created with, so a policy set later never reached the agent; now the
-/// agent is built on the profile of the current start. First start: `warn`
+/// created with; the agent is built on the profile of the current start,
+/// so a policy set later reaches it. First start: `warn`
 /// (no native compaction), the history grows past the threshold and
 /// nothing compacts. Second start of the same realm and conversation:
 /// `auto` at 5%, and the next turn compacts first.

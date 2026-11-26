@@ -8,23 +8,18 @@ pub const LINE_SCROLL: usize = 3;
 /// Editing operations on the input editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditAction {
-    /// Insert a character.
     Insert(char),
     /// Delete before the cursor.
     Backspace,
     /// Delete under the cursor.
     Delete,
-    /// Cursor left.
     Left,
-    /// Cursor right.
     Right,
     /// Line start.
     Home,
     /// Line end.
     End,
-    /// Previous word.
     WordLeft,
-    /// Next word.
     WordRight,
     /// Line up / older history.
     Up,
@@ -88,9 +83,7 @@ pub enum Action {
     ScrollUp(usize),
     /// Scroll the transcript down by lines.
     ScrollDown(usize),
-    /// Page up.
     PageUp,
-    /// Page down.
     PageDown,
     /// Jump to the top of the transcript.
     ScrollTop,
@@ -100,7 +93,6 @@ pub enum Action {
     HelperPrev,
     /// Move the helper panel selection down (Ctrl+Down; the newest first).
     HelperNext,
-    /// Edit the input.
     Edit(EditAction),
     /// Unbound key.
     None,

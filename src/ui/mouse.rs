@@ -456,8 +456,6 @@ pub(super) struct MouseState {
     pub(super) transcript_rows: Vec<(BlockId, usize)>,
     /// The text selection (logical line coordinates).
     pub(super) selection: Option<Selection>,
-    /// A left press not yet released.
     pub(super) press: Option<Press>,
-    /// The last left press, for multi-click detection.
     pub(super) last_down: Option<LastDown>,
 }

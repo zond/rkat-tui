@@ -161,7 +161,6 @@ mod tests {
         Path::new(s)
     }
 
-    /// The config dir resolved.
     fn resolved(flag: Option<&str>, root: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
         GlobalDirs::resolve_with(flag.map(p), root.map(p), home.map(p)).map(|d| d.config)
     }

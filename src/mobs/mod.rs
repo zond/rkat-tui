@@ -217,7 +217,6 @@ pub(crate) async fn stop_helper(
     Err(last)
 }
 
-/// Whether `handle`'s roster lists the helper `key`.
 async fn roster_lists(handle: &meerkat_mob::MobHandle, key: &HelperKey) -> bool {
     handle
         .list_members()

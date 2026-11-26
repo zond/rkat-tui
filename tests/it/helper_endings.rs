@@ -191,8 +191,7 @@ async fn stopping_a_helper_that_is_not_running_says_so() {
 }
 
 /// An interrupt of the agent leaves the dialog of its helper's call open:
-/// the user answers it after the interrupt and the helper's write runs
-/// (before, the interrupt answered it Stop and denied the write).
+/// the user answers it after the interrupt and the helper's write runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_interrupt_leaves_a_helper_s_dialog_open() {
     let ws = Workspace::new();

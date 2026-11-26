@@ -85,10 +85,6 @@ impl SkillCatalog {
     }
 
     /// The realm config as a session build reads it.
-    ///
-    /// # Errors
-    ///
-    /// The store's error, in words.
     pub async fn config(&self) -> Result<Config, String> {
         meerkat_core::ConfigStore::get(&*self.config)
             .await
@@ -278,7 +274,6 @@ pub enum SkillPlace {
 pub struct SkillDirectory {
     /// Whose it is.
     pub place: SkillPlace,
-    /// Its path.
     pub path: PathBuf,
     /// Its valid skills (`None`: the directory does not exist).
     pub skills: Option<usize>,

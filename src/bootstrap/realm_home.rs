@@ -83,7 +83,6 @@ pub enum HomeError {
     Unreadable {
         /// The manifest.
         file: PathBuf,
-        /// Why.
         why: String,
     },
     /// A filesystem operation failed.
@@ -93,7 +92,6 @@ pub enum HomeError {
         context: &'static str,
         /// On which path.
         path: PathBuf,
-        /// Why.
         #[source]
         source: std::io::Error,
     },
@@ -174,7 +172,6 @@ pub enum HomeError {
         id: String,
         /// Its directory.
         dir: PathBuf,
-        /// The workspace.
         workspace: PathBuf,
     },
     /// A realm that would be replaced holds something.
@@ -299,7 +296,6 @@ pub struct Home {
     pub id: String,
     /// The realm directory.
     pub dir: PathBuf,
-    /// Its manifest.
     pub manifest: Manifest,
 }
 

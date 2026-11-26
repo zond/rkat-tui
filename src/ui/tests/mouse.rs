@@ -776,9 +776,9 @@ fn click_later(app: &mut App, row: u16, at: &mut Instant) {
     app.update_at(up(row, 3), *at);
 }
 
-/// The owner's report: in a helper's full view a click on a folded call
-/// did nothing. It unfolds that call and only it, and a second click folds
-/// it again; also with the view scrolled back.
+/// In a helper's full view a click on a folded call unfolds that call and
+/// only it, and a second click folds it again; also with the view
+/// scrolled back.
 #[test]
 fn a_click_in_a_helper_s_view_unfolds_the_call_under_it() {
     let mut at = Instant::now();
@@ -814,10 +814,9 @@ fn a_click_in_a_helper_s_view_unfolds_the_call_under_it() {
     assert!(tool_collapsed(&app, view_tool(&app, fork, "f11")));
 }
 
-/// The owner's report: a drag in a helper's full view selected and copied
-/// nothing. It selects the view's own rows (drawn highlighted), copies
-/// their text, not the transcript's rows at the same places, and a
-/// middle-click pastes it; also with the view scrolled back.
+/// A drag in a helper's full view selects the view's own rows (drawn
+/// highlighted), copies their text, not the transcript's rows at the same
+/// places, and a middle-click pastes it; also with the view scrolled back.
 #[test]
 fn a_drag_in_a_helper_s_view_copies_the_view_s_text() {
     let (mut app, _) = view_app(3);

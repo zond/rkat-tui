@@ -860,13 +860,11 @@ mod tests {
         assert!(missing.is_empty(), "{missing:?}");
     }
 
-    /// `/context` measures definitions normalized again: that changes
-    /// nothing.
     /// `schemars` writes a free-form JSON field as the boolean schema
     /// `true`, alone or in an enum's `anyOf`; a converter that expects
     /// objects fails the request on it. They become objects, and a union
     /// that admits anything is dropped; `additionalProperties` keeps its
-    /// boolean.
+    /// boolean. Normalizing again changes nothing (`/context` does).
     #[test]
     fn boolean_schemas_become_objects() {
         let schema = json!({

@@ -64,9 +64,7 @@ pub const TOLD: &str = " was told";
 /// One helper's ending as its note words it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteItem {
-    /// The helper's label.
     pub label: String,
-    /// How it ended.
     pub how: How,
     /// Where its whole answer was written when the note cuts it.
     pub rest: Option<PathBuf>,

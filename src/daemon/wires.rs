@@ -74,19 +74,15 @@ pub enum WireError {
         "the wire socket {path} is {len} bytes long, more than the {limit} a Unix socket path may have on this system: a shorter --config-dir (the realm lives under it) makes it fit"
     )]
     PathTooLong {
-        /// The path.
         path: PathBuf,
         /// Its length in bytes.
         len: usize,
-        /// The limit.
         limit: usize,
     },
     /// The socket or its directory could not be made.
     #[error("cannot make the wire socket {path}: {source}")]
     Socket {
-        /// The path.
         path: PathBuf,
-        /// The error.
         #[source]
         source: std::io::Error,
     },
@@ -95,7 +91,6 @@ pub enum WireError {
     NoSocket {
         /// The agent.
         agent: String,
-        /// Why.
         why: String,
     },
     /// The card names this daemon's own workspace.
@@ -106,21 +101,16 @@ pub enum WireError {
         /// The card's label.
         label: String,
     },
-    /// The card cannot be read.
     #[error("the other agent's card is unusable: {0}")]
     BadCard(String),
-    /// The engine has no comms endpoint for the agent.
     #[error("agent {0} has no comms endpoint")]
     NoEndpoint(String),
-    /// The engine refused.
     #[error("the engine refused the wire: {0}")]
     Engine(String),
-    /// The cards could not be saved.
     #[error("cannot save the wires in {path}: {why}")]
     Save {
         /// The file.
         path: PathBuf,
-        /// Why.
         why: String,
     },
     /// A wire over ssh failed on the way or on the other machine.
@@ -1195,10 +1185,6 @@ async fn serve(
 }
 
 /// [`WireError::PathTooLong`] when `path` does not fit `sun_path`.
-///
-/// # Errors
-///
-/// See above.
 pub fn check_length(path: &Path) -> Result<(), WireError> {
     let len = path.as_os_str().len();
     if len > MAX_SOCKET_PATH {

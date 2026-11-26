@@ -10,7 +10,6 @@ pub enum TuiError {
     ProjectRoot {
         /// Path that was being resolved.
         path: PathBuf,
-        /// Underlying I/O error.
         #[source]
         source: std::io::Error,
     },
@@ -19,7 +18,6 @@ pub enum TuiError {
     Io {
         /// What was being attempted.
         context: String,
-        /// Underlying I/O error.
         #[source]
         source: std::io::Error,
     },
@@ -28,7 +26,6 @@ pub enum TuiError {
     Config {
         /// What was being attempted.
         context: &'static str,
-        /// Underlying config error.
         #[source]
         source: meerkat_core::ConfigError,
     },
@@ -37,7 +34,6 @@ pub enum TuiError {
     ConfigRuntime {
         /// What was being attempted.
         context: &'static str,
-        /// Underlying config runtime error.
         #[source]
         source: meerkat_core::ConfigRuntimeError,
     },
@@ -49,7 +45,6 @@ pub enum TuiError {
     /// the plain error.
     #[error("{}", persistence_open_message(realm_root, source))]
     PersistenceOpen {
-        /// The realm's directory.
         realm_root: PathBuf,
         /// Underlying persistence error (boxed: the variant must not widen the
         /// error type).
@@ -61,9 +56,7 @@ pub enum TuiError {
     /// written.
     #[error("cannot take the lease of realm {realm_id} in {lease_dir}: {source}")]
     RealmLease {
-        /// The realm id.
         realm_id: String,
-        /// The realm's lease directory.
         lease_dir: PathBuf,
         /// Underlying store error (boxed: the variant must not widen the
         /// error type).
@@ -93,13 +86,11 @@ pub enum TuiError {
     /// composed into one gateway.
     #[error("cannot compose the file and note tools: {0}")]
     ToolGateway(#[source] meerkat_core::error::ToolError),
-    /// stdin or stdout is not a terminal; the TUI needs one.
     #[error("stdin and stdout must be a terminal; rkat-tui is interactive")]
     NotATerminal,
     /// `--classifier-check` could not run, or stopped before its last case.
     #[error("the classifier check did not complete: {0}")]
     ClassifierCheck(String),
-    /// `--classifier-check` ran and the model is outside the targets.
     #[error("the classifier model is outside the targets (the report above says how)")]
     ClassifierOutside,
     /// The terminal UI failed.
@@ -134,7 +125,6 @@ pub enum TuiError {
         realm.display()
     )]
     RealmExposed {
-        /// The realm directory.
         realm: PathBuf,
         /// The shell's grant that reaches it.
         grant: PathBuf,
@@ -165,7 +155,6 @@ pub enum TuiError {
     /// `--attach=HOST:PORT` cannot be used as given.
     #[error("--attach={address}: {reason}")]
     AttachAddress {
-        /// The address given.
         address: String,
         /// Why not.
         reason: String,

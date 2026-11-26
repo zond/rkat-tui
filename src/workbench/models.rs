@@ -26,9 +26,7 @@ pub(super) type ModelFetch = JoinHandle<FetchResults>;
 /// picker lists first.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Current<'a> {
-    /// The current endpoint's name.
     pub endpoint: &'a str,
-    /// The current model.
     pub model: &'a str,
 }
 

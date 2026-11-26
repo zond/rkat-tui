@@ -95,10 +95,6 @@ const NOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// other note shares, across processes too: a session keeps the notes of
 /// earlier daemons, and the engine refuses a key it already holds with
 /// another text. Every note the daemon sends an agent goes through here.
-///
-/// # Errors
-///
-/// The engine's refusal of the append.
 pub(crate) async fn append_note(
     state: &MobMcpState,
     agent: &str,
@@ -117,10 +113,6 @@ pub(crate) async fn append_note(
 
 /// [`append_note`] to `member` of `mob` (a helper: what its parent's
 /// `connect_helpers` gave it, [`crate::daemon::connect`]).
-///
-/// # Errors
-///
-/// The engine's refusal of the append.
 pub(crate) async fn append_note_to(
     state: &MobMcpState,
     mob: &MobId,
@@ -208,10 +200,6 @@ pub(crate) async fn steer_member_as(
 /// takes it with every other steer waiting then (Meerkat 0.9.18), so it
 /// never costs the user's message a request; or as a run of its own when
 /// the agent is idle.
-///
-/// # Errors
-///
-/// The engine's refusal, in words.
 pub(crate) async fn steer_agent(core: &Core, agent: &str, text: String) -> Result<(), String> {
     steer_member(core, &MobId::from(MOB_ID), AgentIdentity::from(agent), text)
         .await
@@ -245,10 +233,6 @@ impl Agents {
     ///
     /// [`ApprovalEngine::human_input`]: crate::approval::ApprovalEngine::human_input
     /// [`ApprovalEngine::user_started`]: crate::approval::ApprovalEngine::user_started
-    ///
-    /// # Errors
-    ///
-    /// The engine's refusal of the send, in words.
     pub(crate) async fn steer(&self, name: &str, text: String, wake: Wake) -> Result<(), String> {
         let kind = match wake {
             Wake::HelperEnded => Kind::HelperEnding,

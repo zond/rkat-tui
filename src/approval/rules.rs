@@ -22,30 +22,23 @@ pub enum RulesError {
     /// A glob pattern failed to compile.
     #[error("invalid pattern `{pattern}`: {source}")]
     Pattern {
-        /// The offending pattern.
         pattern: String,
-        /// Underlying globset error.
         #[source]
         source: globset::Error,
     },
-    /// A tool pattern was empty.
     #[error("tool pattern is empty")]
     EmptyTool,
     /// Reading or writing a rules file failed.
     #[error("{path}: {source}")]
     Io {
-        /// File path.
         path: PathBuf,
-        /// Underlying I/O error.
         #[source]
         source: std::io::Error,
     },
     /// A rules file is not valid TOML for [`crate::config::RulesFile`].
     #[error("{path}: {source}")]
     Parse {
-        /// File path.
         path: PathBuf,
-        /// Underlying TOML error.
         #[source]
         source: toml::de::Error,
     },
@@ -68,7 +61,6 @@ pub enum RulesError {
         /// Why it is too broad.
         reason: &'static str,
     },
-    /// A rule entry set both `arg` and `literal`.
     #[error("rule for `{tool}` sets both `arg` and `literal`")]
     ArgAndLiteral {
         /// The rule's tool pattern.
@@ -80,7 +72,6 @@ pub enum RulesError {
         "endpoints.{endpoint}.models is an empty list (in {place}): list the models the endpoint may run, e.g. [\"model-a\"], or remove the key to allow every model it lists"
     )]
     EmptyModels {
-        /// The endpoint.
         endpoint: String,
         /// The layer that gave it, in words.
         place: String,
@@ -193,7 +184,6 @@ pub enum ArgPattern {
     Glob {
         /// The pattern as written.
         raw: String,
-        /// Compiled matcher.
         matcher: GlobMatcher,
     },
     /// The exact subject string (what "allow + add rule" mints).
@@ -279,11 +269,9 @@ fn compile(pattern: &str) -> Result<GlobMatcher, RulesError> {
 /// One allow or deny rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
-    /// Tool-name matcher.
     pub tool: ToolPattern,
     /// Optional subject matcher; `None` matches every invocation of the tool.
     pub arg: Option<ArgPattern>,
-    /// Allow or deny.
     pub kind: RuleKind,
     /// Layer the rule came from.
     pub origin: RuleOrigin,

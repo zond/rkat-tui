@@ -83,7 +83,6 @@ pub enum Synced {
 /// One setting whose value in force moved.
 #[derive(Debug, Clone)]
 pub struct Change {
-    /// The setting.
     pub setting: &'static Setting,
     /// In force before.
     pub before: Resolved,
@@ -95,7 +94,6 @@ pub struct Change {
 /// and what was in force before and is after.
 #[derive(Debug, Clone)]
 pub struct Written {
-    /// The setting.
     pub setting: &'static Setting,
     /// The level written.
     pub level: Level,

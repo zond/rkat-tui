@@ -51,7 +51,6 @@ impl PathEntry {
         path.rsplit('/').next().unwrap_or(path)
     }
 
-    /// Whether the entry is a directory.
     #[must_use]
     pub fn is_dir(&self) -> bool {
         self.path.ends_with('/')
@@ -187,7 +186,6 @@ pub struct Mention {
     pub path: String,
     /// The resolved absolute path.
     pub abs: PathBuf,
-    /// What it names.
     pub kind: MentionKind,
 }
 

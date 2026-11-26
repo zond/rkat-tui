@@ -7,9 +7,8 @@
 //! comes from, to remove, `e` to edit a rule in place, and `n` (a
 //! statement) and `r` (a rule) to add one. **Hosts**: the hosts the user
 //! trusts with the project's data, to remove, `n` to trust one, and the
-//! project's own, read-only. The rows
-//! are built here from the daemon's lists; the runner asks for them and
-//! does what the keys choose.
+//! project's own, read-only. The rows are built here from the daemon's
+//! lists; the runner asks for them and does what the keys choose.
 
 use ratatui::crossterm::event::KeyCode;
 

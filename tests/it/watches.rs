@@ -1,4 +1,4 @@
-//! `watch_paths` (P6 item B) end to end through the `rkat-tui-mob` daemon
+//! `watch_paths` end to end through the `rkat-tui-mob` daemon
 //! with a scripted LLM: the daemon's process watches the workspace, and a
 //! change of a watched file reaches the agent as a message
 //! (`files changed: …`), labelled in its TUI. The tests wait on explicit

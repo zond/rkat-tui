@@ -14,7 +14,6 @@ pub enum Connection {
     Starting,
     /// Attached to the daemon at `address`.
     Attached {
-        /// The daemon's address.
         address: String,
         /// The daemon's build (`None`: not known); shown
         /// when it is not this client's ([`crate::BUILD`]).

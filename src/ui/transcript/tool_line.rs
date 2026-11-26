@@ -129,9 +129,7 @@ fn cut_middle(text: &str, width: usize) -> String {
 /// home directory, else absolute.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PathView {
-    /// The project root.
     pub root: Option<PathBuf>,
-    /// The user's home directory.
     pub home: Option<PathBuf>,
 }
 
@@ -501,7 +499,6 @@ fn member(args: &Value) -> String {
         .to_string()
 }
 
-/// `text` on one line: its whitespace runs as single spaces.
 /// The first string argument's value (a JSON object's own order).
 fn first_string(args: &Value) -> Option<String> {
     args.as_object()?
@@ -930,7 +927,6 @@ impl Mark {
 /// A tool block's line, before it is fitted to a width.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parts {
-    /// Its state.
     pub mark: Mark,
     /// Verb and object.
     pub head: Head,

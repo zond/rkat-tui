@@ -8,11 +8,11 @@
 //! [`crate::config::registry`]) desugar to the same documents, so there is
 //! one code path. A value for a setting of the table is checked as the
 //! table says (`auto.compact_warn_percent takes a whole number from 1 to
-//! 100`). The documents are
-//! merged (tables recursively, scalars replace, arrays append) into one
-//! [`RulesFile`] that [`crate::config::load_layered_with`] applies as
-//! the `cli` layer: after the global and realm files, before the project
-//! file's deny-only/lower-only rules.
+//! 100`). The documents are merged (tables recursively, scalars replace,
+//! arrays append) into one [`RulesFile`] that
+//! [`crate::config::load_layered_with`] applies as the `cli` layer: after
+//! the global and realm files, before the project file's
+//! deny-only/lower-only rules.
 
 use std::fmt;
 
@@ -542,7 +542,7 @@ mod tests {
         assert_eq!(opus.input, Some(15.0));
         assert_eq!(opus.cached_input, Some(1.5));
         assert_eq!(f.pricing["gpt-5.4"].output, Some(10.5));
-        // E3: the fetch switch sits beside the overrides.
+        // The fetch switch sits beside the overrides.
         let f = file(&[
             "--set",
             "pricing.fetch=false",

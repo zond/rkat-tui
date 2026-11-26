@@ -1358,7 +1358,7 @@ async fn next_note(
     .await
 }
 
-/// P3b: a reviewed call is held as a durable decision the daemon pushes to
+/// A reviewed call is held as a durable decision the daemon pushes to
 /// every attached connection (no polling); its `initialize` says so; a
 /// decide naming who decided is refused; the first answer wins and a later
 /// one gets the engine's own refusal; the clients shown it hear it ended.
@@ -1757,10 +1757,10 @@ async fn engine_methods_that_make_sessions_outside_the_mob_are_refused() {
     daemon.stop().await;
 }
 
-/// A2 of the security review: the content an `@` mention attaches is data,
-/// not the user's words. An instruction planted in the mentioned file
-/// reaches the model (it is the file) but the classifier's `[user]` lines
-/// hold only what the user typed; the file is named as attached content.
+/// The content an `@` mention attaches is data, not the user's words. An
+/// instruction planted in the mentioned file reaches the model (it is the
+/// file) but the classifier's `[user]` lines hold only what the user
+/// typed; the file is named as attached content.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mentioned_files_instruction_is_not_the_users_words() {
     let ws = Workspace::new();
@@ -1802,10 +1802,10 @@ async fn a_mentioned_files_instruction_is_not_the_users_words() {
     client.quit().await;
 }
 
-/// D3 of the security review: the endpoint file (the attach token) is
-/// sealed for the agent's file tools: a `read_file` of it is refused at
-/// tier 0 without asking the classifier, and a search the classifier
-/// allows above it never walks into its directory.
+/// The endpoint file (the attach token) is sealed for the agent's file
+/// tools: a `read_file` of it is refused at tier 0 without asking the
+/// classifier, and a search the classifier allows above it never walks
+/// into its directory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_endpoint_file_is_sealed_for_the_file_tools() {
     let ws = Workspace::new();
@@ -1852,11 +1852,11 @@ async fn the_endpoint_file_is_sealed_for_the_file_tools() {
     client.quit().await;
 }
 
-/// Recommendation 11: every gate decision is one line of the daemon's
-/// audit log naming who decided (the policy, the classifier allowing and
-/// blocking, the human by connection, a sealed read denied), a mode switch
-/// is one line, the agent's file tools cannot read the log, and `/audit`
-/// shows this agent's lines.
+/// Every gate decision is one line of the daemon's audit log naming who
+/// decided (the policy, the classifier allowing and blocking, the human by
+/// connection, a sealed read denied), a mode switch is one line, the
+/// agent's file tools cannot read the log, and `/audit` shows this agent's
+/// lines.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_gate_decision_is_one_audit_line_naming_who_decided() {
     use rkat_tui::daemon::audit::{AUDIT_FILE, Line};
@@ -2049,10 +2049,9 @@ async fn the_classifier_model_change_is_refused_for_an_unknown_endpoint() {
 }
 
 /// A mode change is in the agent's context before the prompt sent right
-/// after it starts a run (the cause of a flaky
-/// `plan_mode_refuses_a_write_and_the_model_reads_why`): the change's note is held back, the prompt is sent
-/// meanwhile; it waits for the change to end, and the run reads the note.
-/// Before the fix the prompt went at once and its request had no note.
+/// after it starts a run: the change's note is held back, the prompt is
+/// sent meanwhile; it waits for the change to end, and the run reads the
+/// note.
 #[tokio::test]
 async fn a_prompt_after_a_mode_change_waits_for_its_note() {
     prompt_waits_for_the_note_of("rkat/set_mode", json!({"mode": "plan"})).await;
@@ -2060,7 +2059,7 @@ async fn a_prompt_after_a_mode_change_waits_for_its_note() {
 
 /// The same for a mode change made as a setting (`/set auto.mode plan`):
 /// it takes the one switch `rkat/set_mode` takes, and the prompt after it
-/// waits for it too. Before, only `rkat/set_mode` was waited for.
+/// waits for it too.
 #[tokio::test]
 async fn a_prompt_after_a_mode_set_as_a_setting_waits_for_its_note() {
     prompt_waits_for_the_note_of(

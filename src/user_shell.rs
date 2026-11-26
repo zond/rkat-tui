@@ -77,7 +77,6 @@ pub struct ShellRun {
     /// Stdout and stderr in arrival order (lossy UTF-8), ending with
     /// [`TRUNCATION_MARKER`] when cut.
     pub output: String,
-    /// How it ended.
     pub exit: ShellExit,
     /// Wall time.
     pub duration: Duration,
@@ -202,12 +201,10 @@ pub fn users_shell(shell: Option<OsString>) -> PathBuf {
 /// Why a `!` command could not run.
 #[derive(Debug, thiserror::Error)]
 pub enum UserShellError {
-    /// The shell could not be started.
     #[error("could not start {}: {source}", program.display())]
     Start {
         /// The shell program.
         program: std::path::PathBuf,
-        /// Why.
         source: std::io::Error,
     },
     /// The command's exit could not be read.

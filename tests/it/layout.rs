@@ -1,8 +1,7 @@
 //! `CLAUDE.md`'s layout table keeps up with `src/`: every top-level module
-//! file and every module directory is named in it (the table drifted after
-//! every phase until this test). A nested directory may be named as
-//! `src/<dir>/<sub>/` or as `` `<sub>/` `` in its parent's row. The
-//! wrappers of engine traits forward every method of them.
+//! file and every module directory is named in it. A nested directory may
+//! be named as `src/<dir>/<sub>/` or as `` `<sub>/` `` in its parent's row.
+//! The wrappers of engine traits forward every method of them.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

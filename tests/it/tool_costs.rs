@@ -20,15 +20,14 @@ use rig::Attached;
 use rkat_tui::ui::Effect;
 
 /// A fresh conversation's request carries the direct tools and the search
-/// tool, about 56 KB (122 KB before rkat-tui's own deferral; `skill_read`
-/// added 373 bytes, `compact_ready` 197): no schedule
-/// tool and none of the agent mob tools (`delegate`, the one that was
-/// declared, is not offered, and `fork_off` neither); what is hidden (the
-/// eight schedule tools, 17 mob tools, about 67 KB) `/context` reports as
-/// hidden. Its session's
-/// catalog is inexact, so the engine defers nothing itself and its
-/// catalog control tools are absent. An `assign` helper's request carries
-/// neither hidden family nor the search tool.
+/// tool, about 56 KB (122 KB without rkat-tui's own deferral; `skill_read`
+/// adds 373 bytes, `compact_ready` 197): no schedule tool and none of the
+/// agent mob tools (neither `delegate` nor `fork_off` is offered); what is
+/// hidden (the eight schedule tools, 17 mob tools, about 67 KB) `/context`
+/// reports as hidden. Its session's catalog is inexact, so the engine
+/// defers nothing itself and its catalog control tools are absent. An
+/// `assign` helper's request carries neither hidden family nor the search
+/// tool.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_s_request_carries_every_tool_definition() {
     let ws = Workspace::new();
@@ -128,7 +127,7 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     use rkat_tui::daemon::context::ToolFamily;
     assert_eq!(of(ToolFamily::Schedule).tools, 8, "{hidden_report}");
     assert!(of(ToolFamily::Schedule).bytes > 30_000, "{hidden_report}");
-    // 17 since `fork_off` is not offered (it was the 18th).
+    // 17: `fork_off` is not offered.
     assert_eq!(of(ToolFamily::Mob).tools, 17, "{hidden_report}");
     assert!(of(ToolFamily::Mob).bytes > 25_000, "{hidden_report}");
     let hidden_bytes: usize = hidden.iter().map(|size| size.bytes).sum();

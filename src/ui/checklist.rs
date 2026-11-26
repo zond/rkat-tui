@@ -19,11 +19,8 @@ pub use crate::config::settings::ChecklistView;
 /// Where a checklist item is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemState {
-    /// Not started.
     Pending,
-    /// Being worked on.
     InProgress,
-    /// Finished.
     Done,
 }
 
@@ -54,7 +51,6 @@ impl From<&TaskStatus> for ItemState {
 pub struct ChecklistItem {
     /// The task's subject.
     pub text: String,
-    /// Its state.
     pub state: ItemState,
 }
 
@@ -96,7 +92,6 @@ impl Checklist {
         &self.items
     }
 
-    /// Whether there are no items.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()

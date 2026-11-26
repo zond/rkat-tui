@@ -65,9 +65,9 @@ fn the_panel_lists_live_helpers_and_an_ended_one_leaves_after_its_linger() {
     assert!(!app.status.helper_panel);
 }
 
-/// The owner's 0.0.16 report: in one long turn twenty helpers, of which
-/// three are live (seated) now: the panel lists the three, with no
-/// "more" line, once the ended ones' linger is over.
+/// In one long turn twenty helpers, of which three are live (seated)
+/// now: the panel lists the three, with no "more" line, once the ended
+/// ones' linger is over.
 #[test]
 fn of_twenty_helpers_in_one_long_turn_the_panel_lists_the_three_live() {
     let t0 = Instant::now();
@@ -1805,12 +1805,12 @@ fn mail(lines: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Item 7 (owner, 0.0.17): a message is drawn once, in the view of the
-/// member that received it. The agent's message to its helper is the
-/// helper's (its full view; in the main view only while the helper is
-/// unfolded, tagged and indented as the helper's lines are, never as a
-/// message the agent received); the helper's message to the agent is the
-/// agent's (the main view, once; not in the helper's view).
+/// A message is drawn once, in the view of the member that received it.
+/// The agent's message to its helper is the helper's (its full view; in
+/// the main view only while the helper is unfolded, tagged and indented as
+/// the helper's lines are, never as a message the agent received); the
+/// helper's message to the agent is the agent's (the main view, once; not
+/// in the helper's view).
 #[test]
 fn a_message_is_drawn_once_in_the_view_of_the_member_that_received_it() {
     let (mut app, scout, _) = helper_app();

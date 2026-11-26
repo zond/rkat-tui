@@ -617,8 +617,8 @@ mod tests {
         )
     }
 
-    /// D1 of the security review: a process on the daemon's port that
-    /// does not know the token never receives it, whatever it answers.
+    /// A process on the daemon's port that does not know the token never
+    /// receives it, whatever it answers.
     #[tokio::test]
     async fn a_squatter_that_does_not_know_the_token_never_receives_it() {
         let answers = [

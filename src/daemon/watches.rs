@@ -49,7 +49,6 @@ const OWN_WRITE_WINDOW: Duration = Duration::from_secs(2);
 /// What happened to a path, as far as transient files are concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
-    /// It was created.
     Created,
     /// It was renamed away or removed.
     Gone,
@@ -64,7 +63,6 @@ pub const FILES_CHANGED: &str = "files changed: ";
 /// One agent's changes, ready to deliver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Batch {
-    /// The agent.
     pub agent: String,
     /// The changed paths (relative to the workspace), at most
     /// [`MAX_PATHS`].

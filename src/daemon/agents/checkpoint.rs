@@ -205,7 +205,6 @@ impl Agents {
         self.notice(name, !matches!(outcome, Outcome::Continuing(_)), text);
     }
 
-    /// Tell the clients of `name` `text`.
     fn notice(&self, name: &str, warn: bool, text: String) {
         self.core.decisions.agent_notice(name, warn, text);
     }

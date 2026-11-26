@@ -410,9 +410,8 @@ fn error_code(response: &Value) -> i64 {
         .unwrap_or_else(|| panic!("not refused: {response}"))
 }
 
-/// The finding this guards (second review, item 1): the agent binding was
-/// enforced for `rkat/*` only, so a client could drive another agent
-/// through the engine's member methods by naming it.
+/// The agent binding holds for the engine's member methods too, not only
+/// for `rkat/*`: a client cannot drive another agent by naming it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_cannot_drive_another_agent_through_the_engine() {
     let ws = Workspace::new();

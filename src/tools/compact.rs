@@ -16,7 +16,6 @@ use meerkat_core::{
 };
 use serde_json::json;
 
-/// Tool name.
 pub const COMPACT_READY: &str = "compact_ready";
 /// Provenance source id of the tool (judged with the file tools' family,
 /// see `crate::approval::catalog`).

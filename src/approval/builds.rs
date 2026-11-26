@@ -128,7 +128,6 @@ impl Builds {
         }
     }
 
-    /// Whether something contains the shell.
     pub(super) fn contained(&self) -> bool {
         self.contained
     }
@@ -138,7 +137,6 @@ impl Builds {
         *self.trust.write() = trust;
     }
 
-    /// The setting, as it is now.
     pub(super) fn trust(&self) -> Option<bool> {
         *self.trust.read()
     }
@@ -209,7 +207,7 @@ impl Builds {
     /// sees (its file tools, or the files' digest).
     ///
     /// When something contains the shell a build stays trusted after such
-    /// a change too (the sandbox is the boundary; the owner's decision):
+    /// a change too (the sandbox is the boundary):
     /// the first one shows a notice ([`Self::notice`]).
     /// Uncontained, a build after a change is put to the user.
     pub(super) fn trusted(&self, session: &SessionId, action: &Action<'_>) -> bool {

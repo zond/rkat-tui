@@ -93,7 +93,6 @@ pub fn name_in_use(name: &str) -> String {
 /// One helper a caller holds, as the limit's refusal names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Holding {
-    /// Its name.
     pub name: String,
     /// Whether it is kept and idle now (the ones to retire).
     pub kept_idle: bool,

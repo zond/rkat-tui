@@ -320,8 +320,8 @@ async fn two_clients_quitting_at_once_get_one_decision_for_their_agent() {
 
 /// Two clients on two agents: one quits, which retires its agent (gone
 /// from `rkat/status`, its conversation still listed and seated again on
-/// demand); the other agent still works; the last client's quit follows
-/// the P2 rule (the owner, nobody detached: stop).
+/// demand); the other agent still works; the last client's quit stops the
+/// daemon (the owner, nobody detached).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn quitting_one_of_two_agents_retires_it_and_the_last_quit_stops_the_daemon() {
     let ws = Workspace::new();
@@ -622,10 +622,9 @@ async fn list_shows_a_live_daemon_and_removes_a_stale_file() {
     assert!(list::line(&rows[0], chrono::Utc::now()).ends_with("\tstale (file removed)"));
 }
 
-/// The CI failure this guards (`status_reports_the_daemon_its_clients_and_the_owner`
-/// saw 2 clients after the third attach completed): once a connection's
-/// attach is answered, every other connection's `rkat/status` counts it
-/// at once, with no waiting.
+/// Once a connection's attach is answered, every other connection's
+/// `rkat/status` counts it at once, with no waiting
+/// (`status_reports_the_daemon_its_clients_and_the_owner` relies on it).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_answered_attach_is_counted_for_every_other_connection_at_once() {
     let ws = Workspace::new();
@@ -650,9 +649,9 @@ fn connection_state(client: &Client) -> Option<rkat_tui::ui::Connection> {
     })
 }
 
-/// The finding this guards (second review, item 2): a failed first attach
-/// set the status to `detached`, said why once in a notice that scrolled
-/// away and never tried again.
+/// A failed first attach is not left as `detached` with one notice that
+/// scrolls away: it is retried, reported in the status, and `/daemon
+/// start` attaches once a daemon serves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_daemon_that_exits_at_start_is_retried_reported_and_started_by_hand() {
     use std::os::unix::fs::PermissionsExt as _;

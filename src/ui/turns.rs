@@ -11,7 +11,6 @@ use super::{
 };
 
 impl App {
-    /// Whether a turn is running.
     pub fn is_running(&self) -> bool {
         self.turn.is_running()
     }

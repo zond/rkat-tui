@@ -535,8 +535,6 @@ fn helper_binding(
     ))
 }
 
-/// The endpoint `owner` runs through: the configured one of its binding,
-/// else (no binding) the built-in one of its model's dialect.
 /// A helper's model refused by its endpoint's list, with what the agent
 /// can do.
 fn not_allowed_for_helper(err: &crate::endpoints::ModelNotAllowed) -> String {
@@ -545,6 +543,8 @@ fn not_allowed_for_helper(err: &crate::endpoints::ModelNotAllowed) -> String {
     )
 }
 
+/// The endpoint `owner` runs through: the configured one of its binding,
+/// else (no binding) the built-in one of its model's dialect.
 fn own_endpoint<'a>(
     owner: &Owner,
     endpoints: &'a [crate::endpoints::Endpoint],
@@ -601,7 +601,6 @@ enum Seat {
     /// The spawn carries its own profile (inline, or a fork's copy of its
     /// source's): nothing to put on it.
     Carried,
-    /// This stored profile.
     Stored(Box<meerkat_mob::Profile>),
     /// The mob's definition has no inline profile of the name: the engine
     /// refuses the spawn itself, naming it.
@@ -892,8 +891,8 @@ fn denied_names(also: &[&str]) -> Option<meerkat_core::ToolNameSet> {
 /// call (the mob and council tools are about 25k).
 ///
 /// The mob category goes off through the spec's category overrides. A
-/// member that inherits its spawner's tool filter (a `delegate` helper)
-/// without an override profile otherwise gets every category opened for
+/// member that inherits its spawner's tool filter without an override
+/// profile otherwise gets every category opened for
 /// that filter to narrow, which the engine does only while the spawn
 /// overrides nothing; so such a spawn names every other category open
 /// itself, exactly as the engine would have.
@@ -1143,8 +1142,7 @@ impl SpawnMemberCustomizer for HelperCustomizer {
         let fresh = !matches!(ctx.spawn_source, SpawnSource::Resume);
         // Every child is wired to the member that seats it, asked or not:
         // the engine wires a spawn in its parent's own mob only when this
-        // is set (a `delegate` helper is wired across mobs by the engine
-        // itself; a `fork_off` child's spawn ignores it, and the follower
+        // is set (a `fork_off` child's spawn ignores it, and the follower
         // wires the child once it is seated, `super::follow`).
         if fresh {
             spec.auto_wire_parent = true;
@@ -1210,8 +1208,7 @@ impl SpawnMemberCustomizer for HelperCustomizer {
 /// [`super::HelperRegistry::take_intent`]); a member an agent or helper
 /// seats in a mob it created (`mob_spawn_member`) is a kept fresh helper; a
 /// fork no `assign` asked for (a fork's own fork by the engine) is a kept
-/// fork; a `delegate` helper and a council's participant are told of by
-/// their own tools.
+/// fork; a council's participant is told of by its own tool.
 fn kind_of(
     ctx: &SpawnCustomizationContext,
     intent: Option<super::HelperKind>,
@@ -1284,10 +1281,9 @@ mod tests {
         assert!(!names.contains(crate::tools::ASSIGN));
     }
 
-    /// E2 of the security review: a helper on another model than its
-    /// owner's runs through the owner's endpoint or is refused; it never
-    /// falls back to the model's provider default (its public URL and an
-    /// environment key).
+    /// A helper on another model than its owner's runs through the owner's
+    /// endpoint or is refused; it never falls back to the model's provider
+    /// default (its public URL and an environment key).
     #[test]
     fn a_helper_runs_through_its_owners_endpoint_or_is_refused() {
         use crate::endpoints::{Endpoint, SecretString, WireDialect};
@@ -1410,12 +1406,11 @@ mod tests {
         assert_eq!(spec.model_override.as_deref(), Some("gpt-5.5"));
     }
 
-    /// The bug from real use: a helper of an owner on a self-hosted
-    /// endpoint that names its model through an inline profile (not an
-    /// override) runs on the endpoint's alias with the self-hosted
-    /// provider and server; before, the profile kept the plain catalog
-    /// name, the engine resolved it to the model's public provider, and
-    /// the build was refused against the self-hosted binding.
+    /// A helper of an owner on a self-hosted endpoint that names its model
+    /// through an inline profile (not an override) runs on the endpoint's
+    /// alias with the self-hosted provider and server, not on the plain
+    /// catalog name, which the engine resolves to the model's public
+    /// provider and refuses against the self-hosted binding.
     #[test]
     fn an_inline_profile_s_model_is_qualified_on_a_self_hosted_endpoint() {
         use crate::endpoints::{Endpoint, SecretString, WireDialect};
@@ -1475,14 +1470,13 @@ mod tests {
         assert!(refused.contains("`gpt-5.5` is not permitted"), "{refused}");
     }
 
-    /// The reported bug and its rule: a member seated by a stored profile's
-    /// name (the workspace mob's `main` of the first start, or a profile of
-    /// a mob the agent created) never runs on that profile's model. The
-    /// profile is put on the spawn inline with the chosen model, the
+    /// A member seated by a stored profile's name (the workspace mob's `main`
+    /// of the first start, or a profile of a mob the agent created) never
+    /// runs on that profile's model. The profile is put on the spawn inline
+    /// with the chosen model, the
     /// owner's endpoint's provider and server, and no fallback chain; the
     /// model is the spawn's, else `helpers.model`, else the owner's, and
-    /// the rule judges it (there is no refusal of an unchecked profile
-    /// model any more). A mob whose definition could not be read is
+    /// the rule judges it. A mob whose definition could not be read is
     /// refused with what to do.
     #[test]
     fn a_stored_profile_s_model_never_decides() {

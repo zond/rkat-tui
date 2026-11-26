@@ -76,11 +76,9 @@ pub type OnRun = Box<dyn FnOnce(&SessionId, &RunId) + Send>;
 struct State {
     /// Runs started and not ended, with their conversation.
     open: HashMap<RunId, SessionId>,
-    /// The run that started last.
     latest: Option<RunId>,
     /// Told of the next run's start ([`Activity::when_running`]).
     waiting: Vec<OnRun>,
-    /// The run that ended last.
     last_ended: Option<RunId>,
     /// Inputs forwarded and not answered yet.
     sending: usize,

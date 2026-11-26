@@ -129,7 +129,6 @@ pub const DEFAULT_PRINCIPAL: &str = "owner";
 /// the human is shown and whose digest a decision binds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DialogRendering {
-    /// The session the call belongs to.
     pub session_id: SessionId,
     /// The dialog's content.
     pub prompt: RecordedPrompt,
@@ -154,10 +153,6 @@ pub struct Principal {
 impl Principal {
     /// The principal `name` (a login name: no whitespace or control
     /// characters).
-    ///
-    /// # Errors
-    ///
-    /// Why `name` cannot name a principal.
     pub fn new(name: &str) -> Result<Self, String> {
         let domain = TrustDomainId::new(TRUST_DOMAIN).map_err(|err| err.to_string())?;
         let person = PrincipalRef::in_domain(PrincipalKind::Human, name, domain)
@@ -217,7 +212,6 @@ fn requester() -> Result<DecisionPrincipalKey, String> {
 /// Why an escalation cannot be held as a decision ([`Decisions::hold_request`]).
 #[derive(Debug, thiserror::Error)]
 pub enum HoldError {
-    /// The dialog's rendering could not be written.
     #[error("the dialog cannot be rendered: {0}")]
     Render(#[from] serde_json::Error),
     /// The host's clock gave no representable time.
@@ -368,7 +362,6 @@ impl Decisions {
         &self.service
     }
 
-    /// The daemon's principal.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn principal(&self) -> &Principal {
@@ -593,10 +586,6 @@ impl Decisions {
 
     /// The hold of `prompt`'s escalation, open for `timeout` (and
     /// [`DEADLINE_SLACK`]).
-    ///
-    /// # Errors
-    ///
-    /// [`HoldError`]: why it cannot be held.
     pub fn hold_request(
         &self,
         prompt: &EscalationPrompt,

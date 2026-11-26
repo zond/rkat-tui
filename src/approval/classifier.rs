@@ -423,9 +423,7 @@ pub struct ClassifierInput<'a> {
     pub environment: &'a Environment,
     /// Reasoning-blind transcript (user prompts and prior tool calls).
     pub transcript: &'a ApprovalTranscript,
-    /// Tool under review.
     pub tool: &'a str,
-    /// Its arguments.
     pub args: &'a Value,
     /// Content of an in-project script the action runs (≤ 8 KiB), if any.
     pub script_payload: Option<&'a str>,
@@ -521,13 +519,11 @@ tokio::task_local! {
 /// The classifier's verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClassifierVerdict {
-    /// Allow the action.
     Allow {
         /// The classifier's stated reason (stage 2), or
         /// [`STAGE1_ALLOW_REASON`] when the fast first stage allowed it.
         reason: String,
     },
-    /// Block the action.
     Block {
         /// Block-rule id (e.g. `D1`), if the classifier named one. Shown
         /// to the user, not passed to the agent.
@@ -593,10 +589,8 @@ pub enum ClassifierError {
     /// A stage exceeded its time budget.
     #[error("classifier timed out")]
     Timeout,
-    /// The provider call failed.
     #[error("classifier provider error: {0}")]
     Provider(String),
-    /// The response could not be parsed.
     #[error("unparseable classifier response: {0}")]
     Unparseable(String),
     /// The review's answer reached no verdict: the provider cut it off at
@@ -608,7 +602,6 @@ pub enum ClassifierError {
         /// Whether the provider stopped the answer at its token limit.
         cut_off: bool,
     },
-    /// No classifier model is configured.
     #[error("no classifier model is configured")]
     Unavailable,
 }
@@ -801,7 +794,6 @@ impl LlmClassifier {
         self
     }
 
-    /// The classifier model.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn model(&self) -> &str {
@@ -1197,10 +1189,6 @@ fn assistant_text(reply: &BlockAssistantMessage) -> String {
 /// (`/btw`'s side question, [`crate::daemon::btw`]): the request projected
 /// through the client's replay projection, streamed and folded; its text
 /// and the usage the provider reported.
-///
-/// # Errors
-///
-/// The provider's failure.
 pub(crate) async fn text_call(
     client: &dyn LlmClient,
     request: LlmRequest,

@@ -111,7 +111,6 @@ pub enum Verdict {
     Deny {
         /// Tier the action fell into.
         tier: Tier,
-        /// Why.
         reason: DenyReason,
     },
 }
@@ -144,7 +143,6 @@ impl Verdict {
 pub enum DenyReason {
     /// A user deny rule matched.
     UserRule {
-        /// Rule id.
         id: RuleId,
         /// The rule as written (`shell git push*`).
         rule: String,
@@ -166,7 +164,6 @@ pub enum DenyReason {
     Classifier {
         /// Block-rule id, if named (the user's text only).
         rule: Option<String>,
-        /// Explanation.
         explanation: String,
         /// How the classifier checked (the user's text only).
         annotation: Option<String>,
@@ -443,17 +440,12 @@ pub fn scope_hint(
 pub enum ApprovalEvent {
     /// A tool call was decided.
     Decision {
-        /// Session.
         session_id: SessionId,
         /// The helper that made the call (`None`: the session's own agent).
         agent: Option<String>,
-        /// Tool-use id.
         tool_use_id: String,
-        /// Tool name.
         tool: String,
-        /// Tier.
         tier: Tier,
-        /// Outcome.
         verdict: VerdictSummary,
         /// Why it was denied (the reason the model receives), or, for an
         /// action the classifier allowed, the classifier's stated reason.
@@ -474,7 +466,6 @@ pub enum ApprovalEvent {
         session_id: SessionId,
         /// Classifier model.
         model: String,
-        /// Its usage.
         usage: Usage,
     },
     /// An escalation ended without the human's answer (it timed out or its
@@ -498,7 +489,6 @@ pub enum ApprovalEvent {
         done: usize,
         /// Cases it sends.
         total: usize,
-        /// Whether it still runs.
         running: bool,
     },
 }

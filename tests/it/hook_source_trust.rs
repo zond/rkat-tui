@@ -226,8 +226,8 @@ async fn a_hook_written_between_the_guard_and_the_build_never_runs() {
     assert_eq!(run.refused, [untrusted_source("planted")]);
 }
 
-/// A project file untrusted when the store serves the build config keeps
-/// today's behaviour: its hooks are shadowed by disabled entries, so they
+/// A project file untrusted when the store serves the build config stays
+/// inert: its hooks are shadowed by disabled entries, so they
 /// run nothing and gate nothing, and the factory has nothing to refuse.
 #[tokio::test]
 async fn a_project_file_untrusted_before_the_build_stays_inert() {

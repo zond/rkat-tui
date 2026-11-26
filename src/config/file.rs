@@ -183,7 +183,6 @@ pub struct InstructionsSection {
 pub struct InstructionPath {
     /// As written (what the file keeps).
     written: String,
-    /// Expanded.
     path: std::path::PathBuf,
 }
 
@@ -238,16 +237,12 @@ impl From<InstructionPath> for String {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSection {
-    /// `agent.checkpoint_steps`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_steps: Option<u64>,
-    /// `agent.checkpoint_continues`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_continues: Option<u64>,
-    /// `agent.web_search`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_search: Option<bool>,
-    /// `agent.web_fetch`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_fetch: Option<bool>,
 }
@@ -486,7 +481,6 @@ pub struct PricingSection {
     /// Uncached input tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<f64>,
-    /// Output tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<f64>,
     /// Input tokens read from the prompt cache (default: `input`).
@@ -540,13 +534,10 @@ pub struct LayeredEndpoint {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulesFile {
-    /// Auto-mode settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto: Option<AutoSection>,
-    /// Allow rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<RuleEntry>,
-    /// Deny rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deny: Vec<RuleEntry>,
     /// Extra LLM endpoints by name.
@@ -599,10 +590,6 @@ pub struct DaemonSection {
 
 impl RulesFile {
     /// Load a rules file; a missing file yields an empty one.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RulesError`] on I/O or parse failures.
     pub fn load(path: &Path) -> Result<Self, RulesError> {
         match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text).map_err(|source| RulesError::Parse {

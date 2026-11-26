@@ -76,8 +76,6 @@ fn kept_fork(task: &str) -> Step {
     common::fork("f1", "kid", task, true)
 }
 
-/// Whether a recorded request of the fork (`fork`: its task names
-/// `FORK-TASK`) or of its parent carries `text`.
 /// Whether a request of the fork followed its `contacts` listing.
 fn fork_listed(llm: &ScriptedLlmClient) -> bool {
     llm.recorded()
@@ -86,6 +84,8 @@ fn fork_listed(llm: &ScriptedLlmClient) -> bool {
         .any(|r| after_peers(&r.messages))
 }
 
+/// Whether a recorded request of the fork (`fork`: its task names
+/// `FORK-TASK`) or of its parent carries `text`.
 fn heard(llm: &ScriptedLlmClient, fork: bool, text: &str) -> bool {
     llm.recorded()
         .iter()

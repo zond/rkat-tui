@@ -23,7 +23,6 @@ use crate::cli::{Args, AttachMode};
 use crate::daemon::endpoint::Endpoint;
 use crate::daemon::lifecycle::START_TOKEN_ENV;
 
-/// The daemon's binary name.
 pub const DAEMON_BINARY: &str = "rkat-tui-mob";
 
 /// How long a started daemon may take to write its endpoint file.
@@ -362,7 +361,6 @@ pub fn spawn_daemon(
 /// How a started daemon exited.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonExit {
-    /// Its exit status.
     pub status: String,
     /// The error it wrote last ([`last_words`]), if any.
     pub said: Option<String>,
@@ -608,11 +606,9 @@ mod tests {
         assert_eq!(format!("{shared:?}"), format!("{expected:?}"));
     }
 
-    /// The finding this guards: every flag was hand-written into the
-    /// daemon's argv a third time, so a new one could silently not be
-    /// forwarded. Each argument clap knows is given alone and must come out
-    /// of the daemon's parser as it went in, unless it is listed in
-    /// [`NOT_FORWARDED`].
+    /// No flag silently stays behind: each argument clap knows is given
+    /// alone and must come out of the daemon's parser as it went in, unless
+    /// it is listed in [`NOT_FORWARDED`].
     #[test]
     fn every_engine_flag_reaches_the_daemon() {
         use clap::CommandFactory as _;

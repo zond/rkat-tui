@@ -3,11 +3,10 @@
 //! command write the workspace but not outside it and keeps the network;
 //! the strict mode denies IP network access. An interrupted shell call runs
 //! in durable process custody and leaves no process behind. A `!` command
-//! runs in the attached client as the user, unconfined. The security
-//! review's sandbox claims (recommendation 12): no `~/.ssh`, no Cargo
-//! credentials, no network in strict; `.rkat/` and `.git/` are still
-//! writable (engine ask 8), pinned as the gap it is. The user's skills
-//! directory is out of the shell's reach.
+//! runs in the attached client as the user, unconfined. The sandbox's
+//! claims: no `~/.ssh`, no Cargo credentials, no network in strict;
+//! `.rkat/` and `.git/` are still writable (engine ask 8), pinned as the
+//! gap it is. The user's skills directory is out of the shell's reach.
 //!
 //! The confined cases need the platform backend (Linux: unprivileged user
 //! namespaces; macOS: Seatbelt). Each case first probes the backend directly
@@ -570,8 +569,7 @@ async fn a_declared_outer_sandbox_trusts_the_project_builds() {
 
 /// The realm config's `[confinement]` table does not decide the agent
 /// shell's confinement: the command line does, so `--confinement=off`
-/// starts even when the table asks for the workspace preset (it was a
-/// floor the command line could only narrow).
+/// starts even when the table asks for the workspace preset.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_realm_confinement_table_does_not_decide_the_shell() {
     let ws = Workspace::new();
@@ -678,7 +676,7 @@ async fn a_bang_command_runs_as_the_user_unlike_the_agents_shell() {
 /// Set (in a rerun of the test) to a value only the user's `!` shell sees.
 const BANG_VAR: &str = "RKAT_TUI_TEST_BANG";
 
-/// S3 of the security review: the Cargo home is granted entry by entry.
+/// The Cargo home is granted entry by entry.
 /// Under workspace confinement with this host's real paths, `cargo build`
 /// of a crate with a registry dependency (offline, from the local cache)
 /// still works, while `bin/` and `config.toml` of the Cargo home cannot
@@ -747,7 +745,7 @@ async fn cargo_builds_under_the_narrowed_cargo_home_grant() {
     assert!(!home.join("bin/rkat-probe").exists());
 }
 
-/// Recommendation 11: the audit log is out of the confined shell's reach.
+/// The audit log is out of the confined shell's reach.
 /// It lies in the workspace's realm, which the daemon refuses to start
 /// with inside any grant of its shell; with this host's real paths a
 /// confined command can neither read nor append to it, while the file
@@ -797,7 +795,7 @@ async fn the_confined_shell_cannot_read_or_write_the_audit_log() {
     assert!(!text.lines().any(|line| line == "forged"), "{text}");
 }
 
-/// Recommendation 12: the user's `~/.ssh` is not in a confined command's
+/// The user's `~/.ssh` is not in a confined command's
 /// view. With this host's real paths (its home holds the Cargo home, the
 /// cache dir and the rustup home, each granted), the home directory itself
 /// is only the mount view's way to them: `.ssh` beside them is not there.
@@ -845,7 +843,7 @@ async fn the_confined_shell_does_not_see_the_users_ssh_directory() {
     assert!(!output.contains("SSH-LISTED"), "{output}");
 }
 
-/// Recommendation 12 and S3: `credentials.toml` (and `credentials`) of the
+/// `credentials.toml` (and `credentials`) of the
 /// Cargo home are not in a confined command's view, while the entries
 /// beside them are readable. A Cargo home made for the test (the real one
 /// may hold no credentials, and a test must not write one there).
@@ -908,8 +906,8 @@ async fn the_confined_shell_cannot_read_the_cargo_credentials() {
     assert!(!output.contains("CREDENTIALS-VISIBLE"), "{output}");
 }
 
-/// Recommendation 12 asks that the confined shell cannot write the realm
-/// or `.git/`. The realm half holds: the realm lives under the config
+/// The confined shell should not write the realm or `.git/`. The realm
+/// half holds: the realm lives under the config
 /// directory, outside every grant (the daemon refuses to start otherwise),
 /// so with this host's real paths a confined command can neither write nor
 /// list it. The `.git/` half does not hold yet, and this test says so: on
@@ -1037,10 +1035,10 @@ async fn the_confined_shell_cannot_reach_the_users_skills() {
     );
 }
 
-/// Decision 5 of the realm move: a confinement plan that reaches the realm
-/// refuses the daemon's start: a workspace that holds the config directory (`-w` at an ancestor of
-/// the realm, as `-w ~` with the default `~/.rkat/tui`), and an extra
-/// write grant of the config directory.
+/// A confinement plan that reaches the realm refuses the daemon's start: a
+/// workspace that holds the config directory (`-w` at an ancestor of the
+/// realm, as `-w ~` with the default `~/.rkat/tui`), and an extra write
+/// grant of the config directory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_shell_that_could_reach_the_realm_refuses_the_start() {
     let ws = Workspace::new();

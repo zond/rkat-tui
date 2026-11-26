@@ -44,23 +44,17 @@ pub type HelperId = (String, String);
 /// What the runner does for [`Followers`].
 #[derive(Debug)]
 pub enum Action {
-    /// Send this to the UI.
     Ui(Msg),
     /// Read `session`'s durable events after `after` and hand them to
     /// [`Followers::backfilled`].
     Backfill {
-        /// The helper.
         helper: HelperId,
-        /// Its session.
         session: SessionId,
-        /// The sequence to read after.
         after: u64,
     },
     /// Read `session`'s model and hand it to [`Followers::model`].
     Snapshot {
-        /// The helper.
         helper: HelperId,
-        /// Its session.
         session: SessionId,
     },
 }

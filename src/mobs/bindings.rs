@@ -40,7 +40,6 @@ pub enum BindingsError {
     Read {
         /// The bindings file.
         path: PathBuf,
-        /// Why.
         source: std::io::Error,
     },
     /// The file is not a bindings file this version understands.
@@ -48,7 +47,6 @@ pub enum BindingsError {
     Parse {
         /// The bindings file.
         path: PathBuf,
-        /// Why.
         source: serde_json::Error,
     },
     /// The file's version is not [`FORMAT_VERSION`].
@@ -59,7 +57,6 @@ pub enum BindingsError {
         /// The version it names.
         found: u32,
     },
-    /// The bindings cannot be encoded.
     #[error("cannot encode the helper bindings: {0}")]
     Encode(serde_json::Error),
     /// The file cannot be written.
@@ -352,7 +349,6 @@ impl HelperBindings {
         self.outlet.set(outlet).is_ok()
     }
 
-    /// The bindings file.
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         self.store.as_ref().map(|store| store.path.as_path())
@@ -529,7 +525,6 @@ impl HelperBindings {
         })
     }
 
-    /// The binding of `key`.
     #[must_use]
     pub fn member(&self, key: &HelperKey) -> Option<MemberBinding> {
         self.lookup(|b| b.members.get(key).cloned())
@@ -569,10 +564,6 @@ impl HelperBindings {
 
     /// The task `key` was given is `task` (its first line, shortened).
     /// Nothing when it is not bound.
-    ///
-    /// # Errors
-    ///
-    /// [`BindingsError`] when the file cannot be updated.
     pub fn set_task(&self, key: &HelperKey, task: &str) -> Result<(), BindingsError> {
         if self
             .lookup(|b| {
@@ -595,10 +586,6 @@ impl HelperBindings {
     /// `key` is done and is being retired: a start that finds it still
     /// seated (the retire did not reach the engine before the daemon
     /// stopped) retires it. Nothing when it is not bound.
-    ///
-    /// # Errors
-    ///
-    /// [`BindingsError`] when the file cannot be updated.
     pub fn owe_retire(&self, key: &HelperKey) -> Result<(), BindingsError> {
         if self
             .lookup(|b| b.members.get(key).map(|binding| binding.retire_owed))
@@ -615,10 +602,6 @@ impl HelperBindings {
     }
 
     /// `key` runs as `session`.
-    ///
-    /// # Errors
-    ///
-    /// [`BindingsError`] when the file cannot be updated.
     pub fn set_member_session(
         &self,
         key: &HelperKey,
@@ -653,20 +636,12 @@ impl HelperBindings {
 
     /// `key` retired: drop it (and the mobs its session created).
     /// Idempotent.
-    ///
-    /// # Errors
-    ///
-    /// [`BindingsError`] when the file cannot be updated.
     pub fn remove_member(&self, key: &HelperKey) -> Result<(), BindingsError> {
         let key = key.clone();
         self.change(move |b| b.remove_member(&key))
     }
 
     /// `mob` was destroyed: drop it and its members. Idempotent.
-    ///
-    /// # Errors
-    ///
-    /// [`BindingsError`] when the file cannot be updated.
     pub fn remove_mob(&self, mob: &MobId) -> Result<(), BindingsError> {
         let mob = mob.clone();
         self.change(move |b| b.remove_mob(&mob))

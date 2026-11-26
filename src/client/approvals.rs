@@ -127,7 +127,6 @@ pub fn note_messages(note: ApprovalNote) -> Vec<Msg> {
 /// What a pushed decision changes in the UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
-    /// Show a new dialog.
     Show(RecordedPrompt, EscalationId),
     /// Close a dialog; with a notice when it ended without this client.
     Resolve(EscalationId, Option<String>),
@@ -156,7 +155,6 @@ impl Change {
 /// A decision whose dialog the UI answered ([`Approvals::answer_decision`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnsweredDecision {
-    /// The decision's id.
     pub decision: String,
     /// The digest of the rendering the dialog showed.
     pub digest: String,
@@ -175,7 +173,7 @@ pub struct Approvals {
 }
 
 impl Approvals {
-    /// Whether a dialog is open.
+    /// Whether no dialog is open.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {

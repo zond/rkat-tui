@@ -28,7 +28,7 @@ pub struct JobOutcome {
     pub agent: Option<String>,
     /// Its terminal status (`completed`, `failed`, `cancelled`, …).
     pub status: String,
-    /// Turns and tool calls it took, when reported.
+    /// Turns it took, when reported.
     pub turns: Option<u64>,
     /// Tool calls it made, when reported.
     pub tool_calls: Option<u64>,
@@ -272,7 +272,7 @@ mod tests {
             .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
         assert!(open.iter().any(|r| r.contains("item 10")), "{open:#?}");
-        // Another shape: the notice as before.
+        // Another shape: the raw notice.
         let mut t = super::super::Transcript::new();
         t.apply_agent_event(&meerkat_core::AgentEvent::BackgroundJobCompleted {
             job_id: "job-2".into(),

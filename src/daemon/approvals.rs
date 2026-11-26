@@ -493,11 +493,8 @@ impl ToolOrigins for DaemonToolOrigins {
 
 /// What [`watch`] follows an agent with.
 pub struct Watched {
-    /// The mob host.
     pub state: Arc<MobMcpState>,
-    /// The agent's mob.
     pub mob: MobId,
-    /// The agent.
     pub identity: AgentIdentity,
     /// The approval engine (a run start lifts a Stop).
     pub engine: Arc<ApprovalEngine>,
@@ -507,7 +504,6 @@ pub struct Watched {
     pub current: Arc<super::conversations::Conversations>,
     /// Where its model calls are counted.
     pub ledger: Arc<super::usage::Ledger>,
-    /// The live agents.
     pub agents: std::sync::Weak<super::agents::Agents>,
     /// When the agent is idle (told each run's start and end).
     pub activity: Arc<super::activity::Activity>,
@@ -1068,7 +1064,6 @@ impl Watcher {
     }
 }
 
-/// The engine's tool that deletes a schedule.
 const SCHEDULE_DELETE: &str = "meerkat_schedule_delete";
 
 /// The session an event of an agent belongs to: its source's, else the
@@ -1146,7 +1141,6 @@ impl CatalogReads {
         )
     }
 
-    /// A run of `session` ended.
     pub fn run_ended(&self, session: &SessionId) {
         if (self.has)(session) || !self.reading.lock().insert(session.clone()) {
             return;

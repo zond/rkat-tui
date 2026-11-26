@@ -68,9 +68,7 @@ pub enum ClientError {
     /// Nothing accepts at the endpoint's address.
     #[error("cannot connect to the daemon at {address}: {source}")]
     Connect {
-        /// The address.
         address: SocketAddr,
-        /// The socket error.
         #[source]
         source: std::io::Error,
     },
@@ -82,23 +80,17 @@ pub enum ClientError {
     Refused {
         /// The JSON-RPC error code.
         code: i32,
-        /// Its message.
         message: String,
     },
-    /// The daemon answered something this client does not understand.
     #[error("unexpected answer from the daemon: {0}")]
     Protocol(String),
-    /// A call failed.
     #[error("{method} failed ({code}): {message}")]
     Rpc {
-        /// The method.
         method: String,
         /// The JSON-RPC error code.
         code: i32,
-        /// Its message.
         message: String,
     },
-    /// The connection is gone.
     #[error("the connection to the daemon closed")]
     Disconnected,
     /// Reading or writing the connection failed.
@@ -109,7 +101,6 @@ pub enum ClientError {
     Decode {
         /// Which reply.
         what: &'static str,
-        /// The serde error.
         #[source]
         source: serde_json::Error,
     },
@@ -120,12 +111,10 @@ pub enum ClientError {
         "the process listening at {address} did not prove it is this workspace's rkat-tui-mob, so the token was not sent: {reason}. If the daemon is gone, another program may hold its port; check what listens there"
     )]
     Unproven {
-        /// The address.
         address: SocketAddr,
         /// What it answered.
         reason: String,
     },
-    /// The agent has no session.
     #[error("the agent has no session")]
     NoSession,
     /// No daemon answers and `--attach=existing` may not start one.
@@ -140,9 +129,7 @@ pub enum ClientError {
     /// The daemon could not be started.
     #[error("cannot start {}: {source}", program.display())]
     Spawn {
-        /// The program.
         program: PathBuf,
-        /// The error.
         #[source]
         source: std::io::Error,
     },
@@ -153,10 +140,8 @@ pub enum ClientError {
         log.display()
     )]
     DaemonExited {
-        /// Its exit status.
         status: String,
-        /// The error it wrote last
-        /// ([`launch::last_words`]), if any.
+        /// The error it wrote last ([`launch::last_words`]), if any.
         said: Option<String>,
         /// Its output.
         log: PathBuf,
@@ -164,7 +149,6 @@ pub enum ClientError {
     /// The started daemon did not write a live endpoint in time.
     #[error("rkat-tui-mob did not come up within {waited:?}; see {}", log.display())]
     NeverCameUp {
-        /// How long the client waited.
         waited: Duration,
         /// Its output.
         log: PathBuf,
@@ -527,10 +511,6 @@ pub async fn run(
 
 /// Turn every SIGHUP into [`Msg::Hangup`] on `ui_tx` (the UI then leaves as
 /// a detach); the handler is installed before this returns.
-///
-/// # Errors
-///
-/// When the signal handler cannot be installed.
 #[cfg(unix)]
 pub fn forward_hangup(
     ui_tx: mpsc::UnboundedSender<Msg>,

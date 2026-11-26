@@ -20,12 +20,10 @@ pub mod style {
 
     /// Plain paragraph text.
     pub const TEXT: Style = Style::new();
-    /// Level-1 heading.
     pub const H1: Style = Style::new()
         .fg(Color::Magenta)
         .add_modifier(Modifier::BOLD)
         .add_modifier(Modifier::UNDERLINED);
-    /// Level-2 heading.
     pub const H2: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     /// Level 3+ headings.
     pub const H3: Style = Style::new().add_modifier(Modifier::BOLD);
@@ -53,7 +51,6 @@ pub mod style {
     pub const LINK_URL: Style = Style::new().add_modifier(Modifier::DIM);
     /// List bullets and numbers.
     pub const LIST_MARKER: Style = Style::new().fg(Color::Cyan);
-    /// Horizontal rule.
     pub const RULE: Style = Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM);
     /// Table header row.
     pub const TABLE_HEADER: Style = Style::new().add_modifier(Modifier::BOLD);

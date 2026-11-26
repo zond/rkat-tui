@@ -764,13 +764,11 @@ fn walk_history(app: &mut App, expected: &[&str], what: &str) {
     assert!(app.input.is_empty(), "{what}: back to the empty draft");
 }
 
-/// The owner's report: after a slash command that opened a
-/// dialog (`/helpers`, `/model`, …), acted in and closed, ↑ stopped at
-/// that command. The cause: a recalled `/helpers` is a complete command
-/// word, so the completion menu opened over it and took ↑/↓ for its
-/// highlight. Now no menu opens over an unedited recall: every earlier
-/// entry is reachable, a multi-line one included, and the same command
-/// sent twice in a row is one entry.
+/// No completion menu opens over an unedited recall (a recalled
+/// `/helpers` is a complete command word, whose menu would take ↑/↓):
+/// after a slash command that opened a dialog, acted in and closed, every
+/// earlier entry is reachable, a multi-line one included, and the same
+/// command sent twice in a row is one entry.
 #[test]
 fn up_walks_past_a_recalled_slash_command_to_every_earlier_entry() {
     let pickers = [

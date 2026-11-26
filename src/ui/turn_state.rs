@@ -1,10 +1,7 @@
 //! The UI's turn, the delivery of the user's typed messages, and
 //! compaction: three small states ([`Turn`], [`Delivery`],
 //! [`Compaction`]) that `App::update` asks and moves through their own
-//! methods, in place of the eleven flags they were (`running`,
-//! `streamed_text`, `returned`, `send_waiting`, `woken_by`, `send_next`,
-//! `recalling`, `reached`, `draining`, `compacting`, `compaction_run`).
-//! The Elm rule stands: they change only inside `App::update`.
+//! methods. The Elm rule stands: they change only inside `App::update`.
 //!
 //! # Turn
 //!
@@ -44,13 +41,13 @@
 //! - any → `Running` → `Idle`: the run that lets the idle agent compact
 //!   began and ended ([`Msg::CompactionRun`](super::Msg::CompactionRun)).
 //!
-//! # What can no longer be represented
+//! # What cannot be represented
 //!
 //! - Streamed text, messages an interrupt took back, or Ctrl-X Ctrl-S's
 //!   push while no turn runs (they are the run's).
 //! - A waking peer remembered while a turn runs.
 //! - The compaction's run going while nothing says a compaction is
-//!   under way (`compaction_run` without `compacting`).
+//!   under way.
 
 use super::PendingId;
 

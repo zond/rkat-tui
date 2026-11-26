@@ -7,7 +7,7 @@
 //! host's `ToolConsequencePolicyRegistry` at every build. The daemon
 //! installs one provider ([`PROVIDER`]) with one policy ([`POLICY`]) and
 //! binds the agent, its same-mob helpers and the members of child
-//! mobs (a council's, a team's, an earlier build's `delegate` helpers) to it.
+//! mobs (a council's, a team's) to it.
 //!
 //! The policy only narrows ("narrow-only"): it denies a call a user deny
 //! rule matches or a file write into a sealed path (`.git/`, `.rkat/`), and
@@ -50,10 +50,6 @@ pub const POLICY: &str = "deny-rules";
 pub const EVALUATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The binding every member of the daemon is built with.
-///
-/// # Panics
-///
-/// Never: the ids are constant and canonical.
 #[must_use]
 pub fn binding() -> ApplicationToolPolicyBinding {
     match (PolicyProviderId::new(PROVIDER), PolicyId::new(POLICY)) {

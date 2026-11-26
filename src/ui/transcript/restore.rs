@@ -194,7 +194,7 @@ fn peer_blocks(notice: &meerkat_core::SystemNoticeMessage) -> Vec<Block> {
 
 /// A detached job's durable outcome record (a fork's report) as the live
 /// transcript shows it ([`super::outcome::JobOutcome`]); a detail of
-/// another shape is left out, as before.
+/// another shape is left out.
 fn outcome_blocks(notice: &meerkat_core::SystemNoticeMessage) -> Vec<Block> {
     use meerkat_core::SystemNoticeBlock;
     notice

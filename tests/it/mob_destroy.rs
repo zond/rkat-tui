@@ -1,7 +1,7 @@
-//! `mob_destroy` of a mob the agent created (P6 item 18): the destroy
-//! succeeds and the mob's database is gone from disk, in the daemon that
-//! made it and in a later one that restored it. A mob a client follows
-//! (a council's) is `tests/councils.rs`'s: the daemon closes the client's
+//! `mob_destroy` of a mob the agent created: the destroy succeeds and the
+//! mob's database is gone from disk, in the daemon that made it and in a
+//! later one that restored it. A mob a client follows (a council's) is
+//! `tests/it/councils.rs`'s: the daemon closes the client's
 //! stream on it when it is destroyed (`docs/evidence.md`, "`mob_destroy`").
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -63,7 +63,7 @@ fn script() -> Arc<ScriptedLlmClient> {
     ScriptedLlmClient::new(vec![step; 40])
 }
 
-/// Reveal the mob tools the script calls (`tests/deferral.rs` covers
+/// Reveal the mob tools the script calls (`tests/it/deferral.rs` covers
 /// finding them).
 async fn reveal(rig: &Attached) {
     let session = rig.current_session().await;

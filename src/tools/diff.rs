@@ -13,9 +13,7 @@ pub struct FileDiff {
     pub path: PathBuf,
     /// Unified diff text with `a/<path>` / `b/<path>` headers.
     pub unified: String,
-    /// Number of added lines.
     pub added: usize,
-    /// Number of removed lines.
     pub removed: usize,
 }
 
@@ -61,9 +59,7 @@ pub fn count_changes<'a>(diff: &TextDiff<'a, 'a, '_, str>) -> (usize, usize) {
 /// Line-count summary that renders as `(+3 −1)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiffStats {
-    /// Added lines.
     pub added: usize,
-    /// Removed lines.
     pub removed: usize,
 }
 

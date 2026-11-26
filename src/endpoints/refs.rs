@@ -6,7 +6,6 @@ use super::*;
 /// A model on a named endpoint; displayed (and parsed) as `endpoint:model`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EndpointRef {
-    /// Endpoint name.
     pub endpoint: String,
     /// Model id as the endpoint knows it.
     pub model: String,
@@ -134,7 +133,6 @@ impl ModelIndex {
             .is_some_and(|endpoints| endpoints.iter().any(|e| e == endpoint))
     }
 
-    /// Whether nothing is indexed.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {

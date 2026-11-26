@@ -54,7 +54,6 @@ impl Leaving {
         !self.0.swap(true, Ordering::SeqCst)
     }
 
-    /// Whether it left.
     #[must_use]
     pub fn left(&self) -> bool {
         self.0.load(Ordering::SeqCst)
@@ -180,7 +179,6 @@ impl Lifecycle {
         &self.build
     }
 
-    /// The workspace the daemon serves.
     #[must_use]
     pub fn workspace(&self) -> &std::path::Path {
         &self.workspace
@@ -240,7 +238,6 @@ impl Lifecycle {
         self.shutdown();
     }
 
-    /// Whether the shutdown retires every agent.
     #[must_use]
     pub fn retires_all(&self) -> bool {
         self.retire_all.load(Ordering::SeqCst)
@@ -258,7 +255,6 @@ impl Lifecycle {
         self.terminating.store(true, Ordering::SeqCst);
     }
 
-    /// Whether the daemon is shutting down.
     #[must_use]
     pub fn is_terminating(&self) -> bool {
         self.terminating.load(Ordering::SeqCst)

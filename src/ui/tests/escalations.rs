@@ -518,11 +518,10 @@ fn plan_ready_dialog() {
     assert_eq!(app.modal, None);
 }
 
-/// A1 of the security review: the dialog says when the arguments are
-/// abbreviated and Ctrl+O shows the end that the preview cut, reachable
-/// with PgDn/End on an ordinary 80x24 terminal (the maintainer's review
-/// of b50a32c: the expanded view had no scrolling, so the tail of an
-/// oversized command could not be reached before answering).
+/// The dialog says when the arguments are abbreviated and Ctrl+O shows
+/// the end that the preview cut, reachable with PgDn/End on an ordinary
+/// 80x24 terminal, so the tail of an oversized command can be read before
+/// answering.
 #[test]
 fn ctrl_o_shows_the_whole_arguments_the_preview_cut() {
     let mut app = App::new(StatusInfo::default());

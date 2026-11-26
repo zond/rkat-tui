@@ -6,9 +6,8 @@
 //! client reads the session's tasks when a session opens (a resumed one
 //! gets its list back) and after each of its task tool calls completes, and
 //! sends the UI the list, through the daemon's `rkat/tasks`, which reads it
-//! here. A
-//! store that cannot be read leaves the checklist as it was and is named at
-//! the next Ctrl+T.
+//! here. A store that cannot be read leaves the checklist as it was and is
+//! named at the next Ctrl+T.
 
 use std::path::Path;
 

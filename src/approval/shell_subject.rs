@@ -71,7 +71,6 @@ fn normalise(raw: &str) -> String {
 
 /// A command prefix that runs its operand as another command.
 struct Prefix {
-    /// Command name.
     name: &'static str,
     /// Short options whose value is attached or in the next word.
     short_args: &'static [char],

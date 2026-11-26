@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 pub enum Notice {
     /// The project-level file contained allow rules, which are ignored.
     ProjectAllowIgnored {
-        /// Project rules file.
         path: PathBuf,
         /// Number of ignored entries.
         count: usize,
@@ -30,7 +29,6 @@ pub enum Notice {
     /// The project-level file named a `classifier_model`; only the user's
     /// own layers pick the model that reviews the agent's actions.
     ProjectClassifierModelIgnored {
-        /// Project rules file.
         path: PathBuf,
         /// The model it named.
         model: String,
@@ -38,7 +36,6 @@ pub enum Notice {
     /// The project-level file listed `[auto] allow` statements; only the
     /// user's own layers say which kinds of action they allow.
     ProjectStatementsIgnored {
-        /// Project rules file.
         path: PathBuf,
         /// Number of ignored statements.
         count: usize,
@@ -47,13 +44,11 @@ pub enum Notice {
     StatementIgnored {
         /// The statement as written.
         text: String,
-        /// Why.
         reason: String,
     },
     /// The project-level file listed `[auto] trusted_hosts`; only the
     /// user's own layers say which hosts they trust with the project.
     ProjectTrustedHostsIgnored {
-        /// Project rules file.
         path: PathBuf,
         /// Number of ignored hosts.
         count: usize,
@@ -62,14 +57,12 @@ pub enum Notice {
     TrustedHostIgnored {
         /// The entry as written.
         text: String,
-        /// Why.
         reason: String,
     },
     /// A configured endpoint is invalid and was skipped.
     EndpointSkipped {
         /// Endpoint name.
         name: String,
-        /// Why.
         reason: String,
     },
     /// The project file defines an endpoint. Project files never define
@@ -79,13 +72,11 @@ pub enum Notice {
     ProjectEndpointIgnored {
         /// Project rules file.
         path: PathBuf,
-        /// Endpoint name.
         name: String,
     },
     /// A file the user does not own (the project file, or an untrusted
     /// realm file) set `[pricing]`; only user layers may.
     PricingIgnored {
-        /// The rules file.
         path: PathBuf,
         /// Number of ignored model entries.
         count: usize,
@@ -93,7 +84,6 @@ pub enum Notice {
     /// The project file sets `[confinement]` grants. Only the user's own
     /// layers may widen the shell's sandbox: they are ignored.
     ProjectConfinementIgnored {
-        /// Project rules file.
         path: PathBuf,
         /// Number of ignored grants (directories).
         count: usize,
@@ -101,7 +91,6 @@ pub enum Notice {
     /// A file the user does not own (the project file) set `[thinking]`;
     /// only user layers may (a thinking budget is billed).
     ThinkingIgnored {
-        /// The rules file.
         path: PathBuf,
         /// Number of ignored model entries.
         count: usize,
@@ -114,7 +103,6 @@ pub enum Notice {
     },
     /// A `[pricing."<model>"]` entry has a negative or non-finite price.
     PricingInvalid {
-        /// Model id.
         model: String,
         /// The offending field.
         field: &'static str,
@@ -141,7 +129,6 @@ pub enum Notice {
     InstructionFileSkipped {
         /// The file.
         path: PathBuf,
-        /// Why.
         why: String,
     },
     /// The user's or the workspace's file sets a key the command line
@@ -149,7 +136,6 @@ pub enum Notice {
     Replaced {
         /// The key, as written on the command line.
         key: String,
-        /// The file.
         path: PathBuf,
     },
 }
@@ -296,10 +282,6 @@ pub struct Layered {
 ///
 /// Same as [`load_layered_with`] without a command-line layer, returning
 /// only rules, settings and notices.
-///
-/// # Errors
-///
-/// Returns [`RulesError`] when a file cannot be read or parsed.
 #[cfg(any(test, feature = "test-support"))]
 pub fn load_layered(
     realm_dir: &Path,
@@ -325,10 +307,6 @@ pub fn load_layered(
 /// ignored with a notice; it can never turn
 /// `trust_project_builds` or `classifier_tools` on, but may turn them off,
 /// and never names the `classifier_model`.
-///
-/// # Errors
-///
-/// Returns [`RulesError`] when a file cannot be read or parsed.
 #[cfg(any(test, feature = "test-support"))]
 pub fn load_layered_with(
     realm_dir: &Path,

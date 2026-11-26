@@ -57,7 +57,6 @@ pub struct AtStop {
 }
 
 impl AtStop {
-    /// Whether it holds nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.queued.is_empty() && self.written.is_empty()

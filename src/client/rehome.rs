@@ -58,9 +58,7 @@ pub enum RehomeError {
         workspace.display()
     )]
     Running {
-        /// The daemon's pid.
         pid: u32,
-        /// Its workspace.
         workspace: PathBuf,
         /// The agent whose turn runs.
         agent: String,
@@ -98,7 +96,6 @@ pub enum RehomeError {
         id: String,
         /// Its daemon's pid.
         pid: u32,
-        /// Its clients.
         clients: usize,
     },
     /// A daemon could not be asked: nothing is proven.
@@ -109,7 +106,6 @@ pub enum RehomeError {
     Unasked {
         /// Its workspace.
         workspace: PathBuf,
-        /// Why.
         why: String,
     },
 }
@@ -287,10 +283,6 @@ fn check_idle(status: &Status) -> Result<(), RehomeError> {
 /// realm the user confirmed deleting: a `replace` of that id is replaced
 /// whatever it holds (a turn on its daemon, or another client there,
 /// still refuses).
-///
-/// # Errors
-///
-/// [`RehomeError`].
 pub async fn prepare(
     root: &Path,
     adopt: Home,
@@ -400,10 +392,6 @@ pub(crate) async fn held_by(
 
 /// Ask the daemon on `connection` to stop, keeping its agents (they are
 /// restored at its next start). A connection that drops is an answer too.
-///
-/// # Errors
-///
-/// Why it was not asked.
 pub async fn stop(connection: &Connection) -> Result<(), String> {
     let params = ShutdownParams { retire: false };
     let asked = tokio::time::timeout(
@@ -694,10 +682,6 @@ impl std::fmt::Display for Removed {
 /// first. Without `yes` nothing is deleted: the answer says what would
 /// be and the command line that deletes it (`config_dir`: the
 /// `--config-dir` the caller was given, repeated in it).
-///
-/// # Errors
-///
-/// [`RehomeError`].
 pub async fn remove_home(
     root: &Path,
     home: &Home,

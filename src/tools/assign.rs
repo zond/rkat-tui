@@ -19,13 +19,9 @@ use meerkat_core::{
 use serde::Deserialize;
 use serde_json::json;
 
-/// Tool name.
 pub const ASSIGN: &str = "assign";
-/// Tool name.
 pub const CONNECT_HELPERS: &str = "connect_helpers";
-/// Tool name.
 pub const RETIRE_HELPER: &str = "retire_helper";
-/// Tool name.
 pub const CONTACTS: &str = crate::daemon::contacts::CONTACTS;
 
 /// The arguments of one `retire_helper` call.

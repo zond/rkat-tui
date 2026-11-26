@@ -110,7 +110,6 @@ struct Trigger {
 pub enum Crossing {
     /// Steer `text` into the agent's run now (`tokens`: the reading).
     Steer {
-        /// The steer.
         text: String,
         /// The context that crossed.
         tokens: u64,
@@ -124,7 +123,6 @@ pub enum Crossing {
 /// A steer held for the agent's next run ([`Prepare::run_started`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldSteer {
-    /// The steer.
     pub text: String,
     /// The context that crossed.
     pub tokens: u64,
@@ -135,7 +133,6 @@ pub struct HeldSteer {
 /// What `compact_ready` does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Ready {
-    /// Request the compaction.
     Request,
     /// Compact nothing, for this reason.
     Refuse(String),

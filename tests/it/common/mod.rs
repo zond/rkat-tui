@@ -1,6 +1,6 @@
 //! Shared test support: a temporary workspace, a scripted LLM client that
 //! records every request, and the command lines of a test realm. The
-//! daemon rig over them is `attach.rs` beside this file.
+//! daemon rig over them is `rig.rs` beside this file.
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -681,7 +681,6 @@ pub fn parent_told(llm: &ScriptedLlmClient, marker: &str, name: &str) -> bool {
         })
 }
 
-/// Copy a directory tree.
 pub fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {

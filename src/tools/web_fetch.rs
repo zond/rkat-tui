@@ -47,7 +47,6 @@ use meerkat_core::{AgentToolDispatcher, ToolCallView, ToolDef, ToolError, ToolRe
 use reqwest::Url;
 use serde::Deserialize;
 
-/// Tool name.
 pub const WEB_FETCH: &str = "web_fetch";
 
 /// Provenance source id of [`WEB_FETCH`] (judged with the file tools'

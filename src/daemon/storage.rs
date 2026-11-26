@@ -263,10 +263,6 @@ pub fn watch_free_space(
 /// failed (a client whose own send it was hears it in that send's
 /// answer instead); a helper's reload is logged and audited only (a send
 /// that still fails goes on as any refused send to a helper does).
-///
-/// # Errors
-///
-/// The engine's refusal of the reload.
 pub async fn reload(
     core: &Core,
     mob: &MobId,

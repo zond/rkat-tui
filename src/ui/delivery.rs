@@ -114,7 +114,6 @@ pub struct Pending {
     pub id: PendingId,
     /// Raw user text.
     pub text: String,
-    /// Lifecycle state.
     pub state: PendingState,
     /// The [`Block::Queued`] placeholder.
     pub block: BlockId,
@@ -132,13 +131,11 @@ pub struct PendingQueue {
 }
 
 impl PendingQueue {
-    /// An empty queue.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Allocate the next id.
     pub fn alloc_id(&mut self) -> PendingId {
         self.next_id += 1;
         PendingId(self.next_id)
@@ -157,7 +154,6 @@ impl PendingQueue {
         self.items.iter().chain(self.settled.iter())
     }
 
-    /// Append an item.
     #[cfg(any(test, feature = "test-support"))]
     pub fn push(&mut self, item: Pending) {
         self.items.push(item);
@@ -175,24 +171,20 @@ impl PendingQueue {
         self.items.len()
     }
 
-    /// Whether nothing is pending.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
-    /// Item by id.
     #[must_use]
     pub fn get(&self, id: PendingId) -> Option<&Pending> {
         self.items.iter().find(|p| p.id == id)
     }
 
-    /// Mutable item by id.
     pub fn get_mut(&mut self, id: PendingId) -> Option<&mut Pending> {
         self.items.iter_mut().find(|p| p.id == id)
     }
 
-    /// Remove and return an item.
     pub fn remove(&mut self, id: PendingId) -> Option<Pending> {
         let idx = self.items.iter().position(|p| p.id == id)?;
         Some(self.items.remove(idx))

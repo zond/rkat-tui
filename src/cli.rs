@@ -299,10 +299,6 @@ pub struct Args {
 }
 
 /// Parse a `--classifier-check` value: `quick`, `all` or a number of cases.
-///
-/// # Errors
-///
-/// What the value should have been.
 pub fn parse_check_limit(value: &str) -> Result<crate::approval::corpus::Limit, String> {
     crate::approval::corpus::Limit::parse(value).ok_or_else(|| {
         format!("expected quick, all or a number of cases (at least 1), not {value:?}")
@@ -357,10 +353,6 @@ impl AttachTarget {
 /// Parse an `--attach` value: `auto`, `existing`, a directory (containing
 /// `/` or starting with `.` or `~`; `~` is the home directory) or
 /// `HOST:PORT`.
-///
-/// # Errors
-///
-/// What the value should have been.
 pub fn parse_attach(value: &str) -> Result<AttachTarget, String> {
     match value {
         "auto" => return Ok(AttachTarget::Auto),

@@ -78,7 +78,6 @@ pub struct End {
 /// Two helpers in different mobs, connected both ways.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
-    /// Its two ends.
     pub ends: [End; 2],
 }
 
