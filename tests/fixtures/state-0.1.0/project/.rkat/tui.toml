@@ -1,0 +1,36 @@
+# The project layer a repository ships: deny rules and the settings a
+# project may set (`[auto]`, and the ones it may only lower).
+[auto]
+mode = "default"
+trust_project_builds = false
+classifier_tools = false
+classifier_probe = false
+compact = "warn"
+compact_warn_percent = 60
+compact_auto_percent = 80
+compact_prepare = "Note the failing tests."
+compact_prepare_at = "70%"
+
+[[deny]]
+tool = "write_file"
+arg = "migrations/**"
+
+[helpers]
+max_depth = 1
+max_live = 2
+
+[shell]
+user_timeout_secs = 60
+
+[search]
+budget_secs = 10
+max_entries = 20000
+
+[ui]
+helpers = "folded"
+bell = true
+mouse = true
+checklist = "shown"
+
+[pricing]
+fetch = false

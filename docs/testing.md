@@ -60,7 +60,7 @@ small by moving its oldest entries to a new `docs/evidence/part-<n>.md`
 (listed under its "Earlier entries"; a reference `docs/evidence.md,
 "<title>"` names an entry by title in whichever of these files holds it).
 The stored-state copy of the realm's `tui_history` is kept as
-`tests/fixtures/state-0.0.1/realm/tui-input-history`, and
+`tests/fixtures/state-0.1.0/realm/tui-input-history`, and
 `src/state_fixtures.rs` copies it back to its real name.
 
 **Secrets.** The job runs gitleaks (the version pinned in

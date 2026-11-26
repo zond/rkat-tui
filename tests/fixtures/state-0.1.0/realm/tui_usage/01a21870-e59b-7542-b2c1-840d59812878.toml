@@ -1,0 +1,26 @@
+[context]
+tokens = 15
+
+[cost.per_model.claude-sonnet-4-6]
+input = 130
+output = 65
+cache_read = 0
+cache_write = 0
+
+[cost.helpers.scout.claude-sonnet-4-6]
+input = 10
+output = 5
+cache_read = 0
+cache_write = 0
+
+[cost.helpers.quick.claude-sonnet-4-6]
+input = 10
+output = 5
+cache_read = 0
+cache_write = 0
+
+[cost.helpers.w1.claude-sonnet-4-6]
+input = 10
+output = 5
+cache_read = 0
+cache_write = 0

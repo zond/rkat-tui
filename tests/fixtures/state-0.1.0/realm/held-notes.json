@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "notes": [
+    {
+      "agent": "main-s8hs",
+      "session": "01a21870-e59b-7542-b2c1-840d59812878",
+      "text": "rkat-tui note: 3 helpers: `scout` went idle; `quick` finished; `w1` went idle\n\n3 notes about your helpers:\n- Your helper `scout` went idle. Its last message:\n  \n  SCOUT-ANSWER\n  \n  It is still seated, idle: a message to it starts another run of it, so message it with `send_message` only to give it more work, and retire it with `retire_helper` when you are done with it.\n- Your helper `quick` finished its task. Its answer:\n  \n  QUICK-ANSWER\n  \n  It is retired: it takes no more messages (start another helper for more work).\n- Your helper `w1` went idle. Its last message:\n  \n  W1-ANSWER\n  \n  It is still seated, idle: a message to it starts another run of it, so message it with `send_message` only to give it more work, and retire it with `retire_helper` when you are done with it."
+    }
+  ]
+}

@@ -4934,3 +4934,72 @@ forwarded), `client::launch::tests::a_running_daemon_is_said_to_keep_its_own_set
 (attaching to a daemon already running warns that this run's
 `--replace`, `--set`, `--endpoint-def` do not apply: the daemon decides,
 and one started without a list has none).
+
+## The stored-state guard moves to 0.1.0 (owner decision, 2026-11-26)
+
+Stored state is supported from release 0.1.0 (tag `v0.1.0`, 8277f8b) on;
+nothing older. `src/state_fixtures.rs` opened copies a run of the rig at
+3bb9a74 (0.0.1) left, with two hand-written `tui.toml` files; no capture
+code was kept then (the commit 11d04ed says only "as the rig wrote it").
+The copies in `tests/fixtures/state-0.1.0/` replace them, and this time
+the capture is written down so it can be repeated.
+
+How it was made: a temporary test module `tests/it/capture_state.rs` in
+a checkout of `v0.1.0` (built with the main checkout's target directory;
+never committed), run with `RKAT_CAPTURE_OUT=<dir> cargo nextest run
+--all-features --test it -E 'test(capture_state)'`. Its outline, all on
+0.1.0's rig (`rig::Attached`: the real daemon, the scripted LLM, the
+allow-all classifier, one client):
+
+1. An empty `.rkat/mcp.toml` in the workspace (the input `/trust`
+   records). The daemon starts; `registry.endings().hold_batches()` holds
+   every helper's ending note in its window, so the stop writes them to
+   `held-notes.json`; `state/mob.endpoint` is copied while the daemon runs
+   (its stop removes it).
+2. `reveal` of `meerkat_schedule_create`, `mob_create`,
+   `mob_spawn_member`; one prompt (`go and save the notes`) whose run
+   calls, from a `Step::Dynamic` keyed on which call ids have results:
+   `note_save` at user and workspace scope, `shell` (`echo fixture`),
+   `meerkat_schedule_create` (a one-shot `tick` 6 s out on the current
+   session), `assign` of a kept `scout`, `assign` of a single-use `quick`,
+   `mob_create` of `team` (profile `worker`, comms on), `mob_spawn_member`
+   `w1` in it, `connect_helpers` of `scout` and `w1`; helpers answer one
+   text each. The schedule fires (`Msg::Triggered`), the agent goes idle.
+3. `rkat/wire` of a card of another workspace's agent `main-gggg` whose
+   key is 32 bytes of 1 (the engine refuses an all-zero key; nothing
+   random lands in `wires.json`), its socket one nothing listens on.
+4. The realm layer's writes: `Effect::SetMode(Plan)`, `AddRule` (allow
+   `shell cargo test*`), `SetChecklistView(Shown)`, `SetSettings`
+   (`auto.compact_prepare`, `auto.compact_prepare_at = 70%`), a statement
+   allowed `Always`, a trusted host (`ci.example.net`); then `/trust` and
+   its yes; `SaveUnsent` of `for later`; the client quits, the daemon
+   stops.
+5. After the stop, as the client writes them: the two histories
+   (`History::append`, the 0.0.1 set's lines), the price cache
+   (`CommunityPrices::save_cache`, one model, fetched at the capture's
+   time); the global and project `tui.toml` written by hand with every key
+   0.1.0 reads (`helpers.deny_models` left out: 0.1.0 refuses it beside
+   `allow_models`; an inline `api_key` is refused), each read by 0.1.0's
+   `RulesFile::load` and layered by its `read_layers`.
+
+Then the realm's own files (not the engine's), the config directory's,
+the cache's and the endpoint file were copied into the fixture layout.
+Replaced for the mirror's scanners: the daemon token in
+`state/mob.endpoint` (64 zeros); `tui_history` stored as
+`realm/tui-input-history`. Nothing else: the temporary path
+(`/tmp/.tmpmcPXqC`) names no user, session and schedule ids are UUIDs,
+the trust record's name and the cursor's daemon id are short hex as in
+the 0.0.1 set. Not captured: `audit.1.jsonl` (written at 50 MiB),
+sockets, `trusted-mcp-*/` and `drafts/` (removed by their writers), logs
+and `export-*.txt` (nothing reads them back), `attach.cursor` (written by
+builds before named agents; `attach-<agent>.cursor` is), the engine's
+files and the comms identity (the engine's contract, and a secret key).
+
+New assertions beside the old ones' 0.1.0 equivalents:
+`state_fixtures::the_daemon_files_since_0_0_1_open` (the user's words
+through `conversations::parse_user_words`, split out of
+`Conversations::stored_user_words` for it; the held notes through
+`HeldNotes::open`, `holds` and `take`, now `pub(crate)`; `wires::Records::read`,
+the card's peer id its key's; `links::Records::read`), and in
+`state_fixtures::the_daemon_files_open` the schedule's usage record and
+the kept helpers of both mobs with their kind and task.

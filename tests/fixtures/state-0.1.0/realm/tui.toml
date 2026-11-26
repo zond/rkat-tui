@@ -1,0 +1,13 @@
+[auto]
+mode = "plan"
+trusted_hosts = ["ci.example.net"]
+compact_prepare = "Write down the plan."
+allow = ["running the test suite"]
+compact_prepare_at = "70%"
+
+[ui]
+checklist = "shown"
+
+[[allow]]
+tool = "shell"
+arg = "cargo test*"

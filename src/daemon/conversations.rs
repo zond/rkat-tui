@@ -66,6 +66,26 @@ struct WordsFile {
     kept: Vec<String>,
 }
 
+/// The user's words a `<session>.json` of [`WORDS_DIR`] holds, blank ones
+/// left out.
+///
+/// # Errors
+///
+/// The bytes are no [`WordsFile`].
+pub(crate) fn parse_user_words(bytes: &[u8]) -> Result<StoredWords, serde_json::Error> {
+    let present = |words: Vec<String>| -> Vec<String> {
+        words
+            .into_iter()
+            .filter(|word| !word.trim().is_empty())
+            .collect()
+    };
+    let file = serde_json::from_slice::<WordsFile>(bytes)?;
+    Ok(StoredWords {
+        kept: present(file.kept),
+        words: present(file.words),
+    })
+}
+
 /// How many conversations [`Conversations::list`] reads at once.
 const LIST_READS: usize = 8;
 
@@ -790,17 +810,8 @@ impl Conversations {
                 return StoredWords::default();
             }
         };
-        let present = |words: Vec<String>| -> Vec<String> {
-            words
-                .into_iter()
-                .filter(|word| !word.trim().is_empty())
-                .collect()
-        };
-        match serde_json::from_slice::<WordsFile>(&bytes) {
-            Ok(file) => StoredWords {
-                kept: present(file.kept),
-                words: present(file.words),
-            },
+        match parse_user_words(&bytes) {
+            Ok(words) => words,
             Err(err) => {
                 tracing::warn!(%session, file = %path.display(), error = %err, "the user's stored words do not parse; the classifier sees only those the conversation shows");
                 StoredWords::default()

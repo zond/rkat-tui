@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Stored state is supported from 0.1.0 on: the guard opens the files a
+  0.1.0 build wrote (`tests/fixtures/state-0.1.0/`), no longer 0.0.1's.
+
 ### Removed
 
 - The handling of `delegate` helpers a realm of a build before 0.1.0

@@ -94,7 +94,7 @@ it, nothing the agent can call), and they stay the only ones.
 | `src/endpoints/` | LLM endpoints: the types and `Endpoint`'s kinds (`mod.rs`: built-in, gateway, self-hosted), `endpoint:model` references (`refs.rs`), which endpoints this process has (`discover.rs`), their projection into the realm document (`project.rs`), the start-up plan (`startup.rs`) |
 | `src/models.rs`, `src/pricing.rs`, `src/cost.rs`, `src/thinking.rs` | Model listing, price table, token totals by model and their price (the daemon counts them, `daemon/usage.rs`), the per-model `[thinking]` setting |
 | `src/mentions.rs`, `src/paths.rs`, `src/overlay.rs`, `src/http.rs`, `src/hex.rs`, `src/text.rs`, `src/user_shell.rs`, `src/error.rs`, `src/late.rs` | `@` mentions and the path index, path expansion and the one atomic writer (`write_atomic`), `--set` overlays, the HTTP client and lenient fields, hex digests and random ids, counts, durations and the one set of text cuts (`one_line`, `head_chars`, `head_bytes`, `tail_bytes`) in messages, the user's `!` shell, the crate's error types, the handles the daemon's start-up binds once (`Late`: a warning the first time one is reached unbound) |
-| `src/state_fixtures.rs` | The stored-state guard: opens the first release's files (`tests/fixtures/state-0.0.1/`) with this build's readers |
+| `src/state_fixtures.rs` | The stored-state guard: opens the files release 0.1.0 wrote (`tests/fixtures/state-0.1.0/`) with this build's readers |
 | `tests/` | Integration tests, one binary `it` (`tests/it/main.rs` declares one module per file of `tests/it/`), through the `test-support` feature on the one rig: the real daemon with a scripted LLM (`tests/it/common/rig.rs`: `Setup`, `Attached`, `Running`, `Client`); `tests/it/common/mod.rs` holds the scripted LLM, the workspace and the command lines |
 | `docs/` | `testing.md` (protocol), `evidence.md` (what was built, why, with the probes and test names), `mob-split.md` (the architecture, its words, its status and the engine asks), `ux-parity.md` (Claude Code keys and behaviour compared), `state.md` (every stored file, its format and writer) |
 
@@ -240,13 +240,12 @@ repository). Open upstream issues this code waits on:
 ## Stored state
 
 `docs/state.md` lists every file rkat-tui stores (path, format, writer,
-what losing it loses). From the first release on these formats are a
-contract: state a tagged build wrote must keep opening; a change that
-would break it needs the owner's explicit yes. The guard is
-`src/state_fixtures.rs`: it opens the copies in
-`tests/fixtures/state-0.0.1/` (taken from a run of the rig at the first
-release) with this build's readers; never edit those copies to make it
-pass.
+what losing it loses). From release 0.1.0 on these formats are a
+contract (nothing older is supported): state a build from 0.1.0 on wrote
+must keep opening; a change that would break it needs the owner's
+explicit yes. The guard is `src/state_fixtures.rs`: it opens the copies
+in `tests/fixtures/state-0.1.0/` (taken from a run of the rig at v0.1.0)
+with this build's readers; never edit those copies to make it pass.
 
 ## What the mirror refuses
 

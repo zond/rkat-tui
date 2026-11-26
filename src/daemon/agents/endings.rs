@@ -712,7 +712,12 @@ impl HeldNotes {
     /// conversation of it go (it was left), and so does one held after a
     /// failed steer that `started_with` (the input of the run starting
     /// now) shows reached it after all.
-    fn take(&self, agent: &str, session: &SessionId, started_with: Option<&str>) -> Option<String> {
+    pub(crate) fn take(
+        &self,
+        agent: &str,
+        session: &SessionId,
+        started_with: Option<&str>,
+    ) -> Option<String> {
         let mut held = self.held.lock();
         if !held.notes.iter().any(|note| note.agent == agent) {
             return None;
@@ -731,7 +736,7 @@ impl HeldNotes {
     }
 
     /// Whether a note is held for `agent`.
-    fn holds(&self, agent: &str) -> bool {
+    pub(crate) fn holds(&self, agent: &str) -> bool {
         self.held
             .lock()
             .notes

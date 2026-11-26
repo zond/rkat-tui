@@ -1,4 +1,4 @@
-# The global layer as a user writes it: every key 0.0.1 reads.
+# The global layer as a user writes it: every key 0.1.0 reads.
 [auto]
 mode = "auto"
 classifier_model = "claude-haiku-4-5"
@@ -7,6 +7,11 @@ compact = "auto"
 compact_warn_percent = 70
 compact_auto_percent = 85
 classifier_tools = false
+classifier_probe = true
+allow = ["reading the project's documentation"]
+trusted_hosts = ["*.corp.example"]
+compact_prepare = "Write down what is left to do."
+compact_prepare_at = 300000
 
 [[allow]]
 tool = "shell"
@@ -45,15 +50,27 @@ claude-haiku-4-5 = "default"
 extra_read = ["/usr/share/dict"]
 extra_write = ["/var/tmp/rkat-tui-fixture"]
 
+[agent]
+checkpoint_steps = 200
+checkpoint_continues = 3
+
 [helpers]
 max_depth = 2
+max_live = 4
+model = "claude-sonnet-4-6"
+allow_models = ["claude-*"]
 
 [shell]
 user_timeout_secs = 120
 
+[search]
+budget_secs = 20
+max_entries = 50000
+
 [ui]
 helpers = "expanded"
 bell = false
+mouse = false
 checklist = "hidden"
 
 [daemon]

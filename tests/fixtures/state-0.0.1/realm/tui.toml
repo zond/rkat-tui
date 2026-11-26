@@ -1,9 +1,0 @@
-[auto]
-mode = "plan"
-
-[[allow]]
-tool = "shell"
-arg = "cargo test*"
-
-[ui]
-checklist = "shown"

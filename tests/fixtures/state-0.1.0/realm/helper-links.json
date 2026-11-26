@@ -1,0 +1,24 @@
+{
+  "links": [
+    {
+      "ends": [
+        {
+          "key": {
+            "mob": "tui",
+            "member": "scout"
+          },
+          "peer": "tui/main/scout",
+          "name": "scout"
+        },
+        {
+          "key": {
+            "mob": "team",
+            "member": "w1"
+          },
+          "peer": "team/worker/w1",
+          "name": "w1"
+        }
+      ]
+    }
+  ]
+}

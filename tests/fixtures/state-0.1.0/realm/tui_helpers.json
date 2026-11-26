@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "mobs": {
+    "team": "01a21870-e59b-7542-b2c1-840d59812878"
+  },
+  "members": [
+    {
+      "mob": "team",
+      "member": "w1",
+      "owner": "01a21870-e59b-7542-b2c1-840d59812878",
+      "path": [
+        "w1"
+      ],
+      "model": "claude-sonnet-4-6",
+      "kind": "fresh_kept",
+      "session": "01a21870-ed70-7235-a8c2-dec9cccd84bb"
+    },
+    {
+      "mob": "tui",
+      "member": "scout",
+      "owner": "01a21870-e59b-7542-b2c1-840d59812878",
+      "path": [
+        "scout"
+      ],
+      "model": "claude-sonnet-4-6",
+      "kind": "fresh_kept",
+      "session": "01a21870-e987-7411-ab53-a00c77719d3f",
+      "task": "SCOUT-TASK: look"
+    }
+  ]
+}

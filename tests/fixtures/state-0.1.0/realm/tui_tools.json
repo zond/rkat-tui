@@ -1,0 +1,9 @@
+{
+  "revealed": {
+    "01a21870-e59b-7542-b2c1-840d59812878": [
+      "meerkat_schedule_create",
+      "mob_create",
+      "mob_spawn_member"
+    ]
+  }
+}

@@ -1,14 +1,14 @@
 # Stored state
 
 Every file and directory rkat-tui reads or writes outside the workspace's
-sources, as of the first release. From that release on these formats are
-a contract: a workspace's state written by a tagged build must keep
-opening with every later build, and a change that would break that needs
-the owner's explicit yes (`CLAUDE.md`, "Stored state"). The engine's own
-files inside a realm are Meerkat's contract, listed at the end.
-`src/state_fixtures.rs` opens the copies of these files in
-`tests/fixtures/state-0.0.1/`, as the first release wrote them, with the
-readers of the current build: that test is the guard.
+sources. From release 0.1.0 on these formats are a contract: a
+workspace's state written by a tagged build from 0.1.0 on must keep
+opening with every later build (nothing older is supported), and a change
+that would break that needs the owner's explicit yes (`CLAUDE.md`,
+"Stored state"). The engine's own files inside a realm are Meerkat's
+contract, listed at the end. `src/state_fixtures.rs` opens the copies of
+these files in `tests/fixtures/state-0.1.0/`, as 0.1.0 wrote them, with
+the readers of the current build: that test is the guard.
 
 "Atomic" means `paths::write_atomic`: a temporary file in the same
 directory, synced, renamed over the target; `Private` is mode 0600, and a

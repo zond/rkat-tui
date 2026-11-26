@@ -1,0 +1,13 @@
+{
+  "agents": {
+    "main-s8hs": [
+      {
+        "workspace": "/tmp/.tmpmcPXqC/gamma",
+        "agent": "main-gggg",
+        "peer_id": "c2a81ee0-aba0-5e8e-a408-d61864a82361",
+        "pubkey": "ed25519:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        "address": "uds:///tmp/.tmpmcPXqC/gamma/nothing.sock"
+      }
+    ]
+  }
+}
