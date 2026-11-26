@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-26
+
+### Added
+
+- `endpoints.<name>.models`: the only model ids an endpoint may run. It
+  replaces the endpoint's live list in the `/model` picker, completion
+  and a bare id's lookup, and every model call is held to it: the
+  start-up model (outside the list the start stops; none named, the
+  list's first), `/model`, helpers (`assign`, `mob_spawn_member`,
+  `helpers.model`, councils), the classifier (`--classifier-model`,
+  `/auto model`), `/btw`, and a conversation saved on a model the list
+  no longer allows (it opens; its runs are refused until `/model` picks
+  a listed one). Each agent's and helper's model request is checked once
+  more before it leaves the daemon. `[]` refuses the start; a project
+  file cannot set it; a built-in endpoint's table may set only it. A
+  launcher:
+
+      rkat-tui --endpoint-def gateway=openai=https://llm.example.net,key_env=GATEWAY_KEY \
+               --replace 'endpoints.gateway.models=["model-a", "model-b"]'
+
+- `--replace <dotted.key>=<value>` (forwarded to the daemon as `--set`
+  is): sets a key to exactly that value, dropping the user's and the
+  workspace's files' value of it and a `--set` of the same key (for a
+  list that is the difference from `--set`, which adds; for a scalar it
+  is `--set`). The key stays so while the daemon that run starts lives:
+  `/set` of it is refused naming `--replace`, and a file edit of it is
+  not taken (the clients are told). `--replace 'endpoints={…}'` leaves
+  exactly the configured endpoints it names; beside an `--endpoint-def`
+  it would drop, it is refused.
+- A run that attaches to the workspace's daemon already running warns
+  that its `--replace`, `--set` and `--endpoint-def` do not apply there.
+
 ## [0.1.3] - 2026-11-26
 
 ### Changed

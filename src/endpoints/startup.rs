@@ -43,6 +43,22 @@ pub fn plan_startup(
     endpoints: &[Endpoint],
     index: &ModelIndex,
 ) -> Result<StartupPlan, ModelRefError> {
+    let plan = plan_unchecked(request, endpoints, index)?;
+    // A model the plan names (`--model`, `agent.model`, the provider's
+    // default) runs only where its endpoint's list allows it: the start
+    // stops with the refusal, never picks another.
+    if let StartupPlan::Resolved(reference) = &plan {
+        check_ref(reference, endpoints)?;
+    }
+    Ok(plan)
+}
+
+/// [`plan_startup`] before the allowed models are checked.
+fn plan_unchecked(
+    request: StartupRequest<'_>,
+    endpoints: &[Endpoint],
+    index: &ModelIndex,
+) -> Result<StartupPlan, ModelRefError> {
     if endpoints.is_empty() {
         return Err(ModelRefError::NoEndpoints);
     }

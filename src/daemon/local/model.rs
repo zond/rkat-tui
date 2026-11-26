@@ -32,6 +32,35 @@ impl Local {
         let endpoint = endpoint_name
             .and_then(|name| self.parts.endpoints.get(name))
             .cloned();
+        // `endpoints.<name>.models`: the endpoint the switch lands on must
+        // allow the model (a built-in endpoint is named by the provider; a
+        // provider this daemon cannot place is checked on every endpoint
+        // it could be). Whatever the client checked, the daemon decides.
+        let allowed = match (&endpoint, provider.as_deref().and_then(WireDialect::parse)) {
+            (Some(endpoint), _) => endpoint.check_model(endpoint.own_model(&model)),
+            (None, Some(dialect)) => self.parts.endpoints.check_route(
+                &model,
+                dialect.into(),
+                None,
+                auth_binding.as_ref(),
+            ),
+            (None, None) => match provider
+                .as_deref()
+                .and_then(meerkat_core::Provider::parse_strict)
+            {
+                Some(provider) => self.parts.endpoints.check_unrouted(&model, provider),
+                None => self
+                    .parts
+                    .endpoints
+                    .check_unrouted(&model, meerkat_core::Provider::SelfHosted),
+            },
+        };
+        allowed.map_err(|err| {
+            Refusal::new(
+                protocol::SWITCH_FAILED,
+                format!("{err}; the model was not changed"),
+            )
+        })?;
         let reseated = self
             .ensure_alias(
                 agent,
@@ -189,6 +218,11 @@ impl Local {
                 self.parts.endpoints.names().join(", ")
             ));
         };
+        if let Err(err) = target.check_model(model) {
+            return refused(format!(
+                "the classifier model was not changed: {err}; /auto model picks one"
+            ));
+        }
         if target.is_self_hosted()
             && let Err(err) = crate::endpoints::ensure_endpoint_model(
                 self.parts.realm_config.runtime(),

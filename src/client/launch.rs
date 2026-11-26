@@ -90,6 +90,28 @@ pub fn argv_for(argv: &[OsString], files: &[PathBuf]) -> Vec<OsString> {
     }
 }
 
+/// The settings flags a daemon's command line `argv` gives.
+const SETTINGS_FLAGS: [&str; 3] = ["--replace", "--set", "--endpoint-def"];
+
+/// When this run attaches to a daemon that runs already: the warning that
+/// the settings flags of its daemon command line `argv` (`--replace`,
+/// `--set`, `--endpoint-def`) are not that daemon's, so a list such as
+/// `endpoints.<name>.models` given here does not hold there. `None` when
+/// it gives none.
+#[must_use]
+pub fn unapplied_warning(argv: &[OsString]) -> Option<String> {
+    let given: Vec<&str> = SETTINGS_FLAGS
+        .into_iter()
+        .filter(|flag| argv.iter().any(|arg| arg == *flag))
+        .collect();
+    (!given.is_empty()).then(|| {
+        format!(
+            "this workspace's daemon was already running, so this run's {} do not apply to it: it keeps the settings it was started with (an endpoints.<name>.models list given here does not hold); stop it (/daemon stop) and start again to apply them",
+            given.join(", ")
+        )
+    })
+}
+
 /// What to do about the endpoint file's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -151,8 +173,12 @@ pub fn daemon_argv(args: &Args, workspace: &Path) -> Vec<OsString> {
         args.classifier_model.as_ref().map(os).as_ref(),
     );
     value("--confinement", value_name(args.confinement).as_ref());
-    let repeated: [(&str, Vec<OsString>); 7] = [
+    let repeated: [(&str, Vec<OsString>); 8] = [
         ("--set", args.set.iter().map(OsString::from).collect()),
+        (
+            "--replace",
+            args.replace.iter().map(OsString::from).collect(),
+        ),
         (
             "--mcp-server",
             args.mcp_server.iter().map(OsString::from).collect(),
@@ -527,6 +553,8 @@ mod tests {
             "auto.compact=auto",
             "--set",
             "a=1",
+            "--replace",
+            r#"endpoints.gateway.models=["model-a", "model-b"]"#,
             "--mcp-server",
             r#"name="search", command="/opt/wrapper/tool", args=["mcp", "search"]"#,
             "--mcp-server",
@@ -627,6 +655,32 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 20, "{checked}");
+    }
+
+    /// Attaching to a daemon that runs already: the settings flags this
+    /// run gives are named as not applied (an allowed-models list does
+    /// not hold there); a run with none is told nothing.
+    #[test]
+    fn a_running_daemon_is_said_to_keep_its_own_settings() {
+        let tui = Args::try_parse_from([
+            "rkat-tui",
+            "--replace",
+            r#"endpoints.gateway.models=["model-a"]"#,
+            "--endpoint-def",
+            "gateway=openai=https://llm.example.net,key_env=GATEWAY_KEY",
+        ])
+        .unwrap();
+        let text = unapplied_warning(&daemon_argv(&tui, Path::new("/ws"))).unwrap();
+        assert!(
+            text.contains("--replace, --endpoint-def do not apply")
+                && text.contains("endpoints.<name>.models"),
+            "{text}"
+        );
+        let plain = Args::try_parse_from(["rkat-tui", "--model", "x"]).unwrap();
+        assert_eq!(
+            unapplied_warning(&daemon_argv(&plain, Path::new("/ws"))),
+            None
+        );
     }
 
     #[test]

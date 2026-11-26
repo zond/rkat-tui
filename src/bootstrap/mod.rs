@@ -59,10 +59,10 @@ use meerkat_tools::builtin::shell::ShellConfinement;
 use crate::cli::Args;
 use crate::endpoints::{
     EndpointError, EndpointRef, EndpointRegistry, ModelRefError, StartupPlan, StartupRequest,
-    check_catalogued, ensure_aliases, needs_lookup, plan_startup, project_endpoints,
+    check_catalogued, check_ref, ensure_aliases, needs_lookup, plan_startup, project_endpoints,
 };
 use crate::error::TuiError;
-use crate::models::{ModelCache, ModelLister, live_lister};
+use crate::models::{ModelCache, ModelLister, fetch_lists, live_lister};
 use crate::thinking::ThinkingTable;
 use meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig;
 
@@ -440,7 +440,8 @@ pub async fn assemble(
             .get(choice.endpoint.as_str())
             .filter(|e| !e.is_builtin() && e.has_key())
     {
-        models = Some(ModelCache::from_results(lister(vec![endpoint.clone()]).await).0);
+        models =
+            Some(ModelCache::from_results(fetch_lists(&lister, vec![endpoint.clone()]).await).0);
     }
     let choice = choice.with_thinking(&thinking);
 
@@ -808,7 +809,7 @@ pub async fn plan_model(
     };
     let fetch = || async {
         let listable = endpoints.iter().filter(|e| e.has_key()).cloned().collect();
-        ModelCache::from_results(lister(listable).await).0
+        ModelCache::from_results(fetch_lists(lister, listable).await).0
     };
     let mut cache = None;
     if request.endpoint.is_none()
@@ -843,6 +844,7 @@ pub async fn plan_model(
                 EndpointRef::new(name, first.id.clone())
             }
         };
+    check_ref(&reference, endpoints.as_slice()).map_err(EndpointError::from)?;
     Ok((choice_for(endpoints, &reference)?, cache))
 }
 
@@ -1047,6 +1049,43 @@ mod tests {
         assert_eq!(choice.reference().to_string(), "openai:gpt-5.5");
         let err = plan(&["--endpoint", "nope"], "").await.unwrap_err();
         assert!(err.to_string().contains("unknown endpoint `nope`"), "{err}");
+    }
+
+    /// With `endpoints.<name>.models`, the endpoint's first listed model is
+    /// the list's first (not the fetch's), and a model the list does not
+    /// allow stops the plan, the fetched list naming it or not.
+    #[tokio::test]
+    async fn the_start_up_plan_takes_the_allowed_models() {
+        let registry = EndpointRegistry::from_endpoints(vec![
+            ep("litellm", WireDialect::OpenAi, false)
+                .with_models(Some(vec!["gpt-5.5".into(), "model-a".into()])),
+        ]);
+        let plan = |extra: &'static [&'static str]| {
+            let registry = registry.clone();
+            async move {
+                plan_model(&args(extra), &Config::default(), &registry, &lister())
+                    .await
+                    .map(|(choice, _)| choice.reference().to_string())
+            }
+        };
+        assert_eq!(
+            plan(&["--endpoint", "litellm"]).await.unwrap(),
+            "litellm:gpt-5.5"
+        );
+        assert_eq!(
+            plan(&["--model", "model-a"]).await.unwrap(),
+            "litellm:model-a"
+        );
+        for refused in [
+            &["--model", "litellm:llama3:8b"][..],
+            &["--model", "llama3:8b"],
+        ] {
+            let err = plan(refused).await.unwrap_err().to_string();
+            assert!(
+                err.contains("endpoints.litellm.models allows only gpt-5.5, model-a"),
+                "{err}"
+            );
+        }
     }
 
     #[test]

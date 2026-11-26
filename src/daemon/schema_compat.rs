@@ -45,6 +45,7 @@ use parking_lot::Mutex;
 use serde_json::{Map, Value};
 
 use super::{blank_text, call_ids, comms_text};
+use crate::endpoints::EndpointRegistry;
 
 /// How deep `$ref`s are inlined into each other (a recursive type stops
 /// there and keeps its `$ref`).
@@ -372,10 +373,60 @@ fn wire_messages(
 }
 
 /// The decorator the daemon's runtime applies to every agent-facing LLM
-/// client: [`SchemaCompat`] around it.
+/// client: [`SchemaCompat`] around it, refusing every request of a model
+/// `endpoints`' lists (`endpoints.<name>.models`) do not allow.
 #[must_use]
-pub fn decorator() -> AgentLlmClientDecorator {
-    Arc::new(|inner| Arc::new(SchemaCompat::new(inner)) as Arc<dyn AgentLlmClient>)
+pub fn decorator(endpoints: Arc<EndpointRegistry>) -> AgentLlmClientDecorator {
+    Arc::new(move |inner| {
+        Arc::new(SchemaCompat::new(inner).with_endpoints(Arc::clone(&endpoints)))
+            as Arc<dyn AgentLlmClient>
+    })
+}
+
+/// Whether `client`'s model may run, by `endpoints`' lists: the route the
+/// client reports (its model, provider, self-hosted server and auth
+/// binding: the factory's selection) is checked; a client that reports
+/// none (or whose current model is not the selection's) is checked as one
+/// that could be on any endpoint of its provider
+/// ([`EndpointRegistry::check_unrouted`]). The backstop below every other
+/// check: an agent's or helper's request of a model its endpoint's list
+/// does not allow never leaves the daemon.
+///
+/// # Errors
+///
+/// [`AgentError::ConfigError`] with the refusal, which the run's failure
+/// shows.
+pub fn check_client(
+    endpoints: &EndpointRegistry,
+    client: &dyn AgentLlmClient,
+) -> Result<(), AgentError> {
+    let refused = |err: crate::endpoints::ModelNotAllowed| {
+        AgentError::ConfigError(format!(
+            "{err}; this request was not sent. Pick an allowed model with /model"
+        ))
+    };
+    let model = client.model();
+    match client.controller_model_selection() {
+        Some(selection) => {
+            endpoints
+                .check_route(
+                    selection.model(),
+                    selection.provider(),
+                    selection.self_hosted_server_id(),
+                    selection.auth_binding(),
+                )
+                .map_err(refused)?;
+            if selection.model() != model {
+                endpoints
+                    .check_unrouted(model, client.provider())
+                    .map_err(refused)?;
+            }
+            Ok(())
+        }
+        None => endpoints
+            .check_unrouted(model, client.provider())
+            .map_err(refused),
+    }
 }
 
 /// An agent-facing LLM client whose requests carry their tools with
@@ -391,6 +442,9 @@ pub struct SchemaCompat {
     /// made from (a tool whose definition changes is normalized again);
     /// shared with the client's forks.
     cache: Arc<Mutex<Normalized>>,
+    /// The endpoints whose `endpoints.<name>.models` every request is
+    /// checked against ([`check_client`]); none: no check.
+    endpoints: Option<Arc<EndpointRegistry>>,
 }
 
 /// [`SchemaCompat`]'s cache.
@@ -403,6 +457,22 @@ impl SchemaCompat {
         Self {
             inner,
             cache: Arc::default(),
+            endpoints: None,
+        }
+    }
+
+    /// Every request checked against `endpoints`' lists first.
+    #[must_use]
+    pub fn with_endpoints(mut self, endpoints: Arc<EndpointRegistry>) -> Self {
+        self.endpoints = Some(endpoints);
+        self
+    }
+
+    /// The client's model may run ([`check_client`]).
+    fn allowed(&self) -> Result<(), AgentError> {
+        match &self.endpoints {
+            Some(endpoints) => check_client(endpoints, self.inner.as_ref()),
+            None => Ok(()),
         }
     }
 
@@ -469,6 +539,7 @@ impl AgentLlmClient for SchemaCompat {
         provider_params: Option<ProviderParamsOverride>,
         authorization: Option<meerkat_core::LlmRequestAuthorization>,
     ) -> Result<Arc<dyn AgentLlmRequestAttempt>, AgentError> {
+        self.allowed()?;
         let tools = self.tools(&tools);
         let messages = wire_messages(self.inner.provider(), messages);
         Arc::clone(&self.inner).prepare_request_attempt_authorized(
@@ -489,6 +560,7 @@ impl AgentLlmClient for SchemaCompat {
         temperature: Option<f32>,
         provider_params: Option<ProviderParamsOverride>,
     ) -> Result<Arc<dyn AgentLlmRequestAttempt>, AgentError> {
+        self.allowed()?;
         let tools = self.tools(&tools);
         let messages = wire_messages(self.inner.provider(), messages);
         Arc::clone(&self.inner).prepare_request_attempt(
@@ -512,6 +584,7 @@ impl AgentLlmClient for SchemaCompat {
         temperature: Option<f32>,
         provider_params: Option<&ProviderParamsOverride>,
     ) -> Result<LlmStreamResult, AgentError> {
+        self.allowed()?;
         let tools = self.tools(tools);
         let sent = as_sent(self.inner.provider(), messages);
         let messages = sent.as_deref().unwrap_or(messages);
@@ -529,6 +602,7 @@ impl AgentLlmClient for SchemaCompat {
         provider_params: Option<&ProviderParamsOverride>,
         authorization: Option<meerkat_core::LlmRequestAuthorization>,
     ) -> Result<LlmStreamResult, AgentError> {
+        self.allowed()?;
         let tools = self.tools(tools);
         let sent = as_sent(self.inner.provider(), messages);
         let messages = sent.as_deref().unwrap_or(messages);
@@ -595,6 +669,7 @@ impl AgentLlmClient for SchemaCompat {
         Ok(Arc::new(Self {
             inner: fork,
             cache: Arc::clone(&self.cache),
+            endpoints: self.endpoints.clone(),
         }))
     }
 
@@ -614,6 +689,13 @@ impl AgentLlmClient for SchemaCompat {
         previous_identity: &meerkat_core::SessionLlmIdentity,
         target_identity: &meerkat_core::SessionLlmIdentity,
     ) -> Result<(), AgentError> {
+        // An engine fallback to a model the lists do not allow is refused
+        // before it is switched to (and every request is checked anyway).
+        if let Some(endpoints) = &self.endpoints {
+            endpoints.check_identity(target_identity).map_err(|err| {
+                AgentError::ConfigError(format!("the fallback model is refused: {err}"))
+            })?;
+        }
         self.inner
             .commit_model_fallback(previous_identity, target_identity)
     }
@@ -871,5 +953,124 @@ mod tests {
             "the deepest $ref still needs them"
         );
         assert_eq!(out["properties"]["node"]["type"], "object");
+    }
+
+    /// A client that counts its requests and reports no route.
+    struct Counting {
+        model: String,
+        provider: meerkat_core::Provider,
+        sent: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl AgentLlmClient for Counting {
+        async fn stream_response(
+            &self,
+            _messages: &[Message],
+            _tools: &[Arc<ToolDef>],
+            _max_tokens: u32,
+            _temperature: Option<f32>,
+            _provider_params: Option<&ProviderParamsOverride>,
+        ) -> Result<LlmStreamResult, AgentError> {
+            self.sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(LlmStreamResult::new(
+                Vec::new(),
+                meerkat_core::StopReason::EndTurn,
+                meerkat_core::Usage::default(),
+            ))
+        }
+
+        fn provider(&self) -> meerkat_core::Provider {
+            self.provider
+        }
+
+        fn model(&self) -> &str {
+            &self.model
+        }
+    }
+
+    /// The backstop: a request of a model the endpoint's list does not
+    /// allow is refused in the decorator, naming the setting, and never
+    /// reaches the client below; an allowed one goes through, and so does
+    /// one on an endpoint without a list. A fallback onto a forbidden
+    /// model is refused before it is switched to.
+    #[tokio::test]
+    async fn the_decorator_refuses_a_model_its_endpoint_does_not_allow() {
+        use crate::endpoints::{ApiStyle, Endpoint, SecretString, WireDialect};
+        let gateway = Endpoint::configured(
+            "gateway",
+            WireDialect::OpenAi,
+            Some("https://llm.example.net".into()),
+            SecretString::new("plainly-fake"),
+            "GATEWAY_KEY",
+            0,
+            ApiStyle::default(),
+        )
+        .with_models(Some(vec!["model-a".into()]));
+        let endpoints = Arc::new(EndpointRegistry::from_endpoints(vec![
+            Endpoint::builtin(WireDialect::Anthropic, None, SecretString::new("k")),
+            gateway.clone(),
+        ]));
+        let send = |model: &str, provider| {
+            let inner = Arc::new(Counting {
+                model: model.to_string(),
+                provider,
+                sent: std::sync::atomic::AtomicUsize::new(0),
+            });
+            let client =
+                (decorator(Arc::clone(&endpoints)))(Arc::clone(&inner) as Arc<dyn AgentLlmClient>);
+            (inner, client)
+        };
+        let messages = [Message::User(meerkat_core::UserMessage::text("hi"))];
+        let (inner, client) = send("gateway:model-z", meerkat_core::Provider::SelfHosted);
+        let err = client
+            .stream_response(&messages, &[], 100, None, None)
+            .await
+            .err()
+            .expect("refused");
+        assert!(
+            err.to_string()
+                .contains("endpoints.gateway.models allows only model-a"),
+            "{err}"
+        );
+        let attempt = Arc::clone(&client).prepare_request_attempt(
+            Arc::new(messages.to_vec()),
+            Arc::from(Vec::new()),
+            100,
+            None,
+            None,
+        );
+        assert!(attempt.is_err());
+        assert_eq!(inner.sent.load(std::sync::atomic::Ordering::SeqCst), 0);
+        for (model, provider) in [
+            ("gateway:model-a", meerkat_core::Provider::SelfHosted),
+            ("claude-anything", meerkat_core::Provider::Anthropic),
+        ] {
+            let (inner, client) = send(model, provider);
+            client
+                .stream_response(&messages, &[], 100, None, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                inner.sent.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "{model}"
+            );
+        }
+        let (_, client) = send("gateway:model-a", meerkat_core::Provider::SelfHosted);
+        let identity = |model: &str| meerkat_core::SessionLlmIdentity {
+            model: model.to_string(),
+            provider: meerkat_core::Provider::SelfHosted,
+            self_hosted_server_id: Some("gateway".into()),
+            provider_params: None,
+            auth_binding: gateway.binding(),
+        };
+        let err = client
+            .commit_model_fallback(&identity("gateway:model-a"), &identity("gateway:model-z"))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("the fallback model is refused"),
+            "{err}"
+        );
     }
 }

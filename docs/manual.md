@@ -15,7 +15,7 @@ on rkat-tui itself.
 - [Helpers](#helpers): [Tools](#tools), [How the parent hears of it](#how-the-parent-hears-of-it), [Interrupting and stopping](#interrupting-and-stopping), [Watching helpers](#watching-helpers), [Limits](#limits), [Helper models](#helper-models)
 - [Settings](#settings)
 - [Rules](#rules): [Configuration reference (`tui.toml`)](#configuration-reference-tuitoml)
-- [Models, endpoints and cost](#models-endpoints-and-cost): [Setting up an endpoint](#setting-up-an-endpoint), [How endpoints reach the engine](#how-endpoints-reach-the-engine), [Choosing a model](#choosing-a-model), [Thinking](#thinking), [Context gauge and cost](#context-gauge-and-cost)
+- [Models, endpoints and cost](#models-endpoints-and-cost): [Setting up an endpoint](#setting-up-an-endpoint), [Allowed models](#allowed-models-endpointsnamemodels), [How endpoints reach the engine](#how-endpoints-reach-the-engine), [Choosing a model](#choosing-a-model), [Thinking](#thinking), [Context gauge and cost](#context-gauge-and-cost)
 - [Instructions and memory](#instructions-and-memory): [Context and compaction](#context-and-compaction)
 - [Skills](#skills)
 - [Keys and commands](#keys-and-commands): [Commands](#commands), [Keys](#keys), [Task checklist](#task-checklist)
@@ -1239,7 +1239,8 @@ the file tools at once but the confined shell only after the daemon's
 next start. A file that does not parse keeps its last good values until
 it does. Two kinds of change wait for the next start: the project's
 `.rkat/tui.toml` (the agent's shell can write it), and endpoints, prices
-or thinking in any file.
+or thinking in any file. A key the daemon's command line gives with
+`--replace` is never taken from a file while it runs.
 
 ## Rules
 
@@ -1295,7 +1296,21 @@ repository could otherwise choose it.
 (`true`, `85`, `[{tool = "shell"}]`); anything else is a string
 (`--set auto.compact=auto`). Tables merge, scalars replace, arrays
 append, endpoints merge by name. A bad `--set` stops start-up and names
-it. The table is generated from `src/config/registry.rs`; "Takes effect"
+it.
+
+`--replace <dotted.key>=<value>` (repeatable) sets a key to exactly that
+value: every lower layer's value of it is dropped, not merged: your
+`tui.toml`'s, the workspace's, and a `--set` of the same key on the same
+command line (`--replace` wins, whichever comes first). For a list
+(`endpoints.<name>.models`, `instructions.files`, the rules) that is the
+difference: `--set` adds to the files' lists, `--replace` stands alone.
+For a scalar it is the same as `--set`. Start-up names each file value it
+drops. A key given with `--replace` stays so for the life of the daemon
+that run starts: `/set` of it is refused naming `--replace`, and a hand
+edit of it in a file is not taken (every client is told once per
+change). The pin holds for what rkat-tui reads from the files; a
+permission the approval dialog adds while the daemon runs still applies
+on top of a `--replace`d rule list. The table is generated from `src/config/registry.rs`; "Takes effect"
 says when a change made while the daemon runs applies.
 
 <!-- settings-table:begin -->
@@ -1334,7 +1349,7 @@ says when a change made while the daemon runs applies.
 | `auto.allow`: Statements: kinds of action you allow, which the classifier reads. | a section | none | may not set it | at once | —; /permissions (In force: n adds, d removes; Blocked: e) |
 | `auto.trusted_hosts`: Hosts you trust with the project's data (`host` or `*.domain`), which the classifier reads beside the hosts of the project's git remotes; other rules still apply there. | a section | none | may not set it | at once | `--set 'auto.trusted_hosts=["<host>"]'`; /permissions (Hosts: n adds, d removes; Blocked: t, T) |
 | `confinement.extra_read / extra_write`: Extra directories for the confined shell, which the approval gate is told too. | a section | none | may not set it | the gate and the file tools at once; a confined shell at the next start | `--confinement-read` / `--confinement-write <dir>`; /permissions (Blocked: a, A) |
-| `endpoints.<name>`: `dialect`, `base_url`, `api_key_env`, `priority`, `api_style` (an inline `api_key` is refused). | a section | none | may not set it | at the next start | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]`; — |
+| `endpoints.<name>`: `dialect`, `base_url`, `api_key_env`, `priority`, `api_style` (an inline `api_key` is refused), `models` (the only model ids the endpoint may run, in place of its live list; the layers' lists add up, `[]` is refused; a built-in endpoint's table may set only `models`). | a section | none | may not set it | at the next start | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]`, `--replace 'endpoints.<name>.models=["<id>"]'`; — |
 | `pricing."<model id>"`: `input`, `output`, `cached_input`, `cache_write` in USD per million tokens. | a section | none | may not set it | at the next start | `--set 'pricing."<id>".input=15'`; — |
 | `thinking."<endpoint:id or id>"`: Anthropic thinking: `"adaptive"`, `{ enabled = <budget tokens> }` or `"default"`. | a section | none | may not set it | at the next start | `--set 'thinking."proxy:my-alias"=adaptive'`; — |
 <!-- settings-table:end -->
@@ -1347,8 +1362,10 @@ the run; [Instructions and memory](#instructions-and-memory)),
 `--trust-project`, `--attach`, `--attach-token-file`,
 `--attach-insecure`, `--list`, `--rehome`, `--remove-state <ref>
 [--yes]`, `--audit`, `--classifier-check` (`rkat-tui --help`). Like
-`--set`, the flags that shape the engine reach the daemon only when the
-run starts it.
+`--set` and `--replace`, the flags that shape the engine reach the
+daemon only when the run starts it; a run that attaches to the
+workspace's daemon already running warns that its `--replace`, `--set`
+and `--endpoint-def` do not apply there.
 
 ## Models, endpoints and cost
 
@@ -1385,6 +1402,83 @@ variable skips the endpoint with a notice. Models are `work:<model>`, as
 the server lists them (`--model work:claude-opus-5-5`, or `/model`). The
 classifier reviews with the start-up model unless you give it another
 (`--classifier-model work:<model>` or `[auto] classifier_model`).
+
+### Allowed models (`endpoints.<name>.models`)
+
+An endpoint's key often reaches more models than you may use (a
+repository's policy forbids a provider). `models` lists the only ones it
+may run, by the endpoint's own ids (as its list shows them, without the
+`<name>:` prefix). A launcher gives it on the command line:
+
+```sh
+rkat-tui --endpoint-def gateway=openai=https://llm.example.net,key_env=GATEWAY_KEY \
+         --replace 'endpoints.gateway.models=["model-a", "model-b"]'
+```
+
+or a `tui.toml` holds it (`models = ["model-a"]` in `[endpoints.gateway]`).
+
+- **The list replaces the live listing**: the `/model` picker, completion
+  and a bare id's lookup see exactly these ids, in this order. The
+  endpoint's `/v1/models` (and LiteLLM's `/model/info`) is still asked,
+  for the listed ids' windows, limits and prices only; an id it lists
+  that the list does not is dropped, and a listed id it does not know is
+  shown without figures. With no model named, the start-up model is the
+  list's first.
+- **Every model call is held to it**: the start-up model (`--model`,
+  `agent.model`, the provider's default), `/model` and its picker, a
+  helper (`assign`'s or `mob_spawn_member`'s model, `helpers.model`, a
+  council's participants; a fork keeps its parent's model), the
+  classifier (`--classifier-model`, `auto.classifier_model`, `/auto
+  model`, its checks and the checkpoints' reviews), `/btw`, and a
+  conversation saved on a model the list no longer allows. A model
+  outside the list is refused with `model `<id>` is not allowed on
+  endpoint `<name>`: endpoints.<name>.models allows only …`. At start
+  that stops the start (rkat-tui never picks another); a helper's call
+  fails with what to name instead. A bare id no list has never goes to a
+  listed endpoint, even the only one.
+- **A saved conversation** whose model is now outside the list opens and
+  reads, but its next run (and `/btw`) is refused with that message until
+  `/model` picks a listed model. Underneath every check, each agent's and
+  helper's model request is checked once more before it leaves the
+  daemon, so a model that reached a session another way is refused there
+  and never sent.
+- **Layers.** The lists of your `tui.toml`, the workspace's and the
+  command line's `--set` add up; `--replace` drops the files' (and a
+  `--set` of it) and holds for the daemon's life (see
+  [Configuration reference](#configuration-reference-tuitoml)). A
+  project's `.rkat/tui.toml` cannot set it (its endpoint tables are
+  ignored). `models = []` refuses the start: list the models, or remove
+  the key.
+- **Built-in endpoints** take a list too: an `[endpoints.anthropic]` (or
+  `openai`, `gemini`) table with only `models` restricts the built-in
+  endpoint (`--set 'endpoints.anthropic.models=["claude-sonnet-4-6"]'`);
+  anything else in such a table is skipped with a notice.
+- **Other endpoints stay unrestricted**: a list on one endpoint does not
+  restrict another, such as a built-in endpoint a provider key in the
+  environment adds, so a launcher that must keep every agent on its list
+  also controls the environment it starts rkat-tui in. Nor does it
+  restrict a second endpoint a `tui.toml` defines on the same server with
+  the same key: a launcher that must rule that out replaces the whole
+  table, which leaves exactly the endpoints it names (the built-in ones
+  aside):
+
+  ```sh
+  rkat-tui --replace 'endpoints={gateway={dialect="openai", base_url="https://llm.example.net", api_key_env="GATEWAY_KEY", models=["model-a"]}}'
+  ```
+
+  (`--replace` of `endpoints` or of `endpoints.<name>` is refused beside
+  an `--endpoint-def` it would drop.)
+- **It limits rkat-tui's model calls, not the key.** With
+  `--no-confinement` the agent's shell has the daemon's whole
+  environment, the endpoint's key included, and a command there can call
+  the server with any model the key reaches. The confined shell gets only an allow-list of
+  variables, which names no key.
+- **The daemon decides.** `--replace` and `--set` reach the daemon only
+  when this run starts it. A run that attaches to the workspace's daemon
+  already running keeps that daemon's lists (none, if it was started
+  without) and warns that its own flags do not apply; a launcher starts
+  its own daemon (stop a running one with `/daemon stop` first) for its
+  list to hold.
 
 ### How endpoints reach the engine
 
@@ -1472,10 +1566,13 @@ neither changes what the other does.
 ### Choosing a model
 
 A reference is `endpoint:id` or a bare id. A bare id goes to the endpoint
-whose live model list has it; when several do, the current endpoint wins,
+whose live model list has it (an endpoint with
+[`models`](#allowed-models-endpointsnamemodels) has that list); when
+several do, the current endpoint wins,
 then the built-in endpoint of the id's catalog provider, then the highest
 `priority`, then the first configured. An id no list has goes to its
-catalog provider's endpoint, or to the only endpoint. Names are never
+catalog provider's endpoint, or to the only endpoint, unless that
+endpoint has `models`, which refuses it. Names are never
 guessed from a prefix.
 
 `/model` opens a picker grouped by endpoint, with each model's input and

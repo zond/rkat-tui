@@ -215,6 +215,7 @@ fn a_changed_file_is_synced_by_content() {
             changes,
             permissions,
             later,
+            ..
         } => (
             changes
                 .iter()
@@ -382,4 +383,92 @@ fn both_helper_model_lists_are_refused_on_a_write_and_a_sync() {
         settings.sync(Level::Workspace),
         Synced::Changed { .. }
     ));
+}
+
+/// A key the daemon's command line gives with `--replace` is held for the
+/// daemon's life: `/set` of it is refused naming `--replace` (and so is a
+/// key under a replaced table); an edit of a file is not taken, for a
+/// scalar and for `endpoints.<name>.models`, and is told once per change;
+/// a held file's other keys still sync.
+#[test]
+fn a_replaced_key_is_pinned_against_set_and_file_edits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let user_file = tmp.path().join("user").join("tui.toml");
+    std::fs::create_dir_all(user_file.parent().unwrap()).unwrap();
+    std::fs::write(&user_file, "[auto]\ncompact_warn_percent = 40\n").unwrap();
+    let path = |key: &str| key.split('.').map(str::to_string).collect::<Vec<_>>();
+    let layers = Layers {
+        cli: "[auto]\ncompact_warn_percent = 70\n[endpoints.gateway]\nmodels = [\"model-a\"]\n"
+            .parse()
+            .unwrap(),
+        replaced: vec![
+            path("auto.compact_warn_percent"),
+            path("endpoints.gateway.models"),
+        ],
+        ..Layers::default()
+    };
+    let settings = settings(tmp.path(), layers);
+    let warn = Setting::find("auto.compact_warn_percent").unwrap();
+    for user in [true, false] {
+        let refused = settings
+            .write("auto.compact_warn_percent", Some("30"), user)
+            .unwrap_err();
+        assert!(
+            refused.contains("--replace") && refused.contains("auto.compact_warn_percent"),
+            "{refused}"
+        );
+    }
+    assert_eq!(
+        settings.pinned("endpoints.gateway.models.x").as_deref(),
+        Some("endpoints.gateway.models")
+    );
+    assert_eq!(
+        settings.pinned("endpoints"),
+        Some("endpoints.gateway.models".to_string())
+    );
+    assert_eq!(settings.pinned("auto.compact_auto_percent"), None);
+    // The file held 40 at start (told then): an untouched sync says nothing.
+    assert!(matches!(settings.sync(Level::User), Synced::Same));
+    // A file edit of both pinned keys: neither is taken, both told.
+    std::fs::write(
+        &user_file,
+        "[auto]\ncompact_warn_percent = 20\n[endpoints.gateway]\nmodels = [\"model-b\"]\n",
+    )
+    .unwrap();
+    let Synced::Changed {
+        changes,
+        later,
+        pinned,
+        ..
+    } = settings.sync(Level::User)
+    else {
+        panic!("not told")
+    };
+    assert!(changes.is_empty(), "{changes:?}");
+    assert!(!later, "the endpoints the daemon holds did not change");
+    assert_eq!(
+        pinned,
+        ["auto.compact_warn_percent", "endpoints.gateway.models"]
+    );
+    assert_eq!(settings.resolve(warn).value, Some(Value::Integer(70)));
+    assert_eq!(settings.resolve(warn).source, Level::CommandLine);
+    let held = settings.layers();
+    assert!(held.user.get("endpoints").is_none(), "{:?}", held.user);
+    // Told once: the same file again is nothing new.
+    assert!(matches!(settings.sync(Level::User), Synced::Same));
+    // Another key of the file still syncs.
+    std::fs::write(
+        &user_file,
+        "[auto]\ncompact_warn_percent = 20\ncompact_auto_percent = 90\n[endpoints.gateway]\nmodels = [\"model-b\"]\n",
+    )
+    .unwrap();
+    let Synced::Changed {
+        changes, pinned, ..
+    } = settings.sync(Level::User)
+    else {
+        panic!("not synced")
+    };
+    assert!(pinned.is_empty());
+    let keys: Vec<&str> = changes.iter().map(|c| c.setting.key).collect();
+    assert_eq!(keys, ["auto.compact_auto_percent"]);
 }

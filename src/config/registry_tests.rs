@@ -229,6 +229,7 @@ fn every_setting_layers_as_it_always_did() {
                 workspace: table_with(setting.key, layers[1]),
                 cli: table_with(setting.key, layers[2]),
                 project: table_with(setting.key, layers[3]),
+                replaced: Vec::new(),
             };
             write(&home, &tables.user);
             write(&realm, &tables.workspace);

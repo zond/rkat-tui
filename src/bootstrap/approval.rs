@@ -104,17 +104,19 @@ pub(crate) fn load_layers(
     scope: &RuntimeScope,
     args: &Args,
 ) -> Result<(config::Layered, Vec<String>), TuiError> {
-    let cli_layer = ConfigOverlay::from_args(args)?.rules_file()?;
+    let overlay = ConfigOverlay::from_args(args)?;
+    let cli_layer = overlay.rules_file()?;
     let realm_dir = scope.realm_root();
     let mut notices = Vec::new();
     // The realm lives under the config directory, out of the agent's
     // confined shell's reach (the start refuses a plan that reaches it) and
     // a clone's: its `tui.toml` is the user's.
-    let layered = config::load_layered_with(
+    let layered = config::load_layered_replacing(
         &realm_dir,
         Some(&scope.global.rules_file()),
         &scope.context_root.join(".rkat"),
         cli_layer.as_ref(),
+        overlay.replaced(),
     )
     .map_err(crate::approval::ApprovalError::from)?;
     notices.extend(layered.notices.iter().map(ToString::to_string));
@@ -169,6 +171,14 @@ pub(crate) async fn build(
         None => {
             let probe = layered.settings.classifier_probe && source.llm_override.is_none();
             let named = classifier_model(&layered.settings, &source.model);
+            // A classifier model its endpoint's list does not allow stops
+            // the start, as the agent's own model does.
+            let (endpoint, target) = classifier_target(&named, &source);
+            endpoint.check_model(&target).map_err(|err| {
+                TuiError::from(crate::endpoints::EndpointError::from(
+                    crate::endpoints::ModelRefError::from(err),
+                ))
+            })?;
             let build = classifier_builder(
                 &source,
                 layered.settings.classifier_tools,
@@ -367,6 +377,12 @@ fn classifier_builder(
         let root = root.clone();
         let events = events.clone();
         Box::pin(async move {
+            // `endpoints.<name>.models` holds for the classifier too: at
+            // start, `/auto model`, `/set auto.classifier_model`, a file's
+            // change of it; the checks run on the classifier built here.
+            endpoint
+                .check_model(&model)
+                .map_err(|err| format!("{err}; pick one of them with /auto model"))?;
             let client = match llm_override {
                 Some(client) => client,
                 None => factory

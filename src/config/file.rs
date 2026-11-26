@@ -366,6 +366,14 @@ pub struct EndpointSection {
     /// `openai` dialect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_style: Option<ApiStyle>,
+    /// `endpoints.<name>.models`: the only models of the endpoint any
+    /// agent, helper or classifier may run on (the endpoint's own ids). It
+    /// replaces the endpoint's live listing. The user's, the workspace's and
+    /// the command line's lists add up, as `instructions.files` do; `--replace`
+    /// drops the lower layers' ([`crate::overlay`]). An empty list is refused
+    /// at start ([`crate::endpoints::EndpointError::EmptyModels`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<String>>,
 }
 
 impl fmt::Debug for EndpointSection {
@@ -377,12 +385,14 @@ impl fmt::Debug for EndpointSection {
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("priority", &self.priority)
             .field("api_style", &self.api_style)
+            .field("models", &self.models)
             .finish()
     }
 }
 
 impl EndpointSection {
-    /// Overwrite every field `other` sets.
+    /// Overwrite every field `other` sets; its `models` add to these (an
+    /// id listed twice once).
     pub fn merge_from(&mut self, other: &Self) {
         let Self {
             dialect,
@@ -391,7 +401,16 @@ impl EndpointSection {
             api_key,
             priority,
             api_style,
+            models,
         } = other;
+        if let Some(more) = models {
+            let list = self.models.get_or_insert_with(Vec::new);
+            for id in more {
+                if !list.contains(id) {
+                    list.push(id.clone());
+                }
+            }
+        }
         if dialect.is_some() {
             self.dialect.clone_from(dialect);
         }

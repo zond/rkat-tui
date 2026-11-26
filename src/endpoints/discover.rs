@@ -7,6 +7,30 @@ use super::*;
 #[derive(Debug, Clone, Default)]
 pub struct EndpointRegistry {
     endpoints: Vec<Endpoint>,
+    /// `endpoints.<built-in>.models` by built-in endpoint name, for a
+    /// built-in endpoint added later ([`Self::add_keyless_builtins`]).
+    builtin_lists: BTreeMap<String, Vec<String>>,
+}
+
+/// Whether `section` sets `models` and nothing else (what a built-in
+/// endpoint's table may set).
+fn only_models(section: &EndpointSection) -> bool {
+    let EndpointSection {
+        dialect,
+        base_url,
+        api_key_env,
+        api_key,
+        priority,
+        api_style,
+        models,
+    } = section;
+    models.is_some()
+        && dialect.is_none()
+        && base_url.is_none()
+        && api_key_env.is_none()
+        && api_key.is_none()
+        && priority.is_none()
+        && api_style.is_none()
 }
 
 impl EndpointRegistry {
@@ -15,7 +39,10 @@ impl EndpointRegistry {
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_endpoints(endpoints: Vec<Endpoint>) -> Self {
-        Self { endpoints }
+        Self {
+            endpoints,
+            builtin_lists: BTreeMap::new(),
+        }
     }
 
     /// The built-in endpoints that resolve (a binding for the provider on
@@ -56,18 +83,38 @@ impl EndpointRegistry {
         {
             return Err(EndpointError::InlineApiKey { name: name.clone() });
         }
+        if let Some(name) = configured.iter().find_map(|(name, layered)| {
+            layered
+                .section
+                .models
+                .as_ref()
+                .is_some_and(Vec::is_empty)
+                .then_some(name)
+        }) {
+            return Err(EndpointError::EmptyModels { name: name.clone() });
+        }
+        // A built-in endpoint's table may carry its list, and nothing else.
+        let builtin_lists: BTreeMap<String, Vec<String>> = configured
+            .iter()
+            .filter(|(name, layered)| {
+                BUILTIN_NAMES.contains(&name.as_str()) && layered.origin != RuleOrigin::Project
+            })
+            .filter_map(|(name, layered)| Some((name.clone(), layered.section.models.clone()?)))
+            .collect();
         let mut endpoints = Vec::new();
         for dialect in WireDialect::ALL {
             if let Some(creds) = resolve_builtin(config, dialect.into(), realm, &env) {
-                endpoints.push(Endpoint::builtin(
-                    dialect,
-                    creds.base_url,
-                    creds.api_key.unwrap_or_default(),
-                ));
+                endpoints.push(
+                    Endpoint::builtin(dialect, creds.base_url, creds.api_key.unwrap_or_default())
+                        .with_models(builtin_lists.get(dialect.as_str()).cloned()),
+                );
             }
         }
         let mut notices = Vec::new();
         for (name, layered) in configured {
+            if builtin_lists.contains_key(name) && only_models(&layered.section) {
+                continue;
+            }
             match configured_endpoint(name, layered, &env) {
                 Ok(endpoint) => endpoints.push(endpoint),
                 Err(reason) => notices.push(Notice::EndpointSkipped {
@@ -76,7 +123,13 @@ impl EndpointRegistry {
                 }),
             }
         }
-        Ok((Self { endpoints }, notices))
+        Ok((
+            Self {
+                endpoints,
+                builtin_lists,
+            },
+            notices,
+        ))
     }
 
     /// Add each built-in endpoint missing from the registry, keyless (a host
@@ -89,7 +142,8 @@ impl EndpointRegistry {
                 let at = index.min(self.endpoints.len());
                 self.endpoints.insert(
                     at,
-                    Endpoint::builtin(dialect, None, SecretString::default()),
+                    Endpoint::builtin(dialect, None, SecretString::default())
+                        .with_models(self.builtin_lists.get(dialect.as_str()).cloned()),
                 );
             }
         }
@@ -172,6 +226,7 @@ pub(super) fn configured_endpoint(
         api_key: _,
         priority,
         api_style,
+        models,
     } = &layered.section;
     if !is_valid_endpoint_name(name) {
         return Err(EndpointSkip::InvalidName);
@@ -205,5 +260,6 @@ pub(super) fn configured_endpoint(
         var.clone(),
         priority.unwrap_or(0),
         api_style.unwrap_or_default(),
-    ))
+    )
+    .with_models(models.clone()))
 }

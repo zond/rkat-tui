@@ -388,6 +388,84 @@ pub struct Layers {
     pub cli: Table,
     /// The project's `.rkat/tui.toml`.
     pub project: Table,
+    /// The keys the command line gives with `--replace`: the user's and
+    /// the workspace's tables never hold them (they are dropped when a
+    /// file is read, at start and on every change), so the command line's
+    /// value stands alone for the daemon's life.
+    pub replaced: Vec<KeyPath>,
+}
+
+/// A dotted key as its segments (a quoted segment may hold a `.`:
+/// `pricing."gpt-5.4".input`).
+pub type KeyPath = Vec<String>;
+
+/// `path` as it is written on the command line: segments joined by `.`,
+/// one that is not a bare name quoted.
+#[must_use]
+pub fn path_words(path: &[String]) -> String {
+    path.iter()
+        .map(|segment| {
+            if crate::endpoints::is_valid_endpoint_name(segment) {
+                segment.clone()
+            } else {
+                format!("\"{segment}\"")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// Remove the value at `path` from `table` (tables left empty stay); the
+/// value removed.
+pub fn remove_path(table: &mut Table, path: &[String]) -> Option<Value> {
+    let (last, parents) = path.split_last()?;
+    let mut at = table;
+    for part in parents {
+        at = at.get_mut(part)?.as_table_mut()?;
+    }
+    at.remove(last)
+}
+
+/// The value at `path` of `table`.
+#[must_use]
+pub fn value_at<'a>(table: &'a Table, path: &[String]) -> Option<&'a Value> {
+    let (first, rest) = path.split_first()?;
+    let mut value = table.get(first)?;
+    for part in rest {
+        value = value.as_table()?.get(part)?;
+    }
+    Some(value)
+}
+
+/// Whether `a` and `b` overlap: one is `b` itself, inside it or holds it
+/// (`endpoints.gateway` and `endpoints.gateway.models`).
+#[must_use]
+pub fn paths_overlap(a: &[String], b: &[String]) -> bool {
+    a.iter().zip(b).all(|(x, y)| x == y)
+}
+
+/// `table` without the values at `replaced`, and the paths it held.
+#[must_use]
+pub fn without_replaced(table: &Table, replaced: &[KeyPath]) -> (Table, Vec<KeyPath>) {
+    let mut out = table.clone();
+    let mut held = Vec::new();
+    for path in replaced {
+        if remove_path(&mut out, path).is_some() {
+            held.push(path.clone());
+            // A table the removal left empty goes too (an empty
+            // `[endpoints.<name>]` would define the endpoint in that layer).
+            for depth in (1..path.len()).rev() {
+                let parent = &path[..depth];
+                if value_at(&out, parent)
+                    .and_then(Value::as_table)
+                    .is_some_and(Table::is_empty)
+                {
+                    remove_path(&mut out, parent);
+                }
+            }
+        }
+    }
+    (out, held)
 }
 
 impl Layers {
@@ -1326,10 +1404,10 @@ pub static SECTIONS: &[Section] = &[
     },
     Section {
         key: "endpoints.<name>",
-        about: "`dialect`, `base_url`, `api_key_env`, `priority`, `api_style` (an inline `api_key` is refused).",
+        about: "`dialect`, `base_url`, `api_key_env`, `priority`, `api_style` (an inline `api_key` is refused), `models` (the only model ids the endpoint may run, in place of its live list; the layers' lists add up, `[]` is refused; a built-in endpoint's table may set only `models`).",
         project: "may not set it",
         applies: "at the next start",
-        flags: "`--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]`",
+        flags: "`--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]`, `--replace 'endpoints.<name>.models=[\"<id>\"]'`",
         commands: "—",
     },
     Section {

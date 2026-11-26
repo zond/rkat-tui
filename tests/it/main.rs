@@ -40,6 +40,7 @@ mod daemon;
 mod deferral;
 mod drift_pins;
 mod e2e_classifier;
+mod endpoint_models;
 mod file_tools;
 mod forks;
 mod helper_endings;

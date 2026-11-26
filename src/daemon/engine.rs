@@ -171,12 +171,19 @@ fn side_clients(
     factory: meerkat::AgentFactory,
     config: meerkat_core::Config,
     llm_override: Option<Arc<dyn meerkat::LlmClient>>,
+    endpoints: Arc<crate::endpoints::EndpointRegistry>,
 ) -> super::btw::SideClients {
     Arc::new(move |identity| {
         let factory = factory.clone();
         let config = config.clone();
         let llm_override = llm_override.clone();
+        // `/btw` asks the agent's model: its endpoint's list must allow it
+        // (a conversation resumed on a model the list does not allow).
+        let allowed = endpoints
+            .check_identity(&identity)
+            .map_err(|err| format!("{err}; pick an allowed model with /model"));
         Box::pin(async move {
+            allowed?;
             match llm_override {
                 Some(client) => Ok(client),
                 None => factory
@@ -281,7 +288,13 @@ pub fn compose(
     let skill_tools = Arc::new(crate::tools::SkillToolDispatcher::new(
         Arc::clone(&skills) as Arc<dyn crate::tools::SkillHost>
     ));
-    let side_clients = side_clients(factory.clone(), effective.clone(), llm_override.clone());
+    let allowed = Arc::new(endpoints.clone());
+    let side_clients = side_clients(
+        factory.clone(),
+        effective.clone(),
+        llm_override.clone(),
+        Arc::clone(&allowed),
+    );
     let runtime = session_runtime(RuntimeParts {
         factory,
         effective: &effective,
@@ -290,6 +303,7 @@ pub fn compose(
         realm_id: &scope.realm_id,
         backend: backend.as_str(),
         llm_override,
+        endpoints: allowed,
     })?;
 
     let realm_root = scope.realm_root();
@@ -743,6 +757,8 @@ struct RuntimeParts<'a> {
     realm_id: &'a str,
     backend: &'a str,
     llm_override: Option<Arc<dyn meerkat::LlmClient>>,
+    /// The endpoints whose lists every agent's request is checked against.
+    endpoints: Arc<crate::endpoints::EndpointRegistry>,
 }
 
 /// The session runtime over the realm, as `rkat-rpc` composes it.
@@ -755,6 +771,7 @@ fn session_runtime(parts: RuntimeParts<'_>) -> Result<Arc<SessionRuntime>, Daemo
         realm_id,
         backend,
         llm_override,
+        endpoints,
     } = parts;
     persistence.require_hosting_mode(effective.storage.hosting_mode())?;
     let config_store = Arc::clone(realm_config) as Arc<dyn ConfigStore>;
@@ -778,8 +795,9 @@ fn session_runtime(parts: RuntimeParts<'_>) -> Result<Arc<SessionRuntime>, Daemo
     runtime.set_default_llm_client(llm_override);
     // Every agent's and helper's requests carry tool schemas every dialect
     // accepts (a Gemini model behind an OpenAI-compatible proxy refuses a
-    // property without a `type`).
-    runtime.set_agent_llm_client_decorator(Some(super::schema_compat::decorator()));
+    // property without a `type`), and none goes out on a model its
+    // endpoint's `endpoints.<name>.models` does not allow.
+    runtime.set_agent_llm_client_decorator(Some(super::schema_compat::decorator(endpoints)));
     Ok(Arc::new(runtime))
 }
 

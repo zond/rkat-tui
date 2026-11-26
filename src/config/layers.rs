@@ -144,6 +144,14 @@ pub enum Notice {
         /// Why.
         why: String,
     },
+    /// The user's or the workspace's file sets a key the command line
+    /// gives with `--replace`: the file's value is not used.
+    Replaced {
+        /// The key, as written on the command line.
+        key: String,
+        /// The file.
+        path: PathBuf,
+    },
 }
 
 impl fmt::Display for Notice {
@@ -232,6 +240,11 @@ impl fmt::Display for Notice {
                 "instructions.files: {} is skipped ({why}); new conversations and helpers are built without it",
                 path.display()
             ),
+            Self::Replaced { key, path } => write!(
+                f,
+                "{key} in {} is not used: the command line gives it with --replace, which drops every file's value of it while this daemon runs",
+                path.display()
+            ),
         }
     }
 }
@@ -316,15 +329,39 @@ pub fn load_layered(
 /// # Errors
 ///
 /// Returns [`RulesError`] when a file cannot be read or parsed.
+#[cfg(any(test, feature = "test-support"))]
 pub fn load_layered_with(
     realm_dir: &Path,
     global_rules_file: Option<&Path>,
     project_rkat_dir: &Path,
     cli: Option<&RulesFile>,
 ) -> Result<Layered, RulesError> {
+    load_layered_replacing(realm_dir, global_rules_file, project_rkat_dir, cli, &[])
+}
+
+/// [`load_layered_with`] where the command line gives the keys of
+/// `replaced` with `--replace`: the user's and the workspace's files are
+/// read without them (a notice names each one a file held), so the
+/// command line's value stands alone; [`Layered::layers`] keeps the keys
+/// for the daemon's syncs.
+///
+/// # Errors
+///
+/// As [`load_layered_with`].
+pub fn load_layered_replacing(
+    realm_dir: &Path,
+    global_rules_file: Option<&Path>,
+    project_rkat_dir: &Path,
+    cli: Option<&RulesFile>,
+    replaced: &[super::registry::KeyPath],
+) -> Result<Layered, RulesError> {
     let mut layered = Layered::of_defaults(Typed::defaults()?);
-    let global = global_rules_file.map(RulesFile::load).transpose()?;
-    let realm = RulesFile::load(&realm_dir.join(RULES_FILE_NAME))?;
+    layered.layers.replaced = replaced.to_vec();
+    let global = match global_rules_file {
+        Some(path) => Some(layered.load_user_file(path)?),
+        None => None,
+    };
+    let realm = layered.load_user_file(&realm_dir.join(RULES_FILE_NAME))?;
     let mut user_layers: Vec<(RuleOrigin, &RulesFile)> = Vec::new();
     if let Some(global) = &global {
         layered.layers.user = global.table();
@@ -337,7 +374,7 @@ pub fn load_layered_with(
         user_layers.push((RuleOrigin::Cli, cli));
     }
     for (origin, file) in &user_layers {
-        layered.apply_user_layer(*origin, file);
+        layered.apply_user_layer(*origin, file)?;
     }
     layered.take_lasting(super::lasting::Lasting::of(&user_layers))?;
     let project_path = project_rkat_dir.join(RULES_FILE_NAME);
@@ -540,7 +577,24 @@ impl Layered {
     /// Apply one of the user's own layers (global, realm, command line)
     /// over the ones before it: its prices, thinking and endpoints (its
     /// permissions are [`Self::take_lasting`]'s).
-    fn apply_user_layer(&mut self, origin: RuleOrigin, file: &RulesFile) {
+    fn apply_user_layer(&mut self, origin: RuleOrigin, file: &RulesFile) -> Result<(), RulesError> {
+        if let Some((name, _)) = file
+            .endpoints
+            .iter()
+            .find(|(_, section)| section.models.as_ref().is_some_and(Vec::is_empty))
+        {
+            return Err(RulesError::EmptyModels {
+                endpoint: name.clone(),
+                place: match origin {
+                    RuleOrigin::Global => "your tui.toml",
+                    RuleOrigin::Realm => "this workspace's tui.toml",
+                    RuleOrigin::Cli | RuleOrigin::Project | RuleOrigin::Session => {
+                        "the command line"
+                    }
+                }
+                .to_string(),
+            });
+        }
         for (model, section) in &file.pricing {
             self.pricing
                 .entry(model.clone())
@@ -563,6 +617,38 @@ impl Layered {
                     origin,
                 });
         }
+        Ok(())
+    }
+
+    /// The user's or the workspace's file at `path`, read without the keys
+    /// the command line gives with `--replace` (each one the file held is a
+    /// notice).
+    ///
+    /// # Errors
+    ///
+    /// As [`RulesFile::load`].
+    fn load_user_file(&mut self, path: &Path) -> Result<RulesFile, RulesError> {
+        let file = RulesFile::load(path)?;
+        if self.layers.replaced.is_empty() {
+            return Ok(file);
+        }
+        let (table, held) = super::registry::without_replaced(&file.table(), &self.layers.replaced);
+        if held.is_empty() {
+            return Ok(file);
+        }
+        for key in &held {
+            self.notices.push(Notice::Replaced {
+                key: super::registry::path_words(key),
+                path: path.to_path_buf(),
+            });
+        }
+        // What is left of a file that read is one.
+        toml::Value::Table(table)
+            .try_into()
+            .map_err(|source| RulesError::Parse {
+                path: path.to_path_buf(),
+                source,
+            })
     }
 
     /// Apply the project file (`.rkat/tui.toml`, which a cloned repository

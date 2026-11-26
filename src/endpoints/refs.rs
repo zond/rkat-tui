@@ -195,6 +195,36 @@ pub fn parse_model_ref(
     index: &ModelIndex,
     current: Option<&str>,
 ) -> Result<EndpointRef, ModelRefError> {
+    let reference = resolve_model_ref(s, endpoints, index, current)?;
+    check_ref(&reference, endpoints)?;
+    Ok(reference)
+}
+
+/// `reference` may run: its endpoint's `endpoints.<name>.models` (if any)
+/// lists its model. An endpoint not among `endpoints` has no list here.
+///
+/// # Errors
+///
+/// [`ModelRefError::NotAllowed`].
+pub fn check_ref(reference: &EndpointRef, endpoints: &[Endpoint]) -> Result<(), ModelRefError> {
+    match endpoints.iter().find(|e| e.name == reference.endpoint) {
+        Some(endpoint) => endpoint
+            .check_model(&reference.model)
+            .map_err(ModelRefError::from),
+        None => Ok(()),
+    }
+}
+
+/// [`parse_model_ref`] before the allowed models are checked: a listed
+/// endpoint that does not allow the id is no candidate for it, and a
+/// fallback that lands on one is refused by the check, never passed on to
+/// another endpoint.
+fn resolve_model_ref(
+    s: &str,
+    endpoints: &[Endpoint],
+    index: &ModelIndex,
+    current: Option<&str>,
+) -> Result<EndpointRef, ModelRefError> {
     let s = s.trim();
     if s.is_empty() {
         return Err(ModelRefError::Empty);
@@ -210,7 +240,11 @@ pub fn parse_model_ref(
     }
     let listing: Vec<&Endpoint> = endpoints
         .iter()
-        .filter(|e| index.lists(&e.name, s))
+        // An endpoint's `endpoints.<name>.models` is its list, fetched or not.
+        .filter(|e| match e.allowed_models() {
+            Some(allowed) => allowed.iter().any(|id| id == s),
+            None => index.lists(&e.name, s),
+        })
         .collect();
     if let Some(endpoint) = tie_break(s, &listing, current) {
         return Ok(EndpointRef::new(endpoint.name.clone(), s));

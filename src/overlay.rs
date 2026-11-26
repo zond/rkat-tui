@@ -21,7 +21,7 @@ use toml::{Table, Value};
 use crate::approval::rules::RuleOrigin;
 use crate::cli::Args;
 use crate::config::RulesFile;
-use crate::config::registry::{FlagValue, SETTINGS, lookup};
+use crate::config::registry::{FlagValue, KeyPath, SETTINGS, lookup, remove_path};
 use crate::endpoints::{ApiStyle, WireDialect, is_valid_endpoint_name};
 
 /// A command-line setting that cannot be applied. Fatal at start-up.
@@ -50,6 +50,8 @@ impl OverlayError {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConfigOverlay {
     table: Table,
+    /// The keys given with `--replace`, in order (each once).
+    replaced: Vec<KeyPath>,
 }
 
 impl ConfigOverlay {
@@ -88,7 +90,38 @@ impl ConfigOverlay {
                 overlay.add(flag.flag, &argument, nested(&path, value))?;
             }
         }
+        // Last, so a key given with `--replace` holds exactly its value,
+        // whatever `--set` or a flag gave it.
+        for arg in &args.replace {
+            let (path, value) = parse_key_value("--replace", arg)?;
+            // Replacing the endpoints table, or one endpoint's, would drop
+            // an `--endpoint-def` of it without a word.
+            if let Some(def) = dropped_endpoint_def(&path, &args.endpoint_def) {
+                return Err(OverlayError::new(
+                    "--replace",
+                    arg,
+                    format!(
+                        "it would drop --endpoint-def {def}: define the endpoint in the --replace table (dialect, base_url, api_key_env, models), or replace only its models"
+                    ),
+                ));
+            }
+            let segments: Vec<&str> = path.iter().map(String::as_str).collect();
+            let piece = nested(&segments, value);
+            validate(&piece).map_err(|reason| OverlayError::new("--replace", arg, reason))?;
+            remove_path(&mut overlay.table, &path);
+            merge(&mut overlay.table, piece);
+            if !overlay.replaced.contains(&path) {
+                overlay.replaced.push(path);
+            }
+        }
         Ok(overlay)
+    }
+
+    /// The keys given with `--replace`: every lower layer's value of each
+    /// is dropped ([`crate::config::load_layered_replacing`]).
+    #[must_use]
+    pub fn replaced(&self) -> &[KeyPath] {
+        &self.replaced
     }
 
     /// Validate `piece` on its own, then merge it in.
@@ -153,14 +186,26 @@ pub fn merge(base: &mut Table, overlay: Table) {
 ///
 /// A missing `=` or an invalid key path.
 pub fn parse_set(arg: &str) -> Result<Table, OverlayError> {
+    let (path, value) = parse_key_value("--set", arg)?;
+    let path: Vec<&str> = path.iter().map(String::as_str).collect();
+    Ok(nested(&path, value))
+}
+
+/// `key.path=value` of `flag` (`--set`, `--replace`) as its key's segments
+/// and the value.
+///
+/// # Errors
+///
+/// As [`parse_set`].
+fn parse_key_value(flag: &'static str, arg: &str) -> Result<(KeyPath, Value), OverlayError> {
     let (path, raw) = split_key_path(arg)
-        .ok_or_else(|| OverlayError::new("--set", arg, "expected <dotted.key>=<value>"))?;
+        .ok_or_else(|| OverlayError::new(flag, arg, "expected <dotted.key>=<value>"))?;
     if let Some(bad) = path.iter().find(|segment| match segment {
         KeySegment::Bare(name) => !is_valid_endpoint_name(name),
         KeySegment::Quoted(name) => name.is_empty(),
     }) {
         return Err(OverlayError::new(
-            "--set",
+            flag,
             arg,
             format!(
                 "invalid key segment `{}` (letters, digits, `_`, `-`, or \"quoted\"; `.` separates)",
@@ -168,8 +213,11 @@ pub fn parse_set(arg: &str) -> Result<Table, OverlayError> {
             ),
         ));
     }
-    let path: Vec<&str> = path.iter().map(KeySegment::as_str).collect();
-    Ok(nested(&path, parse_value(raw)))
+    let path = path
+        .iter()
+        .map(|segment| segment.as_str().to_string())
+        .collect();
+    Ok((path, parse_value(raw)))
 }
 
 /// One segment of a `--set` key path.
@@ -261,6 +309,25 @@ fn rule_table(list: &str, arg: &str, flag: &'static str) -> Result<Table, Overla
     Ok(root)
 }
 
+/// The `--endpoint-def` a `--replace` of `path` would drop: any of them
+/// for the whole `endpoints` table, the one of that name for
+/// `endpoints.<name>`. A deeper path (`endpoints.<name>.models`) drops
+/// none.
+fn dropped_endpoint_def<'a>(path: &[String], defs: &'a [String]) -> Option<&'a str> {
+    let [first, rest @ ..] = path else {
+        return None;
+    };
+    if first != "endpoints" || rest.len() > 1 {
+        return None;
+    }
+    defs.iter()
+        .map(String::as_str)
+        .find(|def| match rest.first() {
+            Some(name) => def.split_once('=').is_some_and(|(n, _)| n == name),
+            None => true,
+        })
+}
+
 /// `--endpoint-def name=dialect=url[,key_env=VAR][,api_style=STYLE]` →
 /// `[endpoints.name]`. The options follow the URL in either order; an
 /// `api_style` other than `responses` or `chat_completions` is refused
@@ -343,6 +410,21 @@ fn validate(piece: &Table) -> Result<(), String> {
             return Err(format!(
                 "unknown dialect `{dialect}` (expected anthropic, openai or gemini)"
             ));
+        }
+        if let Some(models) = &section.models {
+            if models.is_empty() {
+                return Err(format!(
+                    "endpoints.{name}.models is an empty list: list the models the endpoint may run, e.g. [\"model-a\"]"
+                ));
+            }
+            if let Some(blank) = models
+                .iter()
+                .find(|id| id.trim().is_empty() || id.trim() != id.as_str())
+            {
+                return Err(format!(
+                    "endpoints.{name}.models holds {blank:?}: each entry is a model id as the endpoint lists it, without spaces"
+                ));
+            }
         }
     }
     for (model, section) in &file.pricing {

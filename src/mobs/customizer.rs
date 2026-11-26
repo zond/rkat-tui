@@ -539,6 +539,14 @@ fn helper_binding(
 
 /// The endpoint `owner` runs through: the configured one of its binding,
 /// else (no binding) the built-in one of its model's dialect.
+/// A helper's model refused by its endpoint's list, with what the agent
+/// can do.
+fn not_allowed_for_helper(err: &crate::endpoints::ModelNotAllowed) -> String {
+    format!(
+        "the helper was not started: {err}. Call again naming one of those models as the helper's `model`, or leave `model` out to run it on yours"
+    )
+}
+
 fn own_endpoint<'a>(
     owner: &Owner,
     endpoints: &'a [crate::endpoints::Endpoint],
@@ -656,6 +664,11 @@ fn choose_model(
     let plain = plain_model(&raw, own, endpoints, source)?;
     if let Some(refused) = models.refusal(&plain, source) {
         return Err(refused);
+    }
+    if let Some(endpoint) = own {
+        endpoint
+            .check_model(&plain)
+            .map_err(|err| not_allowed_for_helper(&err))?;
     }
     let engine = match (source, own.filter(|endpoint| endpoint.is_self_hosted())) {
         // The owner's own model is its engine id already.
@@ -994,6 +1007,15 @@ impl HelperCustomizer {
         let model = chosen
             .or_else(|| requested_model(spec))
             .unwrap_or_else(|| owner.model.clone());
+        // `endpoints.<name>.models`: a fresh helper runs through its
+        // owner's endpoint, whose list must allow its model (a rebuilt one
+        // keeps its model; its requests meet the same list in the agents'
+        // client decorator, `crate::daemon::schema_compat`).
+        if fresh && let Some(endpoint) = own_endpoint(owner, &self.endpoints) {
+            endpoint
+                .check_model(endpoint.own_model(&model))
+                .map_err(|err| refuse(not_allowed_for_helper(&err)))?;
+        }
         let mut path = owner.path.clone();
         path.push(label.clone());
         let tag = HelperTag {

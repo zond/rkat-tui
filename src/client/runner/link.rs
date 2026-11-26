@@ -776,7 +776,17 @@ pub(super) async fn first_endpoint(
     };
     let decision = launch::decide(launch::probe_any(files).await, mode);
     match (decision, spawn) {
-        (Decision::Attach(endpoint), _) => Ok(endpoint),
+        (Decision::Attach(endpoint), plan) => {
+            // A daemon that runs already keeps its own command line: this
+            // run's settings never reach it.
+            if let Some(text) = plan.and_then(|plan| launch::unapplied_warning(&plan.argv)) {
+                let _ = ui_tx.send(Msg::Notice {
+                    level: NoticeLevel::Warn,
+                    text,
+                });
+            }
+            Ok(endpoint)
+        }
         (Decision::Start, Some(plan)) => {
             let _ = ui_tx.send(Msg::Status(StatusUpdate::Connection(LinkState::Starting)));
             let (pid, mut exited) = launch::spawn_daemon(

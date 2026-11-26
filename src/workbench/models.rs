@@ -78,7 +78,9 @@ impl Workbench {
             .cloned()
             .collect();
         let lister = Arc::clone(&self.lister);
-        self.model_fetch = Some(tokio::spawn(async move { lister(endpoints).await }));
+        self.model_fetch = Some(tokio::spawn(async move {
+            crate::models::fetch_lists(&lister, endpoints).await
+        }));
         if announce {
             self.notice(NoticeLevel::Info, "fetching the model lists…");
         }

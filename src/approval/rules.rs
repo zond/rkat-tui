@@ -74,6 +74,17 @@ pub enum RulesError {
         /// The rule's tool pattern.
         tool: String,
     },
+    /// `endpoints.<name>.models = []`: a list of no models is taken for a
+    /// mistake, not for "no model may run".
+    #[error(
+        "endpoints.{endpoint}.models is an empty list (in {place}): list the models the endpoint may run, e.g. [\"model-a\"], or remove the key to allow every model it lists"
+    )]
+    EmptyModels {
+        /// The endpoint.
+        endpoint: String,
+        /// The layer that gave it, in words.
+        place: String,
+    },
 }
 
 /// Whether a rule allows or denies.

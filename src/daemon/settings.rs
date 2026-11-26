@@ -27,8 +27,9 @@ use toml::Value;
 
 use super::protocol::{SectionRow, SettingRow, SettingsList};
 use crate::config::registry::{
-    Applies, Layers, Level, ProjectRule, Resolved, SECTIONS, SETTINGS, Setting, other_sections_of,
-    permissions_of, put, sections_of, show, with_scalars,
+    Applies, KeyPath, Layers, Level, ProjectRule, Resolved, SECTIONS, SETTINGS, Setting,
+    other_sections_of, path_words, paths_overlap, permissions_of, put, sections_of, show, value_at,
+    with_scalars, without_replaced,
 };
 use crate::config::{RulesFile, SettingsFiles};
 
@@ -45,6 +46,9 @@ pub struct Settings {
     changing: Mutex<()>,
     /// The error each file that does not read was last reported with.
     unreadable: Mutex<std::collections::HashMap<Level, String>>,
+    /// What each file last held at the keys given with `--replace` (which
+    /// the layers never hold), to tell a change of them once.
+    pinned_seen: Mutex<std::collections::HashMap<Level, Vec<(KeyPath, Value)>>>,
 }
 
 /// What reading a settings file again found.
@@ -64,6 +68,10 @@ pub enum Synced {
         /// Another section changed (endpoints, prices, thinking; or any
         /// section of the project's file): it applies at the next start.
         later: bool,
+        /// Keys the daemon's command line gives with `--replace` whose
+        /// value in the file changed: not taken (as written on the command
+        /// line).
+        pinned: Vec<String>,
     },
     /// It does not read, for the first time with this error: its last
     /// good values stay in force.
@@ -106,13 +114,50 @@ impl Settings {
     /// with the project's file at `project`.
     #[must_use]
     pub fn new(files: Option<SettingsFiles>, layers: Layers, project: Option<PathBuf>) -> Self {
+        // What the files hold at the `--replace` keys now: the start told
+        // it (a notice per key), so a sync tells only a change of it.
+        let mut seen = std::collections::HashMap::new();
+        if let Some(files) = files.as_ref().filter(|_| !layers.replaced.is_empty()) {
+            for level in [Level::User, Level::Workspace] {
+                if let Ok(read) = RulesFile::load(files.of(level).path()) {
+                    let raw = read.table();
+                    let held: Vec<(KeyPath, Value)> = layers
+                        .replaced
+                        .iter()
+                        .filter_map(|path| Some((path.clone(), value_at(&raw, path)?.clone())))
+                        .collect();
+                    seen.insert(level, held);
+                }
+            }
+        }
         Self {
             files,
             project,
             layers: RwLock::new(layers),
             changing: Mutex::new(()),
             unreadable: Mutex::default(),
+            pinned_seen: Mutex::new(seen),
         }
+    }
+
+    /// The `--replace` key of the daemon's command line that `key` falls
+    /// under or holds, as written there.
+    #[must_use]
+    pub fn pinned(&self, key: &str) -> Option<String> {
+        let path: KeyPath = key.split('.').map(str::to_string).collect();
+        self.layers
+            .read()
+            .replaced
+            .iter()
+            .find(|replaced| paths_overlap(replaced, &path))
+            .map(|replaced| path_words(replaced))
+    }
+
+    /// `table` (a user's or a workspace's file as read) without the keys
+    /// given with `--replace`.
+    fn unpinned(&self, table: &toml::Table) -> toml::Table {
+        let replaced = self.layers.read().replaced.clone();
+        without_replaced(table, &replaced).0
     }
 
     /// The file of `level` (the user's, the workspace's or the project's).
@@ -197,6 +242,12 @@ impl Settings {
             .as_ref()
             .ok_or_else(|| "this daemon has no tui.toml to write".to_string())?;
         let file = files.of(level);
+        if let Some(replaced) = self.pinned(setting.key) {
+            return Err(format!(
+                "{} was not changed: the daemon's command line gives {replaced} with --replace, which holds it until the daemon restarts; restart without that --replace to change it",
+                setting.key
+            ));
+        }
         let _one = self.changing.lock();
         let before = self.resolve(setting);
         let mut candidate = self.layers();
@@ -239,8 +290,9 @@ impl Settings {
         };
         match RulesFile::load(&path) {
             Ok(read) => {
+                let read = self.unpinned(&read.table());
                 if let Some(table) = self.layers.write().of_mut(level) {
-                    *table = with_scalars(&read.table(), table);
+                    *table = with_scalars(&read, table);
                 }
             }
             Err(err) => tracing::warn!(%err, "a settings file could not be read again"),
@@ -285,7 +337,27 @@ impl Settings {
                 return Synced::Unreadable(why);
             }
         };
-        let table = read.table();
+        let raw = read.table();
+        // The keys given with `--replace` stay the command line's: a file's
+        // value of one is never taken, and a change of it is told once.
+        let (table, pinned) = if level == Level::Project {
+            (raw, Vec::new())
+        } else {
+            let replaced = self.layers.read().replaced.clone();
+            let now: Vec<(KeyPath, Value)> = replaced
+                .iter()
+                .filter_map(|path| Some((path.clone(), value_at(&raw, path)?.clone())))
+                .collect();
+            let mut seen = self.pinned_seen.lock();
+            let before = seen.get(&level).cloned().unwrap_or_default();
+            let pinned: Vec<String> = now
+                .iter()
+                .filter(|entry| !before.contains(entry))
+                .map(|(path, _)| path_words(path))
+                .collect();
+            seen.insert(level, now);
+            (without_replaced(&raw, &replaced).0, pinned)
+        };
         let mut layers = self.layers.write();
         let before = layers.clone();
         let mut after = before.clone();
@@ -325,13 +397,14 @@ impl Settings {
                 })
             })
             .collect();
-        if changes.is_empty() && !permissions && !later {
+        if changes.is_empty() && !permissions && !later && pinned.is_empty() {
             Synced::Same
         } else {
             Synced::Changed {
                 changes,
                 permissions,
                 later,
+                pinned,
             }
         }
     }

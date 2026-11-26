@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[command(name = "rkat-tui", version = crate::BUILD)]
 #[command(about = "Interactive terminal coding harness for Meerkat")]
 #[command(
-    after_help = "Examples:\n  rkat-tui\n  rkat-tui \"fix the failing test\"\n  rkat-tui --resume last\n  rkat-tui --attach=~/src/other -c\n  rkat-tui --attach=~/src/other\n  rkat-tui --model claude-sonnet-4-6 --classifier-model anthropic:claude-haiku-5-5\n  rkat-tui --endpoint-def litellm=openai=http://localhost:4000,key_env=LITELLM_KEY --model litellm:gpt-5.5\n  rkat-tui --allow 'shell=cargo nextest run*' --set auto.compact=auto\n\nEvery tui.toml setting can be given with --set <dotted.key>=<value> (TOML value; bare words are strings).\nCommand-line settings apply after the global and realm tui.toml, before the project file's deny rules.\n\nWhich daemon and which agent are two separate choices: --attach picks the daemon (default: this workspace's), -c or --resume picks an agent in it to join; with neither, you get a new agent."
+    after_help = "Examples:\n  rkat-tui\n  rkat-tui \"fix the failing test\"\n  rkat-tui --resume last\n  rkat-tui --attach=~/src/other -c\n  rkat-tui --attach=~/src/other\n  rkat-tui --model claude-sonnet-4-6 --classifier-model anthropic:claude-haiku-5-5\n  rkat-tui --endpoint-def litellm=openai=http://localhost:4000,key_env=LITELLM_KEY --model litellm:gpt-5.5\n  rkat-tui --allow 'shell=cargo nextest run*' --set auto.compact=auto\n\nEvery tui.toml setting can be given with --set <dotted.key>=<value> (TOML value; bare words are strings).\n--replace <dotted.key>=<value> sets a key to exactly that value: the files' values of it (and a --set of it) are dropped, lists included, and /set or a file edit do not change it while the daemon runs.\n  rkat-tui --endpoint-def gateway=openai=https://llm.example.net,key_env=GATEWAY_KEY --replace 'endpoints.gateway.models=[\"model-a\", \"model-b\"]'\nCommand-line settings apply after the global and realm tui.toml, before the project file's deny rules.\n\nWhich daemon and which agent are two separate choices: --attach picks the daemon (default: this workspace's), -c or --resume picks an agent in it to join; with neither, you get a new agent."
 )]
 pub struct Args {
     /// Optional initial prompt to send as the first turn.
@@ -31,6 +31,15 @@ pub struct Args {
     /// scalars replace, arrays append. Repeatable.
     #[arg(long = "set", value_name = "KEY=VALUE")]
     pub set: Vec<String>,
+
+    /// Set a tui.toml key to exactly this value for this run: as `--set`,
+    /// but the values of every lower layer (your tui.toml, the workspace's,
+    /// and a `--set` of the same key) are dropped, not merged, and the key
+    /// stays so while the daemon this run starts lives (`/set` and file
+    /// edits do not change it). For a scalar it is the same as `--set`.
+    /// `--replace 'endpoints.gateway.models=["model-a"]'`. Repeatable.
+    #[arg(long = "replace", value_name = "KEY=VALUE")]
+    pub replace: Vec<String>,
 
     /// Add an allow rule for this run: `<tool>[=<glob>]` (e.g.
     /// `shell=cargo nextest run*`). Repeatable.

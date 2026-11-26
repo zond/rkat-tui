@@ -106,13 +106,15 @@ impl Local {
         if model.trim().is_empty() {
             return Err(format!("{key} needs a model after the endpoint"));
         }
-        if self.parts.endpoints.get(&endpoint).is_none() {
+        let Some(target) = self.parts.endpoints.get(&endpoint) else {
             return Err(format!(
                 "the classifier model was not changed: this daemon has no endpoint `{endpoint}` (it has {}); define it under [endpoints.{endpoint}] in your own tui.toml and restart the daemon, or pick a model of one it has",
                 self.parts.endpoints.names().join(", ")
             ));
-        }
-        Ok(())
+        };
+        target
+            .check_model(model.trim())
+            .map_err(|err| format!("the classifier model was not changed: {err}"))
     }
 
     /// The hook of `setting`, run when its value in force (or its layer)
@@ -354,7 +356,20 @@ impl Local {
                 changes,
                 permissions,
                 later,
+                pinned,
             } => {
+                for key in pinned {
+                    self.audit(crate::daemon::audit::Line::event(
+                        "setting_pinned",
+                        format!("{key}: {path} changed it; --replace holds it"),
+                    ));
+                    self.tell_every_client(
+                        true,
+                        format!(
+                            "{key} in {file} ({path}) changed, but is not taken: the daemon's command line gives it with --replace, which holds it until the daemon restarts"
+                        ),
+                    );
+                }
                 for change in changes {
                     let words = |resolved: &crate::config::registry::Resolved| {
                         crate::daemon::settings::in_force_words(change.setting, resolved)

@@ -52,6 +52,7 @@ fn rules_file_round_trip() {
                 api_key: None,
                 priority: Some(2),
                 api_style: Some(crate::endpoints::ApiStyle::ChatCompletions),
+                models: Some(vec!["model-a".into()]),
             },
         )]),
         pricing: PricingTable {
@@ -1538,4 +1539,267 @@ fn the_prepare_instruction_layers_like_the_compaction_keys() {
     file.set("auto.compact_prepare", None).unwrap();
     let written = RulesFile::load(&realm.join(RULES_FILE_NAME)).unwrap();
     assert_eq!(written.auto.unwrap().compact_prepare, None);
+}
+
+/// The layers of a test: the user's file, the workspace's, the project's
+/// (each a `tui.toml` text) and a command line, loaded as the start does
+/// (`--replace` keys dropped from the files).
+fn layered_from(
+    user: &str,
+    workspace: &str,
+    project_text: &str,
+    argv: &[&str],
+) -> Result<Layered, String> {
+    use clap::Parser as _;
+    let tmp = tempfile::tempdir().unwrap();
+    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+    let global = tmp.path().join("global.toml");
+    std::fs::write(&global, user).unwrap();
+    write(&realm, workspace);
+    write(&project, project_text);
+    let mut args = vec!["rkat-tui"];
+    args.extend_from_slice(argv);
+    let overlay = crate::overlay::ConfigOverlay::from_args(&crate::cli::Args::parse_from(args))
+        .map_err(|err| err.to_string())?;
+    let cli_layer = overlay.rules_file().map_err(|err| err.to_string())?;
+    load_layered_replacing(
+        &realm,
+        Some(&global),
+        &project,
+        cli_layer.as_ref(),
+        overlay.replaced(),
+    )
+    .map_err(|err| err.to_string())
+}
+
+/// `endpoints.<name>.models` of the layered endpoint `name`.
+fn models_of(layered: &Layered, name: &str) -> Option<Vec<String>> {
+    layered.endpoints.get(name)?.section.models.clone()
+}
+
+/// `--set endpoints.<name>.models` reaches an endpoint `--endpoint-def`
+/// defines on the same command line, whichever comes first; the user's,
+/// the workspace's and the command line's lists add up (each id once), as
+/// `instructions.files` do; a project file may not set it (its endpoint
+/// table is ignored with a notice).
+#[test]
+fn endpoint_models_layer_like_the_other_lists_and_meet_endpoint_def_in_either_order() {
+    let def = "gateway=openai=https://llm.example.net,key_env=GATEWAY_KEY";
+    let set = r#"endpoints.gateway.models=["model-a", "model-b"]"#;
+    for argv in [
+        ["--endpoint-def", def, "--set", set],
+        ["--set", set, "--endpoint-def", def],
+    ] {
+        let layered = layered_from("", "", "", &argv).unwrap();
+        let section = &layered.endpoints["gateway"].section;
+        assert_eq!(section.dialect.as_deref(), Some("openai"), "{argv:?}");
+        assert_eq!(section.api_key_env.as_deref(), Some("GATEWAY_KEY"));
+        assert_eq!(
+            section.models,
+            Some(vec!["model-a".to_string(), "model-b".to_string()]),
+            "{argv:?}"
+        );
+    }
+    // A file's list alone.
+    let layered = layered_from(
+        "[endpoints.gateway]\nmodels = [\"model-c\"]\n",
+        "",
+        "",
+        &["--endpoint-def", def],
+    )
+    .unwrap();
+    assert_eq!(
+        models_of(&layered, "gateway"),
+        Some(vec!["model-c".to_string()])
+    );
+    // `--set` adds to the files'.
+    let layered = layered_from(
+        "[endpoints.gateway]\nmodels = [\"model-c\"]\n",
+        "[endpoints.gateway]\nmodels = [\"model-d\", \"model-a\"]\n",
+        "",
+        &["--endpoint-def", def, "--set", set],
+    )
+    .unwrap();
+    assert_eq!(
+        models_of(&layered, "gateway"),
+        Some(
+            ["model-c", "model-d", "model-a", "model-b"]
+                .map(String::from)
+                .to_vec()
+        )
+    );
+    // The project's is never taken.
+    let layered = layered_from(
+        "",
+        "",
+        "[endpoints.gateway]\nmodels = [\"model-z\"]\n",
+        &["--endpoint-def", def, "--set", set],
+    )
+    .unwrap();
+    assert_eq!(
+        models_of(&layered, "gateway"),
+        Some(vec!["model-a".to_string(), "model-b".to_string()])
+    );
+    assert!(
+        layered
+            .notices
+            .iter()
+            .any(|n| matches!(n, Notice::ProjectEndpointIgnored { name, .. } if name == "gateway")),
+        "{:?}",
+        layered.notices
+    );
+}
+
+/// `--replace` sets a key to exactly its value: a list key's lists of the
+/// user's and the workspace's files are dropped (this key and
+/// `instructions.files`), each with a notice; a `--set` of the same key is
+/// dropped whichever comes first; for a scalar it is `--set`.
+#[test]
+fn replace_drops_every_lower_layers_value() {
+    let def = "gateway=openai=https://llm.example.net,key_env=GATEWAY_KEY";
+    let replace = r#"endpoints.gateway.models=["model-a", "model-b"]"#;
+    let files =
+        "[endpoints.gateway]\nmodels = [\"model-c\"]\n[instructions]\nfiles = [\"/opt/user.md\"]\n";
+    let layered = layered_from(
+        files,
+        "[endpoints.gateway]\nmodels = [\"model-d\"]\n",
+        "",
+        &[
+            "--endpoint-def",
+            def,
+            "--replace",
+            replace,
+            "--replace",
+            r#"instructions.files=["/opt/launcher.md"]"#,
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        models_of(&layered, "gateway"),
+        Some(vec!["model-a".to_string(), "model-b".to_string()])
+    );
+    // The other fields of the endpoint stay the command line's.
+    assert_eq!(
+        layered.endpoints["gateway"].section.base_url.as_deref(),
+        Some("https://llm.example.net")
+    );
+    assert_eq!(
+        super::registry::instruction_files_in_force(&layered.layers),
+        [PathBuf::from("/opt/launcher.md")]
+    );
+    let notices: Vec<String> = layered.notices.iter().map(ToString::to_string).collect();
+    for key in ["endpoints.gateway.models", "instructions.files"] {
+        assert!(
+            notices
+                .iter()
+                .any(|n| n.starts_with(key) && n.contains("--replace")),
+            "{key}: {notices:?}"
+        );
+    }
+    assert_eq!(layered.layers.replaced.len(), 2);
+    // `--replace` beats `--set` of the same key, in either order.
+    let set = r#"endpoints.gateway.models=["model-x"]"#;
+    for argv in [
+        ["--endpoint-def", def, "--set", set, "--replace", replace],
+        ["--endpoint-def", def, "--replace", replace, "--set", set],
+    ] {
+        let layered = layered_from(files, "", "", &argv).unwrap();
+        assert_eq!(
+            models_of(&layered, "gateway"),
+            Some(vec!["model-a".to_string(), "model-b".to_string()]),
+            "{argv:?}"
+        );
+    }
+    // A scalar: `--replace` is `--set`.
+    let user = "[auto]\ncompact_warn_percent = 50\n";
+    let by_set = layered_from(user, "", "", &["--set", "auto.compact_warn_percent=60"]).unwrap();
+    let by_replace =
+        layered_from(user, "", "", &["--replace", "auto.compact_warn_percent=60"]).unwrap();
+    assert_eq!(by_set.settings, by_replace.settings);
+    assert_eq!(by_replace.settings.compact_warn_percent, 60);
+    // A bad value is refused naming the flag.
+    let err = layered_from("", "", "", &["--replace", "auto.compact_warn_percent=0"]).unwrap_err();
+    assert!(
+        err.starts_with("--replace auto.compact_warn_percent=0"),
+        "{err}"
+    );
+}
+
+/// `--replace` of the whole `endpoints` table leaves exactly the endpoints
+/// it defines: one a file defines (which could reach the same server with
+/// no list) is dropped with a notice. With an `--endpoint-def` it is
+/// refused, since it would drop that definition without a word; so is a
+/// `--replace` of that one endpoint's table.
+#[test]
+fn replace_of_the_endpoints_table_drops_the_files_endpoints() {
+    let table = r#"endpoints={gateway={dialect="openai", base_url="https://llm.example.net", api_key_env="GATEWAY_KEY", models=["model-a"]}}"#;
+    let user = "[endpoints.other]\ndialect = \"openai\"\nbase_url = \"https://llm.example.net\"\napi_key_env = \"GATEWAY_KEY\"\n";
+    let layered = layered_from(user, user, "", &["--replace", table]).unwrap();
+    assert_eq!(
+        layered.endpoints.keys().collect::<Vec<_>>(),
+        ["gateway"],
+        "{:?}",
+        layered.notices
+    );
+    assert_eq!(
+        models_of(&layered, "gateway"),
+        Some(vec!["model-a".to_string()])
+    );
+    assert!(
+        layered
+            .notices
+            .iter()
+            .any(|n| n.to_string().starts_with("endpoints in ")),
+        "{:?}",
+        layered.notices
+    );
+    let def = "gateway=openai=https://llm.example.net,key_env=GATEWAY_KEY";
+    for replace in [table, r#"endpoints.gateway={models=["model-a"]}"#] {
+        let err =
+            layered_from("", "", "", &["--endpoint-def", def, "--replace", replace]).unwrap_err();
+        assert!(err.contains("it would drop --endpoint-def"), "{err}");
+    }
+    // Another endpoint's table may be replaced beside the definition.
+    layered_from(
+        "",
+        "",
+        "",
+        &[
+            "--endpoint-def",
+            def,
+            "--replace",
+            r#"endpoints.other={dialect="openai", base_url="https://b.example.net"}"#,
+        ],
+    )
+    .unwrap();
+}
+
+/// `endpoints.<name>.models = []` is refused at start as a mistake, on the
+/// command line (`--set` or `--replace`) and in a file.
+#[test]
+fn an_empty_model_list_is_refused() {
+    for flag in ["--set", "--replace"] {
+        let err = layered_from("", "", "", &[flag, "endpoints.gateway.models=[]"]).unwrap_err();
+        assert!(
+            err.contains("endpoints.gateway.models is an empty list"),
+            "{flag}: {err}"
+        );
+    }
+    let err = layered_from("[endpoints.gateway]\nmodels = []\n", "", "", &[]).unwrap_err();
+    assert!(
+        err.contains("endpoints.gateway.models is an empty list (in your tui.toml)"),
+        "{err}"
+    );
+    // A list that is empty only before `--replace` drops it is not a mistake.
+    let layered = layered_from(
+        "[endpoints.gateway]\nmodels = []\n",
+        "",
+        "",
+        &["--replace", r#"endpoints.gateway.models=["model-a"]"#],
+    )
+    .unwrap();
+    assert_eq!(
+        models_of(&layered, "gateway"),
+        Some(vec!["model-a".to_string()])
+    );
 }

@@ -15485,3 +15485,130 @@ default to the agent and a fresh helper, withheld by
 `agent.web_search=false`, a call through the gate),
 `confinement::web_fetch_is_offered_only_where_the_shell_has_the_network`,
 `tool_costs::an_agent_s_request_carries_every_tool_definition`.
+
+## `endpoints.<name>.models` and `--replace` (2026-11-26)
+
+A launcher behind a gateway must keep every agent off models the
+gateway's key reaches but a repository's policy forbids. Before, an
+endpoint's models came live from its `/v1/models` and a typed id no list
+had went to the only endpoint, so `/model <any id>` reached it.
+
+Decisions:
+
+- **The setting** is a field of the `[endpoints.<name>]` table
+  (`EndpointSection::models`, the endpoint's own ids). `Endpoint` carries
+  it (`allowed_models`, `allows`, `check_model` → `ModelNotAllowed`, whose
+  text names `endpoints.<name>.models`, the id and the allowed ids, cut
+  after twelve). `[]` is a typed start-up error in the layering
+  (`RulesError::EmptyModels`, naming the layer) and in the overlay's
+  check (naming the flag); `EndpointError::EmptyModels` guards
+  `discover` too.
+- **Layering.** Before this, `[endpoints.<name>]` fields replaced per
+  field across the user's layers and no field was a list; of the list
+  settings, `instructions.files` (`Kind::Paths`) adds up across layers
+  and `helpers.allow_models` (`Kind::Patterns`) replaces. The owner's
+  rule is that `--set` adds and `--replace` replaces, so `models` adds up
+  like `instructions.files` (`EndpointSection::merge_from`, each id
+  once). A project file defines no endpoint at all (its tables were
+  ignored with `ProjectEndpointIgnored` already), so it cannot set this.
+- **`--replace <key>=<value>`** is generic, by key path, not by the
+  registry's kinds: the overlay merges it last (after `--set` and the
+  dedicated flags, so it wins whichever comes first) after removing the
+  path from the command line's table, and records the path
+  (`ConfigOverlay::replaced`); `load_layered_replacing` reads the user's
+  and the workspace's files without those paths (`registry::without_replaced`,
+  an emptied parent table removed with it, so an empty
+  `[endpoints.<name>]` does not define the endpoint in that layer), with a
+  `Notice::Replaced` per value dropped. For a scalar that is `--set`
+  (the command line wins anyway). `Layers::replaced` keeps the paths for
+  the daemon.
+- **The pin.** `daemon::settings::Settings`: `write_value` refuses a key a
+  replaced path overlaps (`pinned`), naming `--replace`; `sync` and
+  `adopt_held` drop the replaced paths from a file as read, so the held
+  layers (scalars and `lasting()` permissions alike) never take them;
+  a file's change of one is `Synced::Changed { pinned }`, told to every
+  client once per change (`pinned_seen`, seeded at start from the files,
+  whose values the start's notices named). Endpoints are read at start
+  only (the realm's endpoint registry is fixed for the daemon's life; a
+  file change of `[endpoints]` was and is "at the next start"), so the
+  list could not widen live even before the pin. Not pinned: a permission
+  the approval engine itself adds while running (an `A` in the dialog)
+  applies on top of a `--replace`d rule list; only what is read from the
+  files is held.
+- **Listing.** `models::fetch_lists` is the one way the lister is called
+  (start-up, `/model`'s fetch): `models::restricted` makes a listed
+  endpoint's list exactly its ids in its order. The fetch still runs for
+  the listed ids' window, output limit, capabilities and LiteLLM prices
+  (an alias registered for a self-hosted model carries them); an id it
+  reports that the list lacks is dropped with its price, a listed id it
+  lacks is bare, a failed fetch leaves the bare list. The fetch only adds
+  facts, never an id.
+- **Bare ids.** `parse_model_ref` treats a listed endpoint's list as its
+  index whether fetched or not, never takes a listed endpoint that does
+  not allow the id as a candidate, and checks the result (`check_ref`): a
+  catalog or "only endpoint" fallback that lands on a listed endpoint
+  refuses rather than passing the id on.
+- **Built-in endpoints.** A built-in name's table that sets only `models`
+  gives the built-in endpoint its list (no skip notice); with other
+  fields it is skipped as before and its list still applies, so a typo
+  never drops a list silently. `EndpointRegistry::builtin_lists` carries
+  it to `add_keyless_builtins` too.
+- **The backstop.** The agents' client decorator
+  (`daemon::schema_compat::decorator`, applied by the runtime to every
+  agent-facing client it builds, helpers' and hot swaps' included) gets
+  the endpoint registry and checks every request
+  (`prepare_request_attempt[_authorized]`, `stream_response[_authorized]`)
+  with `check_client`: the client's `controller_model_selection` (model,
+  provider, self-hosted server, auth binding) names the route
+  (`EndpointRegistry::check_route`: the binding's endpoint, else the
+  alias's server, else the built-in endpoint of the provider); a client
+  that reports none, or whose current model is not the selection's, is
+  checked on every endpoint of its provider's dialect
+  (`check_unrouted`, erring toward the lists). The refusal is an
+  `AgentError::ConfigError` the run's failure shows; an engine fallback
+  onto a forbidden model is refused at `commit_model_fallback`. The raw
+  `LlmClient`s rkat-tui builds itself are built in two places only, each
+  for one checked identity: the classifier's builder
+  (`bootstrap::approval::classifier_builder`: start, `/auto model`, the
+  checks, the checkpoint reviews, which run on the classifier) and
+  `/btw`'s (`daemon::engine::side_clients`). The model listing is not a
+  model call.
+
+Every path that chooses or uses a model:
+
+| Path | Where it is checked | Test |
+|---|---|---|
+| `--model`, `agent.model`, the provider's default, `--endpoint`'s first listed | `endpoints::plan_startup` (`check_ref`), `bootstrap::plan_model` | `endpoints::tests::the_start_up_model_meets_the_list`, `bootstrap::tests::the_start_up_plan_takes_the_allowed_models`, `endpoint_models::a_start_up_model_outside_the_list_stops_the_start` |
+| `/model <ref>`, its picker, completion (client) | `parse_model_ref` + `models::restricted` | `endpoints::tests::references_meet_the_list`, `models::tests::a_listed_endpoint_lists_exactly_its_models`, `endpoint_models::model_switches_outside_the_list_are_refused` |
+| `rkat/set_model` (any client) | `daemon::local::model::set_model` | `endpoint_models::model_switches_outside_the_list_are_refused` |
+| `assign`'s and `mob_spawn_member`'s model, `helpers.model`, a member of an agent's own mob, council participants | `mobs::customizer::choose_model` and `HelperCustomizer::admit` (every fresh spawn) | `endpoint_models::a_helper_on_a_model_outside_the_list_is_refused_with_what_to_do` |
+| forks | the parent's model (checked where the parent's was) and the backstop | the backstop's tests |
+| a rebuilt or kept helper's stored model | the backstop (a rebuild is not refused) | `schema_compat::tests::the_decorator_refuses_a_model_its_endpoint_does_not_allow` |
+| `--classifier-model`, `auto.classifier_model` at start | `bootstrap::approval::build` (stops the start) | `endpoint_models::a_start_up_model_outside_the_list_stops_the_start` |
+| `/auto model`, `/set auto.classifier_model`, a file's change of it | `Local::precheck`, `switch_classifier_model`, the classifier builder | `endpoint_models::model_switches_outside_the_list_are_refused` |
+| `/auto check`, `--classifier-check`, the start-up probe, checkpoint reviews | they run on the classifier built for a checked model | (by reading) |
+| `/btw` | `daemon::engine::side_clients` | `endpoint_models::a_stored_model_now_outside_the_list_is_refused_at_its_next_request` |
+| compaction | the session's own client: the backstop | (by reading) |
+| `/resume`, `-c`, a restored agent on a stored model now forbidden | opens; its runs meet the backstop | `endpoint_models::a_stored_model_now_outside_the_list_is_refused_at_its_next_request` |
+| the engine's model fallback | `SchemaCompat::commit_model_fallback` and the backstop | `schema_compat::tests::the_decorator_refuses_a_model_its_endpoint_does_not_allow` |
+
+Engine-side routes rkat-tui does not own: a fallback chain is checked as
+above (rkat-tui sets none; a stored profile's is dropped); provider
+retries keep the client's model; the engine's fallback `web_search` tool
+(which would call a provider's default model outside the agents'
+client) is never offered by rkat-tui; a mob member spec an agent writes
+goes through the customizer; realtime and other clients are not built by
+rkat-tui. `[thinking]` keys naming unlisted models are left (harmless).
+
+Layering and pin tests: `config::tests::endpoint_models_layer_like_the_other_lists_and_meet_endpoint_def_in_either_order`,
+`config::tests::replace_drops_every_lower_layers_value`,
+`config::tests::an_empty_model_list_is_refused`,
+`daemon::settings::tests::a_replaced_key_is_pinned_against_set_and_file_edits`,
+`endpoints::tests::a_built_in_endpoint_takes_a_list_and_an_empty_list_is_refused`,
+`endpoints::tests::a_refusal_names_the_setting_the_model_and_the_allowed_ids`,
+`endpoints::tests::an_engine_identity_meets_its_endpoints_list`,
+`client::launch::tests::every_engine_flag_reaches_the_daemon` (`--replace`
+forwarded), `client::launch::tests::a_running_daemon_is_said_to_keep_its_own_settings`
+(attaching to a daemon already running warns that this run's
+`--replace`, `--set`, `--endpoint-def` do not apply: the daemon decides,
+and one started without a list has none).

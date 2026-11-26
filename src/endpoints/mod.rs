@@ -59,6 +59,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use std::sync::Arc;
 
 use meerkat_core::auth::{AuthConstraints, AuthMetadataDefaults};
 use meerkat_core::config::{
@@ -78,6 +79,7 @@ use crate::approval::rules::RuleOrigin;
 use crate::bootstrap::credentials::{ProviderCredentials, resolve_builtin};
 use crate::config::{EndpointSection, LayeredEndpoint, Notice};
 
+mod allowed;
 mod discover;
 mod project;
 mod refs;
@@ -296,6 +298,45 @@ pub struct Endpoint {
     pub priority: i64,
     /// What it is to the engine.
     kind: Kind,
+    /// `endpoints.<name>.models`: the only models that may run here (the
+    /// endpoint's own ids); `None`: every model it serves.
+    models: Option<Arc<[String]>>,
+}
+
+/// A model outside its endpoint's `endpoints.<name>.models`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "model `{model}` is not allowed on endpoint `{endpoint}`: endpoints.{endpoint}.models allows only {}",
+    AllowedList(.allowed)
+)]
+pub struct ModelNotAllowed {
+    /// The endpoint.
+    pub endpoint: String,
+    /// The model asked for (the endpoint's id of it).
+    pub model: String,
+    /// The models the endpoint allows.
+    pub allowed: Vec<String>,
+}
+
+/// How many allowed ids a refusal names before it counts the rest.
+const ALLOWED_SHOWN: usize = 12;
+
+/// Allowed ids, comma-separated, cut after [`ALLOWED_SHOWN`].
+struct AllowedList<'a>(&'a [String]);
+
+impl fmt::Display for AllowedList<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, id) in self.0.iter().take(ALLOWED_SHOWN).enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str(id)?;
+        }
+        if self.0.len() > ALLOWED_SHOWN {
+            write!(f, " and {} more", self.0.len() - ALLOWED_SHOWN)?;
+        }
+        Ok(())
+    }
 }
 
 /// What an endpoint is to the engine.
@@ -332,6 +373,57 @@ impl Endpoint {
             api_key,
             priority: 0,
             kind: Kind::Builtin,
+            models: None,
+        }
+    }
+
+    /// The endpoint with `endpoints.<name>.models` (`None`: unrestricted).
+    #[must_use]
+    pub fn with_models(mut self, models: Option<Vec<String>>) -> Self {
+        self.models = models.map(Arc::from);
+        self
+    }
+
+    /// The only models that may run here (`None`: every one it serves).
+    #[must_use]
+    pub fn allowed_models(&self) -> Option<&[String]> {
+        self.models.as_deref()
+    }
+
+    /// Whether `model` (the endpoint's own id) may run here.
+    #[must_use]
+    pub fn allows(&self, model: &str) -> bool {
+        self.models
+            .as_deref()
+            .is_none_or(|allowed| allowed.iter().any(|id| id == model))
+    }
+
+    /// `model` (the endpoint's own id) may run here, or why not.
+    ///
+    /// # Errors
+    ///
+    /// [`ModelNotAllowed`], naming the setting, the id and the allowed ids.
+    pub fn check_model(&self, model: &str) -> Result<(), ModelNotAllowed> {
+        if self.allows(model) {
+            return Ok(());
+        }
+        Err(ModelNotAllowed {
+            endpoint: self.name.clone(),
+            model: model.to_string(),
+            allowed: self.models.as_deref().unwrap_or_default().to_vec(),
+        })
+    }
+
+    /// The endpoint's own id of the engine's model `engine_model`: an
+    /// alias `<name>:<model>` of a self-hosted endpoint is `model`.
+    #[must_use]
+    pub fn own_model<'a>(&self, engine_model: &'a str) -> &'a str {
+        match self.kind {
+            Kind::SelfHosted { .. } => engine_model
+                .strip_prefix(self.name.as_str())
+                .and_then(|rest| rest.strip_prefix(':'))
+                .unwrap_or(engine_model),
+            Kind::Builtin | Kind::Gateway { .. } => engine_model,
         }
     }
 
@@ -360,6 +452,7 @@ impl Endpoint {
                 WireDialect::OpenAi => Kind::SelfHosted { key_env, api_style },
                 WireDialect::Anthropic | WireDialect::Gemini => Kind::Gateway { key_env },
             },
+            models: None,
         }
     }
 
@@ -523,6 +616,10 @@ pub enum ModelRefError {
         /// Configured endpoint names.
         known: Vec<String>,
     },
+    /// The model resolves to an endpoint whose `endpoints.<name>.models`
+    /// does not list it.
+    #[error(transparent)]
+    NotAllowed(#[from] ModelNotAllowed),
 }
 
 /// Why an endpoint cannot be used, or its projection into the realm config
@@ -589,6 +686,14 @@ pub enum EndpointError {
     /// The patch for the realm document could not be built.
     #[error("cannot encode the realm config patch: {0}")]
     Encode(#[source] serde_json::Error),
+    /// `endpoints.<name>.models = []` (the layering refuses it first).
+    #[error(
+        "endpoints.{name}.models is an empty list: list the models the endpoint may run, or remove the key"
+    )]
+    EmptyModels {
+        /// The endpoint.
+        name: String,
+    },
     /// The endpoint to take the first model of lists none.
     #[error(
         "no model selected and endpoint `{endpoint}` offers none ({why}); pass --model {endpoint}:<id>"

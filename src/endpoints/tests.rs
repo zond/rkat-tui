@@ -236,6 +236,7 @@ fn section(dialect: Option<&str>, key_env: Option<&str>, key: Option<&str>) -> E
         api_key: key.map(str::to_string),
         priority: None,
         api_style: None,
+        models: None,
     }
 }
 
@@ -973,4 +974,249 @@ async fn an_uncatalogued_model_runs_only_on_a_self_hosted_endpoint() {
             .await
             .unwrap()
     );
+}
+
+/// `gateway` (self-hosted) allowing `model-a` and `model-b`, beside the
+/// unrestricted built-in `anthropic`.
+fn listed() -> Vec<Endpoint> {
+    vec![
+        ep("anthropic", WireDialect::Anthropic, true),
+        ep("gateway", WireDialect::OpenAi, false)
+            .with_models(Some(vec!["model-a".into(), "model-b".into()])),
+    ]
+}
+
+/// The refusal names the setting, the id and the allowed ids, cut after
+/// twelve.
+#[test]
+fn a_refusal_names_the_setting_the_model_and_the_allowed_ids() {
+    let endpoints = listed();
+    let err = endpoints[1].check_model("model-z").unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "model `model-z` is not allowed on endpoint `gateway`: endpoints.gateway.models allows only model-a, model-b"
+    );
+    assert!(endpoints[1].check_model("model-a").is_ok());
+    assert!(endpoints[0].check_model("anything").is_ok());
+    let many: Vec<String> = (0..15).map(|n| format!("m{n}")).collect();
+    let long = ep("gateway", WireDialect::OpenAi, false).with_models(Some(many));
+    let text = long.check_model("x").unwrap_err().to_string();
+    assert!(text.ends_with("m10, m11 and 3 more"), "{text}");
+}
+
+/// `/model`'s and `--model`'s references: an explicit `gateway:<id>` the
+/// list does not allow is refused; a bare id the list allows goes to the
+/// endpoint without any fetched list; a bare id no list has never falls
+/// through to the listed endpoint, not even as the only endpoint.
+#[test]
+fn references_meet_the_list() {
+    let endpoints = listed();
+    let none = ModelIndex::default();
+    assert_eq!(
+        parse_model_ref("model-b", &endpoints, &none, None).unwrap(),
+        r("gateway", "model-b")
+    );
+    for refused in ["gateway:model-z", "gateway:gateway:model-a"] {
+        assert!(
+            matches!(
+                parse_model_ref(refused, &endpoints, &none, None),
+                Err(ModelRefError::NotAllowed(_))
+            ),
+            "{refused}"
+        );
+    }
+    // A fetched list that names a forbidden id does not make it a candidate.
+    let mut index = ModelIndex::default();
+    index.insert("gateway", ["model-z"]);
+    assert!(matches!(
+        parse_model_ref("model-z", &endpoints, &index, None),
+        Err(ModelRefError::Ambiguous { .. })
+    ));
+    // The catalog's built-in endpoint still takes a catalogued id.
+    assert_eq!(
+        parse_model_ref(ANTHROPIC_MODEL, &endpoints, &none, None).unwrap(),
+        r("anthropic", ANTHROPIC_MODEL)
+    );
+    // The only endpoint, listed: an unlisted id is refused, not passed on.
+    let only = vec![endpoints[1].clone()];
+    let err = parse_model_ref("model-z", &only, &none, None).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("endpoints.gateway.models allows only model-a, model-b"),
+        "{err}"
+    );
+    // A catalogued id on an only, listed endpoint of its dialect as well.
+    let only =
+        vec![ep("gw", WireDialect::Anthropic, false).with_models(Some(vec!["model-a".into()]))];
+    assert!(matches!(
+        parse_model_ref(ANTHROPIC_MODEL, &only, &none, None),
+        Err(ModelRefError::NotAllowed(_))
+    ));
+}
+
+/// The start-up model: `--model`, the configured model and the provider's
+/// default each stop the start when the list does not allow them; the
+/// first listed model of a listed endpoint is the list's first.
+#[test]
+fn the_start_up_model_meets_the_list() {
+    let endpoints = listed();
+    let request = |model: Option<&'static str>,
+                   endpoint: Option<&'static str>,
+                   config: &'static str| StartupRequest {
+        model,
+        endpoint,
+        config_model: config,
+    };
+    assert!(matches!(
+        plan_startup_t(request(Some("gateway:model-z"), None, ""), &endpoints),
+        Err(ModelRefError::NotAllowed(_))
+    ));
+    assert!(matches!(
+        plan_startup_t(request(Some("model-z"), Some("gateway"), ""), &endpoints),
+        Err(ModelRefError::NotAllowed(_))
+    ));
+    assert!(matches!(
+        plan_startup_t(request(None, None, "gateway:model-z"), &endpoints),
+        Err(ModelRefError::NotAllowed(_))
+    ));
+    assert_eq!(
+        plan_startup_t(request(Some("model-a"), None, ""), &endpoints).unwrap(),
+        StartupPlan::Resolved(r("gateway", "model-a"))
+    );
+    // A listed built-in endpoint whose provider default is not listed.
+    let builtin = vec![
+        ep("anthropic", WireDialect::Anthropic, true).with_models(Some(vec!["model-a".into()])),
+    ];
+    assert!(matches!(
+        plan_startup_t(request(None, None, ""), &builtin),
+        Err(ModelRefError::NotAllowed(_))
+    ));
+}
+
+/// Which endpoint an engine identity runs on, and its list: the binding
+/// names a configured one; a self-hosted alias names its server; no
+/// binding is the built-in endpoint of the provider; a client with no
+/// route is checked on every endpoint of its provider's dialect.
+#[test]
+fn an_engine_identity_meets_its_endpoints_list() {
+    let gateway =
+        ep("gw", WireDialect::Anthropic, false).with_models(Some(vec![ANTHROPIC_MODEL.into()]));
+    let proxy = ep("gateway", WireDialect::OpenAi, false).with_models(Some(vec!["model-a".into()]));
+    let registry = EndpointRegistry::from_endpoints(vec![
+        ep("anthropic", WireDialect::Anthropic, true),
+        gateway.clone(),
+        proxy.clone(),
+    ]);
+    // The proxy's alias, by binding and by server.
+    assert!(
+        registry
+            .check_route(
+                "gateway:model-a",
+                Provider::SelfHosted,
+                Some("gateway"),
+                proxy.binding().as_ref()
+            )
+            .is_ok()
+    );
+    assert!(
+        registry
+            .check_route(
+                "gateway:model-z",
+                Provider::SelfHosted,
+                Some("gateway"),
+                None
+            )
+            .is_err()
+    );
+    assert!(
+        registry
+            .check_unrouted("gateway:model-z", Provider::SelfHosted)
+            .is_err()
+    );
+    // The gateway by its binding; the built-in endpoint without one.
+    assert!(
+        registry
+            .check_route(
+                "claude-opus-5-5",
+                Provider::Anthropic,
+                None,
+                gateway.binding().as_ref()
+            )
+            .is_err()
+    );
+    assert!(
+        registry
+            .check_route("claude-opus-5-5", Provider::Anthropic, None, None)
+            .is_ok()
+    );
+    // No route known: the gateway of the dialect could be it.
+    assert!(
+        registry
+            .check_unrouted("claude-opus-5-5", Provider::Anthropic)
+            .is_err()
+    );
+    assert!(
+        registry
+            .check_unrouted(ANTHROPIC_MODEL, Provider::Anthropic)
+            .is_ok()
+    );
+    // Another dialect's model is not the gateway's.
+    assert!(
+        registry
+            .check_unrouted(OPENAI_MODEL, Provider::OpenAI)
+            .is_ok()
+    );
+}
+
+/// A built-in endpoint's table may carry `models` alone: the list applies
+/// to the built-in endpoint (with no skip notice); with anything else the
+/// table is skipped as before, and its list still applies. `[]` is a
+/// typed start-up error.
+#[test]
+fn a_built_in_endpoint_takes_a_list_and_an_empty_list_is_refused() {
+    let config = Config::default();
+    let env = |var: &str| (var == "ANTHROPIC_API_KEY").then(|| "plainly-fake".to_string());
+    let only_list = EndpointSection {
+        models: Some(vec!["model-a".into()]),
+        ..EndpointSection::default()
+    };
+    let configured = BTreeMap::from([(
+        "anthropic".to_string(),
+        layered(only_list.clone(), RuleOrigin::Cli),
+    )]);
+    let (mut registry, notices) =
+        EndpointRegistry::discover_with(&config, None, &configured, env).unwrap();
+    assert!(notices.is_empty(), "{notices:?}");
+    assert_eq!(
+        registry.get("anthropic").unwrap().allowed_models(),
+        Some(&["model-a".to_string()][..])
+    );
+    // A keyless built-in added later carries its list too.
+    registry.add_keyless_builtins();
+    assert!(registry.get("openai").unwrap().allowed_models().is_none());
+    let with_more = EndpointSection {
+        base_url: Some("http://x".into()),
+        ..only_list
+    };
+    let configured =
+        BTreeMap::from([("anthropic".to_string(), layered(with_more, RuleOrigin::Cli))]);
+    let (registry, notices) =
+        EndpointRegistry::discover_with(&config, None, &configured, env).unwrap();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        registry
+            .get("anthropic")
+            .unwrap()
+            .allowed_models()
+            .is_some()
+    );
+    let empty = EndpointSection {
+        models: Some(Vec::new()),
+        ..section(Some("openai"), Some("ANTHROPIC_API_KEY"), None)
+    };
+    let configured = BTreeMap::from([("gateway".to_string(), layered(empty, RuleOrigin::Cli))]);
+    assert!(matches!(
+        EndpointRegistry::discover_with(&config, None, &configured, env),
+        Err(EndpointError::EmptyModels { .. })
+    ));
 }

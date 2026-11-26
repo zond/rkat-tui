@@ -647,6 +647,82 @@ pub fn live_lister() -> ModelLister {
     })
 }
 
+/// The lists of `endpoints` from `lister`, each endpoint's
+/// `endpoints.<name>.models` in place of its own listing ([`restricted`]).
+/// Every list the picker, completion, `--list` and a bare id's lookup see
+/// comes through here.
+pub async fn fetch_lists(lister: &ModelLister, endpoints: Vec<Endpoint>) -> FetchResults {
+    let results = lister(endpoints.clone()).await;
+    restricted(&endpoints, results)
+}
+
+/// `results` with each endpoint of `endpoints` that has
+/// `endpoints.<name>.models` listing exactly those ids, in the list's
+/// order: an id the fetch reported keeps its facts (window, output limit,
+/// capabilities) and its price; one it did not is listed bare; one the
+/// fetch reported that the list does not name is dropped, with its price.
+/// A failed fetch leaves the list, bare. The fetch only ever adds facts,
+/// never an id.
+#[must_use]
+pub fn restricted(endpoints: &[Endpoint], results: FetchResults) -> FetchResults {
+    let mut out: FetchResults = Vec::with_capacity(results.len());
+    for (name, result) in results {
+        let Some(allowed) = endpoints
+            .iter()
+            .find(|e| e.name == name)
+            .and_then(Endpoint::allowed_models)
+        else {
+            out.push((name, result));
+            continue;
+        };
+        let fetched = result.unwrap_or_default();
+        let models = allowed
+            .iter()
+            .map(|id| {
+                fetched
+                    .models
+                    .iter()
+                    .find(|entry| &entry.id == id)
+                    .cloned()
+                    .unwrap_or_else(|| bare_entry(id))
+            })
+            .collect();
+        let prices = fetched
+            .prices
+            .into_iter()
+            .filter(|(id, _)| allowed.contains(id))
+            .collect();
+        out.push((name, Ok(EndpointListing { models, prices })));
+    }
+    // A listed endpoint the lister was not asked or did not answer for.
+    for endpoint in endpoints {
+        if let Some(allowed) = endpoint.allowed_models()
+            && !out.iter().any(|(name, _)| *name == endpoint.name)
+        {
+            out.push((
+                endpoint.name.clone(),
+                Ok(EndpointListing {
+                    models: allowed.iter().map(|id| bare_entry(id)).collect(),
+                    prices: Vec::new(),
+                }),
+            ));
+        }
+    }
+    out
+}
+
+/// A listed id with no facts.
+fn bare_entry(id: &str) -> ModelEntry {
+    ModelEntry {
+        id: id.to_string(),
+        display_name: None,
+        source: ModelSource::Provider,
+        context_window: None,
+        max_output_tokens: None,
+        capabilities: ModelCapabilities::default(),
+    }
+}
+
 /// One endpoint's list in the [`ModelCache`]: the models, or why they could
 /// not be listed.
 pub type CachedList = Result<Vec<ModelEntry>, Arc<ListModelsError>>;
@@ -1250,5 +1326,80 @@ mod tests {
     #[ignore = "e2e: live API, requires GEMINI_API_KEY"]
     async fn e2e_list_models_gemini() {
         live(Provider::Gemini).await;
+    }
+
+    /// An endpoint with `endpoints.<name>.models` lists exactly those ids,
+    /// in the list's order: a fetched id keeps its facts and price, a
+    /// listed id the fetch lacks is bare, a fetched id the list lacks is
+    /// dropped with its price; a failed or missing fetch still lists them.
+    /// An endpoint without a list keeps its listing.
+    #[test]
+    fn a_listed_endpoint_lists_exactly_its_models() {
+        use crate::endpoints::ApiStyle;
+        let gateway = Endpoint::configured(
+            "gateway",
+            WireDialect::OpenAi,
+            Some("https://llm.example.net".into()),
+            SecretString::new("plainly-fake"),
+            "GATEWAY_KEY",
+            0,
+            ApiStyle::default(),
+        )
+        .with_models(Some(vec!["model-b".into(), "model-a".into()]));
+        let other = Endpoint::builtin(WireDialect::Anthropic, None, SecretString::new("k"));
+        let price = ModelPrice::from_per_token(1e-6, 2e-6, None, None);
+        let mut fetched_a = entry("model-a", ModelSource::Provider);
+        fetched_a.context_window = Some(64_000);
+        let listing = EndpointListing {
+            models: vec![fetched_a, entry("model-z", ModelSource::Provider)],
+            prices: vec![("model-a".into(), price), ("model-z".into(), price)],
+        };
+        let results = restricted(
+            &[gateway.clone(), other],
+            vec![
+                ("gateway".into(), Ok(listing)),
+                (
+                    "anthropic".into(),
+                    Ok(EndpointListing {
+                        models: vec![entry("claude-x", ModelSource::Provider)],
+                        prices: Vec::new(),
+                    }),
+                ),
+            ],
+        );
+        let (cache, prices) = ModelCache::from_results(results);
+        let ids: Vec<&str> = cache
+            .get("gateway")
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect();
+        assert_eq!(ids, ["model-b", "model-a"]);
+        assert_eq!(
+            cache.entry("gateway", "model-a").unwrap().context_window,
+            Some(64_000)
+        );
+        assert_eq!(
+            cache.entry("gateway", "model-b").unwrap().context_window,
+            None
+        );
+        assert_eq!(
+            prices.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            ["model-a"]
+        );
+        assert!(cache.entry("anthropic", "claude-x").is_some());
+        // A failed fetch, and none at all.
+        for results in [
+            vec![("gateway".to_string(), Err(ListModelsError::NoKey))],
+            Vec::new(),
+        ] {
+            let (cache, _) =
+                ModelCache::from_results(restricted(std::slice::from_ref(&gateway), results));
+            assert_eq!(cache.first("gateway").unwrap().id, "model-b");
+            assert!(cache.index().lists("gateway", "model-a"));
+            assert!(!cache.index().lists("gateway", "model-z"));
+        }
     }
 }
