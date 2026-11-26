@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Removed
+
+- The handling of `delegate` helpers a realm of a build before 0.1.0
+  holds (run on, retired, their answer told to their agent) and the
+  held-note separator only such builds wrote: a stored row of one is
+  read and left alone.
+
 ## [0.1.5] - 2026-11-26
 
 ### Changed

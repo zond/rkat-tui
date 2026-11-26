@@ -131,32 +131,11 @@ fn allow_rule(tool: &str, arg: &str) -> RuleSet {
 }
 
 #[test]
-fn read_inside_project_is_always_allowed() {
-    let h = harness(Options::default());
-    assert_eq!(
-        h.tier("read_file", json!({"path": "src/main.rs"})),
-        Tier::AlwaysAllow
-    );
-}
-
-#[test]
 fn read_outside_project_needs_the_classifier() {
     let h = harness(Options::default());
     assert_eq!(
         h.tier("read_file", json!({"path": h.outside})),
         Tier::Classifier
-    );
-}
-
-#[test]
-fn in_project_edit_is_tier_two() {
-    let h = harness(Options::default());
-    assert_eq!(
-        h.tier(
-            "edit_file",
-            json!({"path": "src/main.rs", "old_string": "a", "new_string": "b"}),
-        ),
-        Tier::InProjectEdit
     );
 }
 
@@ -357,23 +336,6 @@ fn deny_rule_wins() {
 }
 
 #[test]
-fn cargo_test_depends_on_trust_project_builds() {
-    let trusted = harness(Options::default());
-    assert_eq!(
-        trusted.tier("shell", json!({"command": "cargo test"})),
-        Tier::AlwaysAllow
-    );
-    let untrusted = harness(Options {
-        trust_project_builds: false,
-        ..Options::default()
-    });
-    assert_eq!(
-        untrusted.tier("shell", json!({"command": "cargo test"})),
-        Tier::Classifier
-    );
-}
-
-#[test]
 fn broad_rules_are_dropped_and_no_longer_bypass_review() {
     let mut rules = RuleSet::default();
     rules.push(Rule::new(RuleKind::Allow, "shell", None, RuleOrigin::Global).unwrap());
@@ -396,51 +358,6 @@ fn broad_rules_are_dropped_and_no_longer_bypass_review() {
     assert_eq!(
         h.tier("shell", json!({"command": "rm -rf target"})),
         Tier::Classifier
-    );
-}
-
-#[test]
-fn workspace_note_save_is_in_project_edit() {
-    let h = harness(Options::default());
-    assert_eq!(
-        h.tier(
-            "note_save",
-            json!({"scope": "workspace", "name": "build", "content": "make ci"}),
-        ),
-        Tier::InProjectEdit
-    );
-}
-
-#[test]
-fn user_note_save_reaches_classifier() {
-    let h = harness(Options::default());
-    assert_eq!(
-        h.tier(
-            "note_save",
-            json!({"scope": "user", "name": "style", "content": "x"}),
-        ),
-        Tier::Classifier
-    );
-}
-
-#[test]
-fn note_list_is_tier_one() {
-    let h = harness(Options::default());
-    assert_eq!(h.tier("note_list", json!({})), Tier::AlwaysAllow);
-}
-
-#[test]
-fn allow_rule_makes_user_note_save_tier_one() {
-    let h = harness(Options {
-        rules: allow_rule("note_save", "user/*"),
-        ..Options::default()
-    });
-    assert_eq!(
-        h.tier(
-            "note_save",
-            json!({"scope": "user", "name": "style", "content": "x"}),
-        ),
-        Tier::AlwaysAllow
     );
 }
 

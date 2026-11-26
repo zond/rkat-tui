@@ -2441,12 +2441,9 @@ pub fn composed_input(text: &str) -> Option<&'static str> {
 
 /// `text` split into the held notes and the user's words that follow
 /// them, when it is a message the daemon put held notes before
-/// (`crate::daemon::local::HELD_NOTE_SEPARATOR`, or one an earlier build
-/// wrote).
+/// (`crate::daemon::local::HELD_NOTE_SEPARATOR`).
 pub(super) fn split_held(text: &str) -> Option<(&str, &str)> {
-    let (held, words) = crate::daemon::local::HELD_NOTE_SEPARATORS
-        .iter()
-        .find_map(|separator| text.split_once(separator))?;
+    let (held, words) = text.split_once(crate::daemon::local::HELD_NOTE_SEPARATOR)?;
     Some((held.trim(), words.trim()))
 }
 

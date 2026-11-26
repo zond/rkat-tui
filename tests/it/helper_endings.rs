@@ -777,64 +777,6 @@ async fn an_assigned_helper_the_engine_restores_after_a_restart_answers_its_agen
     .await;
 }
 
-/// A realm an earlier build left with a `delegate` helper still running
-/// (the engine's own tool, withdrawn since): the helper is a durable
-/// member of its agent's implicit mob `implicit-<session id>`, seated by
-/// the mob's `delegate` profile and bound to the agent's session. The
-/// state is made here as that build's `delegate` made it, through the mob
-/// host, since no agent is offered the tool any more. At the next start
-/// the engine restores the helper and runs it again; its call ended with
-/// the old daemon, so when it finishes its answer is held for its agent
-/// (no run is started for it), it is retired, and the user's next message
-/// carries the answer.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_delegate_helper_an_earlier_build_left_finishes_and_answers_its_agent() {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    let ws = Workspace::new();
-    let helper_calls = Arc::new(AtomicUsize::new(0));
-    let restarted = Arc::new(AtomicBool::new(false));
-    let llm = restart_script(&helper_calls, &restarted, false);
-    let daemon = Running::start(&ws.root, &llm).await;
-    let owner = daemon.session.clone();
-    let name = daemon.agent.clone();
-    let mob = format!("implicit-{owner}");
-    let mut definition = meerkat_mob::MobDefinition::implicit(&owner.to_string(), common::MODEL);
-    for profile in definition.profiles.values_mut() {
-        if let meerkat_mob::ProfileBinding::Inline(profile) = profile {
-            profile.durable = true;
-        }
-    }
-    common::within(
-        daemon
-            .state()
-            .mob_create_definition_with_owner_bridge_session(definition, owner, false, false),
-    )
-    .await
-    .unwrap();
-    let handle = common::within(daemon.state().handle_for(&mob.as_str().into()))
-        .await
-        .unwrap();
-    let mut spec = meerkat_mob::SpawnMemberSpec::new("delegate", "slow");
-    spec.initial_message = Some("HELPER-TASK: runs on".into());
-    common::within(handle.spawn_spec(spec)).await.unwrap();
-    common::until(|| helper_calls.load(Ordering::SeqCst) > 0).await;
-    drop(handle);
-    daemon.stop().await;
-    restarted.store(true, Ordering::SeqCst);
-    let before = helper_calls.load(Ordering::SeqCst);
-    restored_helper_answers(
-        &ws,
-        &llm,
-        name,
-        &helper_calls,
-        before,
-        0,
-        &mob,
-        "Your helper `slow` finished.",
-    )
-    .await;
-}
-
 /// The script of the stop-and-retire tests: the helper answers
 /// `HELPER-ANSWER` at once; the agent assigns `scout`, waits, and notes
 /// the ending.

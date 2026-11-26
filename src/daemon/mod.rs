@@ -1118,8 +1118,7 @@ async fn start_agents(
     agents.core().schedules.reconcile().await;
     // The helpers the last daemon left: their parents are told how they
     // ended with the user's next message (each restored agent is marked
-    // interrupted as it is admitted, `Agents::start`). A `delegate` helper
-    // an earlier build left is settled here (`crate::mobs::delegates`).
+    // interrupted as it is admitted, `Agents::start`).
     agents.settle_left_helpers().await;
     // Their tool catalogs. An idle agent's is read at once, before the
     // daemon serves; but the engine's read waits behind a running turn

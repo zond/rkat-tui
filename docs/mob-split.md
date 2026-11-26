@@ -446,7 +446,7 @@ asks the customizer, and is a gated, followed helper of the orchestrator's
 session. The client lists the mobs once per attach and per conversation
 (`mob/list`), learns of each later one that hosts a helper from the
 daemon's `rkat/mob` push, and opens a mob-wide
-`mob/stream_open {mob_id}` on each of its agent's (`tui` and every `implicit-<session>`),
+`mob/stream_open {mob_id}` on each of its agent's (`tui` and each council it convened),
 mapping events to the UI's `Msg::Scoped`; a helper first seen is
 backfilled from `events/list_since`, its model from `events/snapshot`. The
 client never calls `mob/fork_helper` or `mob/spawn_helper` itself.

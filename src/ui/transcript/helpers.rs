@@ -46,10 +46,6 @@ pub enum HelperKind {
     /// `spawn_many_members`: a kept fresh helper). A member of a mob the
     /// agent created (`mob_spawn_member`) is a kept fresh one too.
     Started(HelperContext, HelperLife),
-    /// A `delegate` helper (a conversation an earlier build stored: the
-    /// engine's `delegate` is not offered): one task, its answer returned
-    /// to the caller.
-    Delegate,
 }
 
 impl HelperKind {
@@ -59,7 +55,6 @@ impl HelperKind {
     pub fn text(self) -> String {
         match self {
             Self::Started(context, life) => format!("{} · {}", context.word(), life.word()),
-            Self::Delegate => "delegate".to_string(),
         }
     }
 
@@ -85,7 +80,6 @@ impl HelperKind {
                 };
                 Some(Self::Started(context, life))
             }
-            "delegate" => Some(Self::Delegate),
             "fork_off" => Some(Self::Started(HelperContext::Fork, HelperLife::Kept)),
             "spawn_member" | "spawn_many_members" | "mob_spawn_member" => {
                 Some(Self::Started(HelperContext::Fresh, HelperLife::Kept))

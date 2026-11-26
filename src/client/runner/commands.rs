@@ -512,26 +512,20 @@ impl Runner {
     /// a refusal is a notice; the ending comes as the daemon's
     /// `rkat/helper_ended`.
     pub(super) fn stop_helper(&self, path: Vec<String>) {
-        let say = self.say();
-        let Some(connection) = self.link_or_say("the helper was not stopped") else {
-            return;
-        };
-        tokio::spawn(async move {
-            let named = path.join(" › ");
-            let params = protocol::StopHelperParams { path };
-            let stopped = bounded(
-                CALL_TIMEOUT,
-                remote::call::<protocol::method::StopHelper>(&connection, &params),
-            )
-            .await;
-            match stopped {
-                Ok(_) => say.notice(NoticeLevel::Info, format!("stopping helper {named}…")),
-                Err(err) => say.notice(
-                    NoticeLevel::Warn,
-                    format!("helper {named} was not stopped: {err}"),
-                ),
-            }
-        });
+        let named = path.join(" › ");
+        self.ask::<protocol::method::StopHelper>(
+            protocol::StopHelperParams { path },
+            "the helper was not stopped",
+            move |stopped| {
+                vec![match stopped {
+                    Ok(_) => (NoticeLevel::Info, format!("stopping helper {named}…")),
+                    Err(err) => (
+                        NoticeLevel::Warn,
+                        format!("helper {named} was not stopped: {err}"),
+                    ),
+                }]
+            },
+        );
     }
 
     /// The picker's confirmed retire: `name` leaves the workspace through

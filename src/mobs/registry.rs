@@ -647,15 +647,10 @@ impl HelperRegistry {
     }
 
     /// The session that started the helper `key` (its parent): the session
-    /// of a `delegate` helper's implicit mob, else the session that
-    /// created its mob.
+    /// that created its mob.
     #[must_use]
     pub fn parent_session(&self, key: &HelperKey) -> Option<SessionId> {
-        key.mob
-            .as_str()
-            .strip_prefix("implicit-")
-            .and_then(|session| SessionId::parse(session).ok())
-            .or_else(|| self.bindings.mob_owner(&key.mob))
+        self.bindings.mob_owner(&key.mob)
     }
 
     /// The running helper that runs as `session`, with its tag.

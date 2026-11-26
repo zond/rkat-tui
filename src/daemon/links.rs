@@ -88,7 +88,7 @@ impl Link {
             || (&self.ends[0].key == b && &self.ends[1].key == a)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     fn touches(&self, key: &HelperKey) -> bool {
         self.ends.iter().any(|end| &end.key == key)
     }
@@ -499,17 +499,6 @@ impl Links {
             .links
             .iter()
             .any(|link| link.joins(a, b))
-    }
-
-    /// Tests: whether any recorded pair has the end `key`.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn has_end(&self, key: &HelperKey) -> bool {
-        self.records
-            .lock()
-            .links
-            .iter()
-            .any(|link| link.touches(key))
     }
 }
 

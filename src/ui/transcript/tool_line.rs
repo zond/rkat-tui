@@ -265,11 +265,6 @@ const RULES: &[Rule] = &[
         outcome: |_, _, result| glob_outcome(result),
     },
     Rule {
-        tools: &["delegate"],
-        head: |_, args, _| member_task_head("delegate to", args),
-        outcome: no_outcome,
-    },
-    Rule {
         tools: &[crate::tools::ASSIGN],
         head: |_, args, _| {
             let fork = args.get("context").and_then(Value::as_str) == Some("fork");
@@ -1092,13 +1087,6 @@ mod tests {
         assert_eq!(
             line("glob", json!({"pattern": "**/*.toml"})),
             "find **/*.toml"
-        );
-        assert_eq!(
-            line(
-                "delegate",
-                json!({"member_id": "scout", "task": "find\n the bug"})
-            ),
-            "delegate to scout: find the bug"
         );
         assert_eq!(
             line("assign", json!({"name": "scout", "task": "find\n the bug"})),

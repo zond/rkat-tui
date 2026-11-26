@@ -4,9 +4,7 @@
 //!
 //! The daemon hosts every helper the agent starts: `assign`'s helpers
 //! in the agent's own mob, the helpers of
-//! helpers in theirs, a council's in its mob, and the `delegate` helpers
-//! an earlier build left in the agent session's implicit mob
-//! (`implicit-<session>`). A mob-wide `mob/stream_open
+//! helpers in theirs, and a council's in its mob. A mob-wide `mob/stream_open
 //! {mob_id}` (no `agent_identity`) carries every member's events, each
 //! attributed to its member ([`AttributedEvent`]); [`Followers`] turns them
 //! into the [`Msg::Scoped`] events and [`StatusUpdate::Helpers`] updates
@@ -28,9 +26,6 @@
 //!   (`events/snapshot`, [`Action::Snapshot`]); until then the header
 //!   names the agent's model, which a helper that names none runs on
 //!   unless `helpers.model` is set.
-//! - The engine attributes a helper of a helper to its own mob
-//!   (`implicit-<parent session>`): the path of the helper whose session
-//!   that is nests it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -42,9 +37,6 @@ use crate::daemon::MOB_ID;
 use crate::daemon::agents::is_agent;
 use crate::mobs::{HelperStatus, HelperTag};
 use crate::ui::{Msg, StatusUpdate};
-
-/// The prefix of a session's implicit (`delegate`) mob.
-pub const IMPLICIT_PREFIX: &str = "implicit-";
 
 /// A helper: its mob and member identity.
 pub type HelperId = (String, String);
@@ -153,9 +145,8 @@ impl Followers {
     }
 
     /// Whether `mob` should be opened: one of this agent's (the daemon's
-    /// mob, the implicit mob of the agent's session or of one of its
-    /// helpers' sessions; another agent's helpers are its own clients'),
-    /// and not yet open or opening. Marks it opening.
+    /// mob, or a council it convened; another agent's helpers are its own
+    /// clients'), and not yet open or opening. Marks it opening.
     pub fn should_open(&mut self, mob: &str) -> bool {
         if !self.is_ours(mob) {
             return false;
@@ -190,20 +181,7 @@ impl Followers {
 
     /// Whether `mob` holds this agent's helpers.
     fn is_ours(&self, mob: &str) -> bool {
-        if self.convened.contains_key(mob) {
-            return true;
-        }
-        let Some(session) = mob.strip_prefix(IMPLICIT_PREFIX) else {
-            return mob == MOB_ID;
-        };
-        self.owner
-            .as_ref()
-            .is_some_and(|owner| owner.to_string() == session)
-            || self
-                .helpers
-                .values()
-                .filter_map(|helper| helper.session.as_ref())
-                .any(|helper| helper.to_string() == session)
+        self.convened.contains_key(mob) || mob == MOB_ID
     }
 
     /// Opening `mob`'s stream failed: it may be tried again.
@@ -251,26 +229,10 @@ impl Followers {
         Action::Ui(Msg::Status(StatusUpdate::Helpers(self.live())))
     }
 
-    /// The labels above a helper of `mob`: none for the agent's own
-    /// mobs, else the path of the helper whose implicit mob it is.
+    /// The labels above a helper of `mob`: the path of the one that
+    /// convened its council, none for the agent's own mob.
     fn parent_path(&self, mob: &str) -> Vec<String> {
-        if let Some(path) = self.convened.get(mob) {
-            return path.clone();
-        }
-        let Some(session) = mob
-            .strip_prefix(IMPLICIT_PREFIX)
-            .and_then(|id| SessionId::parse(id).ok())
-        else {
-            return Vec::new();
-        };
-        if self.owner.as_ref() == Some(&session) {
-            return Vec::new();
-        }
-        self.helpers
-            .values()
-            .find(|helper| helper.session.as_ref() == Some(&session))
-            .map(|helper| helper.path.clone())
-            .unwrap_or_default()
+        self.convened.get(mob).cloned().unwrap_or_default()
     }
 
     /// A helper not seen before: start following it (its backfill and
@@ -633,9 +595,9 @@ mod tests {
         let owner = SessionId::new();
         let helper_session = SessionId::new();
         let mut followers = Followers::default();
-        followers.reset(owner.clone());
+        followers.reset(owner);
         followers.set_default_model("m");
-        let mob = format!("{IMPLICIT_PREFIX}{owner}");
+        let mob = MOB_ID.to_string();
         followers.opened("s1".into(), &mob);
         // The first live event: held, backfill and model asked for.
         let actions = followers.event("s1", attributed("scout", &helper_session, 3, text("three")));
@@ -700,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn the_agent_is_not_a_helper_and_a_helpers_helper_nests() {
+    fn the_agent_is_not_a_helper_and_an_ended_stream_opens_again() {
         let owner = SessionId::new();
         let mut followers = Followers::default();
         followers.reset(owner.clone());
@@ -712,46 +674,25 @@ mod tests {
         );
         assert!(
             followers
-                .member(MOB_ID, "main-ab12", Some(owner.clone()))
+                .member(MOB_ID, "main-ab12", Some(owner))
                 .is_empty()
         );
-        // A helper with a known session, then its own implicit mob.
-        let scout = SessionId::new();
-        let mob = format!("{IMPLICIT_PREFIX}{owner}");
-        followers.opened("a".into(), &mob);
-        let actions = followers.member(&mob, "scout", Some(scout.clone()));
-        assert_eq!(actions.len(), 2);
-        followers.backfilled(&(mob.clone(), "scout".into()), Vec::new());
-        let nested = format!("{IMPLICIT_PREFIX}{scout}");
-        followers.opened("b".into(), &nested);
-        let inner = SessionId::new();
-        followers.event("b", attributed("inner", &inner, 1, text("x")));
-        let actions = followers.backfilled(&(nested.clone(), "inner".into()), Vec::new());
-        assert_eq!(
-            scoped(&actions),
-            [(
-                vec!["scout".to_string(), "inner".to_string()],
-                "x".to_string()
-            )]
-        );
         // A stream that ends may be opened again.
-        assert!(!followers.should_open(&nested));
-        followers.ended("b");
-        assert!(followers.should_open(&nested));
-        assert!(!followers.owns("b"));
+        assert!(!followers.should_open(MOB_ID));
+        followers.ended("tui");
+        assert!(followers.should_open(MOB_ID));
+        assert!(!followers.owns("tui"));
     }
 
-    /// Another agent's helpers are its own clients': its implicit mob is
-    /// not opened, and an agent in the daemon's mob is no helper.
+    /// Another agent's helpers are its own clients': an agent in the
+    /// daemon's mob is no helper.
     #[test]
     fn another_agents_helpers_are_not_followed() {
         let owner = SessionId::new();
         let other = SessionId::new();
         let mut followers = Followers::default();
-        followers.reset(owner.clone());
+        followers.reset(owner);
         assert!(followers.should_open(MOB_ID));
-        assert!(!followers.should_open(&format!("{IMPLICIT_PREFIX}{other}")));
-        assert!(followers.should_open(&format!("{IMPLICIT_PREFIX}{owner}")));
         followers.opened("tui".into(), MOB_ID);
         assert!(
             followers

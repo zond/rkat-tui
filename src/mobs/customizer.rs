@@ -348,14 +348,12 @@ impl HelperCustomizer {
     }
 
     /// The stored profile the fresh spawn `spec` is seated by: none when
-    /// it carries its own or names the implicit mob's `delegate` profile;
+    /// it carries its own;
     /// the workspace mob's `main` as this start defines it (the stored one
     /// is the first start's, lukacf/meerkat#2184); else its mob's.
     fn seat(&self, ctx: &SpawnCustomizationContext, spec: &SpawnMemberSpec) -> Seat {
         let profile = spec.role_name.as_str();
-        if spec.override_profile.is_some()
-            || (ctx.mob_id.as_str().starts_with("implicit-") && profile == DELEGATE_PROFILE)
-        {
+        if spec.override_profile.is_some() {
             return Seat::Carried;
         }
         if let Some(current) = self
@@ -579,15 +577,6 @@ enum Asked {
     Fork,
 }
 
-/// The profile the engine seated a `delegate` helper with, in its owner's
-/// implicit mob (`implicit-<session id>`); `delegate` is not offered
-/// ([`crate::approval::policy::NOT_OFFERED`]), and such a helper is one
-/// a realm of an earlier build holds. The engine keeps that profile on
-/// the owner's current model, provider and binding
-/// (`MobMcpState::ensure_implicit_mob_for_model`), so it is the one stored
-/// profile left as it is.
-const DELEGATE_PROFILE: &str = "delegate";
-
 impl Asked {
     /// How the spawn `ctx` describes was asked for (`None`: a rebuild or
     /// a respawn, which keeps the model its spawn chose).
@@ -610,8 +599,7 @@ impl Asked {
 #[derive(Debug, Clone, PartialEq)]
 enum Seat {
     /// The spawn carries its own profile (inline, or a fork's copy of its
-    /// source's), or names the implicit mob's `delegate` profile: nothing
-    /// to put on it.
+    /// source's): nothing to put on it.
     Carried,
     /// This stored profile.
     Stored(Box<meerkat_mob::Profile>),

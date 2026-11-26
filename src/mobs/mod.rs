@@ -5,10 +5,8 @@
 //! mob, with two choices: from a fresh context or a fork of its
 //! conversation, single-use or kept ([`HelperKind`]); the `mob_*` tools
 //! make teams of their own. The engine's `delegate`, `fork_off` and
-//! `spawn_member` are not offered ([`crate::approval::policy::NOT_OFFERED`]);
-//! a realm of an earlier build may still hold `delegate` helpers
-//! ([`delegates`]). The
-//! daemon hosts them in its [`MobMcpState`] (mob state durable under the
+//! `spawn_member` are not offered ([`crate::approval::policy::NOT_OFFERED`]).
+//! The daemon hosts them in its [`MobMcpState`] (mob state durable under the
 //! realm, see `crate::daemon::engine`) and adds what upstream leaves to the
 //! host:
 //!
@@ -63,7 +61,6 @@ pub mod registry;
 pub mod bindings;
 pub mod council;
 pub mod customizer;
-pub mod delegates;
 pub mod endings;
 pub(crate) mod follow;
 pub mod profiles;

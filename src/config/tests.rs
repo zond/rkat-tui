@@ -427,17 +427,36 @@ fn a_project_file_cannot_pick_the_classifier_model() {
     );
 }
 
-/// E3 of the security review: `[pricing] fetch = false` keeps the
-/// community price list from being fetched; a project file may turn the
-/// fetch off, never back on.
+/// What the registry's layering test (`every_setting_layers_as_it_always_did`,
+/// whose samples stay clear of the clamps) leaves out: the clamps of a
+/// value out of range, `--no-mouse` through the parser, and `[pricing]
+/// fetch` read apart from the price entries beside it.
 #[test]
-fn pricing_fetch_is_a_user_setting_the_project_can_only_turn_off() {
+fn the_layering_clamps_parses_no_mouse_and_reads_pricing_fetch_apart() {
+    use clap::Parser as _;
     let tmp = tempfile::tempdir().unwrap();
     let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
-    write(&realm, "");
     write(&project, "");
+    write(&realm, "[search]\nmax_entries = 0\n");
     let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert!(layered.pricing_fetch, "fetched by default");
+    assert_eq!(layered.search.max_entries, 1, "at least one entry");
+    write(&realm, "[shell]\nuser_timeout_secs = 0\n");
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
+    assert_eq!(layered.shell.user_timeout_secs, 1);
+    // `--no-mouse`, the command-line layer, wins over a project that
+    // turns it on.
+    write(&realm, "");
+    write(&project, "[ui]\nmouse = true\n");
+    let args = crate::cli::Args::parse_from(["rkat-tui", "--no-mouse"]);
+    let overlay = crate::overlay::ConfigOverlay::from_args(&args)
+        .unwrap()
+        .rules_file()
+        .unwrap()
+        .unwrap();
+    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
+    assert!(!layered.ui.mouse);
+    // E3 of the security review: `[pricing] fetch` beside the prices is
+    // no price entry, and a project's is no ignored price.
     write(
         &realm,
         "[pricing]\nfetch = false\n[pricing.\"m\"]\ninput = 1.0\n",
@@ -454,10 +473,6 @@ fn pricing_fetch_is_a_user_setting_the_project_can_only_turn_off() {
         "{:?}",
         layered.notices
     );
-    write(&realm, "");
-    write(&project, "[pricing]\nfetch = false\n");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert!(!layered.pricing_fetch, "the project may turn it off");
 }
 
 fn write(dir: &Path, text: &str) {
@@ -467,200 +482,6 @@ fn write(dir: &Path, text: &str) {
 
 fn cli(text: &str) -> RulesFile {
     toml::from_str(text).unwrap()
-}
-
-#[test]
-fn classifier_tools_default_on_and_project_can_only_turn_them_off() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
-    assert!(Typed::defaults().unwrap().settings.classifier_tools);
-    // The project may turn the classifier's file reads off, even over
-    // the command line...
-    write(&realm, "");
-    write(&project, "[auto]\nclassifier_tools = false\n");
-    let overlay = cli("[auto]\nclassifier_tools = true\n");
-    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
-    assert!(!layered.settings.classifier_tools);
-    // ...but never back on once a user layer turned them off.
-    write(&realm, "[auto]\nclassifier_tools = false\n");
-    write(&project, "[auto]\nclassifier_tools = true\n");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert!(!layered.settings.classifier_tools);
-    // The command line may turn them off.
-    write(&realm, "");
-    let overlay = cli("[auto]\nclassifier_tools = false\n");
-    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
-    assert!(!layered.settings.classifier_tools);
-}
-
-#[test]
-fn helper_depth_defaults_to_one_layers_and_the_project_only_lowers_it() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
-    write(&realm, "");
-    write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.helpers.max_depth, DEFAULT_HELPER_MAX_DEPTH);
-    assert_eq!(DEFAULT_HELPER_MAX_DEPTH, 1);
-    // The realm sets it, the command line beats the realm.
-    write(&realm, "[helpers]\nmax_depth = 3\n");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.helpers.max_depth, 3);
-    let overlay = cli("[helpers]\nmax_depth = 2\n");
-    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
-    assert_eq!(layered.helpers.max_depth, 2);
-    // The project may lower it, never raise it.
-    write(&project, "[helpers]\nmax_depth = 1\n");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.helpers.max_depth, 1);
-    write(&realm, "");
-    write(&project, "[helpers]\nmax_depth = 5\n");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.helpers.max_depth, 1);
-}
-
-#[test]
-fn the_search_limits_layer_and_the_project_only_lowers_them() {
-    use crate::tools::{DEFAULT_SEARCH_BUDGET_SECS, DEFAULT_SEARCH_MAX_ENTRIES};
-    use std::time::Duration;
-    let tmp = tempfile::tempdir().unwrap();
-    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
-    write(&realm, "");
-    write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(
-        layered.search.budget,
-        Duration::from_secs(DEFAULT_SEARCH_BUDGET_SECS)
-    );
-    assert_eq!(layered.search.max_entries, DEFAULT_SEARCH_MAX_ENTRIES);
-    write(
-        &realm,
-        "[search]
-budget_secs = 60
-max_entries = 0
-",
-    );
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.search.budget, Duration::from_mins(1));
-    assert_eq!(layered.search.max_entries, 1, "at least one entry");
-    write(
-        &realm,
-        "[search]
-budget_secs = 60
-",
-    );
-    write(
-        &project,
-        "[search]
-budget_secs = 5
-max_entries = 9999999999
-",
-    );
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.search.budget, Duration::from_secs(5));
-    assert_eq!(layered.search.max_entries, DEFAULT_SEARCH_MAX_ENTRIES);
-    write(
-        &project,
-        "[search]
-budget_secs = 600
-",
-    );
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.search.budget, Duration::from_mins(1));
-}
-
-#[test]
-fn the_user_shell_timeout_layers_and_the_project_only_lowers_it() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
-    write(&realm, "");
-    write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.shell.user_timeout_secs, 120);
-    write(&realm, "[shell]\nuser_timeout_secs = 600\n");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.shell.user_timeout_secs, 600);
-    write(&project, "[shell]\nuser_timeout_secs = 30\n");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.shell.user_timeout_secs, 30);
-    write(&project, "[shell]\nuser_timeout_secs = 6000\n");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.shell.user_timeout_secs, 600);
-    write(&realm, "[shell]\nuser_timeout_secs = 0\n");
-    write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.shell.user_timeout_secs, 1);
-}
-
-#[test]
-fn ui_bell_defaults_to_on_and_layers() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
-    write(&realm, "");
-    write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert!(layered.ui.bell);
-    write(&realm, "[ui]\nbell = false\n");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert!(!layered.ui.bell);
-    let overlay = cli("[ui]\nbell = true\n");
-    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
-    assert!(layered.ui.bell);
-}
-
-#[test]
-fn ui_mouse_defaults_to_on_layers_and_no_mouse_wins() {
-    use clap::Parser as _;
-    let tmp = tempfile::tempdir().unwrap();
-    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
-    let user = tmp.path().join("user.toml");
-    write(&realm, "");
-    write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert!(layered.ui.mouse);
-    // The user's file turns it off for every workspace.
-    std::fs::write(&user, "[ui]\nmouse = false\n").unwrap();
-    let layered = load_layered_with(&realm, Some(&user), &project, None).unwrap();
-    assert!(!layered.ui.mouse);
-    // The realm's file over the user's.
-    write(&realm, "[ui]\nmouse = true\n");
-    let layered = load_layered_with(&realm, Some(&user), &project, None).unwrap();
-    assert!(layered.ui.mouse);
-    // The project's preference applies, as for every `[ui]` setting...
-    write(&project, "[ui]\nmouse = false\n");
-    let layered = load_layered_with(&realm, Some(&user), &project, None).unwrap();
-    assert!(!layered.ui.mouse);
-    // ...and `--no-mouse`, the command-line layer, wins over a project
-    // that turns it on.
-    write(&project, "[ui]\nmouse = true\n");
-    let args = crate::cli::Args::parse_from(["rkat-tui", "--no-mouse"]);
-    let overlay = crate::overlay::ConfigOverlay::from_args(&args)
-        .unwrap()
-        .rules_file()
-        .unwrap()
-        .unwrap();
-    let layered = load_layered_with(&realm, Some(&user), &project, Some(&overlay)).unwrap();
-    assert!(!layered.ui.mouse);
-}
-
-#[test]
-fn ui_helpers_defaults_to_folded_and_layers() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
-    write(&realm, "");
-    write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.ui.helpers, HelperView::Folded);
-    write(&realm, "[ui]\nhelpers = \"expanded\"\n");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.ui.helpers, HelperView::Expanded);
-    // The project's preference applies unless the command line set one.
-    write(&project, "[ui]\nhelpers = \"folded\"\n");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.ui.helpers, HelperView::Folded);
-    let overlay = cli("[ui]\nhelpers = \"expanded\"\n");
-    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
-    assert_eq!(layered.ui.helpers, HelperView::Expanded);
 }
 
 #[test]
@@ -682,77 +503,8 @@ fn ui_checklist_defaults_to_hidden_layers_and_persists() {
     // The rest of the file stays.
     assert!(!layered.ui.bell);
     assert_eq!(layered.mode, PermissionMode::Plan);
-    // The project's preference applies unless the command line set one.
-    write(&project, "[ui]\nchecklist = \"hidden\"\n");
-    let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.ui.checklist, ChecklistView::Hidden);
-    let overlay = cli("[ui]\nchecklist = \"shown\"\n");
-    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
-    assert_eq!(layered.ui.checklist, ChecklistView::Shown);
     write(&project, "[ui]\nchecklist = \"open\"\n");
     assert!(load_layered_with(&realm, None, &project, None).is_err());
-}
-
-/// The realm's `[auto] mode` (what `/mode` records) sets the start
-/// mode; a project cannot pick one, only move auto mode to manual with
-/// `mode = "default"`; the command line beats both.
-#[test]
-fn the_permission_mode_layers() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
-    let mode = |realm_text: &str, project_text: &str, overlay: Option<&str>| {
-        write(&realm, realm_text);
-        write(&project, project_text);
-        let overlay = overlay.map(cli);
-        load_layered_with(&realm, None, &project, overlay.as_ref())
-            .unwrap()
-            .mode
-    };
-    assert_eq!(mode("", "", None), PermissionMode::Auto);
-    assert_eq!(
-        mode("[auto]\nmode = \"plan\"\n", "", None),
-        PermissionMode::Plan
-    );
-    assert_eq!(
-        mode("[auto]\nmode = \"default\"\n", "", None),
-        PermissionMode::Manual
-    );
-    assert_eq!(
-        mode("", "[auto]\nmode = \"accept-edits\"\n", None),
-        PermissionMode::Auto,
-        "a project picks no mode"
-    );
-    assert_eq!(
-        mode("", "[auto]\nmode = \"default\"\n", None),
-        PermissionMode::Manual
-    );
-    assert_eq!(
-        mode(
-            "[auto]\nmode = \"plan\"\n",
-            "[auto]\nmode = \"default\"\n",
-            None
-        ),
-        PermissionMode::Plan,
-        "only auto mode moves to manual"
-    );
-    assert_eq!(
-        mode(
-            "[auto]\nmode = \"plan\"\n",
-            "",
-            Some("[auto]\nmode = \"default\"\n")
-        ),
-        PermissionMode::Manual,
-        "--no-auto beats the realm"
-    );
-    assert_eq!(
-        mode(
-            "",
-            "[auto]\nmode = \"default\"\n",
-            Some("[auto]\nmode = \"auto\"\n")
-        ),
-        PermissionMode::Auto,
-        "the command line beats the project"
-    );
 }
 
 #[test]
@@ -1128,57 +880,6 @@ fn instruction_files_add_up_over_the_user_s_layers_only() {
     assert_eq!(String::from(home), "~/wrapper.md");
 }
 
-/// `agent.web_search` is on by default; the user's file, the realm's and
-/// `--set` set it; a project file may only turn it off (its `true` over a
-/// user's `false` is ignored, its `false` wins even over the command
-/// line's `true`); `/set` takes `false`.
-#[test]
-fn web_search_is_on_unless_a_layer_turns_it_off_and_a_project_only_turns_it_off() {
-    use super::registry::web_search_in_force;
-    use clap::Parser as _;
-    let tmp = tempfile::tempdir().unwrap();
-    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
-    let global = tmp.path().join("global.toml");
-    let layered = |global_text: &str, project_text: &str, set: &[&str]| {
-        std::fs::write(&global, global_text).unwrap();
-        write(&realm, "");
-        write(&project, project_text);
-        let mut argv = vec!["rkat-tui".to_string()];
-        for value in set {
-            argv.push("--set".to_string());
-            argv.push((*value).to_string());
-        }
-        let overlay = crate::overlay::ConfigOverlay::from_args(&crate::cli::Args::parse_from(argv))
-            .unwrap()
-            .rules_file()
-            .unwrap();
-        let layered = load_layered_with(&realm, Some(&global), &project, overlay.as_ref()).unwrap();
-        web_search_in_force(&layered.layers)
-    };
-    assert!(layered("", "", &[]));
-    assert!(!layered("[agent]\nweb_search = false\n", "", &[]));
-    assert!(!layered("", "", &["agent.web_search=false"]));
-    assert!(layered(
-        "[agent]\nweb_search = false\n",
-        "",
-        &["agent.web_search=true"]
-    ));
-    // The project's `true` is ignored; its `false` applies over all.
-    assert!(!layered(
-        "[agent]\nweb_search = false\n",
-        "[agent]\nweb_search = true\n",
-        &[]
-    ));
-    assert!(!layered(
-        "",
-        "[agent]\nweb_search = false\n",
-        &["agent.web_search=true"]
-    ));
-    let setting = super::registry::Setting::find("agent.web_search").unwrap();
-    assert_eq!(setting.parse("false").unwrap(), toml::Value::Boolean(false));
-    assert!(setting.parse("sometimes").is_err());
-}
-
 /// `agent.web_fetch` is on by default; the user's file and `--set` set
 /// it; a project file may only turn it off; and it is a setting apart
 /// from `agent.web_search` (turning one off leaves the other on).
@@ -1233,6 +934,8 @@ fn web_fetch_is_on_unless_a_layer_turns_it_off_and_is_apart_from_web_search() {
     );
     let setting = super::registry::Setting::find("agent.web_fetch").unwrap();
     assert_eq!(setting.parse("false").unwrap(), toml::Value::Boolean(false));
+    let setting = super::registry::Setting::find("agent.web_search").unwrap();
+    assert!(setting.parse("sometimes").is_err());
 }
 
 /// A relative `instructions.files` entry is refused, naming the key and

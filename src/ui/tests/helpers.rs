@@ -927,19 +927,18 @@ fn an_assigned_helper_s_view_names_its_kind() {
     );
 }
 
-/// The view of a `delegate` helper (a conversation an earlier build
-/// stored) reads as the main transcript: its task
+/// The view of a helper reads as the main transcript: its task
 /// from the agent first, as a prompt; a later peer message in order with
 /// its sender; its answer; the title names its kind and state.
 #[test]
-fn a_delegate_s_view_starts_with_its_task_and_shows_later_input_in_order() {
+fn a_helper_s_view_starts_with_its_task_and_shows_later_input_in_order() {
     let mut app = App::new(StatusInfo::default());
     app.update(Msg::Status(StatusUpdate::Agent(Some("main-ab12".into()))));
     app.transcript.push(user("go"));
     app.update(agent(AgentEvent::ToolCallRequested {
         id: "d1".into(),
-        name: "delegate".into(),
-        args: test_args(json!({"member_id": "scout", "task": "find the bug"})),
+        name: "assign".into(),
+        args: test_args(json!({"name": "scout", "task": "find the bug"})),
     }));
     app.update(live(&["scout"]));
     for event in [
@@ -990,7 +989,7 @@ fn a_delegate_s_view_starts_with_its_task_and_shows_later_input_in_order() {
     );
     let rows = view_rows(&mut app, "scout");
     assert!(
-        rows[0].starts_with("◂ [scout · m] delegate · finished · 1 tool call"),
+        rows[0].starts_with("◂ [scout · m] fresh · single-use · finished · 1 tool call"),
         "{rows:#?}"
     );
     assert!(rows[0].ends_with("Esc back"), "{rows:#?}");

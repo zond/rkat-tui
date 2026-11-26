@@ -107,10 +107,6 @@ fn ending_text(item: &NoteItem) -> String {
     const NOT_CONTINUED: &str = "Its file changes stay on disk; its conversation is not continued.";
     let label = &item.label;
     match &item.how {
-        How::Finished { answer } => format!(
-            "Your helper `{label}` finished. The `delegate` call that started it ended before it did (when rkat-tui's daemon stopped), so its answer comes in this note instead:\n\n{}\n\nIt is retired.",
-            bounded(answer, item.rest.as_deref())
-        ),
         How::Done { answer } => format!(
             "Your helper `{label}` finished its task. Its answer:\n\n{}\n\nIt is retired: it takes no more messages (start another helper for more work).",
             bounded(answer, item.rest.as_deref())
@@ -136,9 +132,6 @@ fn ending_text(item: &NoteItem) -> String {
         How::StoppedByUser => {
             format!("The user stopped your helper `{label}`. {NOT_CONTINUED}")
         }
-        How::DaemonStopped => format!(
-            "Your helper `{label}` ended when the rkat-tui daemon stopped, before it finished. {NOT_CONTINUED}"
-        ),
         How::CheckpointStopped {
             steps,
             reason,
@@ -206,14 +199,13 @@ impl NoteKind {
     #[must_use]
     pub fn of(how: &How) -> Self {
         match how {
-            How::Finished { .. } | How::Done { .. } => Self::Finished,
+            How::Done { .. } => Self::Finished,
             How::WentIdle { failed: None, .. } => Self::Idle,
             How::WentIdle {
                 failed: Some(_), ..
             } => Self::IdleFailed,
             How::Failed { .. } => Self::Failed,
             How::StoppedByUser => Self::Stopped,
-            How::DaemonStopped => Self::DaemonStopped,
             How::CheckpointStopped { .. } => Self::Checkpoint,
         }
     }
@@ -369,8 +361,7 @@ fn answer_first(items: &[NoteItem]) -> String {
         return String::new();
     };
     let answer = match &item.how {
-        How::Finished { answer }
-        | How::Done { answer }
+        How::Done { answer }
         | How::WentIdle {
             answer,
             failed: None,
@@ -436,10 +427,7 @@ pub struct NoteSummary {
 /// header), from its sentences.
 #[must_use]
 pub fn note_summary(text: &str) -> Option<NoteSummary> {
-    if crate::daemon::local::HELD_NOTE_SEPARATORS
-        .iter()
-        .any(|separator| text.contains(separator))
-    {
+    if text.contains(crate::daemon::local::HELD_NOTE_SEPARATOR) {
         return None;
     }
     if let Some(rest) = text.strip_prefix(NOTE_HEADER) {
@@ -1111,8 +1099,7 @@ impl Agents {
     /// full to its agent's scratch directory (`None`: not cut, or there is
     /// no directory, or it could not be written).
     fn write_rest(&self, ended: &Ended) -> Option<PathBuf> {
-        let (How::Finished { answer }
-        | How::Done { answer }
+        let (How::Done { answer }
         | How::WentIdle { answer, .. }
         | How::CheckpointStopped { status: answer, .. }) = &ended.how
         else {
@@ -1173,19 +1160,14 @@ impl Agents {
         );
     }
 
-    /// The `delegate` helpers the last daemon left (a realm of an earlier
-    /// build holds them, `crate::mobs::delegates`): their calls ended with
-    /// it. One its mob still seats was restored by
-    /// the engine, which resumes its run, and its answer comes to its
-    /// parent when it finishes. One its mob no longer seats is gone: its
-    /// parent is told so ([`crate::mobs::endings::HelperEndings::lost`]).
-    ///
     /// A helper of any kind whose retire was decided before the last stop
     /// (it was done) and did not reach the engine is retired now, when its
-    /// mob still seats it; nobody is told (its parent was, then).
+    /// mob still seats it; nobody is told (its parent was, then). A
+    /// `delegate` helper's row an earlier build stored (its mob
+    /// `implicit-<session>`) is read and left alone.
     pub(crate) async fn settle_left_helpers(&self) {
         let registry = &self.core.registry;
-        for (key, tag) in registry.bound_members() {
+        for (key, _) in registry.bound_members() {
             if registry.retire_owed(&key) {
                 match self.core.state.handle_for(&key.mob).await {
                     Ok(handle)
@@ -1203,25 +1185,6 @@ impl Agents {
                         tracing::warn!(helper = %key, error = %err, "cannot reach the mob of a helper whose retire is owed");
                     }
                 }
-                continue;
-            }
-            if !key.mob.as_str().starts_with("implicit-") {
-                continue;
-            }
-            let seated = match self.core.state.handle_for(&key.mob).await {
-                Ok(handle) => handle
-                    .list_members()
-                    .await
-                    .iter()
-                    .any(|member| member.agent_identity == key.member),
-                Err(_) => false,
-            };
-            if seated {
-                tracing::info!(helper = %key, "a delegate helper the last daemon left runs on; its answer goes to its parent");
-                registry.endings().spawned(&key, &tag);
-                registry.endings().left_over(&key);
-            } else {
-                registry.endings().lost(&key, tag);
             }
         }
     }
@@ -1253,12 +1216,6 @@ mod tests {
     /// an empty answer, a reason over lines with a `;`, a long answer.
     fn every_kind(answer: &str) -> Vec<NoteItem> {
         let mut items = vec![
-            item(
-                "a",
-                How::Finished {
-                    answer: answer.into(),
-                },
-            ),
             item(
                 "b",
                 How::Done {
@@ -1292,7 +1249,6 @@ mod tests {
                 },
             ),
             item("g", How::StoppedByUser),
-            item("h", How::DaemonStopped),
         ];
         for retired in [true, false] {
             items.push(item(
@@ -1305,7 +1261,7 @@ mod tests {
                 },
             ));
         }
-        items[1].with = vec!["k".into()];
+        items[0].with = vec!["k".into()];
         items
     }
 
@@ -1377,16 +1333,21 @@ mod tests {
             kinds,
             [
                 NoteKind::Finished,
-                NoteKind::Finished,
                 NoteKind::Idle,
                 NoteKind::IdleFailed,
                 NoteKind::Failed,
                 NoteKind::Failed,
                 NoteKind::Stopped,
-                NoteKind::DaemonStopped,
                 NoteKind::Checkpoint,
                 NoteKind::Checkpoint,
             ]
+        );
+        // A stored note of a helper that ended with the daemon's stop
+        // (earlier builds wrote them) still reads back.
+        assert_eq!(
+            note_summary("rkat-tui note: helper `x` ended when the daemon stopped\n\nwords")
+                .map(|summary| summary.kind),
+            Some(NoteKind::DaemonStopped)
         );
         // A header this build cannot read is no note of its own.
         assert_eq!(
@@ -1490,14 +1451,14 @@ mod tests {
                 NoteKind::Several
             )
         );
-        // A held note with the user's words after it, under either
-        // separator, is no whole note.
-        for separator in crate::daemon::local::HELD_NOTE_SEPARATORS {
-            assert_eq!(
-                note_summary(&format!("{two}\n\n{separator}\n\nnow fix it")),
-                None
-            );
-        }
+        // A held note with the user's words after it is no whole note.
+        assert_eq!(
+            note_summary(&format!(
+                "{two}\n\n{}\n\nnow fix it",
+                crate::daemon::local::HELD_NOTE_SEPARATOR
+            )),
+            None
+        );
     }
 
     /// A note names the helpers of its own a helper was retired with, and
@@ -1550,12 +1511,6 @@ mod tests {
             ("helper review-x finished".into(), first.clone(), false)
         );
         assert_eq!(
-            line(&one(How::Finished {
-                answer: answer.clone()
-            })),
-            ("helper review-x finished".into(), first.clone(), false)
-        );
-        assert_eq!(
             line(&one(How::WentIdle {
                 answer: answer.clone(),
                 failed: None
@@ -1586,10 +1541,6 @@ mod tests {
         assert_eq!(
             one(How::StoppedByUser).title,
             "helper review-x stopped by you"
-        );
-        assert_eq!(
-            one(How::DaemonStopped).title,
-            "helper review-x ended when the daemon stopped"
         );
         for retired in [true, false] {
             assert_eq!(
@@ -1636,18 +1587,6 @@ mod tests {
 
     #[test]
     fn each_ending_is_told_in_plain_words() {
-        let finished = words(&[item(
-            "scout",
-            How::Finished {
-                answer: "the bug is in parse()".into(),
-            },
-        )]);
-        assert!(
-            finished.starts_with("Your helper `scout` finished.")
-                && finished.contains("ended before it did")
-                && finished.contains("\n\nthe bug is in parse()\n\n"),
-            "{finished}"
-        );
         let done = words(&[item(
             "scout",
             How::Done {
@@ -1686,11 +1625,6 @@ mod tests {
             stopped,
             "The user stopped your helper `scout`. Its file changes stay on disk; its conversation is not continued."
         );
-        let lost = words(&[item("scout", How::DaemonStopped)]);
-        assert!(
-            lost.contains("ended when the rkat-tui daemon stopped"),
-            "{lost}"
-        );
         let failed = words(&[item(
             "scout",
             How::Failed {
@@ -1709,13 +1643,13 @@ mod tests {
         let answer = "x".repeat(MAX_ANSWER + 10);
         let cut = words(&[item(
             "scout",
-            How::Finished {
+            How::Done {
                 answer: answer.clone(),
             },
         )]);
         assert!(!cut.contains(&answer));
         assert!(cut.contains("the user can read the whole of it in the helper's view"));
-        let mut written = item("scout", How::Finished { answer });
+        let mut written = item("scout", How::Done { answer });
         written.rest = Some(PathBuf::from("/tmp/scratch/helper-scout-answer.md"));
         let cut = note_text(&[written]);
         assert!(
@@ -1730,7 +1664,7 @@ mod tests {
             item("a", How::StoppedByUser),
             item(
                 "b",
-                How::Finished {
+                How::Done {
                     answer: "line one\nline two".into(),
                 },
             ),
@@ -1738,7 +1672,10 @@ mod tests {
         assert!(
             text.starts_with("2 notes about your helpers:\n- The user stopped your helper `a`.")
         );
-        assert!(text.contains("\n- Your helper `b` finished."), "{text}");
+        assert!(
+            text.contains("\n- Your helper `b` finished its task."),
+            "{text}"
+        );
         assert!(text.contains("\n  line one\n  line two"), "{text}");
     }
 
