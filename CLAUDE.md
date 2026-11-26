@@ -246,21 +246,22 @@ would break it needs the owner's explicit yes. The guard is
 `src/state_fixtures.rs`: it opens the copies in
 `tests/fixtures/state-0.0.1/` (taken from a run of the rig at the first
 release) with this build's readers; never edit those copies to make it
-pass. (One value in them was changed on purpose on 2026-11-26: the dead
-token in `state/mob.endpoint` became 64 zeros, same shape, for the
-secret scan below.)
+pass.
 
-## Test data must pass gitleaks
+## What the mirror refuses
 
-The repository is mirrored into a host whose secret scanner (gitleaks,
-default rules) refuses any commit that adds a value looking like a
-credential, a fake one included. Tests, fixtures, corpus cases and docs
-write a secret as plainly fake text of low randomness
-(`sk-EXAMPLE-NOT-A-REAL-SECRET`, all zeros, `fixture-token`), never a
-random-looking string, and a captured file has its tokens replaced before
-it is committed. CI's `secrets` job scans the tree and each new commit; a
-later commit cannot repair one that added such a value
-(`docs/testing.md`, "Secret scan").
+The repository is mirrored into a host that refuses a commit with any of
+these (`docs/testing.md`, "What the mirror refuses"); a later commit
+cannot repair one:
+
+- a value that looks like a credential, a fake one included (gitleaks,
+  default rules; CI's `secrets` job): write secrets in tests, fixtures and
+  docs as plainly fake, low-randomness text
+  (`sk-EXAMPLE-NOT-A-REAL-SECRET`, all zeros);
+- a file over 1 MB: keep every tracked file under about 500 kB
+  (`docs/evidence.md` moves its oldest entries to
+  `docs/evidence/part-<n>.md`);
+- a file named like a shell history (`*_history`).
 
 ## Sandbox facts worth knowing
 

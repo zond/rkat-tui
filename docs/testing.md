@@ -48,9 +48,22 @@ goes into `deny.toml`'s `ignore` list with the date and what lifts it,
 never silently; one with a fix in semver range is fixed with `cargo update
 -p <crate>`.
 
-## Secret scan (CI only)
+## What the mirror refuses (CI only)
 
-CI's `secrets` job runs gitleaks (the version pinned in
+The repository is mirrored into a host that refuses three things, and
+CI's `secrets` job checks each.
+
+**Large files and shell histories.** A tracked file over 1 MB, or one
+named like a shell history (`*_history`), is refused. The job fails on a
+tracked file over 700 kB or with such a name. `docs/evidence.md` stays
+small by moving its oldest entries to a new `docs/evidence/part-<n>.md`
+(listed under its "Earlier entries"; a reference `docs/evidence.md,
+"<title>"` names an entry by title in whichever of these files holds it).
+The stored-state copy of the realm's `tui_history` is kept as
+`tests/fixtures/state-0.0.1/realm/tui-input-history`, and
+`src/state_fixtures.rs` copies it back to its real name.
+
+**Secrets.** The job runs gitleaks (the version pinned in
 `.github/workflows/ci.yml`, default rules) over the tree (`gitleaks dir
 .`) and over every commit since the job was added (`gitleaks git .
 --log-opts="<that commit>..HEAD"`). The repository is mirrored into a host

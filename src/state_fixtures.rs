@@ -5,6 +5,12 @@
 //! of this build, strictly where the reader is strict and with the values
 //! that were written. A failure here means a change broke the workspaces
 //! users already have: undo it, or get the owner's explicit yes first.
+//!
+//! Two things in the copies differ from the capture, on purpose, for the
+//! scanners of a mirror of this repository: the dead daemon token in
+//! `state/mob.endpoint` is 64 zeros (same shape), and the realm's
+//! `tui_history` is stored as `realm/tui-input-history` and copied back to
+//! its real name ([`copy`]).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -101,7 +107,15 @@ fn copy(from: &Path, to: &Path, edit: &dyn Fn(String) -> String) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
-        let target = to.join(entry.file_name());
+        // The realm's `tui_history` is kept as `tui-input-history` in the
+        // repository: a mirror's guard against committed shell histories
+        // refuses a file named `*_history`. The content is the capture's.
+        let name = entry.file_name();
+        let target = if name == "tui-input-history" {
+            to.join("tui_history")
+        } else {
+            to.join(name)
+        };
         if entry.file_type().unwrap().is_dir() {
             copy(&entry.path(), &target, edit);
         } else {

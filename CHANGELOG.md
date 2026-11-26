@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-26
+
+### Changed
+
+- No tracked file is over 1 MB or named like a shell history, which a
+  mirror of the repository refuses: the engineering record's older
+  entries moved from `docs/evidence.md` to `docs/evidence/part-<n>.md`,
+  and the stored-state copy of the prompt history has another file name
+  in the repository. CI checks both.
+
 ## [0.1.4] - 2026-11-26
 
 ### Added
