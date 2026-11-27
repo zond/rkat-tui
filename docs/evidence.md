@@ -48,7 +48,7 @@ the `##` section named after it):
   methods"; "The proxy forwards only what it parsed".
 - **Helpers and mobs:** "P5 — Mobs (helpers as mob members)"; "Fork — the
   TUI's `fork` tool"; "Helper depth limit"; "P4: helpers, conversations and
-  detach in attach mode".
+  detach in attach mode"; "A team outlives a SIGKILL of its daemon".
 - **The review batches:** the Claude Code parity work ("Editor keys to
   match Claude Code", "Esc, queued messages and commands to match Claude
   Code", "The external editor and its launch exemption", "The approval
@@ -5003,3 +5003,66 @@ through `conversations::parse_user_words`, split out of
 the card's peer id its key's; `links::Records::read`), and in
 `state_fixtures::the_daemon_files_open` the schedule's usage record and
 the kept helpers of both mobs with their kind and task.
+
+## A team outlives a SIGKILL of its daemon (2026-11-27)
+
+The question: does what an agent built with the mob tools survive an
+abrupt death of `rkat-tui-mob`, with none of its stop run? Every restart
+test before this one stopped the daemon cleanly (`Running::stop`), and
+the clean stop does a lot that a crash skips (`Daemon::serve_until` after
+its serve loop): it removes the endpoint file, closes the wires and the
+connected helpers' sockets, saves the unsent messages, flushes the
+conversation log, the usage ledger and the helper bindings, settles the
+retirements, stops the mobs and the runtime, releases the realm lease and
+waits for the databases to close their write-ahead logs.
+
+How it is killed: the test reruns its own binary as a child process
+(the mechanism `cross_workspace` uses for its second workspace) with the
+parent's workspace in `RKAT_TUI_CRASH_ROOT`. The child starts the rig's
+daemon there (the real daemon, its model scripted in that process: a
+process `rkat-tui-mob` has no scripted model, so the rerun is the only
+way to script the tool calls), has the agent build its team, writes a
+marker and waits; the parent SIGKILLs it (`start_kill`, the status's
+signal asserted 9) and starts a daemon of its own on the same workspace.
+An in-process abort would not do: the engine's hosting and cold-delivery
+locks are OS locks of the process, released only when it ends.
+
+What the agent built: `mob_create` of `team` with the profiles `worker`
+(on the agent's model) and `lead` (on `claude-haiku-4-5`); `assign` of the
+kept helper `a`; `mob_spawn_member` of `w1`, `w2` (workers) and `w3` (the
+lead); `connect_helpers` of `a`, `w1`, `w2` (one edge within `team`, two
+across mobs, recorded in `helper-links.json`). At the kill `w3` is in its
+first model call, which never returns; the others are idle, and the
+agent read `a`'s idle note.
+
+What survived, each shown positively: the endpoint file is still there
+after the kill (no stop ran); `tui_helpers.json` names the agent's session
+as the owner of `team` and of all four helpers, `helper-links.json` the
+cross-mob pairs. The restarted daemon restores the same agent and session
+(`created` false), its transcript holding the build; lists `team` with
+its members on their profiles and the definition with each profile's
+model; reports `w1` wired to `w2`; binds every helper to the agent's
+session. Messages pass `w1` to `w2`, `w2` to `w1` (within the mob) and
+`a` to `w1` (across mobs, over the sockets the start listens on again).
+The agent's `contacts` lists its four helpers exactly as before the kill
+(kind, connections, reachability), but for how long each was idle. A
+message from the agent gives `a` more work, and its answer reaches the
+agent; the agent seats `w4` in `team`. Nothing was lost.
+
+The member mid-run at the kill (`w3`): restored seated and active, its
+interrupted turn runs again at the restart: its model is asked once, the
+request holding its task once (not doubled), and its parent is told its
+answer ("Your helper `w3` went idle" with it). That run starts and ends
+while the daemon is still starting, before `bind_agents` binds the
+helper endings' inputs probe: the log says once "the helper endings'
+inputs probe was never bound at the daemon's start-up", and that run's
+end is decided idle without asking the runtime for queued inputs
+(`HelperEndings::run_ended`'s fallback, `went_idle`). Harmless here (a
+restored member has nothing queued); binding the probe before
+`mob::ensure_mob` restores the mobs would close the window, but the probe
+asks `list_active_inputs` of a member session the restore may not have
+registered yet (an error counts as one input held), so it is left as a
+finding, not changed.
+
+Test: `crash::a_team_the_agent_built_outlives_a_sigkill_of_its_daemon`
+(about 7 s; 20 of 20 in a row with `--stress-count 20`).

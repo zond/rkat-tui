@@ -39,7 +39,7 @@ fn after_peers(messages: &[Message]) -> bool {
 }
 
 /// Whether the request answers the tool call `id` ([`common::answers`]).
-fn answered(messages: &[Message], id: &str) -> bool {
+pub(crate) fn answered(messages: &[Message], id: &str) -> bool {
     common::answers(messages, Some(id))
 }
 
@@ -49,7 +49,7 @@ fn has_result(messages: &[Message], id: &str) -> bool {
 }
 
 /// The text of the result of the tool call `id` in `messages`.
-fn result_of(messages: &[Message], id: &str) -> Option<(String, bool)> {
+pub(crate) fn result_of(messages: &[Message], id: &str) -> Option<(String, bool)> {
     messages.iter().find_map(|m| match m {
         Message::ToolResults { results, .. } => results
             .iter()
@@ -59,11 +59,11 @@ fn result_of(messages: &[Message], id: &str) -> Option<(String, bool)> {
     })
 }
 
-fn tool(id: &'static str, name: &'static str, args: serde_json::Value) -> Step {
+pub(crate) fn tool(id: &'static str, name: &'static str, args: serde_json::Value) -> Step {
     Step::Tool { id, name, args }
 }
 
-fn send(id: &'static str, peer: Option<String>, body: &str) -> Step {
+pub(crate) fn send(id: &'static str, peer: Option<String>, body: &str) -> Step {
     tool(
         id,
         "send_message",
@@ -76,7 +76,7 @@ fn connect(id: &'static str, names: &[&str]) -> Step {
 }
 
 /// Whether a recorded request whose user text names `marker` holds `text`.
-fn heard(llm: &ScriptedLlmClient, marker: &str, text: &str) -> bool {
+pub(crate) fn heard(llm: &ScriptedLlmClient, marker: &str, text: &str) -> bool {
     llm.recorded()
         .iter()
         .filter(|r| r.user().contains(marker))
@@ -612,7 +612,7 @@ fn leak(text: String) -> &'static str {
 /// A helper driven by commands its owner's client sends it: `LIST<n>`
 /// lists its peers (call `l<n>`); `SEND<n>` lists them (`q<n>`) and sends
 /// `FROM-<me>-<n>` to the peer whose name holds `other` (`s<n>`).
-fn commanded(messages: &[Message], me: &str, other: &str) -> Step {
+pub(crate) fn commanded(messages: &[Message], me: &str, other: &str) -> Step {
     // The last command, as a user text or an external event's body.
     let all = format!("{messages:?}");
     let at = all.rfind("\"SEND").max(all.rfind("\"LIST"));
@@ -650,7 +650,7 @@ fn commanded(messages: &[Message], me: &str, other: &str) -> Step {
 }
 
 /// The mob tools the agent's script calls.
-const MOB_TOOLS: [&str; 3] = ["mob_create", "mob_spawn_member", "mob_destroy"];
+pub(crate) const MOB_TOOLS: [&str; 3] = ["mob_create", "mob_spawn_member", "mob_destroy"];
 
 /// `mob_spawn_member` of `member` in `team` (its task names it).
 fn in_team(member: &str, task: &str) -> serde_json::Value {
@@ -730,7 +730,7 @@ fn team_script(
 
 /// The result of the call `id` in a request whose user text holds
 /// `marker`, once there is one.
-async fn result_in(llm: &ScriptedLlmClient, marker: &str, id: &str) -> (String, bool) {
+pub(crate) async fn result_in(llm: &ScriptedLlmClient, marker: &str, id: &str) -> (String, bool) {
     common::poll(async || {
         llm.recorded()
             .iter()
@@ -743,7 +743,7 @@ async fn result_in(llm: &ScriptedLlmClient, marker: &str, id: &str) -> (String, 
 /// Tell `who` of `mob` (its task `marker`, signing `me`) to send message
 /// `n` to its peer; the send succeeded and the request of the peer (its
 /// task `to`) after it holds the message.
-async fn relay(
+pub(crate) async fn relay(
     connection: &rkat_tui::client::transport::Connection,
     llm: &ScriptedLlmClient,
     (mob, who, marker, me): (&str, &str, &str, &str),
@@ -782,14 +782,14 @@ async fn listing(
 }
 
 /// The record of the connections across mobs.
-fn record(ws: &Workspace) -> String {
+pub(crate) fn record(ws: &Workspace) -> String {
     std::fs::read_to_string(common::realm_of(&ws.root).join("helper-links.json"))
         .unwrap_or_default()
 }
 
-const A: (&str, &str, &str, &str) = ("tui", "a", "TASK-OF-A", "A");
-const W1: (&str, &str, &str, &str) = ("team", "w1", "TASK-OF-W1", "W1");
-const W2: (&str, &str, &str, &str) = ("team", "w2", "TASK-OF-W2", "W2");
+pub(crate) const A: (&str, &str, &str, &str) = ("tui", "a", "TASK-OF-A", "A");
+pub(crate) const W1: (&str, &str, &str, &str) = ("team", "w1", "TASK-OF-W1", "W1");
+pub(crate) const W2: (&str, &str, &str, &str) = ("team", "w2", "TASK-OF-W2", "W2");
 
 /// A helper of the workspace's mob and a member of a mob the agent
 /// created, connected: each one's message reaches the other's next model

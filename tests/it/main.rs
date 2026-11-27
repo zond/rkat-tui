@@ -35,6 +35,7 @@ mod contacts;
 mod conversations;
 mod corpus;
 mod councils;
+mod crash;
 mod cross_workspace;
 mod daemon;
 mod deferral;

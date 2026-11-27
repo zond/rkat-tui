@@ -125,7 +125,7 @@ impl std::io::Write for LogLine {
 
 /// Capture the process's log into [`LOG`] (once; a subscriber another
 /// test installed first stays).
-fn capture_log() {
+pub fn capture_log() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let filter = tracing_subscriber::EnvFilter::try_from_env("RKAT_TEST_LOG")
