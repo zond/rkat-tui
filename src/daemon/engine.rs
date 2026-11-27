@@ -810,8 +810,11 @@ fn session_runtime(
     } = parts;
     persistence.require_hosting_mode(effective.storage.hosting_mode())?;
     let adapters = Arc::new(super::mcp_auth::Adapters::default());
+    // Each construction's adapter is the daemon's to retry and to watch,
+    // and its calls refused for want of authorization explain themselves.
     let factory = factory
-        .with_mcp_adapter_custody(Arc::clone(&adapters) as Arc<dyn meerkat::McpAdapterCustody>);
+        .with_mcp_adapter_custody(Arc::clone(&adapters) as Arc<dyn meerkat::McpAdapterCustody>)
+        .with_mcp_adapter_composer(Arc::clone(&adapters) as Arc<dyn meerkat::McpAdapterComposer>);
     let mcp_service = match factory.resolution_provider_auth_persistence() {
         Ok(Some(store)) => Some(meerkat::HostAuthService::new(
             store,

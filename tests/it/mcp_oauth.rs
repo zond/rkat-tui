@@ -396,19 +396,127 @@ async fn a_logout_removes_the_login_and_the_session_asks_for_one_again() {
     rig.drain();
     let before = rig.seen.len();
     rig.send(Effect::McpLogout("docs".into()));
-    rig.wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("logged out of MCP server `docs`")))
+    rig.saw(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("logged out of MCP server `docs`")))
         .await;
     assert_eq!(
         login_of(&servers(&rig.daemon).await, "docs"),
         McpLoginState::NeedsLogin
     );
-    rig.send(Effect::StartTurn("after".into()));
-    rig.turn_finished().await.unwrap();
-    rig.saw(|msg| {
-        matches!(msg, Msg::Notice { text, .. } if text.contains("MCP server `docs` needs login"))
-    })
+    // A new episode: told again (the start's notice was the first one's).
+    told_needs_login_since(&mut rig.client, before).await;
+    rig.quit().await;
+}
+
+/// Wait until the clients were told `docs` needs a login in a message
+/// after the first `from` the client saw (seen already, or arriving).
+async fn told_needs_login_since(client: &mut Client, from: usize) {
+    let told = |msg: &Msg| matches!(msg, Msg::Notice { text, .. } if text.contains("MCP server `docs` needs login"));
+    if !client.seen[from..].iter().any(told) {
+        client.wait_for(told).await;
+    }
+}
+
+/// A model that calls the MCP tool named in `echo` with the call id the
+/// user's words name (`CALL e1`), says "done" after its result, else "ok".
+fn caller(echo: &Arc<parking_lot::Mutex<&'static str>>) -> Arc<ScriptedLlmClient> {
+    let echo = Arc::clone(echo);
+    let step = Step::Dynamic(Arc::new(move |messages| {
+        let inputs = common::run_inputs(messages);
+        for id in ["e1", "e2", "e3"] {
+            if inputs.contains(&format!("CALL {id}")) {
+                return if common::answers(messages, Some(id)) {
+                    Step::Text("done")
+                } else {
+                    Step::Tool {
+                        id,
+                        name: *echo.lock(),
+                        args: serde_json::json!({}),
+                    }
+                };
+            }
+        }
+        Step::Text("ok")
+    }));
+    ScriptedLlmClient::new(vec![step; 80])
+}
+
+/// Make the stored login of the fixture's server expired, as time would:
+/// every `expires_at` of its credential file moved to the epoch. Its
+/// refresh then fails (the fixture's token endpoint refuses every grant
+/// but its authorization code), so the login needs a new one.
+fn expire_the_stored_login(credentials: &Path) {
+    fn expire(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, value) in map.iter_mut() {
+                    if key == "expires_at" && value.is_number() {
+                        *value = serde_json::json!(1);
+                    } else {
+                        expire(value);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(expire),
+            _ => {}
+        }
+    }
+    let mut files = Vec::new();
+    files_text(credentials, Path::new("/nonexistent"), &mut files);
+    let (path, text) = files
+        .into_iter()
+        .find(|(_, text)| text.contains(meerkat::test_fixtures::mcp_oauth::ACCESS_CANARY))
+        .expect("the stored login");
+    let mut json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    expire(&mut json);
+    std::fs::write(path, serde_json::to_vec(&json).unwrap()).unwrap();
+}
+
+/// A login that expires while the daemon runs: the agent's call is
+/// refused with the command the user must run, the clients are told the
+/// server needs a login (a new episode after the first login's), `/mcp`
+/// says so, and a new `/mcp login` brings the tool back with no restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_login_that_expires_while_the_daemon_runs_is_told_and_a_new_one_restores_the_tool() {
+    let fixture = McpOAuthFixture::spawn().await.unwrap();
+    let ws = Workspace::new();
+    let credentials = ws.sibling("credentials");
+    let echo = Arc::new(parking_lot::Mutex::new("echo"));
+    let llm = caller(&echo);
+    // Each login on a free port of its own: the second one's start logs
+    // the expired unverified login out, so it registers again with its
+    // own redirect (the fixture sends the browser to the one registered).
+    let mut rig = Attached::start_with(
+        &ws.root,
+        &llm,
+        setup(&[server_flag(&fixture, "docs", "unverified")], &credentials),
+    )
     .await;
-    assert!(rig.seen.len() > before);
+    let shown = login_opened(&mut rig.client, "docs").await;
+    browse(&shown).await;
+    let (level, text) = login_closed(&mut rig.client).await;
+    assert_eq!(level, NoticeLevel::Info, "{text}");
+    *echo.lock() = common::leak(until_echo_offered(&mut rig.client, &llm).await);
+    rig.send(Effect::StartTurn("CALL e1".into()));
+    rig.turn_finished().await.unwrap();
+    assert!(common::tool_text(&rig.messages().await, "e1").contains(ECHO_REPLY));
+
+    expire_the_stored_login(&credentials);
+    rig.drain();
+    let from = rig.seen.len();
+    rig.send(Effect::StartTurn("CALL e2".into()));
+    rig.turn_finished().await.unwrap();
+    let refused = common::tool_text(&rig.messages().await, "e2");
+    assert!(refused.contains("/mcp login docs"), "{refused}");
+    told_needs_login_since(&mut rig.client, from).await;
+    assert!(login_of(&servers(&rig.daemon).await, "docs").wants_login());
+
+    let shown = login_opened(&mut rig.client, "docs").await;
+    browse(&shown).await;
+    let (level, text) = login_closed(&mut rig.client).await;
+    assert_eq!(level, NoticeLevel::Info, "{text}");
+    rig.send(Effect::StartTurn("CALL e3".into()));
+    rig.turn_finished().await.unwrap();
+    assert!(common::tool_text(&rig.messages().await, "e3").contains(ECHO_REPLY));
     rig.quit().await;
 }
 
@@ -648,20 +756,31 @@ async fn a_predefined_redirect_in_each_loopback_spelling_completes_the_login() {
             println!("SKIPPED: [::1]: this host has no IPv6 loopback");
             continue;
         }
-        let redirect = format!("http://{host}:{}/cb/{name}", free());
-        let mut config = client_config(
-            &setup.command_line(&ws.root),
-            None,
-            common::no_lists(),
-            &setup.endpoint_file(&ws.root),
-            None,
-        )
-        .await;
-        config.mcp_redirect = Some(redirect.clone());
-        let mut client = Client::attach_with_config(config).await;
-        let shown = login_opened(&mut client, name).await;
-        assert_eq!(shown.redirect_uri, redirect);
-        assert!(shown.note.is_none(), "{shown:?}");
+        // A port picked free can be taken by a parallel test before the
+        // client binds it (the dialog then says so): another one is
+        // picked, a bounded number of times.
+        let mut attempts = 0;
+        let (mut client, shown) = loop {
+            attempts += 1;
+            let redirect = format!("http://{host}:{}/cb/{name}", free());
+            let mut config = client_config(
+                &setup.command_line(&ws.root),
+                None,
+                common::no_lists(),
+                &setup.endpoint_file(&ws.root),
+                None,
+            )
+            .await;
+            config.mcp_redirect = Some(redirect.clone());
+            let mut client = Client::attach_with_config(config).await;
+            let shown = login_opened(&mut client, name).await;
+            assert_eq!(shown.redirect_uri, redirect);
+            if shown.note.is_none() {
+                break (client, shown);
+            }
+            assert!(attempts < 5, "no free port in five picks: {shown:?}");
+            client.quit().await;
+        };
         browse(&shown).await;
         let (level, text) = login_closed(&mut client).await;
         assert_eq!(level, NoticeLevel::Info, "{host}: {text}");

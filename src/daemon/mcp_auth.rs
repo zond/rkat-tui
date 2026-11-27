@@ -43,7 +43,7 @@
 //! configured) first answers with its URL for the user to confirm; one of
 //! an untrusted file is not a server.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -67,10 +67,33 @@ const AWAITING_POLL: Duration = Duration::from_secs(2);
 /// How to mark a server, said where a login is refused for the lack of it.
 pub const MARK_HINT: &str = "mark it for OAuth in its [[servers]] entry: oauth_account_selection = \"unverified\" works with any authorization server; \"discover\" binds the account an authorization server that publishes OpenID Connect UserInfo verifies; oauth_account = \"<subject>\" names the one account to accept";
 
+pub mod episodes;
+pub mod guard;
+
+use episodes::{Act, Episodes, Look, Stored};
+
 /// Every MCP adapter the factory's constructions made (held weakly: a
-/// session's end drops its adapter).
+/// session's end drops its adapter), and the calls their wrappers saw
+/// refused for want of authorization ([`guard`]).
 #[derive(Default)]
-pub struct Adapters(parking_lot::Mutex<Vec<Weak<McpRouterAdapter>>>);
+pub struct Adapters {
+    held: parking_lot::Mutex<Vec<Weak<McpRouterAdapter>>>,
+    refusals: Arc<guard::Refusals>,
+}
+
+impl meerkat::McpAdapterComposer for Adapters {
+    fn compose(
+        &self,
+        adapter: &Arc<McpRouterAdapter>,
+        _session_id: &meerkat_core::SessionId,
+        _member: Option<&meerkat_core::MobMemberBinding>,
+    ) -> Result<Arc<dyn meerkat_core::AgentToolDispatcher>, meerkat::McpAdapterComposeRefusal> {
+        Ok(Arc::new(guard::Guarded::new(
+            Arc::clone(adapter) as Arc<dyn meerkat_core::AgentToolDispatcher>,
+            Arc::clone(&self.refusals),
+        )))
+    }
+}
 
 impl std::fmt::Debug for Adapters {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -83,7 +106,7 @@ impl meerkat::McpAdapterCustody for Adapters {
         &self,
         adapter: &Arc<McpRouterAdapter>,
     ) -> Result<(), meerkat::McpAdapterCustodyClosed> {
-        let mut held = self.0.lock();
+        let mut held = self.held.lock();
         held.retain(|weak| weak.strong_count() > 0);
         held.push(Arc::downgrade(adapter));
         Ok(())
@@ -93,7 +116,7 @@ impl meerkat::McpAdapterCustody for Adapters {
 impl Adapters {
     /// The adapters still live.
     fn live(&self) -> Vec<Arc<McpRouterAdapter>> {
-        self.0.lock().iter().filter_map(Weak::upgrade).collect()
+        self.held.lock().iter().filter_map(Weak::upgrade).collect()
     }
 }
 
@@ -115,9 +138,8 @@ pub struct McpAuth {
     decisions: Arc<Decisions>,
     /// The attempt pending per server.
     pending: parking_lot::Mutex<HashMap<String, McpOAuthLoginStart>>,
-    /// The servers the clients were told need a login, until a login or
-    /// a logout.
-    told: parking_lot::Mutex<HashSet<String>>,
+    /// When each marked server needs a login ([`episodes`]).
+    episodes: parking_lot::Mutex<Episodes>,
 }
 
 impl std::fmt::Debug for McpAuth {
@@ -180,6 +202,15 @@ async fn apply_now(adapter: &Arc<McpRouterAdapter>, server: &str) {
     }
 }
 
+/// Whether `config` is marked `oauth_account_selection = "unverified"`.
+fn unverified(config: &McpServerConfig) -> bool {
+    matches!(
+        &config.transport,
+        McpTransportConfig::Http(http) if http.oauth_account_selection
+            == Some(meerkat_core::mcp_config::McpOAuthAccountSelection::Unverified)
+    )
+}
+
 /// The OAuth target of a marked HTTP server: `Ok(None)` for one that is
 /// not marked (or not HTTP), `Err` for a mark the engine refuses.
 fn target_of(config: &McpServerConfig) -> Result<Option<McpServerIdentity>, String> {
@@ -219,7 +250,25 @@ impl McpAuth {
             adapters,
             decisions,
             pending: parking_lot::Mutex::default(),
-            told: parking_lot::Mutex::default(),
+            episodes: parking_lot::Mutex::default(),
+        }
+    }
+
+    /// The stored login of `target`, as the episodes read it (no network).
+    async fn stored(&self, target: &McpServerIdentity) -> Stored {
+        let Some(service) = &self.service else {
+            return Stored::Unknown;
+        };
+        match service.mcp_status(target).await {
+            Ok(status) => match status.phase {
+                // The secret-free facts that tell one login from the next.
+                HostMcpAuthPhase::Authorized => {
+                    Stored::Authorized(format!("{:?}/{:?}", status.expires_at, status.account_id))
+                }
+                HostMcpAuthPhase::ReauthRequired => Stored::Expired,
+                HostMcpAuthPhase::AuthorizationRequired => Stored::Missing,
+            },
+            Err(_) => Stored::Unknown,
         }
     }
 
@@ -238,6 +287,10 @@ impl McpAuth {
                 why: "this daemon has no credential store".to_string(),
             };
         };
+        let stored = self.stored(&target).await;
+        if self.episodes.lock().refused(&config.name, &stored) {
+            return McpLoginState::Refused;
+        }
         match service.mcp_status(&target).await {
             Ok(status) => match status.phase {
                 HostMcpAuthPhase::Authorized => McpLoginState::Authorized {
@@ -250,17 +303,6 @@ impl McpAuth {
                 why: err.to_string(),
             },
         }
-    }
-
-    /// Whether the credential store holds a usable login of `target` now.
-    async fn authorized(&self, target: &McpServerIdentity) -> bool {
-        let Some(service) = &self.service else {
-            return false;
-        };
-        service
-            .mcp_status(target)
-            .await
-            .is_ok_and(|status| status.phase == HostMcpAuthPhase::Authorized)
     }
 
     /// `/mcp`: every server, the untrusted ones last.
@@ -290,14 +332,28 @@ impl McpAuth {
         format!("MCP server `{name}` needs login: /mcp login {name}")
     }
 
+    /// The marked servers and their targets.
+    fn marked_targets(&self) -> impl Iterator<Item = (&str, McpServerIdentity)> {
+        self.servers
+            .iter()
+            .filter_map(|server| match target_of(&server.config) {
+                Ok(Some(target)) => Some((server.config.name.as_str(), target)),
+                _ => None,
+            })
+    }
+
     /// The start-up notices: each marked server that needs a login, from
-    /// the stored state (no network). Those servers count as told.
+    /// the stored state (no network); each opens its episode.
     pub async fn startup_notices(&self) -> Vec<String> {
         let mut notices = Vec::new();
-        for server in &self.servers {
-            if self.state_of(&server.config).await.wants_login() {
-                self.told.lock().insert(server.config.name.clone());
-                notices.push(Self::needs_login_text(&server.config.name));
+        for (name, target) in self.marked_targets() {
+            let look = Look {
+                stored: self.stored(&target).await,
+                awaited: false,
+                refused_at_call: false,
+            };
+            if self.episodes.lock().step(name, &look) == Some(Act::Tell) {
+                notices.push(Self::needs_login_text(name));
             }
         }
         notices
@@ -373,10 +429,21 @@ impl McpAuth {
         let failed = |err: meerkat::HostAuthError| {
             refused(format!("the login of `{server}` did not start: {err}"))
         };
-        let mut start = service
-            .mcp_login_start(&target, &redirect_uri, None)
-            .await
-            .map_err(failed)?;
+        let mut start = match service.mcp_login_start(&target, &redirect_uri, None).await {
+            // The engine never reconnects over a stored unverified login
+            // (meerkat-auth-core `attempt_selection`): the user's new login
+            // replaces it, so the old one goes first (it binds no account).
+            Err(meerkat::HostAuthError::McpOAuth(meerkat::McpOAuthError::DisconnectRequired {
+                ..
+            })) if unverified(&entry.config) => {
+                service.mcp_logout(&target).await.map_err(failed)?;
+                service
+                    .mcp_login_start(&target, &redirect_uri, None)
+                    .await
+                    .map_err(failed)?
+            }
+            other => other.map_err(failed)?,
+        };
         // An attempt pending for another redirect (an earlier client's):
         // retired, and this one admitted.
         if start.disposition == McpOAuthLoginDisposition::Joined
@@ -444,9 +511,10 @@ impl McpAuth {
             )
             .await
             .map_err(|err| refused(format!("the login of `{server}` failed: {err}")))?;
-        // The sessions still await it until their retry connects: no
-        // "needs login" from them meanwhile (a logout clears this).
-        self.told.lock().insert(server.clone());
+        // No refusal stands for this login; the episode closes at the next
+        // look that finds it authorized and nothing waiting.
+        let _ = self.adapters.refusals.take(&server);
+        self.episodes.lock().logged_in(&server);
         let mut retried = 0;
         for adapter in self.adapters.live() {
             if retry_on(&adapter, &target).await {
@@ -501,9 +569,7 @@ impl McpAuth {
         let text = format!(
             "logged out of MCP server `{server}` (in every workspace): its tools leave the agents at their next turn; nothing is revoked at the provider"
         );
-        // The sessions that release it then await a login again: the
-        // clients hear "needs login" from them ([`Self::check_awaiting`]).
-        self.told.lock().remove(server);
+        // The next look finds no login stored: a new episode, told.
         Ok(Outcome::ok(text))
     }
 
@@ -518,53 +584,53 @@ impl McpAuth {
         );
     }
 
-    /// Tell the clients of each server an agent's session found waiting
-    /// for a login (it answered that it needs authorization), once until
-    /// a login.
-    ///
-    /// A server awaited whose credential is stored now (a login of this
-    /// daemon before the session's boundary recorded the wait, or a login
-    /// in another workspace) is retried instead: the session connects it
-    /// at its next turn.
-    async fn check_awaiting(&self) {
-        let mut awaiting = HashSet::new();
+    /// One look at every marked server ([`episodes`]): its stored login
+    /// (no network), whether a session waits for its authorization, and
+    /// whether a call was refused for want of it. The clients are told
+    /// once per episode; a waiting server is retried when a new login is
+    /// stored (one of this daemon before the session recorded its wait,
+    /// or one in another workspace): the session connects it at once.
+    async fn look(&self) {
         let adapters = self.adapters.live();
+        let mut waits: Vec<(Arc<McpRouterAdapter>, McpServerIdentity)> = Vec::new();
         for adapter in &adapters {
-            let waits = adapter.servers_awaiting_authorization().await;
-            tracing::trace!(
-                adapters = adapters.len(),
-                waits = waits.len(),
-                "the MCP servers the sessions wait on"
-            );
-            for target in waits {
-                if self.authorized(&target).await {
-                    retry_on(adapter, &target).await;
-                } else {
-                    awaiting.insert(target.server_name().to_string());
-                }
+            for target in adapter.servers_awaiting_authorization().await {
+                waits.push((Arc::clone(adapter), target));
             }
         }
-        let new: Vec<String> = {
-            let mut told = self.told.lock();
-            let new = awaiting
+        for (name, target) in self.marked_targets() {
+            let awaited: Vec<&Arc<McpRouterAdapter>> = waits
                 .iter()
-                .filter(|name| !told.contains(*name))
-                .cloned()
+                .filter(|(_, waiting)| *waiting == target)
+                .map(|(adapter, _)| adapter)
                 .collect();
-            told.extend(awaiting.iter().cloned());
-            new
-        };
-        for name in new {
-            self.tell(
-                &name,
-                McpLoginState::NeedsLogin,
-                &Self::needs_login_text(&name),
-            );
+            let look = Look {
+                stored: self.stored(&target).await,
+                awaited: !awaited.is_empty(),
+                refused_at_call: self.adapters.refusals.take(name),
+            };
+            let act = self.episodes.lock().step(name, &look);
+            match act {
+                Some(Act::Tell) => {
+                    let login = if matches!(look.stored, Stored::Authorized(_)) {
+                        McpLoginState::Refused
+                    } else {
+                        McpLoginState::NeedsLogin
+                    };
+                    self.tell(name, login, &Self::needs_login_text(name));
+                }
+                Some(Act::Retry) => {
+                    for adapter in awaited {
+                        retry_on(adapter, &target).await;
+                    }
+                }
+                None => {}
+            }
         }
     }
 
     /// Follow the agents' sessions for servers that need a login
-    /// ([`Self::check_awaiting`]) while the daemon runs; nothing when no
+    /// ([`Self::look`]) while the daemon runs; nothing when no
     /// server is marked.
     #[must_use]
     pub fn follow(self: &Arc<Self>) -> Option<tokio::task::JoinHandle<()>> {
@@ -583,7 +649,7 @@ impl McpAuth {
                 let Some(auth) = this.upgrade() else {
                     return;
                 };
-                auth.check_awaiting().await;
+                auth.look().await;
             }
         }))
     }

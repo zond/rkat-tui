@@ -1783,6 +1783,17 @@ before; `/mcp login` on it says how to mark it. The same fields work in
   (``MCP server `docs` needs login: /mcp login docs``), read from the
   stored login without any network call, and again when an agent's
   session finds that the server asks for authorization.
+- **A login that ends while you work.** The engine refreshes an expired
+  access token by itself when the server gave a refresh token; the
+  agent notices nothing. When there is none, the refresh is refused, or
+  the server refuses the stored login (it was revoked), the agent's call
+  of one of its tools fails with a message telling it that you must run
+  `/mcp login <server>`, the clients get the "needs login" notice (once,
+  until the server works again; a later expiry is told again), and
+  `/mcp` says "needs re-login". `/mcp login <server>` then brings the
+  tools back for the agents' next call, with no restart. A new login of
+  a server marked `unverified` replaces the stored one as soon as the
+  login starts (the engine never reconnects over it).
 
 A server of the project's `.rkat/mcp.toml` can be logged into only once
 the file is trusted, and only after the dialog showed its URL and you

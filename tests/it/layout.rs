@@ -210,6 +210,11 @@ fn forwarding_wrappers_override_every_method_of_their_engine_trait() {
             "impl AgentToolDispatcher for Routed",
         ),
         (
+            "pub trait AgentToolDispatcher",
+            "src/daemon/mcp_auth/guard.rs",
+            "impl AgentToolDispatcher for Guarded",
+        ),
+        (
             "pub trait ToolDispatchAdmission",
             "src/daemon/approvals.rs",
             "impl ToolDispatchAdmission for RootGate",

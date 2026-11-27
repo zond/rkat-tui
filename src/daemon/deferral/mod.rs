@@ -353,6 +353,10 @@ macro_rules! forward_dispatcher {
     };
 }
 
+/// The MCP adapters' wrapper (`crate::daemon::mcp_auth::guard`) forwards
+/// the same way.
+pub(crate) use forward_dispatcher;
+
 /// A member's engine mob tool surface, reachable from [`ForkRoutes`] (it
 /// holds only a weak reference, so binding the surface to its lifecycle,
 /// which needs sole ownership, still can). Everything is `inner`'s: every

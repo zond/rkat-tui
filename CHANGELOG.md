@@ -15,7 +15,11 @@
   every workspace. `/mcp` lists the servers with their source and login
   state; `/mcp logout <server>` removes a login. A start-up notice names
   a server that needs a login, and so does a session that finds one
-  asking for authorization. A server of the project's `mcp.toml` asks
+  asking for authorization. A login that expires beyond refresh or is
+  revoked while the daemon runs is told again: the agent's failing call
+  says to run `/mcp login <server>`, the clients get the notice once per
+  episode, `/mcp` says "needs re-login", and a new login restores the
+  tools with no restart. A server of the project's `mcp.toml` asks
   for a `y` to its URL first; none logs in over `--attach-insecure`.
 - `mcp.oauth_redirect_uri`: predefine the login's whole loopback redirect
   (`http://localhost:8976/callback`; host, port and path), for an

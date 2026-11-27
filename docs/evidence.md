@@ -5314,3 +5314,91 @@ agent gets the tools with no login), `a_predefined_redirect_in_each_loopback_spe
 unit tests in `client::mcp_login` (redirect spellings, the paste check,
 the listener's one callback, a predefined port in use) and
 `ui::modal::mcp_login`.
+
+### A login that ends while the daemon runs (2026-11-27)
+
+What the engine does (0.9.19, read in the sources):
+
+- Expired with a refresh token: a Streamable HTTP connection reads its
+  bearer on every request (meerkat-mcp `connection.rs:1586-1591`,
+  `transport/streamable_http.rs:291-325` `resolve`), and the authority
+  refreshes there (meerkat-auth-core `mcp_oauth.rs:2350-2390`,
+  `stored_bearer_token`: `RefreshRequired` → the refresh coordinator).
+  A connected session uses the refreshed token with no reconnect; the
+  tool works; `mcp_status` says authorized ("unexpired or refreshable").
+- Expired with no refresh token, or a refresh the token endpoint refuses
+  as needing a login (`map_coordinated_refresh_error`,
+  `mcp_oauth.rs:5833-5838`): `ReauthRequired`; `resolve` turns it into
+  `AuthRequired` before anything is sent (`streamable_http.rs:311-319`),
+  the call is `McpError::AuthorizationRequired` (`connection.rs:4250-4269`),
+  the router queues the server in `calls_refused_unauthorized`
+  (`router.rs:5204-5208`) and the agent reads `ToolError::execution_failed`
+  of the error's text, "MCP server '<name>' is awaiting human
+  authorization" (`router.rs:5673`, `error.rs` `AuthorizationRequired`).
+  `mcp_status` says `ReauthRequired`. A transient refresh failure is
+  `RefreshFailed` → "MCP credential unavailable" (`streamable_http.rs:321`),
+  no refusal.
+- A `401` to a call with a stored token that looks valid (revoked): the
+  same `AuthRequired` (`streamable_http.rs:823`, `979`), the same queue
+  and text; `mcp_status` still says authorized (nothing in the store
+  changed).
+- The queue is released (the server unpublished and recorded as awaiting,
+  `Released`) only inside `apply_staged` (`router.rs:2712`,
+  `release_servers_refused_at_call` at `3980`), which nothing calls for a
+  member's router: so after an expiry or a revocation the server never
+  reaches `servers_awaiting_authorization`, its tools stay published and
+  each call fails the same way. A new login works without a restart: the
+  connection reads the new bearer at the next request, and
+  `retry_authorized` drops the target's queued refusals (`router.rs:3807`).
+- A new login over a stored *unverified* login is refused
+  `DisconnectRequired` ("log it out, then log in again"): the engine
+  never reconnects over an occupied unverified slot
+  (`attempt_selection`, `mcp_oauth.rs:5064`). Found by the expiry test's
+  first run.
+
+What rkat-tui does:
+
+- Episodes (`daemon::mcp_auth::episodes`): the 2 s look reads every
+  marked server's stored login (`mcp_status`, no network), whether a
+  session waits for it, and whether a call was refused; the clients are
+  told once per episode, which closes when the server is authorized,
+  nothing waits and no refusal stands with the stored login (a login is
+  told apart by its expiry and account). The old `told` set kept a
+  server forever after a login, so a later expiry was silent. A waiting
+  server with a stored login is retried only when that login changed
+  since the episode opened, so one the server refuses at its connect is
+  not retried over the network every look. A login here ends the
+  episode; the sessions' waits during its retry tell nothing.
+- The agent's text: the daemon composes a wrapper around every
+  construction's MCP adapter (`AgentFactory::with_mcp_adapter_composer`,
+  `daemon::mcp_auth::guard`, every trait method forwarded, pinned by
+  `layout::forwarding_wrappers_override_every_method_of_their_engine_trait`);
+  a call refused with the engine's text above is noted for the episodes
+  and answered "MCP server `<name>` needs a new login … The user must run
+  `/mcp login <name>` …". The match is on the engine's wording (its type
+  is lost in `execution_failed`).
+- `/mcp` says "needs re-login (the server refused the stored login)"
+  (`McpLoginState::Refused`) after a refusal with a login that looks
+  valid.
+- No `apply_staged` at a boundary: leaving the refused server published
+  is what lets a new login work at once (the connection takes the new
+  bearer); releasing it would only unpublish the tools until a reconnect.
+  The live attach applies at any time (`surface.rs:1606`), so the
+  existing applies after a login or logout stay as they are.
+- `/mcp login` of an `unverified` server whose slot is occupied logs the
+  old login out first and starts again.
+
+Tests: `mcp_oauth::a_login_that_expires_while_the_daemon_runs_is_told_and_a_new_one_restores_the_tool`
+(the stored login's `expires_at` moved to the epoch in the test's own
+credential store; the refresh is refused, since the fixture's token
+endpoint answers `invalid_grant` to every grant but its code: the
+agent's call says `/mcp login docs`, the notice comes again, `/mcp`
+says it needs a login, a new login brings the tool back);
+`a_logout_removes_the_login_and_the_session_asks_for_one_again` now waits
+for a new notice; unit tests `daemon::mcp_auth::episodes::tests`
+(expiry told again, a refused call until another login, a login here
+ends the episode, the retry only for a new login) and
+`daemon::mcp_auth::guard::tests`. Not tested: a revocation (the fixture
+accepts its one access token always and offers no switch to answer
+`401`), and an expiry with a working refresh (the fixture refuses every
+refresh).

@@ -622,6 +622,9 @@ pub enum McpLoginState {
     NeedsLogin,
     /// The stored credential expired and cannot be refreshed.
     NeedsRelogin,
+    /// The server refused a call with the stored credential (revoked, or
+    /// its scope no longer enough): `/mcp login`.
+    Refused,
     /// A server of the project's untrusted `mcp.toml`: not started, no
     /// login.
     Untrusted,
@@ -642,6 +645,7 @@ impl McpLoginState {
             Self::Authorized { expires_at: None } => "authorized".to_string(),
             Self::NeedsLogin => "needs login".to_string(),
             Self::NeedsRelogin => "needs re-login".to_string(),
+            Self::Refused => "needs re-login (the server refused the stored login)".to_string(),
             Self::Untrusted => {
                 "not started: the project's mcp.toml is not trusted (/trust)".to_string()
             }
@@ -652,7 +656,7 @@ impl McpLoginState {
     /// Whether `/mcp login` is what the server needs.
     #[must_use]
     pub fn wants_login(&self) -> bool {
-        matches!(self, Self::NeedsLogin | Self::NeedsRelogin)
+        matches!(self, Self::NeedsLogin | Self::NeedsRelogin | Self::Refused)
     }
 }
 
