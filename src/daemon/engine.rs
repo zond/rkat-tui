@@ -295,6 +295,9 @@ pub fn compose(
         llm_override.clone(),
         Arc::clone(&allowed),
     );
+    // The compaction summary calls the agents' client wrapper measures,
+    // which the agents' watchers take from the ledger.
+    let summaries = super::compaction_call::SummaryCalls::new();
     let runtime = session_runtime(RuntimeParts {
         factory,
         effective: &effective,
@@ -304,6 +307,7 @@ pub fn compose(
         backend: backend.as_str(),
         llm_override,
         endpoints: allowed,
+        summaries: Arc::clone(&summaries),
     })?;
 
     let realm_root = scope.realm_root();
@@ -534,7 +538,7 @@ pub fn compose(
         .map_err(DaemonError::Approval)?;
     let decisions_task = decisions.follow();
     let diffs_task = Decisions::forward_diffs(&decisions, diff_rx);
-    let ledger = ledger(&decisions, &realm_root);
+    let ledger = ledger(&decisions, &realm_root, summaries);
     let (follower, destroyed_task) = follow_helpers(
         &state,
         &registry,
@@ -758,6 +762,8 @@ struct RuntimeParts<'a> {
     llm_override: Option<Arc<dyn meerkat::LlmClient>>,
     /// The endpoints whose lists every agent's request is checked against.
     endpoints: Arc<crate::endpoints::EndpointRegistry>,
+    /// Where the agents' client wrapper records compaction summary calls.
+    summaries: Arc<super::compaction_call::SummaryCalls>,
 }
 
 /// The session runtime over the realm, as `rkat-rpc` composes it.
@@ -771,6 +777,7 @@ fn session_runtime(parts: RuntimeParts<'_>) -> Result<Arc<SessionRuntime>, Daemo
         backend,
         llm_override,
         endpoints,
+        summaries,
     } = parts;
     persistence.require_hosting_mode(effective.storage.hosting_mode())?;
     let config_store = Arc::clone(realm_config) as Arc<dyn ConfigStore>;
@@ -795,8 +802,11 @@ fn session_runtime(parts: RuntimeParts<'_>) -> Result<Arc<SessionRuntime>, Daemo
     // Every agent's and helper's requests carry tool schemas every dialect
     // accepts (a Gemini model behind an OpenAI-compatible proxy refuses a
     // property without a `type`), and none goes out on a model its
-    // endpoint's `endpoints.<name>.models` does not allow.
-    runtime.set_agent_llm_client_decorator(Some(super::schema_compat::decorator(endpoints)));
+    // endpoint's `endpoints.<name>.models` does not allow; their
+    // compaction summary calls are measured.
+    runtime.set_agent_llm_client_decorator(Some(super::schema_compat::decorator(
+        endpoints, summaries,
+    )));
     Ok(Arc::new(runtime))
 }
 
@@ -916,11 +926,17 @@ fn mob_state(
 
 /// Every model call of every agent, helper and classifier is counted
 /// here; a conversation's new record (its totals and the gauge) goes to
-/// every client.
-fn ledger(decisions: &Arc<Decisions>, realm_root: &std::path::Path) -> Arc<super::usage::Ledger> {
+/// every client; `summaries` are the compaction summary calls the agents'
+/// client wrapper measures.
+fn ledger(
+    decisions: &Arc<Decisions>,
+    realm_root: &std::path::Path,
+    summaries: Arc<super::compaction_call::SummaryCalls>,
+) -> Arc<super::usage::Ledger> {
     let decisions = Arc::downgrade(decisions);
-    super::usage::Ledger::new(
+    super::usage::Ledger::with_summaries(
         realm_root,
+        summaries,
         move |session: &meerkat_core::SessionId, record: &super::usage::Record| {
             if let Some(decisions) = decisions.upgrade() {
                 decisions.broadcast(

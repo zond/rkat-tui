@@ -5109,3 +5109,84 @@ docs and examples; `meerkat-anthropic`, `-llm-core`, `-auth-core`,
   to 0.9.18.
 - #2126 turned out to be upstream's design note for the rewind (merged
   2026-11-09), not an implementation.
+
+## The compaction summary call measured, and its cache write (2026-11-27)
+
+What the engine sends (Meerkat 0.9.18, `meerkat-core` `agent/compact.rs`,
+read and pinned in the rig): the summary request goes through the
+session's decorated client, `stream_response_authorized(&messages, &[],
+max_summary_tokens, None, params, authorization)`. Our members run with
+no work authorization (a probe in the wrapper printed `authorized=false`
+for the one summary call of `compact::the_summary_request_carries_no_tools_and_its_own_params`),
+so the summary is the only request that reaches our wrapper through that
+method; an agent's turn is prepared as an attempt
+(`prepare_request_attempt*`). The shape, from the same test: the request
+before it carries the agent's tools, the summary none; the summary's
+provider tag is the agent's (the gate's `DisableAll` native-tool policy
+makes the engine send the session's tag, `compaction_provider_params`);
+its output budget is the compactor's (4096 against the agent's 64000),
+the same temperature. Its rows: the agent's system prompt unchanged, the
+agent's history row for row with the same roles and text (the assistant
+rows rewritten without their interaction, run and message ids), the rows
+since, and the compaction prompt last. With no tools the prefix differs
+from the agent's at its first part (Anthropic caches tools, then
+system, then messages), so it cannot read the agent's prompt cache, and
+under Anthropic's default automatic `cache_control` its whole input was
+billed as a cache write nothing reads.
+
+`CompactionCompleted` carries only `summary_tokens`, the call's output
+(`outcome.summary_usage.output_tokens`); the engine validates the full
+usage but does not publish it (the open ask B7). rkat-tui counted the
+engine's history estimate at the full input price.
+
+Built: `src/daemon/compaction_call.rs`. `is_summary_request` (by the
+authorization's `Compaction` use when one is carried, else no tools and
+the default compactor's own prompt as the last user row);
+`SummaryCalls`, a bounded list (64) of the summary calls' usage the
+wrapper records (it knows no session), from which the agent's watcher
+(`approvals.rs`, `summary_call`) takes at `CompactionCompleted` the one
+reading with that output recorded since the agent's last compaction
+ended (not since `CompactionStarted`: the watcher reads the stream
+behind the engine, and a scripted call returns before the start is
+read); none or several: the estimate, counted as such
+(`usage::Summarized::Estimated`), and logged as unattributed. One
+`info` line per compaction with counts only; a `debug` line from the
+wrapper. `SessionCost.compactions` (`measured`, `estimated`, optional in
+the stored record). `without_cache_write`: for a summary with no tools
+on Anthropic, `cache_control = disabled` merged into the tag the request
+would have gone with (its params', else the client's own, as the
+adapter picks), its `cache_ttl` and native tools dropped; a tag with only
+the policy lowers thinking and effort as no tag does (`thinking_block_binding`,
+`build_request_body`). Upstream issue: to be filed.
+
+Cached tokens counted twice: the Anthropic client reports uncached input
+apart from disjoint cache counts (`ProviderTokenAccounting::anthropic`,
+presented = the sum); OpenAI Responses (`apply_responses_usage`, a live
+`gpt-5.6-luna` row: 37679 input holding 26966 cached and 10710 written),
+the OpenAI-compatible client (`prompt_tokens` with `cached_tokens` and
+`cache_write_tokens` as subsets) and Gemini (`prompt_token_count` holding
+`cached_content_token_count`) report the whole prompt. Our cost and
+context gauge added the cache counts to `input_tokens` for every
+provider, and a `TurnUsage`'s own fields drop its accounting, so the
+convention was never seen. Fixed: `UsageTotals` takes the uncached input
+as the engine's presented total less the clamped cache counts; the gauge
+is `normalized_total_tokens`; the classifier's review numbers and the
+status bar's live count take the presented total too (the live count had
+left out an Anthropic call's cached input, which the session's totals,
+the engine's cumulative presented usage, hold).
+
+Not covered: a helper's compaction (the daemon counts none, before or
+now); a summary on the bound controller's client (none of ours); an
+OpenAI-compatible proxy in front of Anthropic (LiteLLM decides its
+caching).
+
+Tests: `compact::the_summary_request_carries_no_tools_and_its_own_params`
+(fails on purpose when the engine sends the tools),
+`compact::a_summary_call_s_reported_usage_is_its_cost`,
+`daemon::compaction_call::tests::*`,
+`daemon::schema_compat::tests::the_summary_call_is_measured_and_sent_without_a_cache_write`,
+`cost::tests::every_provider_s_cached_tokens_are_counted_once`,
+`cost::tests::a_measured_summary_call_is_its_own_share_of_the_breakdown`,
+`cost::tests::the_summaries_table_is_optional_in_the_stored_record`,
+`daemon::usage::tests::a_call_with_cached_tokens_inside_its_input_counts_them_once`,
+`ui::tests::turns::submit_starts_turn_and_streams_into_one_block`.

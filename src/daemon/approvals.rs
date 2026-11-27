@@ -563,6 +563,12 @@ struct Following {
     run: Option<meerkat_core::RunId>,
     /// A compaction's history estimate, until it completes.
     compacting: Option<u64>,
+    /// Where the next compaction's summary call is looked for among the
+    /// measured ones (`super::compaction_call::SummaryCalls::mark`): from
+    /// the last compaction's end on. Not from its `CompactionStarted`:
+    /// this watcher reads the stream behind the engine, and the call can
+    /// be recorded before the start is read.
+    summaries_since: u64,
     /// The model calls of the run now (a checkpoint names them).
     steps: u64,
     /// The last run that ended at its limit (its checkpoint began).
@@ -859,25 +865,28 @@ impl Watcher {
             } => {
                 let estimate = following.compacting.take();
                 if let Some(session) = session() {
-                    // Only a provider call costs anything; its input is
-                    // the history estimate, its output the summary.
-                    let summarized = summary_source
-                        .as_ref()
-                        .is_none_or(|source| {
-                            matches!(
-                                source,
-                                meerkat_core::CompactionSummarySource::ProviderCall { .. }
-                            )
-                        })
-                        .then_some(super::usage::Summarized {
-                            input: estimate.unwrap_or(0),
-                            output: *summary_tokens,
-                        });
                     let model = self.watched.current.model_of(&session).unwrap_or_default();
+                    // Only a provider call costs anything.
+                    let provider_call = summary_source.as_ref().is_none_or(|source| {
+                        matches!(
+                            source,
+                            meerkat_core::CompactionSummarySource::ProviderCall { .. }
+                        )
+                    });
+                    let summarized = provider_call.then(|| {
+                        self.summary_call(
+                            &session,
+                            &model,
+                            following.summaries_since,
+                            estimate.unwrap_or(0),
+                            *summary_tokens,
+                        )
+                    });
+                    following.summaries_since = self.watched.ledger.summaries().mark();
                     let after = estimated_history_tokens_after.unwrap_or(*summary_tokens);
                     self.watched
                         .ledger
-                        .compaction(&session, &model, summarized, after)
+                        .compaction(&session, &model, summarized.as_ref(), after)
                         .await;
                     self.compacted(&session, after);
                 }
@@ -1008,6 +1017,64 @@ impl Watcher {
             agents
                 .unprompted_run(&self.name, session, run, &prompt)
                 .await;
+        }
+    }
+
+    /// What a compaction of `session` (on `model`) whose summary wrote
+    /// `output` tokens is counted as: the one summary call the agents'
+    /// client wrapper measured since `since` with that output (the
+    /// engine's `summary_tokens` is that call's output), else the engine's
+    /// history `estimate` as input, never a guess among several. One log
+    /// line of counts either way.
+    fn summary_call(
+        &self,
+        session: &SessionId,
+        model: &str,
+        since: u64,
+        estimate: u64,
+        output: u64,
+    ) -> super::usage::Summarized {
+        use super::compaction_call::Attribution;
+        use super::usage::Summarized;
+        match self.watched.ledger.summaries().take(since, output) {
+            Attribution::Measured(reading) => {
+                let totals = reading.totals;
+                tracing::info!(
+                    agent = %self.name,
+                    session = %session,
+                    model = %reading.model,
+                    estimate,
+                    input = totals.input,
+                    cache_read = totals.cache_read,
+                    cache_write = totals.cache_write,
+                    output = totals.output,
+                    measured = true,
+                    "compaction summary call"
+                );
+                Summarized::Measured {
+                    model: reading.model,
+                    totals,
+                }
+            }
+            Attribution::Unattributed { candidates } => {
+                tracing::info!(
+                    agent = %self.name,
+                    session = %session,
+                    model,
+                    estimate,
+                    input = estimate,
+                    cache_read = 0_u64,
+                    cache_write = 0_u64,
+                    output,
+                    measured = false,
+                    candidates,
+                    "compaction summary call (unattributed: counted from the estimate)"
+                );
+                Summarized::Estimated {
+                    input: estimate,
+                    output,
+                }
+            }
         }
     }
 

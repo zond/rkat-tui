@@ -9,6 +9,25 @@
   with it. Requests to a self-hosted server now state the closed choices
   of the engine's own tools (a task's status and priority) as typed
   choices.
+- A compaction's summary call is counted as its provider reported it
+  (input, cache read, cache write, output), no longer from the engine's
+  estimate of the history at the full input price; `/cost` lists the
+  summaries' share on lines of their own, and marks a summary it could
+  only estimate `(estimated)`. The daemon's log has one line of counts
+  per compaction ("compaction summary call").
+- On Anthropic the compaction summary request goes with prompt caching
+  off: it cannot read the agent's cache (no tools, a rewritten history),
+  so the automatic cache write was billed for nothing.
+
+### Fixed
+
+- Cached input tokens were counted twice on OpenAI, OpenAI-compatible
+  endpoints (LiteLLM) and Gemini, whose reported input already holds
+  them: once at the input price and again at the cache price, in the
+  cost, the context gauge and the classifier's review numbers. Every
+  provider's call is now priced and gauged once. The status bar's live
+  token count also counted an Anthropic call's cached input as nothing;
+  it now counts every input token, as the session's totals do.
 
 ## [0.1.6] - 2026-11-27
 

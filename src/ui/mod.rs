@@ -1827,8 +1827,11 @@ impl App {
                 if shown
                     && let Some(usage) = self.transcript.apply_agent_event_at(&env.payload, now)
                 {
+                    // Every input token once (an Anthropic call's
+                    // `input_tokens` leaves the cached ones out), as the
+                    // session's totals the daemon reports count them.
                     self.status
-                        .add_tokens(usage.input_tokens, usage.output_tokens);
+                        .add_tokens(usage.presented_tokens(), usage.output_tokens);
                 }
             }
             Msg::Scoped(ev) => {

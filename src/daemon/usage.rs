@@ -17,11 +17,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use meerkat_core::{SessionId, Usage};
+use meerkat_core::{SessionId, TurnUsage, Usage};
 use meerkat_schedule::ScheduleId;
 use serde::{Deserialize, Serialize};
 
-use crate::cost::SessionCost;
+use super::compaction_call::SummaryCalls;
+use crate::cost::{SessionCost, UsageTotals};
 use crate::paths::{FileMode, write_atomic};
 
 /// Directory (inside the realm root) of the usage records.
@@ -104,6 +105,9 @@ pub struct Ledger {
     writing: parking_lot::Mutex<()>,
     /// Tells the clients a conversation's record changed.
     notify: Box<dyn Fn(&SessionId, &Record) + Send + Sync>,
+    /// The compaction summary calls the agents' client wrapper measured,
+    /// until their compactions complete.
+    summaries: Arc<SummaryCalls>,
 }
 
 impl std::fmt::Debug for Ledger {
@@ -118,8 +122,22 @@ impl Ledger {
     /// The records of the realm at `realm_root`; `notify` is told every
     /// change of a conversation's record (its totals and the gauge).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(
         realm_root: &Path,
+        notify: impl Fn(&SessionId, &Record) + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        Self::with_summaries(realm_root, SummaryCalls::new(), notify)
+    }
+
+    /// The records of the realm at `realm_root`, with the summary calls
+    /// `summaries` the agents' client wrapper records into
+    /// ([`super::schema_compat::decorator`]); `notify` is told every
+    /// change of a conversation's record (its totals and the gauge).
+    #[must_use]
+    pub fn with_summaries(
+        realm_root: &Path,
+        summaries: Arc<SummaryCalls>,
         notify: impl Fn(&SessionId, &Record) + Send + Sync + 'static,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -127,7 +145,14 @@ impl Ledger {
             records: parking_lot::Mutex::new(HashMap::new()),
             writing: parking_lot::Mutex::new(()),
             notify: Box::new(notify),
+            summaries,
         })
+    }
+
+    /// The compaction summary calls measured and not yet taken.
+    #[must_use]
+    pub fn summaries(&self) -> &SummaryCalls {
+        &self.summaries
     }
 
     /// `account`'s record as counted (read from its file the first time,
@@ -194,13 +219,14 @@ impl Ledger {
     }
 
     /// One model call of the agent running as `session`, on `model`.
-    pub async fn turn(&self, session: &SessionId, model: &str, usage: &Usage) {
+    pub async fn turn(&self, session: &SessionId, model: &str, usage: &TurnUsage) {
         let context = Some(ContextReading {
             tokens: crate::cost::context_tokens(usage),
             approx: false,
         });
+        let usage = accounted(usage);
         self.change(Account::Session(session.clone()), |record| {
-            let counted = count(record, |cost| cost.record(model, usage), usage);
+            let counted = count(record, |cost| cost.record(model, &usage), &usage);
             let moved = record.context != context;
             record.context = context;
             counted || moved
@@ -209,26 +235,36 @@ impl Ledger {
     }
 
     /// One model call of a scheduled run, counted to its schedule too.
-    pub async fn scheduled(&self, schedule: &ScheduleId, model: &str, usage: &Usage) {
+    pub async fn scheduled(&self, schedule: &ScheduleId, model: &str, usage: &TurnUsage) {
+        let usage = accounted(usage);
         self.change(Account::Schedule(schedule.clone()), |record| {
-            count(record, |cost| cost.record(model, usage), usage)
+            count(record, |cost| cost.record(model, &usage), &usage)
         })
         .await;
     }
 
     /// One model call of the helper `label` (on `model`) for `owner`.
-    pub async fn helper_turn(&self, owner: &SessionId, label: &str, model: &str, usage: &Usage) {
+    pub async fn helper_turn(
+        &self,
+        owner: &SessionId,
+        label: &str,
+        model: &str,
+        usage: &TurnUsage,
+    ) {
+        let usage = accounted(usage);
         self.change(Account::Session(owner.clone()), |record| {
             count(
                 record,
-                |cost| cost.record_helper(label, model, usage),
-                usage,
+                |cost| cost.record_helper(label, model, &usage),
+                &usage,
             )
         })
         .await;
     }
 
-    /// One classifier call judging a call of `session` (or of its helpers).
+    /// One classifier call judging a call of `session` (or of its helpers):
+    /// `usage` carries the call's provider accounting
+    /// ([`TurnUsage::into_inner`]), which prices its cache counts once.
     pub async fn classifier(&self, session: &SessionId, model: &str, usage: &Usage) {
         self.change(Account::Session(session.clone()), |record| {
             count(record, |cost| cost.record(model, usage), usage)
@@ -244,13 +280,14 @@ impl Ledger {
     }
 
     /// A compaction of `session` on `model`: `summarized` when a provider
-    /// call made the summary (which costs), `after` the history estimate
+    /// call made the summary (which costs; a measured call counts on the
+    /// model its provider accounted it to), `after` the history estimate
     /// it left.
     pub async fn compaction(
         &self,
         session: &SessionId,
         model: &str,
-        summarized: Option<Summarized>,
+        summarized: Option<&Summarized>,
         after: u64,
     ) {
         let context = Some(ContextReading {
@@ -258,8 +295,14 @@ impl Ledger {
             approx: true,
         });
         self.change(Account::Session(session.clone()), |record| {
-            if let Some(Summarized { input, output }) = summarized {
-                record.cost.record_compaction(model, input, output);
+            match summarized {
+                Some(Summarized::Measured { model, totals }) => {
+                    record.cost.record_summary_call(model, totals);
+                }
+                Some(Summarized::Estimated { input, output }) => {
+                    record.cost.record_compaction(model, *input, *output);
+                }
+                None => {}
             }
             let moved = record.context != context;
             record.context = context;
@@ -359,14 +402,23 @@ impl Ledger {
     }
 }
 
-/// A provider call's summary of a compaction: the history estimate it
-/// read and the summary it wrote, in tokens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Summarized {
-    /// The history estimate summarized.
-    pub input: u64,
-    /// The summary.
-    pub output: u64,
+/// What a compaction's summary call is counted as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Summarized {
+    /// The usage its provider reported (`super::compaction_call`), on the
+    /// model the provider accounted it to.
+    Measured { model: String, totals: UsageTotals },
+    /// No reading could be told to be this compaction's: the history
+    /// estimate the engine summarized as input, the summary as output, in
+    /// tokens.
+    Estimated { input: u64, output: u64 },
+}
+
+/// `usage` as a [`Usage`] that keeps its provider accounting (a
+/// [`TurnUsage`]'s own fields leave it out), so the cost counts each
+/// provider's cache tokens once ([`crate::cost::UsageTotals::from_usage`]).
+fn accounted(usage: &TurnUsage) -> Usage {
+    usage.clone().into_inner()
 }
 
 /// Count `usage` into `record` with `add` when it holds any tokens;
@@ -436,12 +488,19 @@ fn load_record(path: &Path) -> std::io::Result<Record> {
 mod tests {
     use super::*;
 
-    fn usage(input: u64, output: u64) -> Usage {
+    fn raw(input: u64, output: u64) -> Usage {
         Usage {
             input_tokens: input,
             output_tokens: output,
             ..Usage::default()
         }
+    }
+
+    fn usage(input: u64, output: u64) -> TurnUsage {
+        TurnUsage::new(
+            raw(input, output),
+            meerkat_core::ProviderTokenAccounting::anthropic("m", input, 0, 0),
+        )
     }
 
     /// Counts land in memory and are told; they reach the file only when
@@ -462,7 +521,7 @@ mod tests {
         ledger
             .helper_turn(&session, "scout", "h", &usage(3, 1))
             .await;
-        ledger.classifier(&session, "judge", &usage(7, 2)).await;
+        ledger.classifier(&session, "judge", &raw(7, 2)).await;
         ledger.scheduled(&schedule, "m", &usage(10, 5)).await;
         // A change of nothing is not told.
         ledger
@@ -554,8 +613,39 @@ mod tests {
         assert_eq!(found, expected);
     }
 
-    /// A compaction counts its estimate when a provider call made the
-    /// summary, and leaves an estimated context either way.
+    /// A call whose provider reports the cached tokens inside its input
+    /// (OpenAI's convention) is counted with them once, in the totals and
+    /// in the gauge.
+    #[tokio::test]
+    async fn a_call_with_cached_tokens_inside_its_input_counts_them_once() {
+        let realm = tempfile::tempdir().unwrap();
+        let ledger = Ledger::new(realm.path(), |_: &SessionId, _: &Record| {});
+        let session = SessionId::new();
+        let call = TurnUsage::new(
+            Usage {
+                cache_read_tokens: Some(600),
+                ..raw(1_000, 50)
+            },
+            meerkat_core::ProviderTokenAccounting::openai("gpt", 1_000),
+        );
+        ledger.turn(&session, "gpt", &call).await;
+        ledger.helper_turn(&session, "scout", "gpt", &call).await;
+        let record = ledger.get(&Account::Session(session)).await;
+        let once = UsageTotals {
+            input: 400,
+            output: 50,
+            cache_read: 600,
+            cache_write: 0,
+        };
+        assert_eq!(record.cost.helpers["scout"]["gpt"], once);
+        assert_eq!(record.cost.per_model["gpt"].input, 800);
+        assert_eq!(record.cost.per_model["gpt"].cache_read, 1_200);
+        assert_eq!(record.context.map(|c| c.tokens), Some(1_050));
+    }
+
+    /// A compaction counts its summary call when a provider call made the
+    /// summary (measured on the model it was accounted to, else the
+    /// estimate), and leaves an estimated context either way.
     #[tokio::test]
     async fn a_compaction_counts_its_summary_call_and_estimates_the_context() {
         let realm = tempfile::tempdir().unwrap();
@@ -576,7 +666,7 @@ mod tests {
             .compaction(
                 &session,
                 "m",
-                Some(Summarized {
+                Some(&Summarized::Estimated {
                     input: 5_000,
                     output: 300,
                 }),
@@ -586,6 +676,28 @@ mod tests {
         let record = ledger.get(&account).await;
         assert_eq!(record.cost.per_model["m"].input, 5_000);
         assert_eq!(record.cost.per_model["m"].output, 300);
+        assert_eq!(record.cost.compactions.estimated["m"].input, 5_000);
+        let measured = UsageTotals {
+            input: 10,
+            output: 300,
+            cache_read: 4_000,
+            cache_write: 0,
+        };
+        ledger
+            .compaction(
+                &session,
+                "m",
+                Some(&Summarized::Measured {
+                    model: "accounted".to_string(),
+                    totals: measured,
+                }),
+                400,
+            )
+            .await;
+        let record = ledger.get(&account).await;
+        assert_eq!(record.cost.per_model["accounted"], measured);
+        assert_eq!(record.cost.compactions.measured["accounted"], measured);
+        assert_eq!(record.cost.per_model["m"].input, 5_000, "unchanged");
     }
 
     /// A record that exists but cannot be read (here: a directory in its

@@ -214,6 +214,26 @@ fn submit_starts_turn_and_streams_into_one_block() {
         ]
     );
     assert_eq!((app.status.input_tokens, app.status.output_tokens), (10, 4));
+    // An Anthropic call's `input_tokens` leaves its cached tokens out: the
+    // counter takes every input token once, as the daemon's totals do.
+    app.update(agent(AgentEvent::TurnCompleted {
+        stop_reason: StopReason::EndTurn,
+        usage: Some(meerkat_core::TurnUsage::new(
+            Usage {
+                input_tokens: 5,
+                output_tokens: 1,
+                cache_read_tokens: Some(80),
+                cache_creation_tokens: Some(15),
+                ..Usage::default()
+            },
+            meerkat_core::ProviderTokenAccounting::anthropic("claude", 5, 15, 80),
+        )),
+        assistant_message_id: None,
+    }));
+    assert_eq!(
+        (app.status.input_tokens, app.status.output_tokens),
+        (110, 5)
+    );
     app.update(Msg::TurnFinished(Ok(summary())));
     assert!(!app.is_running());
     assert!(app.status.running_since.is_none());

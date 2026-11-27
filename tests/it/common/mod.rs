@@ -179,6 +179,9 @@ pub enum Step {
     Text(&'static str),
     /// Text reporting `input` input tokens, then `Done(EndTurn)`.
     TextUsage(&'static str, u64),
+    /// Text reporting `usage` in full (its cache counts too, in
+    /// Anthropic's convention), then `Done(EndTurn)`.
+    TextWith(&'static str, Usage),
     /// Text the provider stopped at its token limit: `Done(MaxTokens)`.
     CutOff(&'static str),
     /// A single tool call, then `Done(ToolUse)`.
@@ -227,15 +230,26 @@ impl Step {
             _ => 10,
         };
         let usage = Ok(LlmEvent::UsageUpdate {
-            usage: TurnUsage::host_declared(
-                Provider::Anthropic,
-                model,
-                Usage {
-                    input_tokens,
-                    output_tokens: 5,
-                    ..Usage::default()
-                },
-            ),
+            usage: match &self {
+                Self::TextWith(_, usage) => TurnUsage::new(
+                    usage.clone(),
+                    meerkat_core::ProviderTokenAccounting::anthropic(
+                        model,
+                        usage.input_tokens,
+                        usage.cache_creation_tokens.unwrap_or(0),
+                        usage.cache_read_tokens.unwrap_or(0),
+                    ),
+                ),
+                _ => TurnUsage::host_declared(
+                    Provider::Anthropic,
+                    model,
+                    Usage {
+                        input_tokens,
+                        output_tokens: 5,
+                        ..Usage::default()
+                    },
+                ),
+            },
         });
         let done = |stop_reason| {
             Ok(LlmEvent::Done {
@@ -243,7 +257,7 @@ impl Step {
             })
         };
         match self {
-            Self::Text(text) | Self::TextUsage(text, _) => vec![
+            Self::Text(text) | Self::TextUsage(text, _) | Self::TextWith(text, _) => vec![
                 Ok(LlmEvent::TextDelta {
                     delta: text.to_string(),
                     meta: None,

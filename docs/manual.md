@@ -1623,7 +1623,24 @@ it.
 The daemon counts every model call, attached or not: the agent's, every
 helper's, every classifier call and every compaction. Turns that ran
 while you were detached are in the totals, and the totals survive a
-daemon restart. The figure is an estimate, not a bill.
+daemon restart. The figure is an estimate, not a bill. Cached input is
+counted once on every provider: Anthropic reports it beside the
+uncached input, OpenAI and Gemini inside it, and `/cost` shows the
+uncached input (`in`) apart from what was read from or written to the
+cache.
+
+A compaction's summary is a model call of its own: the agent's history
+goes to the model once more, with no tools, to be summarized. `/cost`
+lists the summaries' share on lines of their own under "of which
+compaction summaries" (their tokens are in the model's line too), with
+the input, the cache counts and the output the provider reported for
+the call. When the daemon cannot tell which call a compaction's was
+(two agents' summaries of the same size, or a call that went through no
+client of rkat-tui's), it counts the engine's estimate of the history as
+input and marks the line `(estimated)`. On Anthropic the summary request
+is sent with prompt caching off: it cannot read the agent's cache (no
+tools, a rewritten history), so the automatic cache write would be billed
+at the higher cache-write price for nothing.
 
 ## Instructions and memory
 

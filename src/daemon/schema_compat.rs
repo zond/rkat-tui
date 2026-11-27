@@ -32,6 +32,10 @@
 //! and without the engine's instructions about the comms tools rkat-tui
 //! does not offer (`super::comms_text`: in the system prompt and in
 //! `send_message`'s description).
+//!
+//! The engine's compaction summary call passes it too
+//! ([`super::compaction_call`]): its usage is recorded for the agent's
+//! watcher, and on Anthropic it goes without a prompt-cache write.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -44,6 +48,7 @@ use meerkat_core::{
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
 
+use super::compaction_call::{self, SummaryCalls};
 use super::{blank_text, call_ids, comms_text};
 use crate::endpoints::EndpointRegistry;
 
@@ -374,12 +379,19 @@ fn wire_messages(
 
 /// The decorator the daemon's runtime applies to every agent-facing LLM
 /// client: [`SchemaCompat`] around it, refusing every request of a model
-/// `endpoints`' lists (`endpoints.<name>.models`) do not allow.
+/// `endpoints`' lists (`endpoints.<name>.models`) do not allow, and
+/// recording each compaction summary call's usage in `summaries`.
 #[must_use]
-pub fn decorator(endpoints: Arc<EndpointRegistry>) -> AgentLlmClientDecorator {
+pub fn decorator(
+    endpoints: Arc<EndpointRegistry>,
+    summaries: Arc<SummaryCalls>,
+) -> AgentLlmClientDecorator {
     Arc::new(move |inner| {
-        Arc::new(SchemaCompat::new(inner).with_endpoints(Arc::clone(&endpoints)))
-            as Arc<dyn AgentLlmClient>
+        Arc::new(
+            SchemaCompat::new(inner)
+                .with_endpoints(Arc::clone(&endpoints))
+                .with_summaries(Arc::clone(&summaries)),
+        ) as Arc<dyn AgentLlmClient>
     })
 }
 
@@ -445,6 +457,9 @@ pub struct SchemaCompat {
     /// The endpoints whose `endpoints.<name>.models` every request is
     /// checked against ([`check_client`]); none: no check.
     endpoints: Option<Arc<EndpointRegistry>>,
+    /// Where each compaction summary call's usage is recorded
+    /// ([`super::compaction_call`]); none: not measured.
+    summaries: Option<Arc<SummaryCalls>>,
 }
 
 /// [`SchemaCompat`]'s cache.
@@ -458,6 +473,7 @@ impl SchemaCompat {
             inner,
             cache: Arc::default(),
             endpoints: None,
+            summaries: None,
         }
     }
 
@@ -466,6 +482,59 @@ impl SchemaCompat {
     pub fn with_endpoints(mut self, endpoints: Arc<EndpointRegistry>) -> Self {
         self.endpoints = Some(endpoints);
         self
+    }
+
+    /// Each compaction summary call's usage recorded in `summaries`.
+    #[must_use]
+    pub fn with_summaries(mut self, summaries: Arc<SummaryCalls>) -> Self {
+        self.summaries = Some(summaries);
+        self
+    }
+
+    /// A compaction summary call returned `result`: its usage is recorded
+    /// for the agent's watcher, under the model its provider accounted it
+    /// to. Counts only in the log line, never content.
+    fn summary_returned(
+        &self,
+        result: &Result<LlmStreamResult, AgentError>,
+        messages: usize,
+        tools: usize,
+        cache_write_disabled: bool,
+        authorized: bool,
+    ) {
+        let Ok(result) = result else {
+            tracing::debug!(
+                tools,
+                messages,
+                cache_write_disabled,
+                authorized,
+                "compaction summary call failed; nothing measured"
+            );
+            return;
+        };
+        let usage = result.usage();
+        let totals = crate::cost::UsageTotals::from_usage(usage);
+        let accounted = usage
+            .provider_accounting
+            .as_ref()
+            .map(|accounting| accounting.model.trim())
+            .filter(|model| !model.is_empty());
+        let model = accounted.unwrap_or_else(|| self.inner.model());
+        tracing::debug!(
+            tools,
+            messages,
+            cache_write_disabled,
+            authorized,
+            model,
+            input = totals.input,
+            cache_read = totals.cache_read,
+            cache_write = totals.cache_write,
+            output = totals.output,
+            "compaction summary call"
+        );
+        if let Some(summaries) = &self.summaries {
+            summaries.record(model, totals);
+        }
     }
 
     /// The client's model may run ([`check_client`]).
@@ -603,10 +672,27 @@ impl AgentLlmClient for SchemaCompat {
         authorization: Option<meerkat_core::LlmRequestAuthorization>,
     ) -> Result<LlmStreamResult, AgentError> {
         self.allowed()?;
+        // The engine's compaction summary comes this way (an agent's turn
+        // is prepared as an attempt): measured, and on Anthropic sent
+        // without a cache write nothing reads (`compaction_call`).
+        let summary = compaction_call::is_summary_request(messages, tools, authorization.as_ref());
+        let without_cache = if summary {
+            compaction_call::without_cache_write(
+                self.inner.provider(),
+                tools,
+                provider_params,
+                self.inner.default_provider_tag(),
+            )
+        } else {
+            None
+        };
+        let provider_params = without_cache.as_ref().or(provider_params);
+        let authorized = authorization.is_some();
         let tools = self.tools(tools);
         let sent = as_sent(self.inner.provider(), messages);
         let messages = sent.as_deref().unwrap_or(messages);
-        self.inner
+        let result = self
+            .inner
             .stream_response_authorized(
                 messages,
                 &tools,
@@ -615,7 +701,17 @@ impl AgentLlmClient for SchemaCompat {
                 provider_params,
                 authorization,
             )
-            .await
+            .await;
+        if summary {
+            self.summary_returned(
+                &result,
+                messages.len(),
+                tools.len(),
+                without_cache.is_some(),
+                authorized,
+            );
+        }
+        result
     }
 
     fn request_pressure(
@@ -670,6 +766,7 @@ impl AgentLlmClient for SchemaCompat {
             inner: fork,
             cache: Arc::clone(&self.cache),
             endpoints: self.endpoints.clone(),
+            summaries: self.summaries.clone(),
         }))
     }
 
@@ -987,6 +1084,112 @@ mod tests {
         }
     }
 
+    /// A client that keeps the provider params of each request and answers
+    /// with a cached usage.
+    struct Keeping {
+        params: Mutex<Vec<Option<ProviderParamsOverride>>>,
+    }
+
+    #[async_trait]
+    impl AgentLlmClient for Keeping {
+        async fn stream_response(
+            &self,
+            _messages: &[Message],
+            _tools: &[Arc<ToolDef>],
+            _max_tokens: u32,
+            _temperature: Option<f32>,
+            provider_params: Option<&ProviderParamsOverride>,
+        ) -> Result<LlmStreamResult, AgentError> {
+            self.params.lock().push(provider_params.cloned());
+            Ok(LlmStreamResult::new(
+                Vec::new(),
+                meerkat_core::StopReason::EndTurn,
+                meerkat_core::TurnUsage::new(
+                    meerkat_core::Usage {
+                        input_tokens: 30,
+                        output_tokens: 7,
+                        cache_read_tokens: Some(900),
+                        cache_creation_tokens: Some(0),
+                        ..meerkat_core::Usage::default()
+                    },
+                    meerkat_core::ProviderTokenAccounting::anthropic("claude-x", 30, 0, 900),
+                )
+                .into_inner(),
+            ))
+        }
+
+        fn provider(&self) -> meerkat_core::Provider {
+            meerkat_core::Provider::Anthropic
+        }
+
+        fn model(&self) -> &'static str {
+            "claude-x"
+        }
+    }
+
+    /// The engine's summary request (no tools, its prompt last) goes with
+    /// caching disabled and its usage is recorded; an agent's request
+    /// through the same method, with tools, goes as it came and is not
+    /// recorded.
+    #[tokio::test]
+    async fn the_summary_call_is_measured_and_sent_without_a_cache_write() {
+        use meerkat_core::compact::Compactor as _;
+        let inner = Arc::new(Keeping {
+            params: Mutex::new(Vec::new()),
+        });
+        let summaries = SummaryCalls::new();
+        let client = SchemaCompat::new(Arc::clone(&inner) as Arc<dyn AgentLlmClient>)
+            .with_summaries(Arc::clone(&summaries));
+        let prompt = meerkat::DefaultCompactor::new(Default::default())
+            .compaction_prompt()
+            .to_string();
+        let summary = [
+            Message::User(meerkat_core::UserMessage::text("earlier")),
+            Message::User(meerkat_core::UserMessage::text(prompt)),
+        ];
+        client
+            .stream_response_authorized(&summary, &[], 100, None, None, None)
+            .await
+            .unwrap();
+        let tool = Arc::new(ToolDef::new("read_file", "reads", serde_json::json!({})));
+        client
+            .stream_response_authorized(&summary[..1], &[tool], 100, None, None, None)
+            .await
+            .unwrap();
+        let params = inner.params.lock().clone();
+        assert!(
+            matches!(
+                &params[0],
+                Some(ProviderParamsOverride {
+                    provider_tag: Some(meerkat_core::lifecycle::run_primitive::ProviderTag::Anthropic(tag)),
+                    ..
+                }) if tag.cache_control == Some(meerkat_core::lifecycle::run_primitive::AnthropicCacheControlPolicy::Disabled)
+            ),
+            "{params:?}"
+        );
+        assert_eq!(params[1], None, "an agent's request goes as it came");
+        match summaries.take(0, 7) {
+            compaction_call::Attribution::Measured(reading) => {
+                assert_eq!(reading.model, "claude-x");
+                assert_eq!(
+                    reading.totals,
+                    crate::cost::UsageTotals {
+                        input: 30,
+                        output: 7,
+                        cache_read: 900,
+                        cache_write: 0,
+                    }
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            summaries.take(0, 7),
+            compaction_call::Attribution::Unattributed { candidates: 0 },
+            "one reading: the agent's request was not recorded"
+        );
+    }
+
     /// The backstop: a request of a model the endpoint's list does not
     /// allow is refused in the decorator, naming the setting, and never
     /// reaches the client below; an allowed one goes through, and so does
@@ -1015,8 +1218,9 @@ mod tests {
                 provider,
                 sent: std::sync::atomic::AtomicUsize::new(0),
             });
-            let client =
-                (decorator(Arc::clone(&endpoints)))(Arc::clone(&inner) as Arc<dyn AgentLlmClient>);
+            let client = (decorator(Arc::clone(&endpoints), SummaryCalls::new()))(
+                Arc::clone(&inner) as Arc<dyn AgentLlmClient>,
+            );
             (inner, client)
         };
         let messages = [Message::User(meerkat_core::UserMessage::text("hi"))];

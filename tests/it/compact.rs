@@ -309,6 +309,195 @@ async fn warn_mode_warns_and_compacts_only_on_compact() {
     rig.quit().await;
 }
 
+/// Whether `request` is the engine's compaction summary (its prompt is the
+/// last user text: `compact_prepare.rs` tells it the same way).
+fn is_summary(request: &common::Recorded) -> bool {
+    common::user_texts(&request.messages)
+        .last()
+        .is_some_and(|text| text.contains("CONTEXT COMPACTION"))
+}
+
+/// The auto-compaction of [`auto_mode_compacts_natively_at_the_threshold`]
+/// with the summary step `summary`: the requests of the run, the
+/// compaction completed (its completion is published at the next run).
+async fn compacted(summary: Step) -> (Attached, std::sync::Arc<ScriptedLlmClient>, Workspace) {
+    let ws = Workspace::new();
+    let mut script = history();
+    script.push(summary);
+    script.push(Step::Text("after"));
+    script.push(Step::Text("later"));
+    let llm = ScriptedLlmClient::new(script);
+    let (mut rig, _) = rig(&llm, &ws, "auto").await;
+    turns(&mut rig, SHORT_TURNS + 1, "turn").await;
+    rig.send(Effect::StartTurn("next".into()));
+    assert_eq!(
+        rig.turn_finished().await.expect("turn succeeds").text,
+        "after"
+    );
+    rig.send(Effect::StartTurn("again".into()));
+    rig.turn_finished().await.expect("turn succeeds");
+    completed(&mut rig).await;
+    (rig, llm, ws)
+}
+
+/// The engine's summary request as Meerkat 0.9.19 sends it: the agent's
+/// request before it has the agent's tools, the summary request none, with
+/// the agent's provider tag (under the gate's `DisableAll` native-tool
+/// policy the engine sends the session's tag) and caching disabled by
+/// rkat-tui's wrapper (`rkat_tui::daemon::compaction_call::without_cache_write`):
+/// with no tools it cannot read the agent's prompt cache, so a cache write
+/// would be billed for nothing. Its rows are the history's (the
+/// compactor's source) and the compaction prompt last.
+///
+/// It fails on purpose the day the engine sends the summary with the
+/// agent's tools; then the summary could read the agent's cache, the
+/// workaround stops applying by itself (it applies only to a request with
+/// no tools), and it goes with this assertion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_summary_request_carries_no_tools_and_its_own_params() {
+    let (rig, llm, _ws) = compacted(Step::Text("SUMMARY of the earlier turns")).await;
+    let recorded = llm.recorded();
+    let at = recorded
+        .iter()
+        .position(is_summary)
+        .expect("a summary request");
+    assert_eq!(at, SHORT_TURNS + 1, "the next turn's first call");
+    let (before, summary) = (&recorded[at - 1], &recorded[at]);
+    assert!(
+        !before.tools.is_empty(),
+        "the agent's request has its tools"
+    );
+    assert!(
+        summary.tools.is_empty(),
+        "the summary request carries no tools: {:?}",
+        summary.tools
+    );
+    // The agent's own provider tag, with only the cache policy changed.
+    let expected = rkat_tui::daemon::compaction_call::without_cache_write(
+        meerkat_core::Provider::Anthropic,
+        &[],
+        Some(&meerkat_core::ProviderParamsOverride {
+            provider_tag: before.provider_params.clone(),
+            ..meerkat_core::ProviderParamsOverride::default()
+        }),
+        None,
+    )
+    .and_then(|params| params.provider_tag);
+    assert!(before.provider_params.is_some(), "the agent's tag");
+    assert_eq!(summary.provider_params, expected);
+    // Its own output budget (the compactor's), the same sampling.
+    assert!(
+        summary.max_tokens < before.max_tokens,
+        "{} {}",
+        summary.max_tokens,
+        before.max_tokens
+    );
+    assert_eq!(summary.temperature, before.temperature);
+    // The rows: the agent's system prompt as it was, the agent's history
+    // row for row (same roles, same text; the assistant rows rewritten
+    // without their run identity), the rest of the history since, and the
+    // compaction prompt last.
+    let rows = |messages: &[meerkat_core::Message]| -> Vec<(&'static str, String)> {
+        messages.iter().map(row).collect()
+    };
+    let (was, sent) = (rows(&before.messages), rows(&summary.messages));
+    assert_eq!(
+        sent[..was.len()],
+        was[..],
+        "the history as the agent had it"
+    );
+    assert_eq!(
+        sent[was.len()..]
+            .iter()
+            .map(|(role, text)| (*role, text.chars().take(24).collect::<String>()))
+            .collect::<Vec<_>>(),
+        [
+            ("assistant", "big".to_string()),
+            ("user", "next".to_string()),
+            ("user", "You are performing a CON".to_string()),
+        ]
+    );
+    for (n, (was, sent)) in before.messages.iter().zip(&summary.messages).enumerate() {
+        if let (
+            meerkat_core::Message::BlockAssistant(was),
+            meerkat_core::Message::BlockAssistant(sent),
+        ) = (was, sent)
+        {
+            assert!(was.identity.run_id.is_some(), "row {n}");
+            assert!(sent.identity.run_id.is_none(), "row {n}");
+        }
+    }
+    rig.quit().await;
+}
+
+/// One row as its role and text.
+fn row(message: &meerkat_core::Message) -> (&'static str, String) {
+    use meerkat_core::{AssistantBlock, Message};
+    match message {
+        Message::System(s) => ("system", s.content.clone()),
+        Message::User(u) => ("user", u.text_content()),
+        Message::BlockAssistant(a) => (
+            "assistant",
+            a.blocks
+                .iter()
+                .filter_map(|block| match block {
+                    AssistantBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect(),
+        ),
+        other => ("other", format!("{other:?}")),
+    }
+}
+
+/// A summary call whose provider reports its full usage is counted as
+/// reported, cache counts and all, not as the engine's history estimate:
+/// the record holds the measured figures under the summaries' share, and
+/// `/cost` shows them on a line of their own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_summary_call_s_reported_usage_is_its_cost() {
+    let usage = meerkat_core::Usage {
+        input_tokens: 34,
+        output_tokens: 37,
+        cache_read_tokens: Some(200),
+        cache_creation_tokens: Some(5_000),
+        ..meerkat_core::Usage::default()
+    };
+    let (mut rig, _llm, _ws) =
+        compacted(Step::TextWith("SUMMARY of the earlier turns", usage)).await;
+    // The daemon pushes the totals after it counted the completion.
+    let pushed = within(rig.saw(|m| {
+        matches!(m, Msg::Status(StatusUpdate::CostTotals(cost)) if !cost.compactions.is_empty())
+    }))
+    .await;
+    let Msg::Status(StatusUpdate::CostTotals(cost)) = pushed else {
+        panic!("{pushed:?}");
+    };
+    let measured = rkat_tui::cost::UsageTotals {
+        input: 34,
+        output: 37,
+        cache_read: 200,
+        cache_write: 5_000,
+    };
+    assert_eq!(
+        cost.compactions
+            .measured
+            .values()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![measured],
+        "{cost:?}"
+    );
+    assert!(cost.compactions.estimated.is_empty(), "{cost:?}");
+    let breakdown = cost.breakdown(&rkat_tui::pricing::PriceTable::default());
+    assert!(
+        breakdown.contains("of which compaction summaries:")
+            && breakdown.contains(": in 34 · out 37 · cache read 200 · cache write 5000"),
+        "{breakdown}"
+    );
+    rig.quit().await;
+}
+
 /// The compaction policy of each start reaches an existing realm's agent.
 /// The mob is created once per realm and keeps the definition it was
 /// created with; the agent is built on the profile of the current start,

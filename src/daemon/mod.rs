@@ -36,6 +36,7 @@ pub mod btw;
 pub mod call_ids;
 pub mod checkpoint;
 pub mod comms_text;
+pub mod compaction_call;
 pub mod connect;
 pub mod contacts;
 pub mod context;

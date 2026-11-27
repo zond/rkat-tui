@@ -830,9 +830,9 @@ impl LlmClassifier {
         if let Some(usage) = &reply.usage {
             let _ = REVIEW_TOKENS.try_with(|tokens| {
                 let mut tokens = tokens.lock();
-                tokens.0 += usage.input_tokens
-                    + usage.cache_read_tokens.unwrap_or(0)
-                    + usage.cache_creation_tokens.unwrap_or(0);
+                // Every input token once, whichever convention the
+                // provider reports in.
+                tokens.0 += crate::cost::UsageTotals::from_usage(usage).presented();
                 tokens.1 += usage.output_tokens;
             });
         }
@@ -1272,7 +1272,9 @@ async fn collect_turn(
                 content,
                 meta,
             } => assembler.on_server_tool_content(id, kind, content, meta),
-            LlmEvent::UsageUpdate { usage: update } => usage = Some(update.as_usage().clone()),
+            // Kept with its provider accounting, which says whether the
+            // input holds the cache counts (`crate::cost`).
+            LlmEvent::UsageUpdate { usage: update } => usage = Some(update.into_inner()),
             LlmEvent::OperationObservationFailed { .. } | LlmEvent::WireLiveness => {}
             LlmEvent::Done { outcome } => match outcome {
                 LlmDoneOutcome::Success {

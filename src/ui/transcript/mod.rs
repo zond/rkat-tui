@@ -1668,7 +1668,7 @@ impl Transcript {
             AgentEvent::TurnCompleted { usage, .. } => {
                 self.close_streams(scope);
                 if let (Some(h), Some(usage)) = (helper, usage) {
-                    let tokens = usage.input_tokens.saturating_add(usage.output_tokens);
+                    let tokens = usage.normalized_total_tokens();
                     self.update_fold(h.header, |f| {
                         f.usage = Some(f.usage.unwrap_or(0).saturating_add(tokens));
                     });
