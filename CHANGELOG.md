@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-27
+
 ### Changed
 
 - Stored state is supported from 0.1.0 on: the guard opens the files a
