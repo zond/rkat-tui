@@ -14,6 +14,15 @@
   held-note separator only such builds wrote: a stored row of one is
   read and left alone.
 
+### Fixed
+
+- What rkat-tui says as it attaches stays on screen: the first render of
+  the conversation used to replace the offer of a new workspace (the
+  state of moved workspaces and `/rehome`), the line about the daemon,
+  "working with agent …", "switched to agent …", "reattached …" after a
+  daemon restart, and the warning that the daemon runs another build.
+  They are now shown after the render.
+
 ## [0.1.5] - 2026-11-26
 
 ### Changed

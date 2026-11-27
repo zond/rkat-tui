@@ -179,7 +179,7 @@ async fn agents_lists_the_agents_and_switches_to_one() {
     a.send(Effect::Agents(Some(b_name.clone())));
     a.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains(&format!("switched to agent {b_name}"))))
         .await;
-    a.wait_for(|m| {
+    a.saw(|m| {
         matches!(m, Msg::ResetTranscript(blocks)
             if blocks.iter().any(|b| matches!(b, Block::User { text } if text == "for b")))
     })

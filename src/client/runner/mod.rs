@@ -761,8 +761,9 @@ impl Runner {
         self.bench.start();
         // This client made the workspace's realm: it offers the realms
         // whose workspace is gone (the daemon it starts finds the realm
-        // made and offers nothing).
-        if let Some(offer) = self.config.scope.offer.take() {
+        // made and offers nothing). The first attach's render replaces
+        // it and says it again (`connected`).
+        if let Some(offer) = self.config.scope.offer.clone() {
             self.notice(NoticeLevel::Info, offer);
         }
         self.show(LinkState::Connecting);

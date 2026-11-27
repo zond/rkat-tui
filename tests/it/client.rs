@@ -43,6 +43,48 @@ async fn a_prompt_sent_before_the_attach_finished_is_held_until_it_did() {
     daemon.stop().await;
 }
 
+/// The first attach renders the conversation, which replaces everything
+/// shown: what the client said while the daemon started (the offer of a
+/// new workspace) and what the attach says come after the render, so they
+/// stay on screen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_the_start_says_is_shown_after_the_first_render() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut config = rkat_tui::client::configure(&args_for(&ws.root), AttachTarget::Existing)
+        .await
+        .unwrap();
+    config.lister = no_lists();
+    config.endpoint_files = vec![endpoint_file_for(&ws.root)];
+    config.scope.offer = Some("the offer of a new workspace".into());
+    let mut client = Client {
+        harness: spawn_attach_runner(config),
+        seen: Vec::new(),
+    };
+    client.attached().await;
+    client
+        .saw(
+            |msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("working with agent")),
+        )
+        .await;
+    let at = |wanted: &dyn Fn(&Msg) -> bool| client.seen.iter().rposition(wanted);
+    let render = at(&|msg| matches!(msg, Msg::ResetTranscript(_))).expect("a render");
+    for text in [
+        "the offer of a new workspace",
+        rkat_tui::client::runner::ATTACH_NOTICE,
+        "working with agent",
+    ] {
+        let said = at(&|msg| matches!(msg, Msg::Notice { text: t, .. } if t.starts_with(text)));
+        assert!(
+            said.is_some_and(|said| said > render),
+            "{text}: {said:?}, render {render}"
+        );
+    }
+    client.quit().await;
+    daemon.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_prompt_is_answered_and_rendered() {
     let ws = Workspace::new();
@@ -251,10 +293,12 @@ async fn the_client_reconnects_to_a_restarted_daemon() {
     // A new daemon numbers its events in a new space: the client does not
     // resume its cursor there but renders the conversation from its start.
     let rendered = client
-        .wait_for(|msg| matches!(msg, Msg::ResetTranscript(_)))
-        .await;
-    let Msg::ResetTranscript(blocks) = rendered else {
-        unreachable!()
+        .seen
+        .iter()
+        .rev()
+        .find(|msg| matches!(msg, Msg::ResetTranscript(_)));
+    let Some(Msg::ResetTranscript(blocks)) = rendered else {
+        panic!("no render at the reattach")
     };
     assert!(
         blocks

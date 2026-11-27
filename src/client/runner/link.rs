@@ -180,7 +180,6 @@ impl Runner {
             self.seen.mark = Some(mark);
         }
         self.send(Msg::Status(StatusUpdate::Session(session.clone())));
-        self.say_attached(&agent, address, seated, fresh, switched_agent);
         if let Some(identity) = identity {
             self.helpers.followers.set_default_model(&identity.model);
             self.show_model(
@@ -190,6 +189,32 @@ impl Runner {
             );
         }
         let daemon_build = link.connection.daemon_build().map(str::to_string);
+        // The helpers of this conversation: what was shown before a
+        // reconnect stays shown.
+        if fresh || self.helpers.followers.owner() != Some(&link.session) {
+            self.helpers.followers.reset(link.session.clone());
+        } else {
+            self.helpers.followers.streams_lost();
+        }
+        self.helpers.orphans.clear();
+        self.conn = Conn::Up {
+            link,
+            leaving: None,
+        };
+        self.reports.epoch += 1;
+        // The render replaces everything shown, so what this attach says
+        // comes after it.
+        let rendered = reset.is_some();
+        if let Some(blocks) = reset {
+            self.send(Msg::ResetTranscript(blocks));
+        }
+        // Shown while the daemon started, and replaced with the render.
+        if let Some(offer) = self.config.scope.offer.take()
+            && rendered
+        {
+            self.notice(NoticeLevel::Info, offer);
+        }
+        self.say_attached(&agent, address, seated, fresh, switched_agent);
         if new_daemon && daemon_build.as_deref() != Some(crate::BUILD) {
             self.notice(
                 NoticeLevel::Warn,
@@ -204,22 +229,6 @@ impl Runner {
             address: address.to_string(),
             daemon_build,
         });
-        // The helpers of this conversation: what was shown before a
-        // reconnect stays shown.
-        if fresh || self.helpers.followers.owner() != Some(&link.session) {
-            self.helpers.followers.reset(link.session.clone());
-        } else {
-            self.helpers.followers.streams_lost();
-        }
-        self.helpers.orphans.clear();
-        self.conn = Conn::Up {
-            link,
-            leaving: None,
-        };
-        self.reports.epoch += 1;
-        if let Some(blocks) = reset {
-            self.send(Msg::ResetTranscript(blocks));
-        }
         self.seed_usage(usage, queued);
         // The mobs there are now; the daemon pushes the ones to come.
         self.list_mobs();

@@ -614,10 +614,7 @@ async fn continue_and_resume_by_id_across_lifetimes() {
     let llm = ScriptedLlmClient::new(vec![Step::Text("continued")]);
     let mut rig = Attached::start_with(&ws.root, &llm, client_args(&["-c"])).await;
     assert_eq!(rig.current_session().await, first);
-    let blocks = match rig
-        .wait_for(|msg| matches!(msg, Msg::ResetTranscript(_)))
-        .await
-    {
+    let blocks = match rig.saw(|msg| matches!(msg, Msg::ResetTranscript(_))).await {
         Msg::ResetTranscript(blocks) => blocks,
         other => panic!("{other:?}"),
     };

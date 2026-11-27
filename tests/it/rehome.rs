@@ -385,7 +385,7 @@ async fn a_pull_from_a_fresh_start_in_the_moved_directory_adopts_the_old_realm()
     running.ended().await;
     issuer.attached().await;
     let blocks = match issuer
-        .wait_for(|msg| matches!(msg, Msg::ResetTranscript(blocks) if !blocks.is_empty()))
+        .saw(|msg| matches!(msg, Msg::ResetTranscript(blocks) if !blocks.is_empty()))
         .await
     {
         Msg::ResetTranscript(blocks) => blocks,
