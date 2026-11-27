@@ -27,9 +27,6 @@
 - The daemon refuses to start when the shell's confinement would reach
   the engine's credential store (`~/.config/meerkat/credentials`), as it
   refuses the workspace's state.
-
-### Changed
-
 - The engine is Meerkat 0.9.19 (from 0.9.18), each engine crate pinned to
   exactly that release as upstream asks. Nothing of rkat-tui's changes
   with it. Requests to a self-hosted server now state the closed choices
