@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-11-27
+
 ### Added
 
 - OAuth login for remote MCP servers. A server marked for it in its
