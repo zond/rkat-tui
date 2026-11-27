@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The engine is Meerkat 0.9.19 (from 0.9.18), each engine crate pinned to
+  exactly that release as upstream asks. Nothing of rkat-tui's changes
+  with it. Requests to a self-hosted server now state the closed choices
+  of the engine's own tools (a task's status and priority) as typed
+  choices.
+
 ## [0.1.6] - 2026-11-27
 
 ### Changed

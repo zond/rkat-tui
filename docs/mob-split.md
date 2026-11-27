@@ -606,8 +606,9 @@ integration" (2026-11-09); the engine was the crates.io 0.9.11 release
 ("The engine moves to crates.io 0.9.14", 2026-11-12), then 0.9.15
 ("The engine moves to crates.io 0.9.15", 2026-11-16), then 0.9.16
 ("The engine moves to crates.io 0.9.16", 2026-11-17), then 0.9.17
-("The engine moves to crates.io 0.9.17", 2026-11-21) and is now 0.9.18
-("The engine moves to crates.io 0.9.18", 2026-11-24). Two asks of the first list are done: the stream
+("The engine moves to crates.io 0.9.17", 2026-11-21), then 0.9.18
+("The engine moves to crates.io 0.9.18", 2026-11-24) and is now 0.9.19
+("The engine moves to crates.io 0.9.19", 2026-11-27). Two asks of the first list are done: the stream
 cursor (#2114) and pushed consent, delivered through durable decisions
 rather than plain approval records (#2115).
 

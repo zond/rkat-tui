@@ -5066,3 +5066,46 @@ finding, not changed.
 
 Test: `crash::a_team_the_agent_built_outlives_a_sigkill_of_its_daemon`
 (about 7 s; 20 of 20 in a row with `--stress-count 20`).
+
+## The engine moves to crates.io 0.9.19 (2026-11-27)
+
+Every `meerkat-*` line names `version = "=0.9.19"`: upstream's changelog
+now asks downstreams to pin exactly, and an exact pin also keeps a
+`cargo install` without the lockfile off a later engine release. The
+lock moved the 38 engine crates and nothing else (`rmcp` stays 1.8,
+`chrono`, `chrono-tz` and `humantime` stay, so the four ignores of
+`deny.toml` still match; their reasons name 0.9.19). `cargo check
+--all-targets --all-features` was clean with no change of ours.
+
+What the release holds, read from the diff of the two tags (most of it
+docs and examples; `meerkat-anthropic`, `-llm-core`, `-auth-core`,
+`-mcp`, `-store`, `-sqlite`, `-comms`, `-schedule`, `-skills`,
+`-memory`, `-models`, `-gemini` have no source change):
+- None of the upstream issues this code waits on is closed. No
+  workaround goes.
+- #2564 (refs #2560): the Responses client replaces a stored tool-call id
+  over 64 bytes itself. Chat Completions and Anthropic do not, so
+  `daemon::call_ids` stays as it is; its short ids (`call_` and 32 hex
+  digits) never take upstream's `call_sha256_` form.
+- #2469 (refs #2234): for self-hosted servers the engine's own tools'
+  closed string choices go out as `{"type":"string","enum":[…]}`. MCP
+  tools and every other nested shape are untouched, so
+  `daemon::schema_compat` stays; our normalisation runs first and
+  upstream's lowering sees its output. This is the one change in what a
+  gateway receives (`task_list.status`, `task_create.priority`,
+  `task_update.priority`, `task_update.status`); the rig records the
+  tool definitions, not the wire, so no test sees it.
+- #2487: `delegate` owns its wait, which fixes #2206, #2207, #2208 and
+  #2224 in code. rkat-tui withdrew `delegate`; nothing of ours changes.
+- #2489: a profile key `tools.web_search`. It is not #2579 (the
+  provider-native search under a dispatch admission did not ship); with
+  `agent.web_search = false` our spawn override is now also written
+  into the member's stored profile override, read with a default, so
+  state from 0.1.0 keeps opening (`web_search::` tests, the
+  stored-state guard).
+- No database schema or migration changed. Compaction (`compact.rs`,
+  `compactor.rs`, the events) and the MCP OAuth host surface
+  (`host_auth.rs`, `meerkat-auth-core`, `meerkat-mcp`) are byte-identical
+  to 0.9.18.
+- #2126 turned out to be upstream's design note for the rewind (merged
+  2026-11-09), not an implementation.

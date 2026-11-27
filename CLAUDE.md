@@ -122,7 +122,8 @@ The README is the front page; the full user manual is `docs/manual.md`.
 ## Engine dependency
 
 `Cargo.toml` depends on every `meerkat-*` crate at one crates.io release,
-currently 0.9.18; there are no git sources. Moving the version is the pin
+currently 0.9.19, each line pinned exactly (`version = "=0.9.19"`, as
+upstream asks of downstreams); there are no git sources. Moving the version is the pin
 move: change the version in every dependency line, `cargo update -p
 meerkat`, `cargo check --all-targets --all-features`, adapt to API drift by
 reading upstream's replacement in the fetched sources under
@@ -152,18 +153,20 @@ repository). Open upstream issues this code waits on:
 - #2184: updating a stored mob definition (the agents' override profile,
   `src/daemon/mob.rs` `main_profile`). 0.9.15 ships the update, but each
   member's roster row keeps the override profile it was seated with
-  (still so in 0.9.18), so the override stays until a rebuild can drop
+  (still so in 0.9.19), so the override stays until a rebuild can drop
   it (`docs/evidence.md`, "Meerkat 0.9.15's fixes for our asks").
-- #2126: rewinding a session in place under the same identity; `/rewind`
-  returns then.
+- #2126 (upstream's design note, merged 2026-11-09; nothing implements
+  it yet): rewinding a session in place under the same identity;
+  `/rewind` returns then.
 - #2206: a `delegate` call that times out leaves its helper seated.
   #2207: a deadline of `delegate`'s own. #2208: a `delegate` helper's mob
   discoverable after a failed call. #2224: a `delegate` call that times
   out returns an error with no helper identity. Their workarounds (the
   orphan retirement, `default_delegate_wait`, the persona's
   `implicit-<your session id>` line) are gone with `delegate` itself,
-  which rkat-tui withdrew on 2026-11-16 (`assign` replaces it); the issues
-  stay open asks, nothing of ours waits on them now.
+  which rkat-tui withdrew on 2026-11-16 (`assign` replaces it); 0.9.19
+  fixes the four in code (`delegate` owns its wait), nothing of ours
+  waits on them.
 - #2225: `member_not_found` from a per-member tool does not say that the
   member is in another mob the caller owns. Its workaround (the #2208 hint
   line) is gone with `delegate`; an open ask.
