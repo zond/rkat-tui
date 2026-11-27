@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-27
+
+No change to the program: the same code as 0.1.7 under a new version
+number, for a packager that needed a new release.
+
 ## [0.1.7] - 2026-11-27
 
 ### Added
