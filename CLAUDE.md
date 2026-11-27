@@ -245,6 +245,10 @@ repository). Open upstream issues this code waits on:
 - #2615 (filed 2026-11-27): a public pre-registered MCP OAuth client
   profile (client id, no secret). Nothing is worked around: a server
   without dynamic registration cannot be logged into until it ships.
+  Our fix is upstream PR #2618 (opened 2026-11-27:
+  `McpOAuthClientProfile::public`, method `none`); when a release
+  carries it, per-server settings for the client id, issuer and scopes
+  install the profile before `mcp_login_start`.
 - #2433 also asks (comment of 2026-11-27) for an event when an MCP
   server starts or stops awaiting authorization; the 2 s look
   (`src/daemon/mcp_auth.rs` `McpAuth::follow`) goes then.
