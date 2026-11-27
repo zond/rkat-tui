@@ -244,6 +244,17 @@ pub enum HelpersCommand {
     Fold(HelperTarget),
 }
 
+/// `/mcp` subcommands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpCommand {
+    /// `/mcp`: the servers and their login states.
+    List,
+    /// `/mcp login <server>`.
+    Login(String),
+    /// `/mcp logout <server>`.
+    Logout(String),
+}
+
 /// A parsed slash command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -312,6 +323,8 @@ pub enum Command {
     /// `config.toml`) as it is now; their servers and hooks run from the
     /// next session.
     TrustProject,
+    /// `/mcp [login|logout <server>]`.
+    Mcp(McpCommand),
     /// `/helpers [expand|fold <label>|all]`.
     Helpers(HelpersCommand),
     /// `/daemon stop`: shut the attached `rkat-tui-mob` down.
@@ -642,6 +655,27 @@ pub static COMMANDS: &[CommandSpec] = &[
         parse: |rest| arg_free(rest, Command::TrustProject),
     },
     CommandSpec {
+        name: "mcp",
+        aliases: &[],
+        usage: "[login <server> | logout <server>]",
+        summary: "the MCP servers and their OAuth logins",
+        help: &[
+            (
+                "/mcp",
+                "list the MCP servers: where each is defined, its URL or\ncommand, and the login state of one marked for OAuth",
+            ),
+            (
+                "/mcp login <server>",
+                "log into a server marked for OAuth: open the address shown\nin a browser; the redirect returns here, or paste the\naddress the browser shows (one login serves every workspace)",
+            ),
+            (
+                "/mcp logout <server>",
+                "remove the server's stored login (in every workspace)",
+            ),
+        ],
+        parse: parse_mcp,
+    },
+    CommandSpec {
         name: "mode",
         aliases: &[],
         usage: "[[--user] default | accept-edits | plan | auto]",
@@ -957,6 +991,15 @@ fn arg_free(rest: &str, command: Command) -> Option<Command> {
 
 fn words(rest: &str) -> Vec<&str> {
     rest.split_whitespace().collect()
+}
+
+fn parse_mcp(rest: &str) -> Option<Command> {
+    match words(rest).as_slice() {
+        [] => Some(Command::Mcp(McpCommand::List)),
+        ["login", server] => Some(Command::Mcp(McpCommand::Login((*server).to_string()))),
+        ["logout", server] => Some(Command::Mcp(McpCommand::Logout((*server).to_string()))),
+        _ => None,
+    }
 }
 
 fn parse_resume(rest: &str) -> Option<Command> {
@@ -1480,7 +1523,7 @@ mod tests {
         // alias left behind.
         assert!(super::spec("approve").is_none());
         assert!(!help_text().contains("/approve"), "{}", help_text());
-        assert_eq!(seen.len(), 37);
+        assert_eq!(seen.len(), 38);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = HelpView::Commands.text();
         let mut at = 0;
@@ -2005,6 +2048,18 @@ mod tests {
         assert!(parse("/permissions trust").is_some_and(|r| r.is_err()));
         assert_eq!(ok("/trust"), Command::TrustProject);
         assert!(parse("/trust all").is_some_and(|r| r.is_err()));
+        assert_eq!(ok("/mcp"), Command::Mcp(McpCommand::List));
+        assert_eq!(
+            ok("/mcp login docs"),
+            Command::Mcp(McpCommand::Login("docs".into()))
+        );
+        assert_eq!(
+            ok("/mcp logout docs"),
+            Command::Mcp(McpCommand::Logout("docs".into()))
+        );
+        for bad in ["/mcp login", "/mcp login a b", "/mcp trust"] {
+            assert!(parse(bad).is_some_and(|r| r.is_err()), "{bad}");
+        }
         // The old names are gone.
         for old in ["/rules", "/rules list", "/mcp trust"] {
             assert!(!matches!(parse(old), Some(Ok(_))), "{old}");

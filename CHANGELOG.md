@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Added
+
+- OAuth login for remote MCP servers. A server marked for it in its
+  entry (`oauth_account_selection = "unverified"` or `"discover"`, or
+  `oauth_account`) is logged into with `/mcp login <server>`: rkat-tui
+  opens no browser; a dialog shows the address as a link and as text,
+  its loopback listener takes the browser's redirect on this machine,
+  and the address the browser shows can be pasted when it runs
+  elsewhere (over ssh). The server's tools reach the agents at their
+  next turn, with no restart, and one login serves the same server in
+  every workspace. `/mcp` lists the servers with their source and login
+  state; `/mcp logout <server>` removes a login. A start-up notice names
+  a server that needs a login, and so does a session that finds one
+  asking for authorization. A server of the project's `mcp.toml` asks
+  for a `y` to its URL first; none logs in over `--attach-insecure`.
+- `mcp.oauth_redirect_uri`: predefine the login's whole loopback redirect
+  (`http://localhost:8976/callback`; host, port and path), for an
+  authorization server that accepts only a registered one. User files
+  and `--set` only.
+
+### Changed
+
+- The daemon refuses to start when the shell's confinement would reach
+  the engine's credential store (`~/.config/meerkat/credentials`), as it
+  refuses the workspace's state.
+
 ### Changed
 
 - The engine is Meerkat 0.9.19 (from 0.9.18), each engine crate pinned to

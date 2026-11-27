@@ -145,6 +145,8 @@ pub struct LocalParts {
     pub report: ReportParts,
     /// Builds the model client of the agent's model for `/btw`.
     pub side_clients: crate::daemon::btw::SideClients,
+    /// The MCP servers' OAuth logins (`/mcp`).
+    pub mcp_auth: Arc<crate::daemon::mcp_auth::McpAuth>,
 }
 
 /// The fixed part of [`protocol::method::Report`]'s answer.
@@ -425,6 +427,14 @@ impl Local {
             method::Wire, protocol::WireParams { agent, card } => self.wire(&caller, agent, card).await;
             method::Unwire, protocol::UnwireParams { agent, workspace, peer } => self.unwire(&caller, agent, &workspace, &peer).await;
             method::WireSsh, params => self.wire_ssh(&caller, params).await;
+            method::McpServers, Empty {} => Ok(self.parts.mcp_auth.list().await);
+            method::McpLoginStart, params => self.parts.mcp_auth.login_start(params).await;
+            method::McpLoginComplete, params => self.parts.mcp_auth.login_complete(params).await;
+            method::McpLoginCancel, protocol::McpServerParams { server } => {
+                self.parts.mcp_auth.login_cancel(&server);
+                Ok(Empty {})
+            };
+            method::McpLogout, protocol::McpServerParams { server } => self.parts.mcp_auth.logout(&server).await;
         }
         Err(Refusal::new(
             METHOD_NOT_FOUND,

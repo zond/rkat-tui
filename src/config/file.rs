@@ -574,6 +574,19 @@ pub struct RulesFile {
     /// The `rkat-tui-mob` daemon's settings (user layers only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon: Option<DaemonSection>,
+    /// MCP server logins (user layers only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<McpSection>,
+}
+
+/// `[mcp]` section of a rules file: how `/mcp login` receives the
+/// authorization server's redirect. User layers only.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpSection {
+    /// The loopback redirect URI (`mcp.oauth_redirect_uri`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_redirect_uri: Option<String>,
 }
 
 /// `[daemon]` section of a rules file: how the `rkat-tui-mob` daemon of

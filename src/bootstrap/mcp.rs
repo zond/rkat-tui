@@ -58,6 +58,11 @@ pub struct LoadedMcp {
     pub refused: Vec<Refused>,
     /// Start-up notices (project-scoped servers, the build's MCP support).
     pub notices: Vec<String>,
+    /// Where each of [`Self::servers`] is defined, by name (`/mcp`).
+    pub sources: Vec<(String, crate::daemon::protocol::McpSource)>,
+    /// The servers of an untrusted project `mcp.toml`, which do not start
+    /// (`/mcp` lists them; no login).
+    pub untrusted: Vec<McpServerConfig>,
 }
 
 /// Load the effective MCP set for `scope` (see the module docs): the
@@ -130,10 +135,24 @@ async fn load_judged(
             project.join(", ")
         ));
     }
+    use crate::daemon::protocol::McpSource;
+    let sources = servers
+        .iter()
+        .map(|s| {
+            let source = match s.source {
+                McpServerSource::Realm => McpSource::Realm,
+                McpServerSource::File(McpScope::Project) => McpSource::Project,
+                McpServerSource::File(McpScope::User) => McpSource::User,
+            };
+            (s.server.name.clone(), source)
+        })
+        .collect();
     Ok(LoadedMcp {
         servers: servers.into_iter().map(|s| s.server).collect(),
         refused,
         notices,
+        sources,
+        untrusted: effective.refused.into_iter().map(|r| r.server).collect(),
     })
 }
 
@@ -143,6 +162,11 @@ impl LoadedMcp {
     #[must_use]
     pub fn with_command_line(mut self, servers: Vec<McpServerConfig>) -> Self {
         for server in servers {
+            self.sources.retain(|(name, _)| *name != server.name);
+            self.sources.push((
+                server.name.clone(),
+                crate::daemon::protocol::McpSource::CommandLine,
+            ));
             if let Some(index) = self.servers.iter().position(|s| s.name == server.name) {
                 self.notices.push(format!(
                     "--mcp-server `{}` replaces the MCP server of that name from mcp.toml or the realm config",

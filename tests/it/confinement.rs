@@ -957,3 +957,41 @@ async fn a_shell_that_could_reach_the_realm_refuses_the_start() {
         assert!(realm.starts_with(grant), "{grant:?}");
     }
 }
+
+/// A confinement plan that reaches the credential store (the provider
+/// tokens, the MCP logins) refuses the daemon's start, as the realm does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shell_that_could_read_the_credential_store_refuses_the_start() {
+    let ws = Workspace::new();
+    if workspace_unavailable(&ws).await {
+        return;
+    }
+    let credentials = ws.sibling("secrets").join("credentials");
+    std::fs::create_dir_all(&credentials).unwrap();
+    let granted = ws.sibling("secrets");
+    let args = common::args_with(
+        &ws.root,
+        &[
+            "--confinement=workspace",
+            "--confinement-read",
+            granted.to_str().unwrap(),
+        ],
+    );
+    let llm = ScriptedLlmClient::new(Vec::new());
+    let options = rig::Running::options(&ws.root, &llm)
+        .with_bootstrap(rkat_tui::bootstrap::BootstrapOptions {
+            host_paths: Some(HostPaths::default()),
+            credential_root: Some(credentials.clone()),
+            ..rig::Running::bootstrap(&llm)
+        })
+        .with_endpoint_file(ws.sibling("state").join("mob.endpoint"));
+    let refused = rig::Running::try_start_with(&args, options).await;
+    let Err(DaemonError::Bootstrap(err)) = refused else {
+        panic!("the daemon started with the credential store in reach");
+    };
+    let TuiError::CredentialsExposed { root, grant } = &*err else {
+        panic!("not the credential refusal: {err}");
+    };
+    assert_eq!(root, &credentials);
+    assert!(root.starts_with(grant), "{grant:?}");
+}

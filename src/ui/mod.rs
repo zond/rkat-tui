@@ -562,6 +562,25 @@ pub enum Msg {
     /// The task store could not be read: the checklist stays as it is and
     /// the next Ctrl+T says why.
     ChecklistUnavailable(String),
+    /// `/mcp login` of a server of the project's `mcp.toml`: ask the user
+    /// whether to log into `url` (`y` sends [`Effect::McpLogin`] again,
+    /// confirmed).
+    McpLoginConfirm {
+        server: String,
+        url: String,
+    },
+    /// `/mcp login` started: show the login dialog
+    /// ([`modal::McpLoginDialog`]) with the authorize URL and the paste
+    /// field.
+    McpLoginOpen(modal::McpLoginShown),
+    /// The pasted address was not the login's: say why in the dialog.
+    McpLoginPasteRefused(String),
+    /// The login ended (done, refused, expired, cancelled): close the
+    /// dialog and say how.
+    McpLoginClosed {
+        level: NoticeLevel,
+        text: String,
+    },
     /// What a prompt's `@` mentions attached as the runner sent it, and
     /// the sealed paths it named but never read (reported by the
     /// workbench, so the notice says what the agent actually got).
@@ -772,6 +791,24 @@ pub enum Effect {
     /// it with the question ([`PickerKind::Trust`]); nothing is recorded
     /// before the yes ([`Self::TrustShown`]).
     TrustProject,
+    /// `/mcp`: list the MCP servers and their login states (a notice).
+    McpServers,
+    /// `/mcp login <server>` (or the confirmation of a project server's
+    /// URL): bind the loopback listener, start the login on the daemon and
+    /// show its dialog ([`Msg::McpLoginOpen`]), or ask first
+    /// ([`Msg::McpLoginConfirm`]).
+    McpLogin {
+        server: String,
+        confirmed: bool,
+    },
+    /// The address the user pasted into the login dialog: checked against
+    /// the pending redirect, then the login completes. It reaches neither
+    /// the input history, the drafts nor the transcript.
+    McpLoginPasted(modal::Secret),
+    /// Esc in the login dialog: retire the attempt and close the listener.
+    McpLoginCancel,
+    /// `/mcp logout <server>`.
+    McpLogout(String),
     /// `/trust` answered yes: record the project inputs as they were shown
     /// (their digests) in the host trust record; their servers and hooks
     /// run from the next session.
@@ -2022,6 +2059,32 @@ impl App {
                 self.checklist.note = None;
             }
             Msg::ChecklistUnavailable(why) => self.checklist.note = Some(why),
+            Msg::McpLoginConfirm { server, url } => {
+                self.show_mcp_login(modal::McpLoginDialog::Confirm { server, url });
+            }
+            Msg::McpLoginOpen(shown) => {
+                self.show_mcp_login(modal::McpLoginDialog::Waiting {
+                    shown,
+                    field: modal::Secret(String::new()),
+                    refused: None,
+                });
+            }
+            Msg::McpLoginPasteRefused(why) => {
+                for slot in [&mut self.modal, &mut self.parked] {
+                    if let Some(Modal::McpLogin(dialog)) = slot {
+                        dialog.refuse(why.clone());
+                    }
+                }
+            }
+            Msg::McpLoginClosed { level, text } => {
+                for slot in [&mut self.modal, &mut self.parked] {
+                    if matches!(slot, Some(Modal::McpLogin(_))) {
+                        *slot = None;
+                    }
+                }
+                self.transcript.push_notice(level, text);
+                self.scroll.bottom();
+            }
             Msg::Mentions { attached, sealed } => self.note_mentions(&attached, &sealed),
             Msg::PathIndex { generation, paths } => {
                 if self.completion.path_index == PathIndex::Indexing(generation) {

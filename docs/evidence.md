@@ -5190,3 +5190,127 @@ Tests: `compact::the_summary_request_carries_no_tools_and_its_own_params`
 `cost::tests::the_summaries_table_is_optional_in_the_stored_record`,
 `daemon::usage::tests::a_call_with_cached_tokens_inside_its_input_counts_them_once`,
 `ui::tests::turns::submit_starts_turn_and_streams_into_one_block`.
+
+## OAuth login for remote MCP servers (owner decisions, 2026-11-27)
+
+What the engine does (Meerkat 0.9.18, read in the sources):
+
+- `HostAuthService` (`meerkat/src/host_auth.rs`) is the host's MCP
+  login: `mcp_login_start(target, redirect_uri, www_authenticate)`
+  (discovery, dynamic client registration, PKCE S256, RFC 8707
+  resource), `mcp_login_complete(target, McpOAuthCallback)`, cancels,
+  `mcp_logout`, and `mcp_status` (no network). Its MCP OAuth authority
+  (`mcp_oauth_authority()`) is an `McpAuthResolver`.
+- The slot. `McpServerIdentity::binding_slug` hashes the server's name
+  and URL, the account selection and, only for a realm-scoped target,
+  the Meerkat realm; the token realm is always `mcp-oauth`. A
+  connection scopes its target to `McpAuthResolver::credential_realm()`
+  (`None` for a realm-less authority). The runtime-backed composition
+  installs the realm-scoped default resolver
+  (`default_mcp_auth_resolver_in_realm`) **unless** the factory already
+  has one (`install_mcp_auth_resolver_with_custody`: "a host-supplied
+  resolver wins"); every session the runtime builds, mob members
+  included, takes it. So the per-user slot needs no engine change: the
+  daemon builds a `HostAuthService` without `with_mcp_realm` over the
+  factory's provider-auth persistence and the runtime's AuthMachine
+  pair (`PersistenceBundle::runtime_adapter()
+  .provider_auth_runtime_authority()`, taken before the runtime is
+  built, as the engine's own default takes it there), installs its
+  authority with `AgentFactory::mcp_auth_resolver`, and logs in with the
+  same service. The engine's realm-service-secret custody still wraps
+  it. The resolver has one realm for every target (`credential_realm`
+  takes none), so an *unmarked* HTTP server's legacy stored-credential
+  lookup also reads the realm-less slot now, where it read the realm's
+  before; rkat-tui never wrote either.
+- No restart. `AgentFactory::with_mcp_adapter_custody` hands the daemon
+  every construction's `McpRouterAdapter`; after a login each live one
+  is asked `retry_authorized(&target)` (the router re-stages the server
+  awaiting exactly that target), after a logout `credential_released`.
+  `SessionRuntime::mcp_credential_landed` does the same only for the live
+  `mcp/add` sessions, not for factory-built ones. Probe (the first run of
+  `a_login_brings_…`, the daemon's log at trace): the retry answered
+  `Staged`, then `AlreadyPending` at every later look, and no turn ever
+  offered the tool: a router applies staged operations only in
+  `McpRouterAdapter::apply_staged`, which the engine calls at a turn's
+  boundary only for the RPC runtime's own MCP sessions
+  (`SessionRuntime::apply_mcp_boundary`, `mcp_sessions`), never for a
+  factory-built member's router after its build. So the daemon calls
+  `apply_staged` itself after a `Staged` (or still `AlreadyPending`)
+  retry and after an `Unpublished` release, as the engine's live
+  attachment does (`AdapterLiveMcpAttachment::attach`); the connection
+  runs in the background and its tools reach the agent at its next
+  turn. An ask: a boundary apply for factory-built routers, or
+  `retry_authorized` that says the host must apply. A server that answers 401 at connect is recorded
+  as awaiting (`servers_awaiting_authorization`, after the boundary
+  drains it); no event says so, so the daemon asks the adopted adapters
+  every 2 s (`daemon::mcp_auth`, `AWAITING_POLL`): one more fact for
+  lukacf/meerkat#2433.
+- Redirects. A loopback redirect must be `http` on `localhost`,
+  `127.0.0.1` or `[::1]` (`require_loopback_redirect`). Dynamic
+  registration registers exactly the start's `redirect_uri`
+  (`register_client`, `"redirect_uris": [redirect_uri]`,
+  `token_endpoint_auth_method = "none"`, `application_type = "native"`).
+  A re-login while the slot holds a credential reuses its stored client
+  with the new loopback redirect, any port (RFC 8252 §7.3), and does not
+  register again; after a logout the next login registers a new client.
+  A start that joins a pending attempt returns that attempt's redirect:
+  the daemon retires one of another redirect and starts afresh.
+- Not possible: a pre-registered **public** client. `McpOAuthClientProfile`
+  (`mcp_oauth/client_profile.rs`) is a confidential client only: its
+  `McpOAuthClientAuthMethod` is `ClientSecretBasic` or `ClientSecretPost`
+  and a secret is required; installed with
+  `HostAuthService::mcp_install_client_profile`. Reusing another tool's
+  registered redirect usually means that tool's client id, often a
+  public one without a secret; "client id X, redirect Y, no secret"
+  needs an engine change: a `None` (public PKCE) method in
+  `McpOAuthClientAuthMethod`, or a public profile constructor, accepted
+  by the installation and used by the code exchange and refresh without
+  client authentication. An upstream ask; nothing worked around.
+- Where the attempt is held: the runtime's OAuth flow owner keeps each
+  pending browser attempt durably, its raw `state` included, in the
+  realm's runtime store (`sessions.sqlite3`, key
+  `auth_oauth_flow_state`; seen by the canary test's first run in the
+  WAL), until it completes, is cancelled or expires; the runtime sweeps
+  the attempts it admitted at shutdown. It is the realm's (the daemon
+  that started it), though the credential it mints is the user's. The
+  realm is out of the agent's and its shell's reach, so the test checks
+  the state everywhere else (transcript, log, client messages, every
+  other file of the config directory and the workspace) and the issued
+  secrets everywhere.
+- Other gaps, recorded: a loopback completion does not compare the
+  issuer the redirect could carry (RFC 9207 `iss`); no Client ID
+  Metadata Documents; a 403 `insufficient_scope` at a tool call is no
+  typed status (the user sees the server's error, no "log in again with
+  more scope"); no device flow (neither the engine nor the MCP spec).
+
+What rkat-tui built: `/mcp`, `/mcp login`, `/mcp logout`
+(`ui::commands`, the dialog `ui::modal::mcp_login` drawn in
+`ui::modal::draw` with the URL's rows as OSC 8 links through
+`CellDiffOption::ForcedWidth`), the client's listener and paste check
+(`client::mcp_login`, `client::runner::mcp`), the daemon's side
+(`daemon::mcp_auth`, `rkat/mcp_*`, the `rkat/mcp_auth` push), the setting
+`mcp.oauth_redirect_uri` (the whole redirect; user layers and `--set`;
+the client, which binds the listener, sends it in the start, so its
+value wins over whatever the daemon was started with; not in the server
+entry, which is the engine's `deny_unknown_fields` `McpHttpConfig`), the
+credential store's exposure check (`bootstrap::check_credentials_private`)
+and, for tests, `BootstrapOptions::credential_root`.
+
+Tests: `mcp_oauth::a_login_brings_the_server_s_tools_without_a_restart_and_leaks_no_secret`
+(the start-up notice, the login through the listener, the tool offered
+and answering in the running daemon; the fixture's issued secrets and
+the attempt's state in no transcript, realm file, audit line, log or
+client message), `a_pasted_address_completes_the_login_and_a_wrong_one_is_refused`
+(a predefined port in use named in the dialog, paste-back, a wrong state
+and a wrong path refused), `an_unmarked_server_is_refused_with_how_to_mark_it`,
+`a_logout_removes_the_login_and_the_session_asks_for_one_again` (the
+runtime "needs login" push), `no_login_starts_over_an_insecure_attach`,
+`a_project_server_asks_first_and_an_untrusted_one_cannot_log_in`,
+`one_login_serves_every_workspace_of_the_user` (logged in from A, B's
+agent gets the tools with no login), `a_predefined_redirect_in_each_loopback_spelling_completes_the_login`,
+`the_redirect_setting_takes_only_a_loopback_uri_and_never_a_project_s`;
+`confinement::a_shell_that_could_read_the_credential_store_refuses_the_start`;
+`render::the_mcp_login_dialog_links_the_url_and_keeps_the_paste_out_of_the_transcript`;
+unit tests in `client::mcp_login` (redirect spellings, the paste check,
+the listener's one callback, a predefined port in use) and
+`ui::modal::mcp_login`.

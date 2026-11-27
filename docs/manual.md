@@ -1345,6 +1345,7 @@ says when a change made while the daemon runs applies.
 | `ui.checklist`: Whether the task checklist shows under the input. | `hidden`, `shown` | hidden | may set it (the command line wins) | at once | Ctrl+T |
 | `pricing.fetch`: Whether the community price list is fetched for the cost readout. | `true` or `false` | true | may only set `false` | at the next start | `--no-pricing-fetch` |
 | `daemon.principal`: The person every attached client decides approval requests as. | text (at most 200 characters) | the login name ($USER, else $LOGNAME, else owner) | may not set it | at the next start | — |
+| `mcp.oauth_redirect_uri`: The loopback redirect of `/mcp login` (`http://localhost:8976/callback`): host `127.0.0.1`, `localhost` or `[::1]`, an explicit port, a path. | an `http` loopback URI with an explicit port and a path (`http://127.0.0.1:8976/callback`, `http://localhost:…`, `http://[::1]:…`) | `http://127.0.0.1:<a free port>/callback` | may not set it | at the next start | — |
 | `[[allow]] / [[deny]]`: Rules: `tool`, then `arg` (a glob) or `literal`. | a section | none | may only add deny rules | at once from your own and the workspace's file (a project file's at the next start) | `--allow` / `--deny <tool>[=<glob>]`; /permissions (In force: r adds, e edits, d removes; Blocked: a, A) |
 | `auto.allow`: Statements: kinds of action you allow, which the classifier reads. | a section | none | may not set it | at once | —; /permissions (In force: n adds, d removes; Blocked: e) |
 | `auto.trusted_hosts`: Hosts you trust with the project's data (`host` or `*.domain`), which the classifier reads beside the hosts of the project's git remotes; other rules still apply there. | a section | none | may not set it | at once | `--set 'auto.trusted_hosts=["<host>"]'`; /permissions (Hosts: n adds, d removes; Blocked: t, T) |
@@ -1733,6 +1734,96 @@ the flag: a stdio server inherits the daemon's environment, which is the
 environment of the `rkat-tui` that started it. There is no `tui.toml`
 key for MCP servers; `mcp.toml` stays the one file format.
 
+#### Logging into a remote MCP server (OAuth)
+
+A remote (HTTP) server that needs OAuth takes part only when its entry
+is **marked** for it, with one of the engine's own fields:
+
+```toml
+# ~/.rkat/mcp.toml
+[[servers]]
+name = "docs"
+url = "https://docs.example/mcp"
+oauth_account_selection = "unverified"   # works with any authorization server
+# oauth_account_selection = "discover"   # binds the account an OpenID Connect UserInfo endpoint reports
+# oauth_account = "<subject>"            # accepts only that account
+```
+
+`unverified` is the choice that works with every authorization server:
+the credential is bound to the server, with no account evidence.
+`discover` needs an authorization server that publishes OpenID Connect
+UserInfo; `oauth_account` names the one subject to accept. An HTTP
+server without a mark is connected as configured (its own headers), as
+before; `/mcp login` on it says how to mark it. The same fields work in
+`--mcp-server`.
+
+- `/mcp` lists every server: where it is defined (your `mcp.toml`, the
+  project's, the realm config, `--mcp-server`), its URL or command, and
+  for a marked server its login state (authorized, needs login, needs
+  re-login). A server of an untrusted project file is listed as not
+  started.
+- `/mcp login <server>` starts a login. rkat-tui opens no browser and
+  starts no program: a dialog shows the authorization address, as a link
+  (in a terminal that supports them) and as text (Ctrl+Y copies it).
+  Open it in a browser and log in. When the browser runs on this
+  machine, its redirect reaches rkat-tui's one-shot listener on the
+  loopback interface and the dialog closes by itself. When it does not
+  (you work over ssh), the browser ends on a connection error: copy the
+  whole address from its address bar into the dialog's field and press
+  Enter. Only an address with the login's redirect (scheme, host, port,
+  path) and its `state` is taken. Esc cancels; so does switching agents,
+  re-homing or leaving, and the attempt expires on its own.
+- After a login the server's tools reach the agents at their next turn;
+  no restart. One login serves the same server (name and URL) in every
+  workspace of yours.
+- `/mcp logout <server>` removes the stored login (in every workspace);
+  the agents stop being offered its tools at their next turn. Nothing is
+  revoked at the provider.
+- A marked server that needs a login is named in a start-up notice
+  (``MCP server `docs` needs login: /mcp login docs``), read from the
+  stored login without any network call, and again when an agent's
+  session finds that the server asks for authorization.
+
+A server of the project's `.rkat/mcp.toml` can be logged into only once
+the file is trusted, and only after the dialog showed its URL and you
+answered `y`: the repository chose that URL. A login never starts from a
+file, an agent or a tool call. Over a connection attached with
+`--attach-insecure` to a network address no login starts: its address
+and code would cross that network unencrypted.
+
+**The redirect.** By default the browser is sent back to
+`http://127.0.0.1:<a free port>/callback`. Some authorization servers
+accept only a redirect registered beforehand; `mcp.oauth_redirect_uri`
+predefines the whole redirect, host spelling, port and path, in your
+`tui.toml` or for one run with `--set` (a project file may not set it):
+
+    rkat-tui --set mcp.oauth_redirect_uri=http://localhost:8976/callback
+
+The host is `127.0.0.1`, `localhost` (rkat-tui then listens on both
+`127.0.0.1` and `[::1]`) or `[::1]`, with an explicit port and a path.
+A predefined port that is in use is named in the dialog; pasting the
+address still works. The client that runs `/mcp login` decides the
+redirect, whatever the daemon was started with.
+
+**Where the login lives.** In the engine's credential store, the same
+as for provider logins: `~/.config/meerkat/credentials/` (plain files,
+mode 0600, under your user's config directory), never in the workspace
+or its state directory. The daemon refuses to start when the shell's
+sandbox would reach that directory (as with
+`--confinement-read ~/.config`). With `--no-confinement` (or
+`--confinement=external`) the agent's shell runs as you and can read
+your files, those included, like every other file of yours.
+
+**Not supported.** There is no device-code flow (neither the engine nor
+the MCP authorization spec has one): the browser is always needed, on
+this machine or any other. An authorization server reached over plain
+`http` must be on this machine (loopback); elsewhere it must be `https`.
+A client registered beforehand at the authorization server (a fixed
+client id without dynamic registration) is not supported for a public
+client: the engine registers its own client dynamically, or takes a
+confidential one (with a secret) only from the host's code, which
+rkat-tui does not offer.
+
 ### Context and compaction
 
 A compaction is Meerkat's: before a model call, once the context passes
@@ -1910,6 +2001,7 @@ it is part of the text. A command that takes no argument (`/help`,
 | `/resume [ref]` | Switch to another conversation; no ref opens a picker ([Sessions](#sessions)) |
 | `/permissions [blocked\|rules\|hosts \| list \| add [--user] allow\|deny <tool> [pattern] \| rm <n>]` | The permissions dialog, or list, add and remove rules (`remove` = `rm`) ([The permissions dialog](#the-permissions-dialog)) |
 | `/trust` | Show what the project's `.rkat/mcp.toml` and `.rkat/config.toml` would run and ask; `y` trusts them as shown, their MCP servers and hooks run from the next session (`--trust-project`: for one run) |
+| `/mcp [login <server> \| logout <server>]` | The MCP servers and their login states; log into a server marked for OAuth, or out of it ([Logging into a remote MCP server](#logging-into-a-remote-mcp-server-oauth)) |
 | `/mode [[--user] default\|accept-edits\|plan\|auto]` | Pick or set the permission mode ([Permission modes](#permission-modes)) |
 | `/auto [on\|off\|resume\|stats]` | Show auto mode; switch it on or off; resume it after a denial pause; its review numbers |
 | `/auto model [[--user] [endpoint:]<id>]` | Pick or set the classifier's model |

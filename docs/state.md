@@ -100,7 +100,7 @@ generation check).
 | `realm_manifest.json` | the engine's realm manifest (backend, origin) |
 | `config.toml`, `config_state.json`, `config_state.lock` | the realm's config document and its generation sidecar and writer lock. rkat-tui writes the configured endpoints' connections (`[realm.rkat-tui-endpoints]`), the self-hosted servers and their model aliases (`[self_hosted]`). Holds endpoint settings, never a key |
 | `sessions.sqlite3` | every conversation (the transcripts). A conversation an earlier build began may hold a keyed system-prompt version (key `rkat-tui-instructions`): the daemon's replacement of that build's instruction sections with its own (`daemon::instructions`, through the engine's `update_system_prompt`); the earlier version stays in the transcript's history, the model reads the latest |
-| `runtime.sqlite3`, `jobs.sqlite3` | runtime state (inputs, decisions), detached jobs; the schedules are a domain of the engine's SQLite stores |
+| `runtime.sqlite3`, `jobs.sqlite3` | runtime state (inputs, decisions), detached jobs; the schedules are a domain of the engine's SQLite stores. A pending `/mcp login` attempt (its `state` and PKCE data) is kept by the engine's OAuth flow owner in the realm's runtime store (`auth_oauth_flow_state`, in `sessions.sqlite3` with this backend) until it completes, is cancelled or expires |
 | `mobs/mob--<id>.db`, `mobs/realm_profiles.db`, `mobs/realm_forked_participants.db` | the mobs: the agents (members), helpers, councils |
 | `tasks.db` | the checklist (`SqliteTaskStore`) |
 | `memory/` | the semantic-memory index |
@@ -118,6 +118,18 @@ longer reach it until they are wired again. The key is per session, so
 an agent's `/new` or `/resume` changes it too; for a cross-workspace
 wire the client that switched sends the new card to the other daemon
 (`client::wires::refresh`).
+
+The engine's credential store (provider logins and the MCP servers'
+OAuth logins, `/mcp login`) is the user's, not the realm's:
+`<platform config dir>/meerkat/credentials/` (`~/.config/meerkat/credentials`
+on Linux; `meerkat_auth_core::auth_store::TokenStoreBackend::default_file`),
+plain files 0600 and its `refresh-locks/`, written by the daemon through
+the engine (`HostAuthService::mcp_login_complete`, refreshes, `/mcp
+logout`). An MCP login is the realm-less slot of the server (its name and
+URL, its account selection): one per user, shared by every workspace
+(`daemon::mcp_auth`). Format and keys are Meerkat's contract. Losing it
+loses the logins (log in again). The daemon refuses a shell confinement
+that reaches the directory.
 
 ## In the workspace
 

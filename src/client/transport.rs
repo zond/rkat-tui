@@ -479,7 +479,12 @@ async fn read_loop<R: AsyncRead + Unpin>(
             Ok(_) => {}
         }
         let Ok(message) = serde_json::from_str::<Value>(line.trim()) else {
-            tracing::warn!(line = %line.trim(), "the daemon sent a line that is not JSON");
+            // Its bytes are not logged: a line may carry a login's
+            // authorize URL or state (`rkat/mcp_login_start`).
+            tracing::warn!(
+                bytes = line.trim().len(),
+                "the daemon sent a line that is not JSON"
+            );
             continue;
         };
         route(message, &pending, &notify);
@@ -517,7 +522,11 @@ fn route(message: Value, pending: &Pending, notify: &mpsc::UnboundedSender<Notif
                     params: message.get("params").cloned().unwrap_or(Value::Null),
                 });
             }
-            None => tracing::debug!(%message, "an unexpected line from the daemon"),
+            // Only its keys: a value may be a login's secret.
+            None => tracing::debug!(
+                keys = ?message.as_object().map(|object| object.keys().collect::<Vec<_>>()),
+                "an unexpected line from the daemon"
+            ),
         },
     }
 }

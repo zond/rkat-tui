@@ -28,6 +28,8 @@
 //!   `rkat/resume`, `rkat/conversations`, `rkat/transcript`).
 //! - [`check`]: `/auto check` and `--classifier-check` (the daemon's
 //!   `rkat/classifier_check`).
+//! - [`mcp_login`]: `/mcp login`'s loopback redirect, its one-shot
+//!   callback listener and the pasted address's check.
 //!
 //! What runs on this side of the wire is the [`crate::workbench`] and the
 //! UI it starts ([`crate::workbench::app::build_app`]).
@@ -39,6 +41,7 @@ pub mod check;
 pub mod helpers;
 pub mod launch;
 pub mod list;
+pub mod mcp_login;
 pub mod push;
 pub mod rehome;
 pub mod remote;
@@ -343,6 +346,8 @@ pub async fn configure_with(
         scope,
         reroot: None,
         wire_files: None,
+        mcp_redirect: crate::config::registry::mcp_redirect_in_force(&layered.layers),
+        insecure: false,
     })
 }
 

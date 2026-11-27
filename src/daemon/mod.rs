@@ -51,6 +51,7 @@ pub mod instructions;
 pub mod lifecycle;
 pub mod links;
 pub mod local;
+pub mod mcp_auth;
 pub mod mob;
 pub mod policy;
 pub mod prepare;
@@ -661,6 +662,16 @@ impl Daemon {
         core.links.reconcile().await;
         let watch_task = deliver_watches(&agents, composed.watch_batches);
         let agents_for_space = Arc::clone(&agents);
+        // A marked MCP server that needs a login, from the stored state.
+        composed.startup_notices.extend(
+            composed
+                .mcp_auth
+                .startup_notices()
+                .await
+                .into_iter()
+                .map(protocol::StartupNotice::warn),
+        );
+        composed.tasks.extend(composed.mcp_auth.follow());
         let local = Arc::new(local::Local::new(
             agents,
             local::LocalParts {
@@ -675,6 +686,7 @@ impl Daemon {
                 endpoints: composed.endpoints,
                 startup_notices: composed.startup_notices,
                 side_clients: composed.side_clients,
+                mcp_auth: Arc::clone(&composed.mcp_auth),
                 report: local::ReportParts {
                     realm: composed.scope.realm_root(),
                     realm_id: composed.scope.realm_id.clone(),

@@ -54,6 +54,7 @@ mod instructions;
 mod layout;
 mod lifecycle;
 mod litellm;
+mod mcp_oauth;
 mod mcp_servers;
 mod memory_tools;
 mod mob_destroy;

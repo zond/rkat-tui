@@ -148,6 +148,8 @@ pub struct Composed {
     pub side_clients: super::btw::SideClients,
     /// This build's instructions on conversations earlier builds began.
     pub revisions: Arc<super::instructions::Instructions>,
+    /// The MCP servers' OAuth logins (`/mcp`).
+    pub mcp_auth: Arc<super::mcp_auth::McpAuth>,
     /// Who each agent and helper can message (`contacts`).
     pub contacts: Arc<super::contacts::Contacts>,
     /// The audit log (none: it did not open; a start-up notice says so).
@@ -234,6 +236,7 @@ pub fn compose(
         factory,
         mut approval,
         mcp_servers,
+        mcp_sources: (mcp_sources, mcp_untrusted),
         project_inputs,
         memory,
         helper_max_depth,
@@ -298,7 +301,7 @@ pub fn compose(
     // The compaction summary calls the agents' client wrapper measures,
     // which the agents' watchers take from the ledger.
     let summaries = super::compaction_call::SummaryCalls::new();
-    let runtime = session_runtime(RuntimeParts {
+    let (runtime, mcp_service, adapters) = session_runtime(RuntimeParts {
         factory,
         effective: &effective,
         persistence,
@@ -537,6 +540,14 @@ pub fn compose(
     let decisions = Decisions::new(decision_service, principal, Some(Arc::new(router)))
         .map_err(DaemonError::Approval)?;
     let decisions_task = decisions.follow();
+    let mcp_auth = Arc::new(super::mcp_auth::McpAuth::new(
+        mcp_service,
+        &root_plan.mcp_servers,
+        &mcp_sources,
+        mcp_untrusted,
+        adapters,
+        Arc::clone(&decisions),
+    ));
     let diffs_task = Decisions::forward_diffs(&decisions, diff_rx);
     let ledger = ledger(&decisions, &realm_root, summaries);
     let (follower, destroyed_task) = follow_helpers(
@@ -619,6 +630,7 @@ pub fn compose(
             web_fetch: web_fetch_switch,
             profiles,
             revisions,
+            mcp_auth,
             contacts,
             audit,
         },
@@ -767,7 +779,24 @@ struct RuntimeParts<'a> {
 }
 
 /// The session runtime over the realm, as `rkat-rpc` composes it.
-fn session_runtime(parts: RuntimeParts<'_>) -> Result<Arc<SessionRuntime>, DaemonError> {
+///
+/// With it, the MCP logins' service and the custody of every MCP adapter
+/// the factory's constructions make ([`super::mcp_auth`]): the service is
+/// realm-less, and its MCP OAuth authority is the factory's resolver, so
+/// the agents' connections and the logins address one credential slot per
+/// server for every workspace of the user. The authority is the runtime's
+/// AuthMachine pair as the engine's own default resolver takes it, from
+/// the persistence bundle before the runtime is built.
+fn session_runtime(
+    parts: RuntimeParts<'_>,
+) -> Result<
+    (
+        Arc<SessionRuntime>,
+        Option<meerkat::HostAuthService>,
+        Arc<super::mcp_auth::Adapters>,
+    ),
+    DaemonError,
+> {
     let RuntimeParts {
         factory,
         effective,
@@ -780,6 +809,35 @@ fn session_runtime(parts: RuntimeParts<'_>) -> Result<Arc<SessionRuntime>, Daemo
         summaries,
     } = parts;
     persistence.require_hosting_mode(effective.storage.hosting_mode())?;
+    let adapters = Arc::new(super::mcp_auth::Adapters::default());
+    let factory = factory
+        .with_mcp_adapter_custody(Arc::clone(&adapters) as Arc<dyn meerkat::McpAdapterCustody>);
+    let mcp_service = match factory.resolution_provider_auth_persistence() {
+        Ok(Some(store)) => Some(meerkat::HostAuthService::new(
+            store,
+            persistence
+                .runtime_adapter()
+                .provider_auth_runtime_authority(),
+        )),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(error = %err, "no credential store: MCP servers cannot be logged into");
+            None
+        }
+    };
+    let factory = match mcp_service
+        .as_ref()
+        .map(meerkat::HostAuthService::mcp_oauth_authority)
+    {
+        Some(Ok(authority)) => {
+            factory.mcp_auth_resolver(Arc::new(authority) as Arc<dyn meerkat::McpAuthResolver>)
+        }
+        Some(Err(err)) => {
+            tracing::warn!(error = %err, "no MCP OAuth authority: the agents' MCP servers connect without credentials");
+            factory
+        }
+        None => factory,
+    };
     let config_store = Arc::clone(realm_config) as Arc<dyn ConfigStore>;
     let runtime = SessionRuntime::new_with_config_store(
         factory,
@@ -807,7 +865,7 @@ fn session_runtime(parts: RuntimeParts<'_>) -> Result<Arc<SessionRuntime>, Daemo
     runtime.set_agent_llm_client_decorator(Some(super::schema_compat::decorator(
         endpoints, summaries,
     )));
-    Ok(Arc::new(runtime))
+    Ok((Arc::new(runtime), mcp_service, adapters))
 }
 
 /// The principal the daemon decides as (`[daemon] principal`) and the

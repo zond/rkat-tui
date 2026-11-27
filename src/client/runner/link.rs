@@ -543,6 +543,7 @@ impl Runner {
             Push::AgentNotice(notice) if notice.agent == link.connection.agent() => {
                 self.notice(NoticeLevel::of_warning(notice.warn), notice.text);
             }
+            Push::McpAuth(note) => self.notice(NoticeLevel::Warn, note.text),
             Push::HelperEnded(ended)
                 if ended.agent == link.connection.agent() && ended.session_id == link.session =>
             {

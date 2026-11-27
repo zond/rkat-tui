@@ -354,6 +354,7 @@ impl Runner {
             // Something started meanwhile; the user asks again.
             return;
         }
+        self.cancel_mcp_login(Some("this client switched to another agent"));
         self.unlink();
         self.seen.mark = None;
         self.agent = Some(name);
@@ -763,6 +764,7 @@ impl Runner {
             workspace: config.scope.project_root.clone(),
             realm,
         });
+        self.cancel_mcp_login(Some("this client moved to another workspace"));
         self.config = config;
         self.agent = None;
         self.seen.mark = None;

@@ -82,6 +82,7 @@ impl Running {
                 classifier_model: None,
             },
             without_token_store: true,
+            credential_root: None,
         }
     }
 
@@ -652,6 +653,9 @@ pub struct Setup {
     /// The daemon starts no follower of the mobs' profiles
     /// ([`DaemonOptions::with_profiles_unfollowed`]).
     pub profiles_unfollowed: bool,
+    /// The credential store's directory (the MCP logins), a test's own;
+    /// none by default.
+    pub credential_root: Option<PathBuf>,
 }
 
 impl Setup {
@@ -682,6 +686,7 @@ impl Setup {
                 // has no scripted LLM.
                 llm_override: (!self.engine_clients).then(|| Arc::clone(llm) as Arc<dyn LlmClient>),
                 without_token_store: true,
+                credential_root: self.credential_root.clone(),
                 lister: Some(self.lister.clone().unwrap_or_else(no_lists)),
                 host_paths: Some(self.host_paths.clone().unwrap_or_default()),
                 approval: ApprovalOverrides {

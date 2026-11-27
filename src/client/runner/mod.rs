@@ -71,6 +71,7 @@ mod commands;
 mod conn;
 mod depart;
 mod link;
+mod mcp;
 mod steers;
 mod switch;
 mod turn;
@@ -192,6 +193,12 @@ pub struct ClientConfig {
     /// Where `/wire` looks for the other workspaces' daemons (`None`: every
     /// endpoint file `--list` finds; tests name their own).
     pub wire_files: Option<Vec<PathBuf>>,
+    /// `mcp.oauth_redirect_uri` of the `tui.toml` layers and `--set`: where
+    /// `/mcp login`'s listener binds (`None`: a free port on `127.0.0.1`).
+    pub mcp_redirect: Option<String>,
+    /// The connection crosses a network unencrypted (`--attach-insecure`
+    /// to an address that is not loopback): `/mcp login` is refused.
+    pub insecure: bool,
 }
 
 /// The configuration of this client for a command line
@@ -655,6 +662,8 @@ pub struct Runner {
     /// connect failed; `None` once released.
     held: Option<Vec<Effect>>,
     departing: depart::Departing,
+    /// The `/mcp login` attempt this client waits for.
+    mcp: mcp::McpLogins,
 }
 
 /// What a background task says to the UI ([`Runner::say`]).
@@ -731,6 +740,7 @@ impl Runner {
             bench,
             held: Some(Vec::new()),
             departing: depart::Departing::default(),
+            mcp: mcp::McpLogins::default(),
         }
     }
 
@@ -1246,6 +1256,11 @@ impl Runner {
                 self.outcome_command::<protocol::method::Rules>(RuleCommand::List, "/permissions");
             }
             Effect::TrustProject => self.trust_project(),
+            Effect::McpServers => self.mcp_servers(),
+            Effect::McpLogin { server, confirmed } => self.mcp_login(server, confirmed),
+            Effect::McpLoginPasted(text) => self.mcp_login_pasted(&text),
+            Effect::McpLoginCancel => self.cancel_mcp_login(None),
+            Effect::McpLogout(server) => self.mcp_logout(server),
             Effect::TrustShown(files) => {
                 self.outcome_command::<protocol::method::Trust>(
                     protocol::TrustParams { files },
@@ -1736,6 +1751,8 @@ mod tests {
             pricing: crate::pricing::PricingSetup::default(),
             reroot: None,
             wire_files: None,
+            mcp_redirect: None,
+            insecure: false,
             scope,
         };
         let (ui_tx, ui_rx) = mpsc::unbounded_channel();

@@ -43,6 +43,8 @@ pub enum Push {
     GivenBack(protocol::GivenBack),
     /// A notice for one agent's clients ([`protocol::AGENT_NOTICE`]).
     AgentNotice(protocol::AgentNotice),
+    /// An MCP server needs a login ([`protocol::MCP_AUTH`]).
+    McpAuth(protocol::McpAuthNote),
     /// A helper ended ([`protocol::HELPER_ENDED`]).
     HelperEnded(protocol::HelperEnded),
     /// The helpers seated for a conversation now ([`protocol::SEATED`]).
@@ -96,6 +98,7 @@ impl Push {
             protocol::RUNNING => Self::Running(read(note)?),
             protocol::GIVEN_BACK => Self::GivenBack(read(note)?),
             protocol::AGENT_NOTICE => Self::AgentNotice(read(note)?),
+            protocol::MCP_AUTH => Self::McpAuth(read(note)?),
             protocol::HELPER_ENDED => Self::HelperEnded(read(note)?),
             protocol::SEATED => Self::Seated(read(note)?),
             protocol::MODE => Self::Mode(read(note)?),

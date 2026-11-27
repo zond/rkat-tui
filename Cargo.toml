@@ -125,8 +125,9 @@ nix = { version = "0.29", features = ["signal", "process", "fs", "user", "hostna
 # Makes the internal modules public and adds `harness` (the headless
 # runner) for this crate's own integration tests. Not a stable API. The
 # engine's runtime test hooks come with it (a session left needing a
-# reload, `daemon::storage`).
-test-support = ["meerkat-runtime/test-support"]
+# reload, `daemon::storage`). The engine's MCP OAuth fixture (one loopback
+# server playing an OAuth-protected MCP server) is the login tests' server.
+test-support = ["meerkat-runtime/test-support", "meerkat/test-mcp-oauth-fixtures"]
 
 [dev-dependencies]
 # The integration tests drive the internal modules through `test-support`.

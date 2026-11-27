@@ -279,6 +279,16 @@ impl App {
             }),
             Command::Rules(RulesCommand::Remove(n)) => fx.push(Effect::RemoveRule(n)),
             Command::TrustProject => fx.push(Effect::TrustProject),
+            Command::Mcp(super::commands::McpCommand::List) => fx.push(Effect::McpServers),
+            Command::Mcp(super::commands::McpCommand::Login(server)) => {
+                fx.push(Effect::McpLogin {
+                    server,
+                    confirmed: false,
+                });
+            }
+            Command::Mcp(super::commands::McpCommand::Logout(server)) => {
+                fx.push(Effect::McpLogout(server));
+            }
             Command::Helpers(cmd) => self.helpers_command(cmd),
         }
     }

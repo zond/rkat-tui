@@ -137,6 +137,22 @@ pub fn draw_modal(
         }
         Modal::PlanReady(dialog) => (" Plan ready ".to_string(), plan_lines(*dialog, inner_w)),
         Modal::Quit(dialog) => (" Quit ".to_string(), quit_lines(dialog, inner_w)),
+        Modal::McpLogin(dialog) => {
+            let (mut lines, link) = mcp_login_lines(dialog, inner_w);
+            if ignoring {
+                lines.push(Line::styled(
+                    truncate_to_width(crate::ui::KEYS_IGNORED, inner_w),
+                    Style::default().add_modifier(Modifier::DIM),
+                ));
+            }
+            let height = (lines.len() as u16).saturating_add(2);
+            draw_box(frame, area, width, " MCP login ", lines);
+            if let Some(link) = link {
+                let rect = centered(area, width, height);
+                hyperlink_rows(frame.buffer_mut(), rect, &link);
+            }
+            return;
+        }
         Modal::Help(dialog) => {
             // Wider than the other dialogs: the help's columns.
             let width = area.width.saturating_sub(2).clamp(20, 104);
@@ -481,6 +497,175 @@ fn quit_lines(dialog: &QuitDialog, width: usize) -> Vec<Line<'static>> {
         dim,
     ));
     lines
+}
+
+/// Where the login dialog's authorize URL is drawn: its rows (lines of
+/// the dialog's text) and the URL itself, made a link there.
+struct LinkRows {
+    /// The dialog's line of the URL's first chunk.
+    first: usize,
+    /// The URL's chunks, one per line.
+    chunks: Vec<String>,
+    url: String,
+}
+
+/// The URL in chunks of at most `width` characters (an authorize URL is
+/// ASCII; anything else is cut by characters all the same).
+fn url_chunks(url: &str, width: usize) -> Vec<String> {
+    let chars: Vec<char> = url.chars().collect();
+    chars
+        .chunks(width.max(1))
+        .map(|chunk| chunk.iter().collect())
+        .collect()
+}
+
+/// The `/mcp login` dialog's lines, and where its URL is (to make a link
+/// of it); no link for a URL with a control character or one wider than
+/// a cell per character.
+fn mcp_login_lines(
+    dialog: &super::McpLoginDialog,
+    width: usize,
+) -> (Vec<Line<'static>>, Option<LinkRows>) {
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let url_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::UNDERLINED);
+    let wrapped = |text: &str| -> Vec<Line<'static>> {
+        wrap_text(text, width).into_iter().map(Line::from).collect()
+    };
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let link_of = |url: &str, first: usize| {
+        let plain = url
+            .chars()
+            .all(|c| !c.is_control() && unicode_width::UnicodeWidthChar::width(c) == Some(1));
+        plain.then(|| LinkRows {
+            first,
+            chunks: url_chunks(url, width),
+            url: url.to_string(),
+        })
+    };
+    match dialog {
+        super::McpLoginDialog::Confirm { server, url } => {
+            lines.extend(wrapped(&format!(
+                "MCP server `{server}` is defined in the project's .rkat/mcp.toml (a file you trusted). Log into it at:"
+            )));
+            lines.extend(
+                url_chunks(&sanitize(url), width)
+                    .into_iter()
+                    .map(|chunk| Line::styled(chunk, url_style)),
+            );
+            lines.push(Line::default());
+            lines.push(Line::styled("y logs in · n or Esc cancels", dim));
+            (lines, None)
+        }
+        super::McpLoginDialog::Waiting {
+            shown,
+            field,
+            refused,
+        } => {
+            lines.extend(wrapped(&format!(
+                "Open this address in a browser and log into MCP server `{}`:",
+                shown.server
+            )));
+            let first = lines.len();
+            let url = &shown.authorize_url.0;
+            let link = link_of(url, first);
+            let chunks = url_chunks(&sanitize(url), width);
+            lines.extend(
+                chunks
+                    .iter()
+                    .map(|chunk| Line::styled(chunk.clone(), url_style)),
+            );
+            lines.push(Line::default());
+            lines.extend(wrapped(&format!(
+                "The login sends the browser back to {}. A browser on this machine closes this dialog by itself; one elsewhere (over ssh) shows a connection error then: paste the address from its address bar here and press Enter.",
+                shown.redirect_uri
+            )));
+            if let Some(note) = &shown.note {
+                lines.extend(
+                    wrap_text(note, width)
+                        .into_iter()
+                        .map(|line| Line::styled(line, Style::default().fg(Color::Yellow))),
+                );
+            }
+            lines.push(Line::default());
+            let label = "Address: ";
+            let room = width.saturating_sub(display_width(label) + 1).max(1);
+            let typed = sanitize(&field.0);
+            // The end of what was typed, `…` before it when it is cut.
+            let tail: String = {
+                let chars: Vec<char> = typed.chars().collect();
+                if chars.len() > room {
+                    std::iter::once('…')
+                        .chain(chars[chars.len() + 1 - room..].iter().copied())
+                        .collect()
+                } else {
+                    typed
+                }
+            };
+            lines.push(Line::from(vec![
+                Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(tail),
+                Span::styled("▏", dim),
+            ]));
+            if let Some(why) = refused {
+                lines.extend(
+                    wrap_text(why, width)
+                        .into_iter()
+                        .map(|line| Line::styled(line, Style::default().fg(Color::Red))),
+                );
+            }
+            lines.push(Line::default());
+            lines.extend(
+                wrap_text(
+                    "Enter sends the address · Ctrl+Y copies the login URL · Esc cancels",
+                    width,
+                )
+                .into_iter()
+                .map(|line| Line::styled(line, dim)),
+            );
+            (lines, link)
+        }
+    }
+}
+
+/// Make the URL's rows of the dialog drawn in `rect` a link (OSC 8): each
+/// row's first cell holds the row's text inside the link's escape
+/// sequences, drawn as that many columns (`CellDiffOption::ForcedWidth`),
+/// and the cells it covers are skipped, so a terminal shows the plain text
+/// and makes it clickable; one without OSC 8 shows the text alone.
+fn hyperlink_rows(buffer: &mut ratatui::buffer::Buffer, rect: Rect, link: &LinkRows) {
+    use ratatui::buffer::CellDiffOption;
+    for (i, chunk) in link.chunks.iter().enumerate() {
+        let Ok(row) = u16::try_from(link.first + i) else {
+            return;
+        };
+        // Inside the border: one row and one column in.
+        let y = rect.y.saturating_add(1).saturating_add(row);
+        if y >= rect.y.saturating_add(rect.height.saturating_sub(1)) {
+            return;
+        }
+        let x = rect.x.saturating_add(1);
+        let Ok(columns) = u16::try_from(chunk.chars().count()) else {
+            return;
+        };
+        let Some(width) = std::num::NonZeroU16::new(columns) else {
+            continue;
+        };
+        if x.saturating_add(columns) > rect.x.saturating_add(rect.width.saturating_sub(1)) {
+            return;
+        }
+        let Some(cell) = buffer.cell_mut((x, y)) else {
+            return;
+        };
+        cell.set_symbol(&format!("\x1b]8;;{}\x1b\\{chunk}\x1b]8;;\x1b\\", link.url))
+            .set_diff_option(CellDiffOption::ForcedWidth(width));
+        for dx in 1..columns {
+            if let Some(cell) = buffer.cell_mut((x + dx, y)) {
+                cell.set_diff_option(CellDiffOption::Skip);
+            }
+        }
+    }
 }
 
 fn plan_lines(dialog: PlanDialog, width: usize) -> Vec<Line<'static>> {

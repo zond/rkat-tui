@@ -1552,3 +1552,74 @@ fn an_esc_on_an_empty_input_names_nothing_in_the_title() {
         "{rows:?}"
     );
 }
+
+/// The `/mcp login` dialog: the authorize URL wrapped over rows, each row
+/// an OSC 8 link to the whole URL whose text is the row's part of it, so
+/// it reads (and selects) as plain text and clicks as the URL; the
+/// redirect, the paste field, the keys. The pasted address (the login's
+/// code) shows in the field only: nothing of the dialog reaches the
+/// transcript, its export or the input, and Esc cancels the attempt.
+#[test]
+fn the_mcp_login_dialog_links_the_url_and_keeps_the_paste_out_of_the_transcript() {
+    use rkat_tui::ui::Effect;
+    use rkat_tui::ui::modal::{McpLoginShown, Secret};
+    let url = format!(
+        "https://as.example/authorize?client_id=c&state={}&code_challenge=x",
+        "s".repeat(60)
+    );
+    let mut app = App::new(StatusInfo::default());
+    let now = Instant::now();
+    app.update_at(
+        Msg::McpLoginOpen(McpLoginShown {
+            server: "docs".into(),
+            authorize_url: Secret(url.clone()),
+            redirect_uri: "http://127.0.0.1:8976/callback".into(),
+            note: Some("port 8976 is in use".into()),
+        }),
+        now,
+    );
+    app.update_at(
+        Msg::Paste("http://127.0.0.1:8976/callback?code=PASTED-CODE".into()),
+        now,
+    );
+    let mut terminal = Terminal::new(TestBackend::new(W, 30)).unwrap();
+    terminal.draw(|f| draw_at(f, &mut app, now)).unwrap();
+    let rows = rows(terminal.backend().buffer());
+    let open = format!("\x1b]8;;{url}\x1b\\");
+    let linked: Vec<&String> = rows.iter().filter(|row| row.contains(&open)).collect();
+    assert!(linked.len() >= 2, "{rows:#?}");
+    // Each linked row's text, its escapes taken off, is the next part of
+    // the URL.
+    let text: String = linked
+        .iter()
+        .map(|row| {
+            let after = row.split_once(&open).unwrap().1;
+            after.split_once("\x1b]8;;\x1b\\").unwrap().0.to_string()
+        })
+        .collect();
+    assert_eq!(text, url);
+    let plain = rows.join("\n");
+    for needle in [
+        "`docs`:",
+        "http://127.0.0.1:8976/callback",
+        "port 8976 is in use",
+        "Address:",
+        "PASTED-CODE",
+        "Esc cancels",
+    ] {
+        assert!(plain.contains(needle), "{needle}: {rows:#?}");
+    }
+    assert!(app.input.text().is_empty());
+    let fx = app.update_at(
+        Msg::Key(ratatui::crossterm::event::KeyEvent::from(
+            ratatui::crossterm::event::KeyCode::Esc,
+        )),
+        now,
+    );
+    assert!(fx.contains(&Effect::McpLoginCancel), "{fx:?}");
+    let export = app.transcript.export_text();
+    assert!(
+        !export.contains("PASTED-CODE") && !export.contains("state=s"),
+        "{export}"
+    );
+}

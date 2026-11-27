@@ -549,7 +549,41 @@ impl App {
                 ModalKey::Stay | ModalKey::Choose(()) => {}
                 ModalKey::Close => self.modal = None,
             },
+            Some(Modal::McpLogin(dialog)) => {
+                let waiting = matches!(dialog, super::modal::McpLoginDialog::Waiting { .. });
+                match dialog.key(key) {
+                    ModalKey::Stay => {}
+                    ModalKey::Close => {
+                        self.modal = None;
+                        if waiting {
+                            fx.push(Effect::McpLoginCancel);
+                        }
+                    }
+                    ModalKey::Choose(super::modal::McpLoginAct::Confirmed(server)) => {
+                        self.modal = None;
+                        fx.push(Effect::McpLogin {
+                            server,
+                            confirmed: true,
+                        });
+                    }
+                    ModalKey::Choose(super::modal::McpLoginAct::Pasted(text)) => {
+                        fx.push(Effect::McpLoginPasted(text));
+                    }
+                    ModalKey::Choose(super::modal::McpLoginAct::Copy(url)) => {
+                        self.copy_text(&url.0);
+                    }
+                }
+            }
             None => {}
+        }
+    }
+
+    /// Open the `/mcp login` dialog: over nothing, a list or the help;
+    /// behind an approval dialog it waits until that is answered.
+    pub(super) fn show_mcp_login(&mut self, dialog: super::modal::McpLoginDialog) {
+        match self.modal {
+            Some(Modal::Escalation { .. }) => self.parked = Some(Modal::McpLogin(dialog)),
+            _ => self.modal = Some(Modal::McpLogin(dialog)),
         }
     }
 

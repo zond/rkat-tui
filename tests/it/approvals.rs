@@ -96,6 +96,7 @@ impl Setup {
                 classifier_model: None,
             },
             without_token_store: true,
+            credential_root: None,
         });
         if self.without_registry {
             options.without_policy_registry()

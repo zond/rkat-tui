@@ -20,6 +20,9 @@ fn rules_file_round_trip() {
         daemon: Some(DaemonSection {
             principal: Some("alice".into()),
         }),
+        mcp: Some(super::file::McpSection {
+            oauth_redirect_uri: Some("http://localhost:8976/callback".into()),
+        }),
         auto: Some(AutoSection {
             mode: Some(PermissionMode::Auto),
             classifier_model: Some("claude-sonnet-4-6".into()),

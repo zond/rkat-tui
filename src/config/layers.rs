@@ -101,6 +101,12 @@ pub enum Notice {
         /// The rules file.
         path: PathBuf,
     },
+    /// A project rules file's `[mcp]` section (only the user's own files
+    /// say where a login's redirect goes).
+    McpIgnored {
+        /// The rules file.
+        path: PathBuf,
+    },
     /// A `[pricing."<model>"]` entry has a negative or non-finite price.
     PricingInvalid {
         model: String,
@@ -202,6 +208,11 @@ impl fmt::Display for Notice {
             Self::DaemonIgnored { path } => write!(
                 f,
                 "ignored [daemon] in {}: only your own tui.toml files configure the daemon",
+                path.display()
+            ),
+            Self::McpIgnored { path } => write!(
+                f,
+                "ignored [mcp] in {}: only your own tui.toml files (or --set) say where an MCP login's redirect goes",
                 path.display()
             ),
             Self::PricingInvalid { model, field } => write!(
@@ -667,6 +678,11 @@ impl Layered {
         }
         if project.daemon.is_some() {
             self.notices.push(Notice::DaemonIgnored {
+                path: project_path.clone(),
+            });
+        }
+        if project.mcp.is_some() {
+            self.notices.push(Notice::McpIgnored {
                 path: project_path.clone(),
             });
         }

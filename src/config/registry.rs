@@ -195,6 +195,9 @@ pub enum Kind {
     /// ([`super::file::InstructionPath`]); the lists of the user's file,
     /// the workspace's and the command line add up.
     Paths,
+    /// An `http` loopback redirect URI with an explicit port and a path
+    /// ([`crate::client::mcp_login::LoopbackRedirect`]).
+    LoopbackRedirect,
 }
 
 impl Kind {
@@ -220,6 +223,9 @@ impl Kind {
             }
             Self::Paths => {
                 "a list of absolute file paths, `~` expanded (`[\"~/notes.md\"]`; `/set` also takes `a, b`); the user's, the workspace's and the command line's lists add up".to_string()
+            }
+            Self::LoopbackRedirect => {
+                "an `http` loopback URI with an explicit port and a path (`http://127.0.0.1:8976/callback`, `http://localhost:…`, `http://[::1]:…`)".to_string()
             }
         }
     }
@@ -766,6 +772,11 @@ impl Setting {
                 }
                 Ok(value.clone())
             }
+            (Kind::LoopbackRedirect, Value::String(text)) => {
+                crate::client::mcp_login::LoopbackRedirect::parse(text)
+                    .map(|_| value.clone())
+                    .map_err(|why| format!("{}: {why}", self.key))
+            }
             _ => Err(bad()),
         }
     }
@@ -794,7 +805,9 @@ impl Setting {
                     .map_err(|why| format!("{}: {why}", self.key));
             }
             Kind::Text { .. } => Value::String(unquote(text).to_string()),
-            Kind::Choice(_) | Kind::Model => Value::String(unquote(text).to_string()),
+            Kind::Choice(_) | Kind::Model | Kind::LoopbackRedirect => {
+                Value::String(unquote(text).to_string())
+            }
             Kind::Patterns | Kind::Paths => super::helper_models::list_value(text),
         };
         self.check(&value)
@@ -1340,7 +1353,38 @@ pub static SETTINGS: &[Setting] = &[
         command: None,
         hook: Hook::None,
     },
+    MCP_OAUTH_REDIRECT,
 ];
+
+/// The redirect an MCP server's OAuth login sends the browser back to
+/// (`/mcp login`): the whole loopback URI, host spelling, port and path, so
+/// a wrapper can predefine one an authorization server already has
+/// registered. The client binds its one-shot listener there. User layers
+/// and the command line only: a cloned repository must not point a login
+/// somewhere of its choosing.
+pub const MCP_OAUTH_REDIRECT: Setting = Setting {
+    key: "mcp.oauth_redirect_uri",
+    kind: Kind::LoopbackRedirect,
+    default: Fallback::Unset("`http://127.0.0.1:<a free port>/callback`"),
+    project: ProjectRule::Never,
+    applies: Applies::NextStart,
+    about: "The loopback redirect of `/mcp login` (`http://localhost:8976/callback`): host `127.0.0.1`, `localhost` or `[::1]`, an explicit port, a path.",
+    flags: &[],
+    command: None,
+    hook: Hook::None,
+};
+
+/// The redirect [`MCP_OAUTH_REDIRECT`] sets over `layers`, if any (a
+/// value in force was checked as it was read).
+#[must_use]
+pub fn mcp_redirect_in_force(layers: &Layers) -> Option<String> {
+    MCP_OAUTH_REDIRECT
+        .resolve(layers)
+        .value
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
 
 /// A structured section of `tui.toml`: not a scalar setting, with its own
 /// commands.

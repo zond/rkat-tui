@@ -194,6 +194,9 @@ impl App {
     pub(super) fn paste_text(&mut self, text: &str) {
         if let Some(Modal::Escalation { dialog, .. }) = &mut self.modal {
             dialog.type_text(text);
+        } else if let Some(Modal::McpLogin(dialog)) = &mut self.modal {
+            // The login's code: into the dialog's field, never the input.
+            dialog.type_text(text);
         } else if let Some(Modal::List(picker)) = &mut self.modal
             && picker.editing()
         {

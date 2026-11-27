@@ -10,7 +10,9 @@
 //! This module holds the dialogs' state and keys; [`draw`] draws them.
 
 mod draw;
+pub mod mcp_login;
 
+pub use self::mcp_login::{McpLoginAct, McpLoginDialog, McpLoginShown, Secret};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 pub use self::draw::draw_modal;
@@ -751,6 +753,9 @@ pub enum Modal {
     PlanReady(PlanDialog),
     /// `/quit` asks whether to detach or stop the daemon.
     Quit(QuitDialog),
+    /// `/mcp login`: the question for a project server, then the
+    /// authorize URL and the paste field.
+    McpLogin(McpLoginDialog),
 }
 
 #[cfg(test)]

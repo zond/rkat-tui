@@ -548,6 +548,215 @@ methods! {
     /// without a classifier model); dropped when its client leaves
     /// ([`CANCELLED_ON_LEAVE`]).
     ClassifierCheck = "rkat/classifier_check" (crate::approval::corpus::Selection) -> ClassifierChecked;
+    /// `/mcp`: every MCP server of the daemon's start, with where it comes
+    /// from, its URL or command and, for a server marked for OAuth, its
+    /// login state from the credential store (no network).
+    McpServers = "rkat/mcp_servers" (Empty) -> McpServerList;
+    /// `/mcp login <server>`: admit one OAuth login of a marked server for
+    /// the client's loopback `redirect_uri` ([`crate::daemon::mcp_auth`]).
+    /// A server of the project's (trusted) `mcp.toml` first answers
+    /// [`McpLoginStarted::Confirm`] with its URL; the client asks the user
+    /// and sends `confirmed`. Refused with [`MCP_REFUSED`] in plain words.
+    McpLoginStart = "rkat/mcp_login_start" (McpLoginStartParams) -> McpLoginStarted;
+    /// The browser's redirect, which the client's listener received or the
+    /// user pasted: the daemon completes the login, and the agents' sessions
+    /// connect the server at their next turn (no restart).
+    McpLoginComplete = "rkat/mcp_login_complete" (McpLoginCompleteParams) -> Outcome;
+    /// Retire the login attempt pending for a server (the dialog's Esc, its
+    /// deadline, a switch or a detach). One that ended is no error.
+    McpLoginCancel = "rkat/mcp_login_cancel" (McpServerParams) -> Empty;
+    /// `/mcp logout <server>`: remove the stored credential (the agents'
+    /// sessions stop offering the server's tools at their next turn).
+    McpLogout = "rkat/mcp_logout" (McpServerParams) -> Outcome;
+}
+
+/// An MCP server's login state changed, or a server answered that it needs
+/// one ([`McpAuthNote`]); every client shows its text.
+pub const MCP_AUTH: &str = "rkat/mcp_auth";
+
+/// A refusal of an `rkat/mcp_*` method, in plain words.
+pub const MCP_REFUSED: i32 = -32020;
+
+/// Where an MCP server of the daemon's start is defined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpSource {
+    /// The user's `~/.rkat/mcp.toml`.
+    User,
+    /// The project's `.rkat/mcp.toml`.
+    Project,
+    /// The realm config's `[[tools.mcp_servers]]`.
+    Realm,
+    /// `--mcp-server`.
+    CommandLine,
+}
+
+impl McpSource {
+    /// In words (`/mcp`).
+    #[must_use]
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::User => "your mcp.toml",
+            Self::Project => "the project's .rkat/mcp.toml",
+            Self::Realm => "the realm config",
+            Self::CommandLine => "--mcp-server",
+        }
+    }
+}
+
+/// An MCP server's login state as `/mcp` shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum McpLoginState {
+    /// A local (stdio) server: no login.
+    Local,
+    /// An HTTP server not marked for OAuth (no `oauth_account` or
+    /// `oauth_account_selection`): connected as configured.
+    NotMarked,
+    /// A stored credential serves it.
+    Authorized {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<String>,
+    },
+    /// No credential: `/mcp login`.
+    NeedsLogin,
+    /// The stored credential expired and cannot be refreshed.
+    NeedsRelogin,
+    /// A server of the project's untrusted `mcp.toml`: not started, no
+    /// login.
+    Untrusted,
+    /// The state could not be read (no credential store, a store error).
+    Unknown { why: String },
+}
+
+impl McpLoginState {
+    /// In words (`/mcp`).
+    #[must_use]
+    pub fn words(&self) -> String {
+        match self {
+            Self::Local => "local, no login".to_string(),
+            Self::NotMarked => "not marked for OAuth login".to_string(),
+            Self::Authorized {
+                expires_at: Some(at),
+            } => format!("authorized (token until {at})"),
+            Self::Authorized { expires_at: None } => "authorized".to_string(),
+            Self::NeedsLogin => "needs login".to_string(),
+            Self::NeedsRelogin => "needs re-login".to_string(),
+            Self::Untrusted => {
+                "not started: the project's mcp.toml is not trusted (/trust)".to_string()
+            }
+            Self::Unknown { why } => format!("login state unknown: {why}"),
+        }
+    }
+
+    /// Whether `/mcp login` is what the server needs.
+    #[must_use]
+    pub fn wants_login(&self) -> bool {
+        matches!(self, Self::NeedsLogin | Self::NeedsRelogin)
+    }
+}
+
+/// One row of `/mcp`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerRow {
+    pub name: String,
+    pub source: McpSource,
+    /// The URL of an HTTP server, the command of a local one.
+    pub address: String,
+    pub login: McpLoginState,
+}
+
+/// [`method::McpServers`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerList {
+    pub servers: Vec<McpServerRow>,
+}
+
+/// A server named by a client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerParams {
+    pub server: String,
+}
+
+/// [`method::McpLoginStart`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpLoginStartParams {
+    pub server: String,
+    /// The client's loopback redirect, its listener bound there.
+    pub redirect_uri: String,
+    /// The user confirmed a project server's URL.
+    #[serde(default)]
+    pub confirmed: bool,
+}
+
+/// [`method::McpLoginStart`]'s answer. `Debug` never shows the authorize
+/// URL or the state: they are bearer material for the attempt.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum McpLoginStarted {
+    /// A server of the project's `mcp.toml`: ask the user first.
+    Confirm { url: String },
+    /// The attempt: open `authorize_url` in a browser; the redirect carries
+    /// `state` back.
+    Started {
+        authorize_url: String,
+        state: String,
+        redirect_uri: String,
+        /// Seconds left before the attempt expires.
+        expires_in: u64,
+    },
+}
+
+impl std::fmt::Debug for McpLoginStarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Confirm { url } => f.debug_struct("Confirm").field("url", url).finish(),
+            Self::Started {
+                redirect_uri,
+                expires_in,
+                ..
+            } => f
+                .debug_struct("Started")
+                .field("authorize_url", &"<redacted>")
+                .field("state", &"<redacted>")
+                .field("redirect_uri", redirect_uri)
+                .field("expires_in", expires_in)
+                .finish(),
+        }
+    }
+}
+
+/// [`method::McpLoginComplete`]'s parameters. `Debug` never shows the
+/// state or the code.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpLoginCompleteParams {
+    pub server: String,
+    pub redirect_uri: String,
+    pub state: String,
+    pub code: String,
+}
+
+impl std::fmt::Debug for McpLoginCompleteParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpLoginCompleteParams")
+            .field("server", &self.server)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("state", &"<redacted>")
+            .field("code", &"<redacted>")
+            .finish()
+    }
+}
+
+/// [`MCP_AUTH`]'s payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpAuthNote {
+    pub server: String,
+    pub login: McpLoginState,
+    /// What to tell the user.
+    pub text: String,
 }
 
 /// The local methods whose run is dropped when the client that called

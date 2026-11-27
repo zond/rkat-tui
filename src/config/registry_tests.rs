@@ -37,6 +37,10 @@ fn samples(setting: &Setting) -> [Value; 2] {
         "ui.helpers" => [text("expanded"), text("folded")],
         "ui.checklist" => [text("shown"), text("hidden")],
         "daemon.principal" => [text("alice"), text("bob")],
+        "mcp.oauth_redirect_uri" => [
+            text("http://localhost:8976/callback"),
+            text("http://[::1]:8080/oauth/done"),
+        ],
         _ => match setting.kind {
             Kind::Bool => [Value::Boolean(true), Value::Boolean(false)],
             other => panic!("no samples for {} ({other:?})", setting.key),
@@ -134,6 +138,8 @@ fn typed_value(key: &str, layered: &Layered) -> Option<Value> {
         "ui.checklist" => to(Value::try_from(layered.ui.checklist).unwrap()),
         "pricing.fetch" => to(Value::Boolean(layered.pricing_fetch)),
         "daemon.principal" => layered.daemon_principal.clone().map(Value::String),
+        // Read where it applies (the client's `/mcp login`), from the layers.
+        "mcp.oauth_redirect_uri" => mcp_redirect_in_force(&layered.layers).map(Value::String),
         other => panic!("no typed view of {other}"),
     }
 }

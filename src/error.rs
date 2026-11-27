@@ -142,6 +142,19 @@ pub enum TuiError {
         /// The shell's grant that reaches it.
         grant: PathBuf,
     },
+    /// The shell's confinement plan reaches the credential store (provider
+    /// tokens, the MCP logins).
+    #[error(
+        "refusing to start: the confined shell is granted {}, which reaches the credential store {} (provider tokens and MCP logins); drop that grant",
+        grant.display(),
+        root.display()
+    )]
+    CredentialsExposed {
+        /// The credential store's directory.
+        root: PathBuf,
+        /// The shell's grant that reaches it.
+        grant: PathBuf,
+    },
     /// `--attach=DIRECTORY`: no daemon has an endpoint file for that
     /// workspace.
     #[error(
@@ -187,6 +200,7 @@ impl TuiError {
             | Self::Rehome(_)
             | Self::RealmExposed { .. }
             | Self::SettingsExposed { .. }
+            | Self::CredentialsExposed { .. }
             | Self::NoDaemonAt { .. }
             | Self::AttachAddress { .. }
             | Self::NotATerminal => 2,

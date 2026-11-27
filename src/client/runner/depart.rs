@@ -115,6 +115,7 @@ impl Runner {
 
     /// Leave the daemon as the UI decided: record a detach, or stop it.
     pub(super) async fn depart(&mut self, departure: Departure) {
+        self.cancel_mcp_login(Some("this client left"));
         let Some(connection) = self.connection() else {
             if departure == Departure::Terminate && !self.conn.stopping() {
                 self.farewell(

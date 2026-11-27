@@ -160,6 +160,11 @@ pub struct BootstrapOptions {
     /// never open the user's provider token store.
     #[cfg(any(test, feature = "test-support"))]
     pub without_token_store: bool,
+    /// Tests: keep the credentials (the MCP logins) in this directory, a
+    /// file store of its own, even beside an LLM override (the user's
+    /// `<config dir>/meerkat/credentials` otherwise).
+    #[cfg(any(test, feature = "test-support"))]
+    pub credential_root: Option<PathBuf>,
 }
 
 /// The shell's extra grants: the command line's `--confinement-read`/
@@ -280,6 +285,12 @@ pub struct Assembled {
     pub approval: ApprovalParts,
     /// The declarative MCP servers every session build carries.
     pub mcp_servers: Vec<McpServerConfig>,
+    /// Where each of them is defined, and the untrusted project file's
+    /// servers that do not start (`/mcp`).
+    pub mcp_sources: (
+        Vec<(String, crate::daemon::protocol::McpSource)>,
+        Vec<McpServerConfig>,
+    ),
     /// The workspace files that make the host run something, and their trust.
     pub project_inputs: project_trust::ProjectInputs,
     /// Whether sessions get native semantic memory.
@@ -493,6 +504,14 @@ pub async fn assemble(
             grant,
         });
     }
+    // The provider tokens and the MCP logins: never in the shell's reach.
+    let token_store = credential_store(&options);
+    if let Some(root) = token_store
+        .as_ref()
+        .and_then(meerkat::TokenStoreBackend::credential_root)
+    {
+        check_credentials_private(&confinement, &root)?;
+    }
     let (manifest, persistence, realm_lease) = open_realm(&scope, lease_surface).await?;
     let store_path = persistence
         .store_path()
@@ -505,7 +524,7 @@ pub async fn assemble(
         &scope,
         store_path,
         FactoryToggles {
-            token_store: options.llm_override.is_none() && !without_token_store(&options),
+            token_store,
             memory,
         },
         &confinement.shell,
@@ -582,6 +601,7 @@ pub async fn assemble(
         factory,
         approval,
         mcp_servers: mcp.servers,
+        mcp_sources: (mcp.sources, mcp.untrusted),
         project_inputs,
         memory,
         tasks_db,
@@ -680,11 +700,51 @@ fn memory_probe(
     }
 }
 
+/// The credential store the factory attaches: the user's default
+/// (`<config dir>/meerkat/credentials`), or a test's own directory.
+/// `None`: none (environment keys only, no MCP login).
+fn credential_store(options: &BootstrapOptions) -> Option<meerkat::TokenStoreBackend> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(root) = &options.credential_root {
+        return Some(meerkat::TokenStoreBackend::File { root: root.clone() });
+    }
+    if options.llm_override.is_some() || without_token_store(options) {
+        return None;
+    }
+    match meerkat::TokenStoreBackend::default_auto() {
+        Ok(backend) => Some(backend),
+        Err(err) => {
+            tracing::warn!(error = %err, "provider token store unavailable; using environment keys only");
+            None
+        }
+    }
+}
+
+/// Refuse a shell confinement `plan` that reaches the credential store's
+/// directory `root` (the provider tokens and the MCP logins), as the realm
+/// is refused ([`check_realm_private`]).
+///
+/// # Errors
+///
+/// [`TuiError::CredentialsExposed`] naming the grant.
+pub fn check_credentials_private(
+    plan: &ConfinementPlan,
+    root: &std::path::Path,
+) -> Result<(), TuiError> {
+    match realm_home::exposing_grant(plan, root) {
+        Some(grant) => Err(TuiError::CredentialsExposed {
+            root: root.to_path_buf(),
+            grant,
+        }),
+        None => Ok(()),
+    }
+}
+
 /// Optional factory capabilities.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct FactoryToggles {
-    /// Attach the user's provider token store.
-    token_store: bool,
+    /// The credential store to attach ([`credential_store`]).
+    token_store: Option<meerkat::TokenStoreBackend>,
     /// Native semantic memory (`memory_search`, compaction indexing).
     memory: bool,
 }
@@ -729,16 +789,16 @@ fn build_factory(
     if let Some(user_root) = &scope.user_config_root {
         factory = factory.user_config_root(user_root.clone());
     }
-    if toggles.token_store {
-        factory = match factory.clone().with_default_token_store() {
-            Ok(with_store) => with_store,
+    if let Some(backend) = &toggles.token_store {
+        factory = match backend.clone().open_with_refresh_authority() {
+            Ok(persistence) => factory.with_provider_auth_persistence(persistence),
             Err(err) => {
                 tracing::warn!(error = %err, "provider token store unavailable; using environment keys only");
                 factory
             }
         };
     }
-    protect_host_inputs(factory, scope, toggles.token_store)
+    protect_host_inputs(factory, scope, toggles.token_store.as_ref())
 }
 
 /// Declare to `factory` what the engine's own file tools (`apply_patch`,
@@ -755,7 +815,7 @@ fn build_factory(
 fn protect_host_inputs(
     factory: AgentFactory,
     scope: &RuntimeScope,
-    token_store: bool,
+    token_store: Option<&meerkat::TokenStoreBackend>,
 ) -> AgentFactory {
     use meerkat::{HostConfinement, HostInput};
 
@@ -766,13 +826,8 @@ fn protect_host_inputs(
     let mut inputs = HostConfinement::host_inputs(&scope.realms_root, user_document.as_deref());
     inputs.push((HostInput::RealmState, scope.realm_root()));
     inputs.push((HostInput::RealmState, scope.global.config.clone()));
-    if token_store {
-        inputs.extend(
-            meerkat::TokenStoreBackend::default_auto()
-                .ok()
-                .as_ref()
-                .and_then(HostConfinement::credential_store_input),
-        );
+    if let Some(backend) = token_store {
+        inputs.extend(HostConfinement::credential_store_input(backend));
     }
     factory.with_protected_host_inputs(
         &inputs,
@@ -888,7 +943,7 @@ mod tests {
         let factory = protect_host_inputs(
             AgentFactory::new(root.join("store")).project_root(root.as_path()),
             &scope,
-            false,
+            None,
         );
         let dispatcher = factory
             .build_builtin_dispatcher(
@@ -1178,7 +1233,7 @@ mod tests {
                 &scope,
                 ws.join("store"),
                 FactoryToggles {
-                    token_store: false,
+                    token_store: None,
                     memory: false,
                 },
                 &shell,

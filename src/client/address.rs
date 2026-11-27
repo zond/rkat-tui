@@ -45,6 +45,8 @@ impl Reached {
         if self.remote.is_some() {
             config.endpoint_files.clear();
         }
+        // Not loopback: only `--attach-insecure` reaches it, unencrypted.
+        config.insecure = !self.endpoint.address.ip().is_loopback();
         config.address = Some(self.endpoint);
         config.remote = self.remote;
     }
